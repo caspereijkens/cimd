@@ -1,27 +1,12 @@
 const std = @import("std");
 
-// A correctly structured Zip file starts with a local file header (see https://pkwaredownloads.blob.core.windows.net/pem/APPNOTE.txt "4.3.6 Overall .ZIP file format")
-const local_file_header_sig = [4]u8{ 'P', 'K', 3, 4 };
-
-//pub fn isZipFile(file_path: []const u8) !bool {
-//    const file = try std.fs.cwd().openFile(file_path, .{});
-//    defer file.close();
-//
-//    var magic: [4]u8 = undefined;
-//    const bytes_read = try file.pread(&magic, 0);
-//
-//    if (bytes_read < 4) return false;
-//
-//    return std.mem.eql(u8, &magic, &local_file_header_sig); // PK\x03\x04
-//}
-
 pub fn isZipFile(file: std.fs.File) !bool {
     var magic: [4]u8 = undefined;
     const bytes_read = try file.pread(&magic, 0); // pread does not advance offset
 
     if (bytes_read < 4) return false;
 
-    return std.mem.eql(u8, &magic, &local_file_header_sig);
+    return std.mem.eql(u8, &magic, &std.zip.local_file_header_sig);
 }
 
 test "isZipFile" {
