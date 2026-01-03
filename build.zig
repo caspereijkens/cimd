@@ -1,5 +1,17 @@
 const std = @import("std");
 
+fn extractVersionFromZon(zon_contents: []const u8) []const u8 {
+    // Simple parser to extract .version = "x.y.z" from build.zig.zon
+    const version_prefix = ".version = \"";
+    if (std.mem.indexOf(u8, zon_contents, version_prefix)) |start| {
+        const version_start = start + version_prefix.len;
+        if (std.mem.indexOfScalarPos(u8, zon_contents, version_start, '"')) |end| {
+            return zon_contents[version_start..end];
+        }
+    }
+    return "unknown";
+}
+
 // Although this function looks imperative, it does not perform the build
 // directly and instead it mutates the build graph (`b`) that will be then
 // executed by an external runner. The functions in `std.Build` implement a DSL
@@ -16,6 +28,14 @@ pub fn build(b: *std.Build) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
+
+    // Create build options to expose version and other build-time information
+    const build_options = b.addOptions();
+
+    // Extract version from build.zig.zon
+    const zon_contents = @embedFile("build.zig.zon");
+    const version = comptime extractVersionFromZon(zon_contents);
+    build_options.addOption([]const u8, "version", version);
     // It's also possible to define more custom flags to toggle optional features
     // of this build script using `b.option()`. All defined flags (including
     // target and optimize options) will be listed when running `zig build --help`
@@ -79,6 +99,7 @@ pub fn build(b: *std.Build) void {
                 // can be extremely useful in case of collisions (which can happen
                 // importing modules from different packages).
                 .{ .name = "cimd", .module = mod },
+                .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
     });
