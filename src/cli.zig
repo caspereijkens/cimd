@@ -152,7 +152,7 @@ fn validate_cgmes_file_extension(path: []const u8) void {
         print.stderr("index: file must be .xml or .zip (got: '{s}')", .{path});
     }
 
-    const ext = path[path.len - 4 ..];
+    const ext = std.fs.path.extension(path);
     const is_xml = std.ascii.eqlIgnoreCase(ext, ".xml");
     const is_zip = std.ascii.eqlIgnoreCase(ext, ".zip");
 
