@@ -1,16 +1,13 @@
 const std = @import("std");
 
-fn extractVersionFromZon(zon_contents: []const u8) []const u8 {
-    // Simple parser to extract .version = "x.y.z" from build.zig.zon
-    const version_prefix = ".version = \"";
-    if (std.mem.indexOf(u8, zon_contents, version_prefix)) |start| {
-        const version_start = start + version_prefix.len;
-        if (std.mem.indexOfScalarPos(u8, zon_contents, version_start, '"')) |end| {
-            return zon_contents[version_start..end];
-        }
-    }
-    return "unknown";
-}
+const BuildZonFile = struct {
+    name: enum { cimd },
+    version: []const u8,
+    fingerprint: ?u64 = null,
+    minimum_zig_version: ?[]const u8 = null,
+    dependencies: ?struct {} = null,
+    paths: ?[]const []const u8 = null,
+};
 
 // Although this function looks imperative, it does not perform the build
 // directly and instead it mutates the build graph (`b`) that will be then
@@ -32,10 +29,16 @@ pub fn build(b: *std.Build) void {
     // Create build options to expose version and other build-time information
     const build_options = b.addOptions();
 
-    // Extract version from build.zig.zon
+    // Parse version from build.zig.zon using std.zon.parse
     const zon_contents = @embedFile("build.zig.zon");
-    const version = comptime extractVersionFromZon(zon_contents);
-    build_options.addOption([]const u8, "version", version);
+    const parsed = std.zon.parse.fromSlice(
+        BuildZonFile,
+        b.allocator,
+        zon_contents,
+        null,
+        .{},
+    ) catch @panic("Failed to parse build.zig.zon");
+    build_options.addOption([]const u8, "version", parsed.version);
     // It's also possible to define more custom flags to toggle optional features
     // of this build script using `b.option()`. All defined flags (including
     // target and optimize options) will be listed when running `zig build --help`
