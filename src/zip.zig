@@ -34,4 +34,62 @@ test "isZipFile" {
     try std.testing.expect(!(try isZipFile(file)));
 }
 
+// Modified ZIP extraction function from the std lib.
+// This function first checks if the file was already extracted.
+pub fn extract(gpa: std.mem.Allocator, dest: std.fs.Dir, fr: *std.fs.File.Reader, options: std.zip.ExtractOptions) !std.ArrayList([]const u8) {
+    var extracted_files: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (extracted_files.items) |filename| {
+            gpa.free(filename);
+        }
+        extracted_files.deinit(gpa);
+    }
 
+    var iter = try std.zip.Iterator.init(fr);
+    var filename_buf: [std.fs.max_path_bytes]u8 = undefined;
+
+    while (try iter.next()) |entry| {
+        // Read the filename first (before extracting)
+        const filename = filename_buf[0..entry.filename_len];
+        {
+            try fr.seekTo(entry.header_zip_offset + @sizeOf(std.zip.CentralDirectoryFileHeader));
+            try fr.interface.readSliceAll(filename);
+        }
+
+        // Normalize backslashes if needed
+        if (options.allow_backslashes) {
+            std.mem.replaceScalar(u8, filename, '\\', '/');
+        }
+
+        // Check if we should extract this file
+        const should_extract = blk: {
+            const stat = dest.statFile(filename) catch |err| {
+                if (err == error.FileNotFound) break :blk true; // File doesn't exist, extract
+                return err; // Other errors should be propagated
+            };
+
+            // Directories always end in '/' - if it exists, skip
+            if (filename[filename.len - 1] == '/') break :blk false;
+
+            // Check if size matches
+            if (stat.size != entry.uncompressed_size) break :blk true; // Size mismatch, re-extract
+
+            break :blk false; // File exists with correct size, skip
+        };
+
+        // Add the filename to the list of extracted files.
+        const filename_path = try std.fmt.allocPrint(gpa, ".cimd/{s}", .{filename});
+        errdefer gpa.free(filename_path);
+        try extracted_files.append(gpa, filename_path);
+
+        if (!should_extract) {
+            std.debug.print("Skipping already extracted: {s}\n", .{filename});
+            continue;
+        }
+
+        // File doesn't exist or needs re-extraction, now using the std lib extraction method.
+        try entry.extract(fr, options, &filename_buf, dest);
+    }
+
+    return extracted_files;
+}
