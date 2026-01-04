@@ -19,11 +19,19 @@ const help_index =
     \\  cimd index data/eq.xml data/ssh.xml data/tp.xml
     \\  cimd index data/model.zip
     \\
-    \\To export data, use the 'info' command:
-    \\  cimd info data/eq.xml --type=ACLineSegment --export=lines.csv
-    \\
 ;
 
+const help_extract =
+    \\Usage: cimd extract <file> [<file>...]
+    \\
+    \\Extract one or more CGMES zip files. Provide multiple files
+    \\separated by spaces. Extracted files are written to a folder named '.cimd'.
+    \\
+    \\Examples:
+    \\  cimd extract data/model.zip
+    \\  cimd extract data/eq.zip data/ssh.zip data/tp.zip
+    \\
+;
 const help_version =
     \\Usage: cimd version [--verbose]
     \\
@@ -45,6 +53,7 @@ const help_main =
     \\
     \\Commands:
     \\  index      Index and parse CGMES files
+    \\  extract    Extract CGMES zip files
     \\  version    Print version information
     \\
     \\Use 'cimd <command> --help' for more information about a command.
@@ -56,11 +65,16 @@ pub const Command = union(enum) {
         paths: []const []const u8,
     };
 
+    pub const Extract = struct {
+        paths: []const []const u8,
+    };
+
     pub const Version = struct {
         verbose: bool,
     };
 
     index: Index,
+    extract: Extract,
     version: Version,
 };
 
@@ -70,7 +84,7 @@ pub fn parse_args(args_iterator: *std.process.ArgIterator) Command {
     assert(args_iterator.skip()); // Skip executable name
 
     const command_name = args_iterator.next() orelse print.stderr(
-        "subcommand required, expected 'index' or 'version'\nTry '--help' for more information.",
+        "subcommand required, expected 'index', 'extract' or 'version'\nTry '--help' for more information.",
         .{},
     );
 
@@ -81,6 +95,8 @@ pub fn parse_args(args_iterator: *std.process.ArgIterator) Command {
 
     if (std.mem.eql(u8, command_name, "index")) {
         return parse_index_command(args_iterator);
+    } else if (std.mem.eql(u8, command_name, "extract")) {
+        return parse_extract_command(args_iterator);
     } else if (std.mem.eql(u8, command_name, "version")) {
         return parse_version_command(args_iterator);
     } else {
@@ -103,7 +119,7 @@ fn parse_index_command(args_iterator: *std.process.ArgIterator) Command {
 
         // Validate the file path
         validate_path(arg, "index <path>");
-        validate_cgmes_file_extension(arg);
+        validate_cgmes_file_extension(arg, "index <path>");
 
         paths_list.append(std.heap.page_allocator, arg) catch print.stderr("failed to allocate paths array", .{});
     }
@@ -115,6 +131,32 @@ fn parse_index_command(args_iterator: *std.process.ArgIterator) Command {
     return .{ .index = .{ .paths = paths_list.items } };
 }
 
+fn parse_extract_command(args_iterator: *std.process.ArgIterator) Command {
+    var paths_list: std.ArrayList([]const u8) = .empty;
+
+    while (args_iterator.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            _ = std.fs.File.stdout().write(help_extract) catch std.process.exit(1);
+            std.process.exit(0);
+        }
+
+        if (arg.len > 0 and arg[0] == '-') {
+            print.stderr("extract: unknown option '{s}'", .{arg});
+        }
+
+        // Validate the file path
+        validate_path(arg, "extract <path>");
+        validate_zip_file_extension(arg, "extract <path>");
+
+        paths_list.append(std.heap.page_allocator, arg) catch print.stderr("failed to allocate paths array", .{});
+    }
+
+    if (paths_list.items.len == 0) {
+        print.stderr("extract: at least one file path is required", .{});
+    }
+
+    return .{ .extract = .{ .paths = paths_list.items } };
+}
 fn parse_version_command(args_iterator: *std.process.ArgIterator) Command {
     var verbose = false;
 
@@ -146,10 +188,10 @@ fn validate_path(path: []const u8, comptime context: []const u8) void {
     }
 }
 
-fn validate_cgmes_file_extension(path: []const u8) void {
+fn validate_cgmes_file_extension(path: []const u8, comptime context: []const u8) void {
     // Check if file ends with .xml or .zip (case insensitive)
     if (path.len < 4) {
-        print.stderr("index: file must be .xml or .zip (got: '{s}')", .{path});
+        print.stderr(context ++ ": file must be .xml or .zip (got: '{s}')", .{path});
     }
 
     const ext = std.fs.path.extension(path);
@@ -157,12 +199,30 @@ fn validate_cgmes_file_extension(path: []const u8) void {
     const is_zip = std.ascii.eqlIgnoreCase(ext, ".zip");
 
     if (!is_xml and !is_zip) {
-        print.stderr(
-            \\index: file must be .xml or .zip (got: '{s}')
+        print.stderr(context ++
+            \\: file must be .xml or .zip (got: '{s}')
             \\
             \\CGMES files are typically:
             \\  - Raw XML files (*.xml)
             \\  - ZIP archives containing XML files (*.zip)
+            \\
+            \\If you have a different file format, convert it first.
+        , .{path});
+    }
+}
+
+fn validate_zip_file_extension(path: []const u8, comptime context: []const u8) void {
+    // Check if file ends with .zip (case insensitive)
+    if (path.len < 4) {
+        print.stderr(context ++ ": file must be .zip (got: '{s}')", .{path});
+    }
+
+    const ext = std.fs.path.extension(path);
+    const is_zip = std.ascii.eqlIgnoreCase(ext, ".zip");
+
+    if (!is_zip) {
+        print.stderr(context ++ 
+            \\: file must be .zip (got: '{s}')
             \\
             \\If you have a different file format, convert it first.
         , .{path});
