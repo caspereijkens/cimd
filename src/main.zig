@@ -63,7 +63,7 @@ fn command_index(gpa: std.mem.Allocator, paths: []const []const u8) !void {
                 extracted_files.deinit(gpa);
             }
             for (extracted_files.items) |filename| {
-                const filename_copy = try gpa.dupe(u8, filename); 
+                const filename_copy = try gpa.dupe(u8, filename);
                 try extracted_paths.append(gpa, filename_copy);
             }
         } else {
