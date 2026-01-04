@@ -168,4 +168,3 @@ fn validate_cgmes_file_extension(path: []const u8) void {
         , .{path});
     }
 }
-
