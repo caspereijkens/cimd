@@ -14,10 +14,6 @@ else
 
 const Chunk = @Vector(VECTOR_LEN, u8);
 
-// ============================================================================
-// Low-Level SIMD Primitives
-// ============================================================================
-
 /// Find all positions of a specific byte in the input using SIMD
 /// Returns an ArrayList of positions where the byte was found
 pub fn findByteSIMD(
@@ -84,16 +80,121 @@ pub fn findByteSIMD(
     return result;
 }
 
-// ============================================================================
-// Test Data
-// ============================================================================
+/// Result of finding a pattern match
+pub const PatternMatch = struct {
+    /// Position where the pattern starts (the 'r' in "rdf:")
+    pattern_start: u32,
+    /// Position where the value starts (after the opening quote)
+    value_start: u32,
+    /// Length of the value (excluding quotes)
+    value_len: u32,
+};
 
-const SIMPLE_XML =
-    \\<root>
-    \\  <item id="1">Hello</item>
-    \\  <item id="2">World</item>
-    \\</root>
-;
+/// Verify pattern at position and extract quoted value if match found
+/// Returns PatternMatch if pattern matches and closing quote is found, null otherwise
+fn verifyAndExtractPattern(
+    haystack: []const u8,
+    candidate_pos: usize,
+    pattern: []const u8,
+) ?PatternMatch {
+    // Check bounds for pattern
+    if (candidate_pos + pattern.len > haystack.len) return null;
+
+    // Verify full pattern matches
+    if (!std.mem.eql(u8, haystack[candidate_pos..][0..pattern.len], pattern)) {
+        return null;
+    }
+
+    // Find closing quote for value
+    const value_start = candidate_pos + pattern.len;
+    const closing_quote_offset = std.mem.indexOfScalarPos(u8, haystack, value_start, '"') orelse return null;
+    const value_len = closing_quote_offset - value_start;
+
+    return .{
+        .pattern_start = @intCast(candidate_pos),
+        .value_start = @intCast(value_start),
+        .value_len = @intCast(value_len),
+    };
+}
+
+/// Find all occurrences of a pattern followed by a quoted value
+/// Pattern example: "rdf:ID=\"" (8 bytes)
+/// Returns matches with position and extracted value location
+pub fn findPattern(
+    gpa: std.mem.Allocator,
+    haystack: []const u8,
+    pattern: []const u8,
+) !std.ArrayList(PatternMatch) {
+    assert(pattern.len > 0);
+
+    var result: std.ArrayList(PatternMatch) = .empty;
+    errdefer result.deinit(gpa);
+
+    if (haystack.len == 0 or pattern.len > haystack.len) return result;
+
+    const estimated_matches = @max(haystack.len / 1000, 16);
+    try result.ensureTotalCapacity(gpa, estimated_matches);
+
+    const first_byte = pattern[0];
+    const all_first_bytes: Chunk = @splat(first_byte);
+
+    var i: usize = 0;
+
+    const unroll_factor = 4;
+    const unroll_size = VECTOR_LEN * unroll_factor;
+
+    // Process 4 vectors per iteration
+    while (i + unroll_size <= haystack.len) : (i += unroll_size) {
+        inline for (0..unroll_factor) |j| {
+            const offset = i + j * VECTOR_LEN;
+            const chunk: Chunk = haystack[offset..][0..VECTOR_LEN].*;
+            const matches: @Vector(VECTOR_LEN, bool) = chunk == all_first_bytes;
+            const mask: u32 = @bitCast(matches);
+
+            var m = mask;
+            while (m != 0) {
+                const bit_pos = @ctz(m);
+                const candidate_pos = offset + bit_pos;
+
+                if (verifyAndExtractPattern(haystack, candidate_pos, pattern)) |match| {
+                    result.appendAssumeCapacity(match);
+                }
+
+                m &= m - 1;
+            }
+        }
+    }
+
+    // Remaining full vectors
+    while (i + VECTOR_LEN <= haystack.len) : (i += VECTOR_LEN) {
+        const chunk: Chunk = haystack[i..][0..VECTOR_LEN].*;
+        const matches: @Vector(VECTOR_LEN, bool) = chunk == all_first_bytes;
+        const mask: u32 = @bitCast(matches);
+
+        var m = mask;
+        while (m != 0) {
+            const bit_pos = @ctz(m);
+            const candidate_pos = i + bit_pos;
+
+            if (verifyAndExtractPattern(haystack, candidate_pos, pattern)) |match| {
+                result.appendAssumeCapacity(match);
+            }
+
+            m &= m - 1;
+        }
+    }
+
+    // Scalar remainder
+    while (i < haystack.len) : (i += 1) {
+        if (haystack[i] == first_byte) {
+            if (verifyAndExtractPattern(haystack, i, pattern)) |match| {
+                result.appendAssumeCapacity(match);
+            }
+        }
+    }
+
+    return result;
+}
 
 // ============================================================================
 // Tests
@@ -330,4 +431,139 @@ test "findByteSIMD - no matches in SIMD sections but matches in remainder" {
     try std.testing.expectEqual(@as(u32, VECTOR_LEN + 4), positions.items[2]);
 }
 
+// ============================================================================
+// Pattern Matching Tests
+// ============================================================================
 
+test "findPattern - finds rdf:ID with values" {
+    const gpa = std.testing.allocator;
+
+    const input =
+        \\<cim:Substation rdf:ID="_SubStation1">
+        \\<cim:Breaker rdf:ID="_BR1">
+    ;
+
+    var matches = try findPattern(gpa, input, "rdf:ID=\"");
+    defer matches.deinit(gpa);
+
+    // Should find 2 matches
+    try std.testing.expectEqual(@as(usize, 2), matches.items.len);
+
+    // First match: _SubStation1
+    const match1 = matches.items[0];
+    try std.testing.expectEqual(@as(u32, 16), match1.pattern_start); // Position of 'r' in first rdf:ID
+    try std.testing.expectEqual(@as(u32, 24), match1.value_start); // Position of '_' in _SubStation1
+    try std.testing.expectEqual(@as(u32, 12), match1.value_len); // Length of "_SubStation1"
+
+    // Verify extracted value
+    const value1 = input[match1.value_start..][0..match1.value_len];
+    try std.testing.expectEqualStrings("_SubStation1", value1);
+
+    // Second match: _BR1
+    const match2 = matches.items[1];
+    try std.testing.expectEqual(@as(u32, 52), match2.pattern_start); // Position of 'r' in second rdf:ID
+    const value2 = input[match2.value_start..][0..match2.value_len];
+    try std.testing.expectEqualStrings("_BR1", value2);
+}
+
+test "findPattern - finds rdf:about with # prefix" {
+    const gpa = std.testing.allocator;
+
+    const input =
+        \\<cim:Terminal rdf:about="#_T1">
+        \\  <cim:Terminal.ConnectivityNode rdf:resource="#_CN1"/>
+        \\</cim:Terminal>
+    ;
+
+    var matches = try findPattern(gpa, input, "rdf:about=\"");
+    defer matches.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 1), matches.items.len);
+
+    const match = matches.items[0];
+    const value = input[match.value_start..][0..match.value_len];
+    try std.testing.expectEqualStrings("#_T1", value);
+}
+
+test "findPattern - no matches" {
+    const gpa = std.testing.allocator;
+
+    const input = "<root>Hello World</root>";
+
+    var matches = try findPattern(gpa, input, "rdf:ID=\"");
+    defer matches.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 0), matches.items.len);
+}
+
+test "findPattern - empty input" {
+    const gpa = std.testing.allocator;
+
+    var matches = try findPattern(gpa, "", "rdf:ID=\"");
+    defer matches.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 0), matches.items.len);
+}
+
+test "verifyAndExtractPattern - valid pattern with value" {
+    const input = "Hello rdf:ID=\"_SubStation1\" World";
+    const pattern = "rdf:ID=\"";
+
+    const match = verifyAndExtractPattern(input, 6, pattern);
+
+    try std.testing.expect(match != null);
+    try std.testing.expectEqual(@as(u32, 6), match.?.pattern_start);
+    try std.testing.expectEqual(@as(u32, 14), match.?.value_start);
+    try std.testing.expectEqual(@as(u32, 12), match.?.value_len);
+
+    const value = input[match.?.value_start..][0..match.?.value_len];
+    try std.testing.expectEqualStrings("_SubStation1", value);
+}
+
+test "verifyAndExtractPattern - empty value" {
+    const input = "rdf:ID=\"\"";
+    const pattern = "rdf:ID=\"";
+
+    const match = verifyAndExtractPattern(input, 0, pattern);
+
+    try std.testing.expect(match != null);
+    try std.testing.expectEqual(@as(u32, 0), match.?.value_len);
+}
+
+test "verifyAndExtractPattern - pattern mismatch" {
+    const input = "Hello rdf:about=\"value\"";
+    const pattern = "rdf:ID=\"";
+
+    const match = verifyAndExtractPattern(input, 6, pattern);
+
+    try std.testing.expectEqual(@as(?PatternMatch, null), match);
+}
+
+test "verifyAndExtractPattern - no closing quote" {
+    const input = "rdf:ID=\"unclosed";
+    const pattern = "rdf:ID=\"";
+
+    const match = verifyAndExtractPattern(input, 0, pattern);
+
+    try std.testing.expectEqual(@as(?PatternMatch, null), match);
+}
+
+test "verifyAndExtractPattern - candidate near end of haystack" {
+    const input = "rdf:";
+    const pattern = "rdf:ID=\"";
+
+    const match = verifyAndExtractPattern(input, 0, pattern);
+
+    try std.testing.expectEqual(@as(?PatternMatch, null), match);
+}
+
+test "verifyAndExtractPattern - value with special characters" {
+    const input = "rdf:ID=\"#_Node-123.456\"";
+    const pattern = "rdf:ID=\"";
+
+    const match = verifyAndExtractPattern(input, 0, pattern);
+
+    try std.testing.expect(match != null);
+    const value = input[match.?.value_start..][0..match.?.value_len];
+    try std.testing.expectEqualStrings("#_Node-123.456", value);
+}
