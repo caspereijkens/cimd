@@ -1,0 +1,333 @@
+const std = @import("std");
+const assert = std.debug.assert;
+
+// ============================================================================
+// SIMD Configuration
+// ============================================================================
+
+/// Vector size for SIMD operations (32 bytes = 256-bit AVX2)
+/// Falls back to smaller sizes on older CPUs
+const VECTOR_LEN = if (std.simd.suggestVectorLength(u8)) |size|
+    @min(size, 32)
+else
+    32;
+
+const Chunk = @Vector(VECTOR_LEN, u8);
+
+// ============================================================================
+// Low-Level SIMD Primitives
+// ============================================================================
+
+/// Find all positions of a specific byte in the input using SIMD
+/// Returns an ArrayList of positions where the byte was found
+pub fn findByteSIMD(
+    gpa: std.mem.Allocator,
+    haystack: []const u8,
+    needle: u8,
+) !std.ArrayList(u32) {
+    var result: std.ArrayList(u32) = .empty;
+    errdefer result.deinit(gpa);
+
+    if (haystack.len == 0) return result;
+
+    // Pre-allocate for sparse matches (estimated 5-10% density in XML)
+    const estimated_matches = @divFloor(haystack.len, 10);
+    try result.ensureTotalCapacity(gpa, estimated_matches);
+
+    const all_needles: Chunk = @splat(needle);
+    var i: usize = 0;
+
+    // Process 4 vectors per iteration
+    // Better instruction pipelining, reduces loop overhead by 4x
+    const unroll_factor = 4;
+    const unroll_size = VECTOR_LEN * unroll_factor;
+
+    while (i + unroll_size <= haystack.len) : (i += unroll_size) {
+        // Process 4 SIMD vectors in parallel
+        inline for (0..unroll_factor) |j| {
+            const offset = i + j * VECTOR_LEN;
+            const chunk: Chunk = haystack[offset..][0..VECTOR_LEN].*;
+            const matches: @Vector(VECTOR_LEN, bool) = chunk == all_needles;
+            const mask: u32 = @bitCast(matches);
+
+            var m = mask;
+            while (m != 0) {
+                const bit_pos = @ctz(m);
+                // appendAssumeCapacity (no bounds check)
+                result.appendAssumeCapacity(@intCast(offset + bit_pos));
+                m &= m - 1;
+            }
+        }
+    }
+
+    // Handle remaining full vectors
+    while (i + VECTOR_LEN <= haystack.len) : (i += VECTOR_LEN) {
+        const chunk: Chunk = haystack[i..][0..VECTOR_LEN].*;
+        const matches: @Vector(VECTOR_LEN, bool) = chunk == all_needles;
+        const mask: u32 = @bitCast(matches);
+
+        var m = mask;
+        while (m != 0) {
+            const bit_pos = @ctz(m);
+            result.appendAssumeCapacity(@intCast(i + bit_pos));
+            m &= m - 1;
+        }
+    }
+
+    // Handle remainder - scalar fallback
+    while (i < haystack.len) : (i += 1) {
+        if (haystack[i] == needle) {
+            result.appendAssumeCapacity(@intCast(i));
+        }
+    }
+
+    return result;
+}
+
+// ============================================================================
+// Test Data
+// ============================================================================
+
+const SIMPLE_XML =
+    \\<root>
+    \\  <item id="1">Hello</item>
+    \\  <item id="2">World</item>
+    \\</root>
+;
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+test "findByteSIMD - finds all angle brackets" {
+    const gpa = std.testing.allocator;
+
+    const input = "<a><b></b></a>";
+
+    // Find all '<'
+    var lt_positions = try findByteSIMD(gpa, input, '<');
+    defer lt_positions.deinit(gpa);
+
+    // Expected: positions 0, 3, 6, 10
+    try std.testing.expectEqual(@as(usize, 4), lt_positions.items.len);
+    try std.testing.expectEqual(@as(u32, 0), lt_positions.items[0]);
+    try std.testing.expectEqual(@as(u32, 3), lt_positions.items[1]);
+    try std.testing.expectEqual(@as(u32, 6), lt_positions.items[2]);
+    try std.testing.expectEqual(@as(u32, 10), lt_positions.items[3]);
+
+    // Find all '>'
+    var gt_positions = try findByteSIMD(gpa, input, '>');
+    defer gt_positions.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 4), gt_positions.items.len);
+    try std.testing.expectEqual(@as(u32, 2), gt_positions.items[0]);
+    try std.testing.expectEqual(@as(u32, 5), gt_positions.items[1]);
+    try std.testing.expectEqual(@as(u32, 9), gt_positions.items[2]);
+    try std.testing.expectEqual(@as(u32, 13), gt_positions.items[3]);
+}
+
+test "findByteSIMD - handles empty input" {
+    const gpa = std.testing.allocator;
+
+    var positions = try findByteSIMD(gpa, "", '<');
+    defer positions.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 0), positions.items.len);
+}
+
+test "findByteSIMD - handles input with no matches" {
+    const gpa = std.testing.allocator;
+
+    var positions = try findByteSIMD(gpa, "hello world", '<');
+    defer positions.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 0), positions.items.len);
+}
+
+test "findByteSIMD - handles large input spanning multiple SIMD vectors" {
+    const gpa = std.testing.allocator;
+
+    // Create input larger than VECTOR_LEN to test chunking
+    var buffer: [128]u8 = undefined;
+    @memset(&buffer, 'x');
+    buffer[0] = '<';
+    buffer[32] = '<'; // Cross vector boundary
+    buffer[64] = '<';
+    buffer[127] = '<';
+
+    var positions = try findByteSIMD(gpa, &buffer, '<');
+    defer positions.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 4), positions.items.len);
+    try std.testing.expectEqual(@as(u32, 0), positions.items[0]);
+    try std.testing.expectEqual(@as(u32, 32), positions.items[1]);
+    try std.testing.expectEqual(@as(u32, 64), positions.items[2]);
+    try std.testing.expectEqual(@as(u32, 127), positions.items[3]);
+}
+
+test "findByteSIMD - exactly one vector (32 bytes)" {
+    const gpa = std.testing.allocator;
+
+    // Exactly VECTOR_LEN bytes - tests remaining vectors loop, not unrolled
+    var buffer: [VECTOR_LEN]u8 = undefined;
+    @memset(&buffer, 'x');
+    buffer[0] = '<';
+    buffer[16] = '<';
+    buffer[31] = '<'; // Last position
+
+    var positions = try findByteSIMD(gpa, &buffer, '<');
+    defer positions.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 3), positions.items.len);
+    try std.testing.expectEqual(@as(u32, 0), positions.items[0]);
+    try std.testing.expectEqual(@as(u32, 16), positions.items[1]);
+    try std.testing.expectEqual(@as(u32, 31), positions.items[2]);
+}
+
+test "findByteSIMD - two full vectors (64 bytes)" {
+    const gpa = std.testing.allocator;
+
+    // 2 * VECTOR_LEN - tests remaining vectors loop with 2 iterations
+    var buffer: [VECTOR_LEN * 2]u8 = undefined;
+    @memset(&buffer, 'x');
+    buffer[0] = '<';
+    buffer[VECTOR_LEN] = '<'; // Start of second vector
+    buffer[VECTOR_LEN + 15] = '<'; // Middle of second vector
+
+    var positions = try findByteSIMD(gpa, &buffer, '<');
+    defer positions.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 3), positions.items.len);
+    try std.testing.expectEqual(@as(u32, 0), positions.items[0]);
+    try std.testing.expectEqual(@as(u32, VECTOR_LEN), positions.items[1]);
+    try std.testing.expectEqual(@as(u32, VECTOR_LEN + 15), positions.items[2]);
+}
+
+test "findByteSIMD - three full vectors (96 bytes)" {
+    const gpa = std.testing.allocator;
+
+    // 3 * VECTOR_LEN - tests remaining vectors loop with 3 iterations
+    var buffer: [VECTOR_LEN * 3]u8 = undefined;
+    @memset(&buffer, 'x');
+    buffer[VECTOR_LEN * 0] = '<';
+    buffer[VECTOR_LEN * 1] = '<';
+    buffer[VECTOR_LEN * 2] = '<';
+
+    var positions = try findByteSIMD(gpa, &buffer, '<');
+    defer positions.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 3), positions.items.len);
+    try std.testing.expectEqual(@as(u32, 0), positions.items[0]);
+    try std.testing.expectEqual(@as(u32, VECTOR_LEN), positions.items[1]);
+    try std.testing.expectEqual(@as(u32, VECTOR_LEN * 2), positions.items[2]);
+}
+
+test "findByteSIMD - unrolled loop with remainder" {
+    const gpa = std.testing.allocator;
+
+    // 130 bytes = 128 (unrolled) + 2 (scalar remainder)
+    const unroll_size = VECTOR_LEN * 4;
+    var buffer: [unroll_size + 2]u8 = undefined;
+    @memset(&buffer, 'x');
+    buffer[0] = '<'; // Unrolled loop
+    buffer[unroll_size - 1] = '<'; // End of unrolled loop
+    buffer[unroll_size] = '<'; // Scalar remainder
+    buffer[unroll_size + 1] = '<'; // Scalar remainder
+
+    var positions = try findByteSIMD(gpa, &buffer, '<');
+    defer positions.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 4), positions.items.len);
+    try std.testing.expectEqual(@as(u32, 0), positions.items[0]);
+    try std.testing.expectEqual(@as(u32, unroll_size - 1), positions.items[1]);
+    try std.testing.expectEqual(@as(u32, unroll_size), positions.items[2]);
+    try std.testing.expectEqual(@as(u32, unroll_size + 1), positions.items[3]);
+}
+
+test "findByteSIMD - multiple unrolled iterations" {
+    const gpa = std.testing.allocator;
+
+    // 256 bytes = 2 iterations of unrolled loop (2 * 128)
+    const unroll_size = VECTOR_LEN * 4;
+    var buffer: [unroll_size * 2]u8 = undefined;
+    @memset(&buffer, 'x');
+    buffer[0] = '<'; // First unrolled iteration
+    buffer[unroll_size] = '<'; // Second unrolled iteration
+    buffer[unroll_size * 2 - 1] = '<'; // Last byte
+
+    var positions = try findByteSIMD(gpa, &buffer, '<');
+    defer positions.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 3), positions.items.len);
+    try std.testing.expectEqual(@as(u32, 0), positions.items[0]);
+    try std.testing.expectEqual(@as(u32, unroll_size), positions.items[1]);
+    try std.testing.expectEqual(@as(u32, unroll_size * 2 - 1), positions.items[2]);
+}
+
+test "findByteSIMD - dense matches in single vector" {
+    const gpa = std.testing.allocator;
+
+    // Test multiple matches within a single SIMD vector (tests bit extraction loop)
+    var buffer: [VECTOR_LEN]u8 = undefined;
+    @memset(&buffer, '<'); // All matches!
+
+    var positions = try findByteSIMD(gpa, &buffer, '<');
+    defer positions.deinit(gpa);
+
+    // Should find all 32 positions
+    try std.testing.expectEqual(@as(usize, VECTOR_LEN), positions.items.len);
+    for (positions.items, 0..) |pos, idx| {
+        try std.testing.expectEqual(@as(u32, @intCast(idx)), pos);
+    }
+}
+
+test "findByteSIMD - matches at vector boundaries" {
+    const gpa = std.testing.allocator;
+
+    // Test matches at first and last byte of each vector
+    const unroll_size = VECTOR_LEN * 4;
+    var buffer: [unroll_size + 10]u8 = undefined;
+    @memset(&buffer, 'x');
+
+    // First and last of each 32-byte vector
+    buffer[0] = '<'; // Vector 0, first
+    buffer[VECTOR_LEN - 1] = '<'; // Vector 0, last
+    buffer[VECTOR_LEN] = '<'; // Vector 1, first
+    buffer[VECTOR_LEN * 2 - 1] = '<'; // Vector 1, last
+    buffer[unroll_size] = '<'; // First byte of remainder
+    buffer[unroll_size + 9] = '<'; // Last byte of remainder
+
+    var positions = try findByteSIMD(gpa, &buffer, '<');
+    defer positions.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 6), positions.items.len);
+    try std.testing.expectEqual(@as(u32, 0), positions.items[0]);
+    try std.testing.expectEqual(@as(u32, VECTOR_LEN - 1), positions.items[1]);
+    try std.testing.expectEqual(@as(u32, VECTOR_LEN), positions.items[2]);
+    try std.testing.expectEqual(@as(u32, VECTOR_LEN * 2 - 1), positions.items[3]);
+    try std.testing.expectEqual(@as(u32, unroll_size), positions.items[4]);
+    try std.testing.expectEqual(@as(u32, unroll_size + 9), positions.items[5]);
+}
+
+test "findByteSIMD - no matches in SIMD sections but matches in remainder" {
+    const gpa = std.testing.allocator;
+
+    // All SIMD vectors have no matches, only remainder has matches
+    var buffer: [VECTOR_LEN + 5]u8 = undefined;
+    @memset(&buffer, 'x');
+
+    // Only matches in scalar remainder
+    buffer[VECTOR_LEN] = '<';
+    buffer[VECTOR_LEN + 2] = '<';
+    buffer[VECTOR_LEN + 4] = '<';
+
+    var positions = try findByteSIMD(gpa, &buffer, '<');
+    defer positions.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 3), positions.items.len);
+    try std.testing.expectEqual(@as(u32, VECTOR_LEN), positions.items[0]);
+    try std.testing.expectEqual(@as(u32, VECTOR_LEN + 2), positions.items[1]);
+    try std.testing.expectEqual(@as(u32, VECTOR_LEN + 4), positions.items[2]);
+}
+
+

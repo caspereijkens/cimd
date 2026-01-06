@@ -221,7 +221,7 @@ fn validate_zip_file_extension(path: []const u8, comptime context: []const u8) v
     const is_zip = std.ascii.eqlIgnoreCase(ext, ".zip");
 
     if (!is_zip) {
-        print.stderr(context ++ 
+        print.stderr(context ++
             \\: file must be .zip (got: '{s}')
             \\
             \\If you have a different file format, convert it first.

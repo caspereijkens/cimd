@@ -107,7 +107,7 @@ fn command_extract(gpa: std.mem.Allocator, paths: []const []const u8) !void {
                 const filename_copy = try gpa.dupe(u8, filename);
                 try extracted_paths.append(gpa, filename_copy);
             }
-        } 
+        }
     }
 }
 fn command_not_implemented(comptime command_name: []const u8) !void {
