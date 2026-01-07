@@ -10,30 +10,6 @@ pub fn isZipFile(file: std.fs.File) !bool {
     return std.mem.eql(u8, &magic, &std.zip.local_file_header_sig);
 }
 
-test "isZipFile" {
-    // Happy flow
-    var tmpdir = std.testing.tmpDir(.{});
-    defer tmpdir.cleanup();
-
-    var file = try tmpdir.dir.createFile("temp", .{ .read = true });
-    defer file.close();
-
-    var bytes = [_]u8{ 'P', 'K', 3, 4, 'Z', 'Z', 'Z' };
-    _ = try file.pwrite(&bytes, 0);
-
-    try std.testing.expect(try isZipFile(file));
-
-    // Unhappy flow 1: file too short
-    try file.setEndPos(3); // this truncates the file.
-    try std.testing.expect(!(try isZipFile(file)));
-
-    // Unhappy flow 2: no local file header signature
-    bytes = [_]u8{ 'Z', 'Z', 'Z', 'Z', 'Z', 'Z', 'Z' };
-    _ = try file.pwrite(&bytes, 0);
-
-    try std.testing.expect(!(try isZipFile(file)));
-}
-
 // Modified ZIP extraction function from the std lib.
 // This function first checks if the file was already extracted.
 pub fn extract(gpa: std.mem.Allocator, dest: std.fs.Dir, fr: *std.fs.File.Reader, options: std.zip.ExtractOptions) !std.ArrayList([]const u8) {
@@ -93,3 +69,28 @@ pub fn extract(gpa: std.mem.Allocator, dest: std.fs.Dir, fr: *std.fs.File.Reader
 
     return extracted_files;
 }
+
+test "isZipFile" {
+    // Happy flow
+    var tmpdir = std.testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    var file = try tmpdir.dir.createFile("temp", .{ .read = true });
+    defer file.close();
+
+    var bytes = [_]u8{ 'P', 'K', 3, 4, 'Z', 'Z', 'Z' };
+    _ = try file.pwrite(&bytes, 0);
+
+    try std.testing.expect(try isZipFile(file));
+
+    // Unhappy flow 1: file too short
+    try file.setEndPos(3); // this truncates the file.
+    try std.testing.expect(!(try isZipFile(file)));
+
+    // Unhappy flow 2: no local file header signature
+    bytes = [_]u8{ 'Z', 'Z', 'Z', 'Z', 'Z', 'Z', 'Z' };
+    _ = try file.pwrite(&bytes, 0);
+
+    try std.testing.expect(!(try isZipFile(file)));
+}
+

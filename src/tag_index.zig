@@ -1,10 +1,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-// ============================================================================
-// SIMD Configuration
-// ============================================================================
-
 /// Vector size for SIMD operations (32 bytes = 256-bit AVX2)
 /// Falls back to smaller sizes on older CPUs
 const VECTOR_LEN = if (std.simd.suggestVectorLength(u8)) |size|
@@ -21,13 +17,16 @@ pub fn findByteSIMD(
     haystack: []const u8,
     needle: u8,
 ) !std.ArrayList(u32) {
+    // Catch u32 overflow early (returns error if file size > 4.2GB)
+    if (haystack.len > std.math.maxInt(u32)) return error.FileTooLarge;
+
     var result: std.ArrayList(u32) = .empty;
     errdefer result.deinit(gpa);
 
     if (haystack.len == 0) return result;
 
     // Pre-allocate for sparse matches (estimated 5-10% density in XML)
-    const estimated_matches = @divFloor(haystack.len, 10);
+    const estimated_matches = @max(@divFloor(haystack.len, 10), 16);
     try result.ensureTotalCapacity(gpa, estimated_matches);
 
     const all_needles: Chunk = @splat(needle);
@@ -90,24 +89,25 @@ pub const PatternMatch = struct {
     value_len: u32,
 };
 
-/// Verify pattern at position and extract quoted value if match found
+/// Verify needle at position and extract quoted value if match found
 /// Returns PatternMatch if pattern matches and closing quote is found, null otherwise
 fn verifyAndExtractPattern(
     haystack: []const u8,
     candidate_pos: usize,
-    pattern: []const u8,
+    needle: []const u8,
 ) ?PatternMatch {
     // Check bounds for pattern
-    if (candidate_pos + pattern.len > haystack.len) return null;
+    if (candidate_pos + needle.len > haystack.len) return null;
 
     // Verify full pattern matches
-    if (!std.mem.eql(u8, haystack[candidate_pos..][0..pattern.len], pattern)) {
+    if (!std.mem.eql(u8, haystack[candidate_pos..][0..needle.len], needle)) {
         return null;
     }
 
     // Find closing quote for value
-    const value_start = candidate_pos + pattern.len;
+    const value_start = candidate_pos + needle.len;
     const closing_quote_offset = std.mem.indexOfScalarPos(u8, haystack, value_start, '"') orelse return null;
+    assert(closing_quote_offset >= value_start);
     const value_len = closing_quote_offset - value_start;
 
     return .{
@@ -123,19 +123,19 @@ fn verifyAndExtractPattern(
 pub fn findPattern(
     gpa: std.mem.Allocator,
     haystack: []const u8,
-    pattern: []const u8,
+    needle: []const u8,
 ) !std.ArrayList(PatternMatch) {
-    assert(pattern.len > 0);
+    assert(needle.len > 0);
 
     var result: std.ArrayList(PatternMatch) = .empty;
     errdefer result.deinit(gpa);
 
-    if (haystack.len == 0 or pattern.len > haystack.len) return result;
+    if (haystack.len == 0 or needle.len > haystack.len) return result;
 
-    const estimated_matches = @max(haystack.len / 1000, 16);
+    const estimated_matches = @max(@divFloor(haystack.len, 1000), 16);
     try result.ensureTotalCapacity(gpa, estimated_matches);
 
-    const first_byte = pattern[0];
+    const first_byte = needle[0];
     const all_first_bytes: Chunk = @splat(first_byte);
 
     var i: usize = 0;
@@ -156,7 +156,7 @@ pub fn findPattern(
                 const bit_pos = @ctz(m);
                 const candidate_pos = offset + bit_pos;
 
-                if (verifyAndExtractPattern(haystack, candidate_pos, pattern)) |match| {
+                if (verifyAndExtractPattern(haystack, candidate_pos, needle)) |match| {
                     result.appendAssumeCapacity(match);
                 }
 
@@ -176,7 +176,7 @@ pub fn findPattern(
             const bit_pos = @ctz(m);
             const candidate_pos = i + bit_pos;
 
-            if (verifyAndExtractPattern(haystack, candidate_pos, pattern)) |match| {
+            if (verifyAndExtractPattern(haystack, candidate_pos, needle)) |match| {
                 result.appendAssumeCapacity(match);
             }
 
@@ -187,7 +187,7 @@ pub fn findPattern(
     // Scalar remainder
     while (i < haystack.len) : (i += 1) {
         if (haystack[i] == first_byte) {
-            if (verifyAndExtractPattern(haystack, i, pattern)) |match| {
+            if (verifyAndExtractPattern(haystack, i, needle)) |match| {
                 result.appendAssumeCapacity(match);
             }
         }
@@ -196,6 +196,52 @@ pub fn findPattern(
     return result;
 }
 
+/// Represents the boundaries of a single XML tag
+pub const TagBoundary = struct {
+    /// Position of '<' character
+    start: u32,
+    /// Position of '>' character
+    end: u32,
+};
+
+/// Find all XML tag boundaries by pairing '<' and '>' characters
+/// Uses SIMD to find delimiters, then pairs them sequentially
+/// Returns ArrayList of TagBoundary in document order
+pub fn findTagBoundaries(
+    gpa: std.mem.Allocator,
+    xml: []const u8,
+) !std.ArrayList(TagBoundary) {
+    var result: std.ArrayList(TagBoundary) = .empty;
+    errdefer result.deinit(gpa);
+
+    if (xml.len == 0) return result;
+
+    // Find all '<'
+    var lt_positions = try findByteSIMD(gpa, xml, '<');
+    defer lt_positions.deinit(gpa);
+
+    // Find all '>'
+    var gt_positions = try findByteSIMD(gpa, xml, '>');
+    defer gt_positions.deinit(gpa);
+
+    if (lt_positions.items.len == 0 and gt_positions.items.len == 0) return result;
+
+    // Check that we have as many lt as gt brackets, otherwise the input data is malformed.
+    if (lt_positions.items.len != gt_positions.items.len) {
+        return error.MalformedXML;
+    }
+
+    try result.ensureTotalCapacity(gpa, lt_positions.items.len);
+
+    for (lt_positions.items, gt_positions.items) |lt_pos, gt_pos| {
+        // In well-formed XML, '>' must come after '<'
+        if (gt_pos <= lt_pos) {
+            return error.MalformedXML;
+        }
+        result.appendAssumeCapacity(.{.start=lt_pos, .end=gt_pos});
+    }
+    return result;
+}
 // ============================================================================
 // Tests
 // ============================================================================
@@ -566,4 +612,174 @@ test "verifyAndExtractPattern - value with special characters" {
     try std.testing.expect(match != null);
     const value = input[match.?.value_start..][0..match.?.value_len];
     try std.testing.expectEqualStrings("#_Node-123.456", value);
+}
+
+test "findTagBoundaries - single tag" {
+    const gpa = std.testing.allocator;
+
+    const input = "<root>";
+
+    var boundaries = try findTagBoundaries(gpa, input);
+    defer boundaries.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 1), boundaries.items.len);
+    try std.testing.expectEqual(@as(u32, 0), boundaries.items[0].start);
+    try std.testing.expectEqual(@as(u32, 5), boundaries.items[0].end);
+}
+
+test "findTagBoundaries - opening and closing tags" {
+    const gpa = std.testing.allocator;
+
+    const input = "<root></root>";
+
+    var boundaries = try findTagBoundaries(gpa, input);
+    defer boundaries.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 2), boundaries.items.len);
+
+    // <root>
+    try std.testing.expectEqual(@as(u32, 0), boundaries.items[0].start);
+    try std.testing.expectEqual(@as(u32, 5), boundaries.items[0].end);
+
+    // </root>
+    try std.testing.expectEqual(@as(u32, 6), boundaries.items[1].start);
+    try std.testing.expectEqual(@as(u32, 12), boundaries.items[1].end);
+}
+
+test "findTagBoundaries - nested tags" {
+    const gpa = std.testing.allocator;
+
+    const input = "<root><child>text</child></root>";
+
+    var boundaries = try findTagBoundaries(gpa, input);
+    defer boundaries.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 4), boundaries.items.len);
+
+    // <root>
+    try std.testing.expectEqual(@as(u32, 0), boundaries.items[0].start);
+    try std.testing.expectEqual(@as(u32, 5), boundaries.items[0].end);
+
+    // <child>
+    try std.testing.expectEqual(@as(u32, 6), boundaries.items[1].start);
+    try std.testing.expectEqual(@as(u32, 12), boundaries.items[1].end);
+
+    // </child>
+    try std.testing.expectEqual(@as(u32, 17), boundaries.items[2].start);
+    try std.testing.expectEqual(@as(u32, 24), boundaries.items[2].end);
+
+    // </root>
+    try std.testing.expectEqual(@as(u32, 25), boundaries.items[3].start);
+    try std.testing.expectEqual(@as(u32, 31), boundaries.items[3].end);
+}
+
+test "findTagBoundaries - tag with attributes" {
+    const gpa = std.testing.allocator;
+
+    const input = "<item id=\"123\" name=\"test\">";
+
+    var boundaries = try findTagBoundaries(gpa, input);
+    defer boundaries.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 1), boundaries.items.len);
+    try std.testing.expectEqual(@as(u32, 0), boundaries.items[0].start);
+    try std.testing.expectEqual(@as(u32, 26), boundaries.items[0].end);
+}
+
+test "findTagBoundaries - self-closing tag" {
+    const gpa = std.testing.allocator;
+
+    const input = "<item />";
+
+    var boundaries = try findTagBoundaries(gpa, input);
+    defer boundaries.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 1), boundaries.items.len);
+    try std.testing.expectEqual(@as(u32, 0), boundaries.items[0].start);
+    try std.testing.expectEqual(@as(u32, 7), boundaries.items[0].end);
+}
+
+test "findTagBoundaries - multiple sequential tags" {
+    const gpa = std.testing.allocator;
+
+    const input = "<a></a><b></b><c></c>";
+
+    var boundaries = try findTagBoundaries(gpa, input);
+    defer boundaries.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 6), boundaries.items.len);
+
+    // Verify they're in correct order
+    var prev_end: u32 = 0;
+    for (boundaries.items) |boundary| {
+        try std.testing.expect(boundary.start >= prev_end);
+        try std.testing.expect(boundary.end > boundary.start);
+        prev_end = boundary.end;
+    }
+}
+
+test "findTagBoundaries - empty input" {
+    const gpa = std.testing.allocator;
+
+    var boundaries = try findTagBoundaries(gpa, "");
+    defer boundaries.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 0), boundaries.items.len);
+}
+
+test "findTagBoundaries - no tags" {
+    const gpa = std.testing.allocator;
+
+    const input = "just plain text with no tags";
+
+    var boundaries = try findTagBoundaries(gpa, input);
+    defer boundaries.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 0), boundaries.items.len);
+}
+
+test "findTagBoundaries - unmatched opening bracket" {
+    const gpa = std.testing.allocator;
+
+    const input = "<root"; // No closing >
+
+    try std.testing.expectError(error.MalformedXML, findTagBoundaries(gpa, input));
+}
+
+test "findTagBoundaries - unmatched opening bracket followed by self-closing tag" {
+    const gpa = std.testing.allocator;
+
+    const input = "<root<item />"; // No closing >
+
+    try std.testing.expectError(error.MalformedXML, findTagBoundaries(gpa, input));
+}
+
+test "findTagBoundaries - reversed bracket order" {
+    const gpa = std.testing.allocator;
+
+    const input = ">hello<"; // '>' before '<' - malformed
+
+    try std.testing.expectError(error.MalformedXML, findTagBoundaries(gpa, input));
+}
+
+test "findTagBoundaries - CGMES-style XML" {
+    const gpa = std.testing.allocator;
+
+    const input =
+        \\<cim:Substation rdf:ID="_SS1">
+        \\  <cim:IdentifiedObject.name>North</cim:IdentifiedObject.name>
+        \\</cim:Substation>
+    ;
+
+    var boundaries = try findTagBoundaries(gpa, input);
+    defer boundaries.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 4), boundaries.items.len);
+
+    // Verify all boundaries are valid (end > start)
+    for (boundaries.items) |boundary| {
+        try std.testing.expect(boundary.end > boundary.start);
+        try std.testing.expect(input[boundary.start] == '<');
+        try std.testing.expect(input[boundary.end] == '>');
+    }
 }
