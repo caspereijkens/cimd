@@ -3,7 +3,7 @@ const assert = std.debug.assert;
 
 /// Vector size for SIMD operations (32 bytes = 256-bit AVX2)
 /// Falls back to smaller sizes on older CPUs
-const VECTOR_LEN = if (std.simd.suggestVectorLength(u8)) |size|
+pub const VECTOR_LEN = if (std.simd.suggestVectorLength(u8)) |size|
     @min(size, 32)
 else
     32;
@@ -91,7 +91,7 @@ pub const PatternMatch = struct {
 
 /// Verify needle at position and extract quoted value if match found
 /// Returns PatternMatch if pattern matches and closing quote is found, null otherwise
-fn verifyAndExtractPattern(
+pub fn verifyAndExtractPattern(
     haystack: []const u8,
     candidate_pos: usize,
     needle: []const u8,
@@ -238,548 +238,72 @@ pub fn findTagBoundaries(
         if (gt_pos <= lt_pos) {
             return error.MalformedXML;
         }
-        result.appendAssumeCapacity(.{.start=lt_pos, .end=gt_pos});
+        result.appendAssumeCapacity(.{ .start = lt_pos, .end = gt_pos });
     }
     return result;
 }
-// ============================================================================
-// Tests
-// ============================================================================
 
-test "findByteSIMD - finds all angle brackets" {
-    const gpa = std.testing.allocator;
-
-    const input = "<a><b></b></a>";
-
-    // Find all '<'
-    var lt_positions = try findByteSIMD(gpa, input, '<');
-    defer lt_positions.deinit(gpa);
-
-    // Expected: positions 0, 3, 6, 10
-    try std.testing.expectEqual(@as(usize, 4), lt_positions.items.len);
-    try std.testing.expectEqual(@as(u32, 0), lt_positions.items[0]);
-    try std.testing.expectEqual(@as(u32, 3), lt_positions.items[1]);
-    try std.testing.expectEqual(@as(u32, 6), lt_positions.items[2]);
-    try std.testing.expectEqual(@as(u32, 10), lt_positions.items[3]);
-
-    // Find all '>'
-    var gt_positions = try findByteSIMD(gpa, input, '>');
-    defer gt_positions.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 4), gt_positions.items.len);
-    try std.testing.expectEqual(@as(u32, 2), gt_positions.items[0]);
-    try std.testing.expectEqual(@as(u32, 5), gt_positions.items[1]);
-    try std.testing.expectEqual(@as(u32, 9), gt_positions.items[2]);
-    try std.testing.expectEqual(@as(u32, 13), gt_positions.items[3]);
+/// Extract tag type from XML tag, stripping namespace
+/// Example: "<cim:Substation rdf:ID="_SS1">" → "Substation"
+pub fn extractTagType(slice: []const u8, start_idx: u32) error{MalformedTag}![]const u8 {
+    const colon_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, ':') orelse return error.MalformedTag;
+    const end_idx = std.mem.indexOfAnyPos(u8, slice, colon_idx, " >") orelse return error.MalformedTag;
+    return slice[colon_idx + 1 .. end_idx];
 }
 
-test "findByteSIMD - handles empty input" {
-    const gpa = std.testing.allocator;
+/// Extract rdf:ID value from an XML tag
+/// Example: "<cim:Substation rdf:ID="_SS1">" → "_SS1"
+/// Returns error.NoRdfId if tag doesn't have rdf:ID
+/// Returns error.MalformedTag if rdf:ID exists but is malformed
+pub fn extractRdfId(slice: []const u8, start_idx: u32) error{ NoRdfId, MalformedTag }![]const u8 {
+    // Find tag boundary
+    const gt_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, '>') orelse return error.MalformedTag;
 
-    var positions = try findByteSIMD(gpa, "", '<');
-    defer positions.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 0), positions.items.len);
-}
-
-test "findByteSIMD - handles input with no matches" {
-    const gpa = std.testing.allocator;
-
-    var positions = try findByteSIMD(gpa, "hello world", '<');
-    defer positions.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 0), positions.items.len);
-}
-
-test "findByteSIMD - handles large input spanning multiple SIMD vectors" {
-    const gpa = std.testing.allocator;
-
-    // Create input larger than VECTOR_LEN to test chunking
-    var buffer: [128]u8 = undefined;
-    @memset(&buffer, 'x');
-    buffer[0] = '<';
-    buffer[32] = '<'; // Cross vector boundary
-    buffer[64] = '<';
-    buffer[127] = '<';
-
-    var positions = try findByteSIMD(gpa, &buffer, '<');
-    defer positions.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 4), positions.items.len);
-    try std.testing.expectEqual(@as(u32, 0), positions.items[0]);
-    try std.testing.expectEqual(@as(u32, 32), positions.items[1]);
-    try std.testing.expectEqual(@as(u32, 64), positions.items[2]);
-    try std.testing.expectEqual(@as(u32, 127), positions.items[3]);
-}
-
-test "findByteSIMD - exactly one vector (32 bytes)" {
-    const gpa = std.testing.allocator;
-
-    // Exactly VECTOR_LEN bytes - tests remaining vectors loop, not unrolled
-    var buffer: [VECTOR_LEN]u8 = undefined;
-    @memset(&buffer, 'x');
-    buffer[0] = '<';
-    buffer[16] = '<';
-    buffer[31] = '<'; // Last position
-
-    var positions = try findByteSIMD(gpa, &buffer, '<');
-    defer positions.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 3), positions.items.len);
-    try std.testing.expectEqual(@as(u32, 0), positions.items[0]);
-    try std.testing.expectEqual(@as(u32, 16), positions.items[1]);
-    try std.testing.expectEqual(@as(u32, 31), positions.items[2]);
-}
-
-test "findByteSIMD - two full vectors (64 bytes)" {
-    const gpa = std.testing.allocator;
-
-    // 2 * VECTOR_LEN - tests remaining vectors loop with 2 iterations
-    var buffer: [VECTOR_LEN * 2]u8 = undefined;
-    @memset(&buffer, 'x');
-    buffer[0] = '<';
-    buffer[VECTOR_LEN] = '<'; // Start of second vector
-    buffer[VECTOR_LEN + 15] = '<'; // Middle of second vector
-
-    var positions = try findByteSIMD(gpa, &buffer, '<');
-    defer positions.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 3), positions.items.len);
-    try std.testing.expectEqual(@as(u32, 0), positions.items[0]);
-    try std.testing.expectEqual(@as(u32, VECTOR_LEN), positions.items[1]);
-    try std.testing.expectEqual(@as(u32, VECTOR_LEN + 15), positions.items[2]);
-}
-
-test "findByteSIMD - three full vectors (96 bytes)" {
-    const gpa = std.testing.allocator;
-
-    // 3 * VECTOR_LEN - tests remaining vectors loop with 3 iterations
-    var buffer: [VECTOR_LEN * 3]u8 = undefined;
-    @memset(&buffer, 'x');
-    buffer[VECTOR_LEN * 0] = '<';
-    buffer[VECTOR_LEN * 1] = '<';
-    buffer[VECTOR_LEN * 2] = '<';
-
-    var positions = try findByteSIMD(gpa, &buffer, '<');
-    defer positions.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 3), positions.items.len);
-    try std.testing.expectEqual(@as(u32, 0), positions.items[0]);
-    try std.testing.expectEqual(@as(u32, VECTOR_LEN), positions.items[1]);
-    try std.testing.expectEqual(@as(u32, VECTOR_LEN * 2), positions.items[2]);
-}
-
-test "findByteSIMD - unrolled loop with remainder" {
-    const gpa = std.testing.allocator;
-
-    // 130 bytes = 128 (unrolled) + 2 (scalar remainder)
-    const unroll_size = VECTOR_LEN * 4;
-    var buffer: [unroll_size + 2]u8 = undefined;
-    @memset(&buffer, 'x');
-    buffer[0] = '<'; // Unrolled loop
-    buffer[unroll_size - 1] = '<'; // End of unrolled loop
-    buffer[unroll_size] = '<'; // Scalar remainder
-    buffer[unroll_size + 1] = '<'; // Scalar remainder
-
-    var positions = try findByteSIMD(gpa, &buffer, '<');
-    defer positions.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 4), positions.items.len);
-    try std.testing.expectEqual(@as(u32, 0), positions.items[0]);
-    try std.testing.expectEqual(@as(u32, unroll_size - 1), positions.items[1]);
-    try std.testing.expectEqual(@as(u32, unroll_size), positions.items[2]);
-    try std.testing.expectEqual(@as(u32, unroll_size + 1), positions.items[3]);
-}
-
-test "findByteSIMD - multiple unrolled iterations" {
-    const gpa = std.testing.allocator;
-
-    // 256 bytes = 2 iterations of unrolled loop (2 * 128)
-    const unroll_size = VECTOR_LEN * 4;
-    var buffer: [unroll_size * 2]u8 = undefined;
-    @memset(&buffer, 'x');
-    buffer[0] = '<'; // First unrolled iteration
-    buffer[unroll_size] = '<'; // Second unrolled iteration
-    buffer[unroll_size * 2 - 1] = '<'; // Last byte
-
-    var positions = try findByteSIMD(gpa, &buffer, '<');
-    defer positions.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 3), positions.items.len);
-    try std.testing.expectEqual(@as(u32, 0), positions.items[0]);
-    try std.testing.expectEqual(@as(u32, unroll_size), positions.items[1]);
-    try std.testing.expectEqual(@as(u32, unroll_size * 2 - 1), positions.items[2]);
-}
-
-test "findByteSIMD - dense matches in single vector" {
-    const gpa = std.testing.allocator;
-
-    // Test multiple matches within a single SIMD vector (tests bit extraction loop)
-    var buffer: [VECTOR_LEN]u8 = undefined;
-    @memset(&buffer, '<'); // All matches!
-
-    var positions = try findByteSIMD(gpa, &buffer, '<');
-    defer positions.deinit(gpa);
-
-    // Should find all 32 positions
-    try std.testing.expectEqual(@as(usize, VECTOR_LEN), positions.items.len);
-    for (positions.items, 0..) |pos, idx| {
-        try std.testing.expectEqual(@as(u32, @intCast(idx)), pos);
-    }
-}
-
-test "findByteSIMD - matches at vector boundaries" {
-    const gpa = std.testing.allocator;
-
-    // Test matches at first and last byte of each vector
-    const unroll_size = VECTOR_LEN * 4;
-    var buffer: [unroll_size + 10]u8 = undefined;
-    @memset(&buffer, 'x');
-
-    // First and last of each 32-byte vector
-    buffer[0] = '<'; // Vector 0, first
-    buffer[VECTOR_LEN - 1] = '<'; // Vector 0, last
-    buffer[VECTOR_LEN] = '<'; // Vector 1, first
-    buffer[VECTOR_LEN * 2 - 1] = '<'; // Vector 1, last
-    buffer[unroll_size] = '<'; // First byte of remainder
-    buffer[unroll_size + 9] = '<'; // Last byte of remainder
-
-    var positions = try findByteSIMD(gpa, &buffer, '<');
-    defer positions.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 6), positions.items.len);
-    try std.testing.expectEqual(@as(u32, 0), positions.items[0]);
-    try std.testing.expectEqual(@as(u32, VECTOR_LEN - 1), positions.items[1]);
-    try std.testing.expectEqual(@as(u32, VECTOR_LEN), positions.items[2]);
-    try std.testing.expectEqual(@as(u32, VECTOR_LEN * 2 - 1), positions.items[3]);
-    try std.testing.expectEqual(@as(u32, unroll_size), positions.items[4]);
-    try std.testing.expectEqual(@as(u32, unroll_size + 9), positions.items[5]);
-}
-
-test "findByteSIMD - no matches in SIMD sections but matches in remainder" {
-    const gpa = std.testing.allocator;
-
-    // All SIMD vectors have no matches, only remainder has matches
-    var buffer: [VECTOR_LEN + 5]u8 = undefined;
-    @memset(&buffer, 'x');
-
-    // Only matches in scalar remainder
-    buffer[VECTOR_LEN] = '<';
-    buffer[VECTOR_LEN + 2] = '<';
-    buffer[VECTOR_LEN + 4] = '<';
-
-    var positions = try findByteSIMD(gpa, &buffer, '<');
-    defer positions.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 3), positions.items.len);
-    try std.testing.expectEqual(@as(u32, VECTOR_LEN), positions.items[0]);
-    try std.testing.expectEqual(@as(u32, VECTOR_LEN + 2), positions.items[1]);
-    try std.testing.expectEqual(@as(u32, VECTOR_LEN + 4), positions.items[2]);
-}
-
-// ============================================================================
-// Pattern Matching Tests
-// ============================================================================
-
-test "findPattern - finds rdf:ID with values" {
-    const gpa = std.testing.allocator;
-
-    const input =
-        \\<cim:Substation rdf:ID="_SubStation1">
-        \\<cim:Breaker rdf:ID="_BR1">
-    ;
-
-    var matches = try findPattern(gpa, input, "rdf:ID=\"");
-    defer matches.deinit(gpa);
-
-    // Should find 2 matches
-    try std.testing.expectEqual(@as(usize, 2), matches.items.len);
-
-    // First match: _SubStation1
-    const match1 = matches.items[0];
-    try std.testing.expectEqual(@as(u32, 16), match1.pattern_start); // Position of 'r' in first rdf:ID
-    try std.testing.expectEqual(@as(u32, 24), match1.value_start); // Position of '_' in _SubStation1
-    try std.testing.expectEqual(@as(u32, 12), match1.value_len); // Length of "_SubStation1"
-
-    // Verify extracted value
-    const value1 = input[match1.value_start..][0..match1.value_len];
-    try std.testing.expectEqualStrings("_SubStation1", value1);
-
-    // Second match: _BR1
-    const match2 = matches.items[1];
-    try std.testing.expectEqual(@as(u32, 52), match2.pattern_start); // Position of 'r' in second rdf:ID
-    const value2 = input[match2.value_start..][0..match2.value_len];
-    try std.testing.expectEqualStrings("_BR1", value2);
-}
-
-test "findPattern - finds rdf:about with # prefix" {
-    const gpa = std.testing.allocator;
-
-    const input =
-        \\<cim:Terminal rdf:about="#_T1">
-        \\  <cim:Terminal.ConnectivityNode rdf:resource="#_CN1"/>
-        \\</cim:Terminal>
-    ;
-
-    var matches = try findPattern(gpa, input, "rdf:about=\"");
-    defer matches.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 1), matches.items.len);
-
-    const match = matches.items[0];
-    const value = input[match.value_start..][0..match.value_len];
-    try std.testing.expectEqualStrings("#_T1", value);
-}
-
-test "findPattern - no matches" {
-    const gpa = std.testing.allocator;
-
-    const input = "<root>Hello World</root>";
-
-    var matches = try findPattern(gpa, input, "rdf:ID=\"");
-    defer matches.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 0), matches.items.len);
-}
-
-test "findPattern - empty input" {
-    const gpa = std.testing.allocator;
-
-    var matches = try findPattern(gpa, "", "rdf:ID=\"");
-    defer matches.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 0), matches.items.len);
-}
-
-test "verifyAndExtractPattern - valid pattern with value" {
-    const input = "Hello rdf:ID=\"_SubStation1\" World";
     const pattern = "rdf:ID=\"";
+    const pattern_start_idx = std.mem.indexOfPos(u8, slice, start_idx, pattern) orelse return error.NoRdfId;
 
-    const match = verifyAndExtractPattern(input, 6, pattern);
+    // Check if pattern is within this tag
+    if (pattern_start_idx >= gt_idx) return error.NoRdfId;
 
-    try std.testing.expect(match != null);
-    try std.testing.expectEqual(@as(u32, 6), match.?.pattern_start);
-    try std.testing.expectEqual(@as(u32, 14), match.?.value_start);
-    try std.testing.expectEqual(@as(u32, 12), match.?.value_len);
-
-    const value = input[match.?.value_start..][0..match.?.value_len];
-    try std.testing.expectEqualStrings("_SubStation1", value);
+    // Extract value
+    const value_start_idx = pattern_start_idx + pattern.len;
+    const value_end_idx = std.mem.indexOfScalarPos(u8, slice, value_start_idx, '"') orelse return error.MalformedTag;
+    // Check if closing quote is within this tag
+    if (value_end_idx >= gt_idx) return error.MalformedTag;
+    return slice[value_start_idx..value_end_idx];
 }
 
-test "verifyAndExtractPattern - empty value" {
-    const input = "rdf:ID=\"\"";
-    const pattern = "rdf:ID=\"";
-
-    const match = verifyAndExtractPattern(input, 0, pattern);
-
-    try std.testing.expect(match != null);
-    try std.testing.expectEqual(@as(u32, 0), match.?.value_len);
-}
-
-test "verifyAndExtractPattern - pattern mismatch" {
-    const input = "Hello rdf:about=\"value\"";
-    const pattern = "rdf:ID=\"";
-
-    const match = verifyAndExtractPattern(input, 6, pattern);
-
-    try std.testing.expectEqual(@as(?PatternMatch, null), match);
-}
-
-test "verifyAndExtractPattern - no closing quote" {
-    const input = "rdf:ID=\"unclosed";
-    const pattern = "rdf:ID=\"";
-
-    const match = verifyAndExtractPattern(input, 0, pattern);
-
-    try std.testing.expectEqual(@as(?PatternMatch, null), match);
-}
-
-test "verifyAndExtractPattern - candidate near end of haystack" {
-    const input = "rdf:";
-    const pattern = "rdf:ID=\"";
-
-    const match = verifyAndExtractPattern(input, 0, pattern);
-
-    try std.testing.expectEqual(@as(?PatternMatch, null), match);
-}
-
-test "verifyAndExtractPattern - value with special characters" {
-    const input = "rdf:ID=\"#_Node-123.456\"";
-    const pattern = "rdf:ID=\"";
-
-    const match = verifyAndExtractPattern(input, 0, pattern);
-
-    try std.testing.expect(match != null);
-    const value = input[match.?.value_start..][0..match.?.value_len];
-    try std.testing.expectEqualStrings("#_Node-123.456", value);
-}
-
-test "findTagBoundaries - single tag" {
-    const gpa = std.testing.allocator;
-
-    const input = "<root>";
-
-    var boundaries = try findTagBoundaries(gpa, input);
-    defer boundaries.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 1), boundaries.items.len);
-    try std.testing.expectEqual(@as(u32, 0), boundaries.items[0].start);
-    try std.testing.expectEqual(@as(u32, 5), boundaries.items[0].end);
-}
-
-test "findTagBoundaries - opening and closing tags" {
-    const gpa = std.testing.allocator;
-
-    const input = "<root></root>";
-
-    var boundaries = try findTagBoundaries(gpa, input);
-    defer boundaries.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 2), boundaries.items.len);
-
-    // <root>
-    try std.testing.expectEqual(@as(u32, 0), boundaries.items[0].start);
-    try std.testing.expectEqual(@as(u32, 5), boundaries.items[0].end);
-
-    // </root>
-    try std.testing.expectEqual(@as(u32, 6), boundaries.items[1].start);
-    try std.testing.expectEqual(@as(u32, 12), boundaries.items[1].end);
-}
-
-test "findTagBoundaries - nested tags" {
-    const gpa = std.testing.allocator;
-
-    const input = "<root><child>text</child></root>";
-
-    var boundaries = try findTagBoundaries(gpa, input);
-    defer boundaries.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 4), boundaries.items.len);
-
-    // <root>
-    try std.testing.expectEqual(@as(u32, 0), boundaries.items[0].start);
-    try std.testing.expectEqual(@as(u32, 5), boundaries.items[0].end);
-
-    // <child>
-    try std.testing.expectEqual(@as(u32, 6), boundaries.items[1].start);
-    try std.testing.expectEqual(@as(u32, 12), boundaries.items[1].end);
-
-    // </child>
-    try std.testing.expectEqual(@as(u32, 17), boundaries.items[2].start);
-    try std.testing.expectEqual(@as(u32, 24), boundaries.items[2].end);
-
-    // </root>
-    try std.testing.expectEqual(@as(u32, 25), boundaries.items[3].start);
-    try std.testing.expectEqual(@as(u32, 31), boundaries.items[3].end);
-}
-
-test "findTagBoundaries - tag with attributes" {
-    const gpa = std.testing.allocator;
-
-    const input = "<item id=\"123\" name=\"test\">";
-
-    var boundaries = try findTagBoundaries(gpa, input);
-    defer boundaries.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 1), boundaries.items.len);
-    try std.testing.expectEqual(@as(u32, 0), boundaries.items[0].start);
-    try std.testing.expectEqual(@as(u32, 26), boundaries.items[0].end);
-}
-
-test "findTagBoundaries - self-closing tag" {
-    const gpa = std.testing.allocator;
-
-    const input = "<item />";
-
-    var boundaries = try findTagBoundaries(gpa, input);
-    defer boundaries.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 1), boundaries.items.len);
-    try std.testing.expectEqual(@as(u32, 0), boundaries.items[0].start);
-    try std.testing.expectEqual(@as(u32, 7), boundaries.items[0].end);
-}
-
-test "findTagBoundaries - multiple sequential tags" {
-    const gpa = std.testing.allocator;
-
-    const input = "<a></a><b></b><c></c>";
-
-    var boundaries = try findTagBoundaries(gpa, input);
-    defer boundaries.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 6), boundaries.items.len);
-
-    // Verify they're in correct order
-    var prev_end: u32 = 0;
-    for (boundaries.items) |boundary| {
-        try std.testing.expect(boundary.start >= prev_end);
-        try std.testing.expect(boundary.end > boundary.start);
-        prev_end = boundary.end;
-    }
-}
-
-test "findTagBoundaries - empty input" {
-    const gpa = std.testing.allocator;
-
-    var boundaries = try findTagBoundaries(gpa, "");
-    defer boundaries.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 0), boundaries.items.len);
-}
-
-test "findTagBoundaries - no tags" {
-    const gpa = std.testing.allocator;
-
-    const input = "just plain text with no tags";
-
-    var boundaries = try findTagBoundaries(gpa, input);
-    defer boundaries.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 0), boundaries.items.len);
-}
-
-test "findTagBoundaries - unmatched opening bracket" {
-    const gpa = std.testing.allocator;
-
-    const input = "<root"; // No closing >
-
-    try std.testing.expectError(error.MalformedXML, findTagBoundaries(gpa, input));
-}
-
-test "findTagBoundaries - unmatched opening bracket followed by self-closing tag" {
-    const gpa = std.testing.allocator;
-
-    const input = "<root<item />"; // No closing >
-
-    try std.testing.expectError(error.MalformedXML, findTagBoundaries(gpa, input));
-}
-
-test "findTagBoundaries - reversed bracket order" {
-    const gpa = std.testing.allocator;
-
-    const input = ">hello<"; // '>' before '<' - malformed
-
-    try std.testing.expectError(error.MalformedXML, findTagBoundaries(gpa, input));
-}
-
-test "findTagBoundaries - CGMES-style XML" {
-    const gpa = std.testing.allocator;
-
-    const input =
-        \\<cim:Substation rdf:ID="_SS1">
-        \\  <cim:IdentifiedObject.name>North</cim:IdentifiedObject.name>
-        \\</cim:Substation>
-    ;
-
-    var boundaries = try findTagBoundaries(gpa, input);
-    defer boundaries.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 4), boundaries.items.len);
-
-    // Verify all boundaries are valid (end > start)
-    for (boundaries.items) |boundary| {
-        try std.testing.expect(boundary.end > boundary.start);
-        try std.testing.expect(input[boundary.start] == '<');
-        try std.testing.expect(input[boundary.end] == '>');
-    }
+pub fn findClosingTag(
+    xml: []const u8,
+    boundaries: []const TagBoundary,
+    opening_tag_idx: u32,
+) error{ NoClosingTag, SelfClosingTag, MalformedTag }!u32 {
+    // I have chosen assert over error here because I think this is always a programmer error and never can be caused by bad user input.
+    assert(opening_tag_idx < boundaries.len);
+
+    const opening_tag = boundaries[opening_tag_idx];
+
+    // Check if self-closing.
+    if (xml[opening_tag.end - 1] == '/') return error.SelfClosingTag;
+
+    var depth: u32 = 1;
+    const opening_tag_type = try extractTagType(xml, opening_tag.start);
+    return blk: {
+        for (boundaries[opening_tag_idx + 1 ..], opening_tag_idx + 1..) |tag, i| {
+            if (xml[tag.start + 1] == '/') {
+                const tag_type = extractTagType(xml, tag.start + 1) catch continue;
+                if (std.mem.eql(u8, opening_tag_type, tag_type)) {
+                    depth -= 1;
+                    if (depth == 0) break :blk @intCast(i);
+                }
+            } else if (xml[tag.end - 1] != '/') {
+                // Opening tag (not self-closing)
+                const tag_type = extractTagType(xml, tag.start) catch continue;
+                if (std.mem.eql(u8, opening_tag_type, tag_type)) {
+                    depth += 1;
+                }
+            }
+        }
+        break :blk error.NoClosingTag;
+    };
 }

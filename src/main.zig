@@ -125,17 +125,17 @@ fn command_extract(gpa: std.mem.Allocator, paths: []const []const u8) !void {
     }
 }
 
-  /// Read file into memory (used for unzipped usecase)
-  pub fn readFileToMemory(
-      gpa: std.mem.Allocator,
-      file: std.fs.File,
-  ) ![]u8 {
-      const file_size = try file.getEndPos();
+/// Read file into memory (used for unzipped usecase)
+pub fn readFileToMemory(
+    gpa: std.mem.Allocator,
+    file: std.fs.File,
+) ![]u8 {
+    const file_size = try file.getEndPos();
 
-      // Reject files >4GB (matches our u32 indexing limit)
-      if (file_size > std.math.maxInt(u32)) {
-          return error.FileTooLarge;
-      }
+    // Reject files >4GB (matches our u32 indexing limit)
+    if (file_size > std.math.maxInt(u32)) {
+        return error.FileTooLarge;
+    }
 
-      return try file.readToEndAlloc(gpa, file_size);
-  }
+    return try file.readToEndAlloc(gpa, file_size);
+}

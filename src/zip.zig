@@ -321,4 +321,3 @@ test "isZipFile" {
 
     try std.testing.expect(!(try isZipFile(file)));
 }
-
