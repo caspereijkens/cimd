@@ -329,7 +329,7 @@ pub fn findClosingTag(
     };
 }
 
-pub fn getProperty(
+pub fn getPropertyFromIndices(
     xml: []const u8,
     boundaries: []const TagBoundary,
     opening_tag_idx: u32,
@@ -354,7 +354,7 @@ pub fn getProperty(
     return null;
 }
 
-pub fn getReference(
+pub fn getReferenceFromIndices(
     xml: []const u8,
     boundaries: []const TagBoundary,
     opening_tag_idx: u32,
@@ -378,3 +378,44 @@ pub fn getReference(
     }
     return null;
 }
+
+/// Represents a CIM object with lazy property access
+/// Zero-copy, index-based design for minimal memory footprint
+pub const CimObject = struct {
+    xml: []const u8,
+    boundaries: []const TagBoundary,
+
+    object_tag_idx: u32,
+    closing_tag_idx: u32,
+
+    id: []const u8,
+    type_name: []const u8,
+
+    pub fn init(
+        xml: []const u8,
+        boundaries: []const TagBoundary,
+        object_tag_idx: u32,
+        closing_tag_idx: u32,
+    ) error{ NoRdfId, MalformedTag }!CimObject {
+        return .{
+            .xml = xml,
+            .boundaries = boundaries,
+            .object_tag_idx = object_tag_idx,
+            .closing_tag_idx = closing_tag_idx,
+            .id = try extractRdfId(xml, boundaries[object_tag_idx].start),
+            .type_name = try extractTagType(xml, boundaries[object_tag_idx].start),
+        };
+    }
+
+    /// Get a text property value by name
+    /// Returns null if property doesn't exist
+    pub fn getProperty(self: CimObject, property_name: []const u8) error{MalformedTag}!?[]const u8 {
+        return getPropertyFromIndices(self.xml, self.boundaries, self.object_tag_idx, self.closing_tag_idx, property_name);
+    }
+
+    /// Get a reference (rdf:resource) value by name
+    /// Returns null if property doesn't exist or has no rdf:resource
+    pub fn getReference(self: CimObject, property_name: []const u8) error{MalformedTag}!?[]const u8 {
+        return getReferenceFromIndices(self.xml, self.boundaries, self.object_tag_idx, self.closing_tag_idx, property_name);
+    }
+};
