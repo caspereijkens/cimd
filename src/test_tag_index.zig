@@ -680,6 +680,117 @@ test "tag_index.extractRdfId - no tag close bracket" {
     try std.testing.expectError(error.MalformedTag, result);
 }
 
+// ============================================================================
+// extractRdfResource Tests
+// ============================================================================
+
+test "tag_index.extractRdfResource - simple resource extraction" {
+    const xml = "<cim:Substation.Region rdf:resource=\"#_Region1\"/>";
+    const resource = try tag_index.extractRdfResource(xml, 0);
+    try std.testing.expect(resource != null);
+    try std.testing.expectEqualStrings("#_Region1", resource.?);
+}
+
+test "tag_index.extractRdfResource - multiple attributes" {
+    const xml = "<cim:Terminal name=\"test\" rdf:resource=\"#_T1\" other=\"value\"/>";
+    const resource = try tag_index.extractRdfResource(xml, 0);
+    try std.testing.expect(resource != null);
+    try std.testing.expectEqualStrings("#_T1", resource.?);
+}
+
+test "tag_index.extractRdfResource - with hash prefix" {
+    const xml = "<cim:Property rdf:resource=\"#_LocalRef\"/>";
+    const resource = try tag_index.extractRdfResource(xml, 0);
+    try std.testing.expect(resource != null);
+    try std.testing.expectEqualStrings("#_LocalRef", resource.?);
+}
+
+test "tag_index.extractRdfResource - without hash prefix" {
+    const xml = "<cim:Property rdf:resource=\"_ExternalRef\"/>";
+    const resource = try tag_index.extractRdfResource(xml, 0);
+    try std.testing.expect(resource != null);
+    try std.testing.expectEqualStrings("_ExternalRef", resource.?);
+}
+
+test "tag_index.extractRdfResource - non-self-closing tag" {
+    const xml = "<cim:Property rdf:resource=\"#_Ref1\"></cim:Property>";
+    const resource = try tag_index.extractRdfResource(xml, 0);
+    try std.testing.expect(resource != null);
+    try std.testing.expectEqualStrings("#_Ref1", resource.?);
+}
+
+test "tag_index.extractRdfResource - empty value" {
+    const xml = "<cim:Property rdf:resource=\"\"/>";
+    const resource = try tag_index.extractRdfResource(xml, 0);
+    try std.testing.expect(resource != null);
+    try std.testing.expectEqualStrings("", resource.?);
+}
+
+test "tag_index.extractRdfResource - no rdf:resource returns null" {
+    const xml = "<cim:Substation name=\"test\"/>";
+    const resource = try tag_index.extractRdfResource(xml, 0);
+    try std.testing.expectEqual(@as(?[]const u8, null), resource);
+}
+
+test "tag_index.extractRdfResource - full URI" {
+    const xml = "<cim:Property rdf:resource=\"http://example.com/resource#_R1\"/>";
+    const resource = try tag_index.extractRdfResource(xml, 0);
+    try std.testing.expect(resource != null);
+    try std.testing.expectEqualStrings("http://example.com/resource#_R1", resource.?);
+}
+
+test "tag_index.extractRdfResource - special characters in value" {
+    const xml = "<cim:Property rdf:resource=\"#_Node-123.456_v2\"/>";
+    const resource = try tag_index.extractRdfResource(xml, 0);
+    try std.testing.expect(resource != null);
+    try std.testing.expectEqualStrings("#_Node-123.456_v2", resource.?);
+}
+
+test "tag_index.extractRdfResource - malformed (no closing quote)" {
+    const xml = "<cim:Property rdf:resource=\"#_Ref1/>";
+    const result = tag_index.extractRdfResource(xml, 0);
+    try std.testing.expectError(error.MalformedTag, result);
+}
+
+test "tag_index.extractRdfResource - closing quote after tag boundary" {
+    const xml = "<cim:Property rdf:resource=\"#_Ref1> later text \"";
+    const result = tag_index.extractRdfResource(xml, 0);
+    try std.testing.expectError(error.MalformedTag, result);
+}
+
+test "tag_index.extractRdfResource - pattern appears after tag close" {
+    const xml = "<cim:Property> rdf:resource=\"#_Ref1\"";
+    const resource = try tag_index.extractRdfResource(xml, 0);
+    try std.testing.expectEqual(@as(?[]const u8, null), resource);
+}
+
+test "tag_index.extractRdfResource - no tag close bracket" {
+    const xml = "<cim:Property rdf:resource=\"#_Ref1\"";
+    const result = tag_index.extractRdfResource(xml, 0);
+    try std.testing.expectError(error.MalformedTag, result);
+}
+
+test "tag_index.extractRdfResource - start_index in middle of document" {
+    const xml = "prefix text <cim:Property rdf:resource=\"#_Ref1\"/> more text";
+    const resource = try tag_index.extractRdfResource(xml, 12);
+    try std.testing.expect(resource != null);
+    try std.testing.expectEqualStrings("#_Ref1", resource.?);
+}
+
+test "tag_index.extractRdfResource - rdf:resource at end of tag" {
+    const xml = "<cim:Property name=\"test\" other=\"value\" rdf:resource=\"#_Ref1\" />";
+    const resource = try tag_index.extractRdfResource(xml, 0);
+    try std.testing.expect(resource != null);
+    try std.testing.expectEqualStrings("#_Ref1", resource.?);
+}
+
+test "tag_index.extractRdfResource - value contains equals sign" {
+    const xml = "<cim:Property rdf:resource=\"x=y+z\"/>";
+    const resource = try tag_index.extractRdfResource(xml, 0);
+    try std.testing.expect(resource != null);
+    try std.testing.expectEqualStrings("x=y+z", resource.?);
+}
+
 test "tag_index.findClosingTag - simple opening and closing tag" {
     const gpa = std.testing.allocator;
 
@@ -881,4 +992,595 @@ test "tag_index.findClosingTag - empty tag" {
 
     const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
     try std.testing.expectEqual(@as(u32, 1), closing);
+}
+
+test "tag_index.getProperty - simple property with text content" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Substation rdf:ID="_SS1">
+        \\  <cim:IdentifiedObject.name>North Station</cim:IdentifiedObject.name>
+        \\</cim:Substation>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    // Substation: opening at 0, closing at 3
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+    try std.testing.expectEqual(@as(u32, 3), closing);
+
+    // Get the "IdentifiedObject.name" property
+    const value = try tag_index.getProperty(xml, boundaries.items, 0, closing, "IdentifiedObject.name");
+    try std.testing.expect(value != null);
+    try std.testing.expectEqualStrings("North Station", value.?);
+}
+
+test "tag_index.getProperty - property not found returns null" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Substation rdf:ID="_SS1">
+        \\  <cim:IdentifiedObject.name>North Station</cim:IdentifiedObject.name>
+        \\</cim:Substation>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    // Request property that doesn't exist
+    const value = try tag_index.getProperty(xml, boundaries.items, 0, closing, "NonExistent.property");
+    try std.testing.expectEqual(@as(?[]const u8, null), value);
+}
+
+test "tag_index.getProperty - empty property value" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Object>
+        \\  <cim:Property.name></cim:Property.name>
+        \\</cim:Object>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    const value = try tag_index.getProperty(xml, boundaries.items, 0, closing, "Property.name");
+    try std.testing.expect(value != null);
+    try std.testing.expectEqualStrings("", value.?);
+}
+
+test "tag_index.getProperty - multiple properties, find specific one" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Substation rdf:ID="_SS1">
+        \\  <cim:IdentifiedObject.name>North Station</cim:IdentifiedObject.name>
+        \\  <cim:IdentifiedObject.description>Main substation</cim:IdentifiedObject.description>
+        \\  <cim:Substation.Region rdf:resource="#_R1"/>
+        \\</cim:Substation>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    // Get first property
+    const name = try tag_index.getProperty(xml, boundaries.items, 0, closing, "IdentifiedObject.name");
+    try std.testing.expect(name != null);
+    try std.testing.expectEqualStrings("North Station", name.?);
+
+    // Get second property
+    const desc = try tag_index.getProperty(xml, boundaries.items, 0, closing, "IdentifiedObject.description");
+    try std.testing.expect(desc != null);
+    try std.testing.expectEqualStrings("Main substation", desc.?);
+}
+
+test "tag_index.getProperty - self-closing property tag returns null" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Substation rdf:ID="_SS1">
+        \\  <cim:Substation.Region rdf:resource="#_R1"/>
+        \\</cim:Substation>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    // Self-closing tag has no text content
+    const value = try tag_index.getProperty(xml, boundaries.items, 0, closing, "Substation.Region");
+    try std.testing.expectEqual(@as(?[]const u8, null), value);
+}
+
+test "tag_index.getProperty - property with whitespace preserved" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Object>
+        \\  <cim:Property.value>  Leading and trailing spaces  </cim:Property.value>
+        \\</cim:Object>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    const value = try tag_index.getProperty(xml, boundaries.items, 0, closing, "Property.value");
+    try std.testing.expect(value != null);
+    try std.testing.expectEqualStrings("  Leading and trailing spaces  ", value.?);
+}
+
+test "tag_index.getProperty - property name must match exactly" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Object>
+        \\  <cim:Property.name>Value</cim:Property.name>
+        \\  <cim:Property.nameExtra>Other</cim:Property.nameExtra>
+        \\</cim:Object>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    // Should find exact match "Property.name", not "Property.nameExtra"
+    const value = try tag_index.getProperty(xml, boundaries.items, 0, closing, "Property.name");
+    try std.testing.expect(value != null);
+    try std.testing.expectEqualStrings("Value", value.?);
+
+    // Should NOT match partial "Property.name" when looking for "Property.nameExtra"
+    const value2 = try tag_index.getProperty(xml, boundaries.items, 0, closing, "Property.nameExtra");
+    try std.testing.expect(value2 != null);
+    try std.testing.expectEqualStrings("Other", value2.?);
+}
+
+test "tag_index.getProperty - property with special characters" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Object>
+        \\  <cim:Property.value>Value with &lt;special&gt; chars &amp; symbols</cim:Property.value>
+        \\</cim:Object>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    const value = try tag_index.getProperty(xml, boundaries.items, 0, closing, "Property.value");
+    try std.testing.expect(value != null);
+    // Note: We return raw XML content, not decoded entities
+    try std.testing.expectEqualStrings("Value with &lt;special&gt; chars &amp; symbols", value.?);
+}
+
+test "tag_index.getProperty - multiple same-name properties returns first" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Object>
+        \\  <cim:Property.value>First</cim:Property.value>
+        \\  <cim:Property.value>Second</cim:Property.value>
+        \\</cim:Object>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    // Should return first occurrence
+    const value = try tag_index.getProperty(xml, boundaries.items, 0, closing, "Property.value");
+    try std.testing.expect(value != null);
+    try std.testing.expectEqualStrings("First", value.?);
+}
+
+test "tag_index.getProperty - property with numeric value" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:VoltageLevel>
+        \\  <cim:VoltageLevel.nominalV>380.0</cim:VoltageLevel.nominalV>
+        \\</cim:VoltageLevel>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    const value = try tag_index.getProperty(xml, boundaries.items, 0, closing, "VoltageLevel.nominalV");
+    try std.testing.expect(value != null);
+    try std.testing.expectEqualStrings("380.0", value.?);
+}
+
+test "tag_index.getProperty - no properties in object" {
+    const gpa = std.testing.allocator;
+
+    const xml = "<cim:Object></cim:Object>";
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    const value = try tag_index.getProperty(xml, boundaries.items, 0, closing, "Any.property");
+    try std.testing.expectEqual(@as(?[]const u8, null), value);
+}
+
+test "tag_index.getProperty - nested object doesn't interfere" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Outer>
+        \\  <cim:Outer.property>OuterValue</cim:Outer.property>
+        \\  <cim:Inner>
+        \\    <cim:Inner.property>InnerValue</cim:Inner.property>
+        \\  </cim:Inner>
+        \\</cim:Outer>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const outer_closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    // Getting property from Outer should find its own property, not nested one
+    const value = try tag_index.getProperty(xml, boundaries.items, 0, outer_closing, "Outer.property");
+    try std.testing.expect(value != null);
+    try std.testing.expectEqualStrings("OuterValue", value.?);
+}
+
+test "tag_index.getProperty - property with newlines and indentation" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Object>
+        \\  <cim:Property.text>
+        \\    Multi-line
+        \\    content
+        \\  </cim:Property.text>
+        \\</cim:Object>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    const value = try tag_index.getProperty(xml, boundaries.items, 0, closing, "Property.text");
+    try std.testing.expect(value != null);
+    // Should preserve all whitespace including newlines
+    try std.testing.expect(std.mem.indexOf(u8, value.?, "Multi-line") != null);
+    try std.testing.expect(std.mem.indexOf(u8, value.?, "content") != null);
+}
+
+test "tag_index.getProperty - self-closing tag before target property" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Substation>
+        \\  <cim:Region rdf:resource="#_R1"/>
+        \\  <cim:IdentifiedObject.name>North Station</cim:IdentifiedObject.name>
+        \\</cim:Substation>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    // Should skip self-closing Region and find name
+    const value = try tag_index.getProperty(xml, boundaries.items, 0, closing, "IdentifiedObject.name");
+    try std.testing.expect(value != null);
+    try std.testing.expectEqualStrings("North Station", value.?);
+}
+
+test "tag_index.getReference - simple reference extraction" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Substation rdf:ID="_SS1">
+        \\  <cim:Substation.Region rdf:resource="#_Region1"/>
+        \\</cim:Substation>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    const ref = try tag_index.getReference(xml, boundaries.items, 0, closing, "Substation.Region");
+    try std.testing.expect(ref != null);
+    try std.testing.expectEqualStrings("#_Region1", ref.?);
+}
+
+test "tag_index.getReference - reference not found returns null" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Substation rdf:ID="_SS1">
+        \\  <cim:Substation.Region rdf:resource="#_Region1"/>
+        \\</cim:Substation>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    const ref = try tag_index.getReference(xml, boundaries.items, 0, closing, "NonExistent.property");
+    try std.testing.expectEqual(@as(?[]const u8, null), ref);
+}
+
+test "tag_index.getReference - property exists but no rdf:resource" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Substation>
+        \\  <cim:IdentifiedObject.name>North Station</cim:IdentifiedObject.name>
+        \\</cim:Substation>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    // Property exists but has text content, not rdf:resource
+    const ref = try tag_index.getReference(xml, boundaries.items, 0, closing, "IdentifiedObject.name");
+    try std.testing.expectEqual(@as(?[]const u8, null), ref);
+}
+
+test "tag_index.getReference - multiple properties find specific reference" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Terminal rdf:ID="_T1">
+        \\  <cim:Terminal.ConnectivityNode rdf:resource="#_CN1"/>
+        \\  <cim:Terminal.ConductingEquipment rdf:resource="#_CE1"/>
+        \\  <cim:IdentifiedObject.name>Terminal 1</cim:IdentifiedObject.name>
+        \\</cim:Terminal>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    // Get first reference
+    const cn = try tag_index.getReference(xml, boundaries.items, 0, closing, "Terminal.ConnectivityNode");
+    try std.testing.expect(cn != null);
+    try std.testing.expectEqualStrings("#_CN1", cn.?);
+
+    // Get second reference
+    const ce = try tag_index.getReference(xml, boundaries.items, 0, closing, "Terminal.ConductingEquipment");
+    try std.testing.expect(ce != null);
+    try std.testing.expectEqualStrings("#_CE1", ce.?);
+}
+
+test "tag_index.getReference - reference with hash prefix" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Object>
+        \\  <cim:Property.ref rdf:resource="#_LocalRef"/>
+        \\</cim:Object>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    const ref = try tag_index.getReference(xml, boundaries.items, 0, closing, "Property.ref");
+    try std.testing.expect(ref != null);
+    try std.testing.expectEqualStrings("#_LocalRef", ref.?);
+}
+
+test "tag_index.getReference - reference without hash prefix" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Object>
+        \\  <cim:Property.ref rdf:resource="_ExternalRef"/>
+        \\</cim:Object>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    const ref = try tag_index.getReference(xml, boundaries.items, 0, closing, "Property.ref");
+    try std.testing.expect(ref != null);
+    try std.testing.expectEqualStrings("_ExternalRef", ref.?);
+}
+
+test "tag_index.getReference - empty reference value" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Object>
+        \\  <cim:Property.ref rdf:resource=""/>
+        \\</cim:Object>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    const ref = try tag_index.getReference(xml, boundaries.items, 0, closing, "Property.ref");
+    try std.testing.expect(ref != null);
+    try std.testing.expectEqualStrings("", ref.?);
+}
+
+test "tag_index.getReference - reference with URI" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Object>
+        \\  <cim:Property.ref rdf:resource="http://example.com/resource#_R1"/>
+        \\</cim:Object>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    const ref = try tag_index.getReference(xml, boundaries.items, 0, closing, "Property.ref");
+    try std.testing.expect(ref != null);
+    try std.testing.expectEqualStrings("http://example.com/resource#_R1", ref.?);
+}
+
+test "tag_index.getReference - reference with special characters" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Object>
+        \\  <cim:Property.ref rdf:resource="#_Node-123.456_v2"/>
+        \\</cim:Object>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    const ref = try tag_index.getReference(xml, boundaries.items, 0, closing, "Property.ref");
+    try std.testing.expect(ref != null);
+    try std.testing.expectEqualStrings("#_Node-123.456_v2", ref.?);
+}
+
+test "tag_index.getReference - multiple same-name properties returns first" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Object>
+        \\  <cim:Property.ref rdf:resource="#_First"/>
+        \\  <cim:Property.ref rdf:resource="#_Second"/>
+        \\</cim:Object>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    const ref = try tag_index.getReference(xml, boundaries.items, 0, closing, "Property.ref");
+    try std.testing.expect(ref != null);
+    try std.testing.expectEqualStrings("#_First", ref.?);
+}
+
+test "tag_index.getReference - property name must match exactly" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Object>
+        \\  <cim:Property.ref rdf:resource="#_Ref1"/>
+        \\  <cim:Property.refExtra rdf:resource="#_Ref2"/>
+        \\</cim:Object>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    const ref1 = try tag_index.getReference(xml, boundaries.items, 0, closing, "Property.ref");
+    try std.testing.expect(ref1 != null);
+    try std.testing.expectEqualStrings("#_Ref1", ref1.?);
+
+    const ref2 = try tag_index.getReference(xml, boundaries.items, 0, closing, "Property.refExtra");
+    try std.testing.expect(ref2 != null);
+    try std.testing.expectEqualStrings("#_Ref2", ref2.?);
+}
+
+test "tag_index.getReference - no properties in object" {
+    const gpa = std.testing.allocator;
+
+    const xml = "<cim:Object></cim:Object>";
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    const ref = try tag_index.getReference(xml, boundaries.items, 0, closing, "Any.property");
+    try std.testing.expectEqual(@as(?[]const u8, null), ref);
+}
+
+test "tag_index.getReference - nested object doesn't interfere" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Outer>
+        \\  <cim:Outer.ref rdf:resource="#_OuterRef"/>
+        \\  <cim:Inner>
+        \\    <cim:Inner.ref rdf:resource="#_InnerRef"/>
+        \\  </cim:Inner>
+        \\</cim:Outer>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const outer_closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    // Getting reference from Outer should find its own reference
+    const ref = try tag_index.getReference(xml, boundaries.items, 0, outer_closing, "Outer.ref");
+    try std.testing.expect(ref != null);
+    try std.testing.expectEqualStrings("#_OuterRef", ref.?);
+}
+
+test "tag_index.getReference - non-self-closing tag with rdf:resource" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Object>
+        \\  <cim:Property.ref rdf:resource="#_Ref1"></cim:Property.ref>
+        \\</cim:Object>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    // Should still extract rdf:resource even if tag is not self-closing
+    const ref = try tag_index.getReference(xml, boundaries.items, 0, closing, "Property.ref");
+    try std.testing.expect(ref != null);
+    try std.testing.expectEqualStrings("#_Ref1", ref.?);
+}
+
+test "tag_index.getReference - rdf:resource with other attributes" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Object>
+        \\  <cim:Property.ref name="test" rdf:resource="#_Ref1" other="value"/>
+        \\</cim:Object>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+
+    const ref = try tag_index.getReference(xml, boundaries.items, 0, closing, "Property.ref");
+    try std.testing.expect(ref != null);
+    try std.testing.expectEqualStrings("#_Ref1", ref.?);
 }

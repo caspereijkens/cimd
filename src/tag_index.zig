@@ -273,6 +273,27 @@ pub fn extractRdfId(slice: []const u8, start_idx: u32) error{ NoRdfId, Malformed
     return slice[value_start_idx..value_end_idx];
 }
 
+/// Extract rdf:Resource value from an XML tag
+/// Returns error.NoRdfResource if tag doesn't have rdf:Resource
+/// Returns error.MalformedTag if rdf:Resource exists but is malformed
+pub fn extractRdfResource(slice: []const u8, start_idx: u32) error{MalformedTag}!?[]const u8 {
+    // Find tag boundary
+    const gt_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, '>') orelse return error.MalformedTag;
+
+    const pattern = "rdf:resource=\"";
+    const pattern_start_idx = std.mem.indexOfPos(u8, slice, start_idx, pattern) orelse return null;
+
+    // Check if pattern is within this tag
+    if (pattern_start_idx >= gt_idx) return null;
+
+    // Extract value
+    const value_start_idx = pattern_start_idx + pattern.len;
+    const value_end_idx = std.mem.indexOfScalarPos(u8, slice, value_start_idx, '"') orelse return error.MalformedTag;
+    // Check if closing quote is within this tag
+    if (value_end_idx >= gt_idx) return error.MalformedTag;
+    return slice[value_start_idx..value_end_idx];
+}
+
 pub fn findClosingTag(
     xml: []const u8,
     boundaries: []const TagBoundary,
@@ -306,4 +327,54 @@ pub fn findClosingTag(
         }
         break :blk error.NoClosingTag;
     };
+}
+
+pub fn getProperty(
+    xml: []const u8,
+    boundaries: []const TagBoundary,
+    opening_tag_idx: u32,
+    closing_tag_idx: u32,
+    property_name: []const u8,
+) error{MalformedTag}!?[]const u8 {
+    assert(closing_tag_idx > opening_tag_idx);
+    assert(property_name.len > 0);
+    assert(closing_tag_idx < boundaries.len);
+
+    if (closing_tag_idx == opening_tag_idx + 1) return null;
+    for (boundaries[opening_tag_idx + 1 .. closing_tag_idx], opening_tag_idx + 1..) |tag, i| {
+        if (xml[tag.start + 1] == '/' or xml[tag.end - 1] == '/') {
+            // Skip closing and self-closing tags
+            continue;
+        }
+        const tag_type = extractTagType(xml, tag.start) catch continue;
+        if (std.mem.eql(u8, tag_type, property_name)) {
+            return xml[tag.end + 1 .. boundaries[i + 1].start];
+        }
+    }
+    return null;
+}
+
+pub fn getReference(
+    xml: []const u8,
+    boundaries: []const TagBoundary,
+    opening_tag_idx: u32,
+    closing_tag_idx: u32,
+    property_name: []const u8,
+) error{MalformedTag}!?[]const u8 {
+    assert(closing_tag_idx > opening_tag_idx);
+    assert(property_name.len > 0);
+    assert(closing_tag_idx < boundaries.len);
+
+    if (closing_tag_idx == opening_tag_idx + 1) return null;
+    for (boundaries[opening_tag_idx + 1 .. closing_tag_idx]) |tag| {
+        if (xml[tag.start + 1] == '/') {
+            // Skip closing tags
+            continue;
+        }
+        const tag_type = extractTagType(xml, tag.start) catch continue;
+        if (std.mem.eql(u8, tag_type, property_name)) {
+            return extractRdfResource(xml, tag.start);
+        }
+    }
+    return null;
 }
