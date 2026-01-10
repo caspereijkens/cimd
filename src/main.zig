@@ -21,6 +21,7 @@ pub fn main() !void {
 
     switch (command) {
         .index => |_| try command_index(gpa, command.index.paths),
+        .find => |_| try command_find(gpa, command.find.id, command.find.paths),
         .extract => |_| try command_extract(gpa, command.extract.paths),
         .version => |_| try command_version(command.version.verbose),
     }
@@ -83,6 +84,55 @@ fn command_index(gpa: std.mem.Allocator, paths: []const []const u8) !void {
             try print.displayObjectInventory(gpa, model);
         }
     }
+}
+
+fn command_find(gpa: std.mem.Allocator, id: []const u8, paths: []const []const u8) !void {
+    const cwd = std.fs.cwd();
+    var buffer: [4096]u8 = undefined;
+
+    for (paths) |path| {
+        const file = try cwd.openFile(path, .{});
+        defer file.close();
+
+        if (try zip.isZipFile(file)) {
+            // ZIP: search through extracted files
+            var file_reader = file.reader(&buffer);
+            var extracted_files = try zip.extractToMemory(gpa, &file_reader, .{});
+            defer {
+                for (extracted_files.items) |extracted_file| {
+                    extracted_file.deinit(gpa);
+                }
+                extracted_files.deinit(gpa);
+            }
+
+            for (extracted_files.items) |extracted_file| {
+                var model = try cim_model.CimModel.init(gpa, extracted_file.data);
+                defer model.deinit(gpa);
+
+                if (model.getObjectById(id)) |obj| {
+                    try print.stdout("Found in: {s} (in {s})\n\n", .{ extracted_file.filename, path });
+                    try print.displayObject(gpa, obj);
+                    return; // Found it, we're done!
+                }
+            }
+        } else {
+            // Regular XML file
+            const xml = try readFileToMemory(gpa, file);
+            defer gpa.free(xml);
+
+            var model = try cim_model.CimModel.init(gpa, xml);
+            defer model.deinit(gpa);
+
+            if (model.getObjectById(id)) |obj| {
+                try print.stdout("Found in: {s}\n\n", .{path});
+                try print.displayObject(gpa, obj);
+                return; // Found it, we're done!
+            }
+        }
+    }
+
+    // Not found in any file
+    try print.stdout("Object '{s}' not found in any of the provided files\n", .{id});
 }
 
 fn command_not_implemented(comptime command_name: []const u8) !void {

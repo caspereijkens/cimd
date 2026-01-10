@@ -256,20 +256,20 @@ pub fn extractTagType(slice: []const u8, start_idx: u32) error{MalformedTag}![]c
 /// Returns error.NoRdfId if tag doesn't have rdf:ID
 /// Returns error.MalformedTag if rdf:ID exists but is malformed
 pub fn extractRdfId(slice: []const u8, start_idx: u32) error{ NoRdfId, MalformedTag }![]const u8 {
-    // Find tag boundary
     const gt_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, '>') orelse return error.MalformedTag;
 
     const pattern = "rdf:ID=\"";
-    const pattern_start_idx = std.mem.indexOfPos(u8, slice, start_idx, pattern) orelse return error.NoRdfId;
 
-    // Check if pattern is within this tag
-    if (pattern_start_idx >= gt_idx) return error.NoRdfId;
+    const tag_content = slice[start_idx..gt_idx];
+    const pattern_offset = std.mem.indexOf(u8, tag_content, pattern) orelse return error.NoRdfId;
+    const pattern_start_idx = start_idx + pattern_offset;
 
-    // Extract value
     const value_start_idx = pattern_start_idx + pattern.len;
     const value_end_idx = std.mem.indexOfScalarPos(u8, slice, value_start_idx, '"') orelse return error.MalformedTag;
+
     // Check if closing quote is within this tag
     if (value_end_idx >= gt_idx) return error.MalformedTag;
+
     return slice[value_start_idx..value_end_idx];
 }
 
@@ -277,20 +277,20 @@ pub fn extractRdfId(slice: []const u8, start_idx: u32) error{ NoRdfId, Malformed
 /// Returns error.NoRdfResource if tag doesn't have rdf:Resource
 /// Returns error.MalformedTag if rdf:Resource exists but is malformed
 pub fn extractRdfResource(slice: []const u8, start_idx: u32) error{MalformedTag}!?[]const u8 {
-    // Find tag boundary
     const gt_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, '>') orelse return error.MalformedTag;
 
     const pattern = "rdf:resource=\"";
-    const pattern_start_idx = std.mem.indexOfPos(u8, slice, start_idx, pattern) orelse return null;
 
-    // Check if pattern is within this tag
-    if (pattern_start_idx >= gt_idx) return null;
+    const tag_content = slice[start_idx..gt_idx];
+    const pattern_offset = std.mem.indexOf(u8, tag_content, pattern) orelse return null;
+    const pattern_start_idx = start_idx + pattern_offset;
 
-    // Extract value
     const value_start_idx = pattern_start_idx + pattern.len;
     const value_end_idx = std.mem.indexOfScalarPos(u8, slice, value_start_idx, '"') orelse return error.MalformedTag;
+
     // Check if closing quote is within this tag
     if (value_end_idx >= gt_idx) return error.MalformedTag;
+
     return slice[value_start_idx..value_end_idx];
 }
 
@@ -425,5 +425,60 @@ pub const CimObject = struct {
     /// Returns null if property doesn't exist or has no rdf:resource
     pub fn getReference(self: CimObject, property_name: []const u8) error{MalformedTag}!?[]const u8 {
         return getReferenceFromIndices(self.xml, self.boundaries, self.object_tag_idx, self.closing_tag_idx, property_name);
+    }
+
+    /// Get all text properties (not references) as a HashMap
+    pub fn getAllProperties(self: CimObject, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
+        var result = std.StringHashMap([]const u8).init(gpa);
+        errdefer result.deinit();
+
+        // Handle self-closing tags
+        if (self.closing_tag_idx == self.object_tag_idx) return result;
+
+        // Iterate through all tags between opening and closing
+        for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx], self.object_tag_idx + 1..) |tag, i| {
+            // Skip closing and self-closing tags
+            if (self.xml[tag.start + 1] == '/') {
+                continue;
+            }
+            if (self.xml[tag.end - 1] == '/') {
+                continue;
+            }
+            const tag_type = try extractTagType(self.xml, tag.start);
+            const reference = try extractRdfResource(self.xml, tag.start);
+            if (reference != null) {
+                continue;
+            }
+            const content = self.xml[tag.end + 1 .. self.boundaries[i + 1].start];
+            try result.put(tag_type, content);
+        }
+
+        return result;
+    }
+
+    /// Get all rdf:resource references as a HashMap
+    pub fn getAllReferences(self: CimObject, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
+        var result = std.StringHashMap([]const u8).init(gpa);
+        errdefer result.deinit();
+
+        // Handle self-closing tags
+        if (self.closing_tag_idx == self.object_tag_idx) return result;
+
+        // Iterate through all tags between opening and closing
+        for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx]) |tag| {
+            // Skip closing tags (self-closing do have references though)
+            if (self.xml[tag.start + 1] == '/') {
+                continue;
+            }
+
+            const tag_type = extractTagType(self.xml, tag.start) catch continue;
+            const reference = extractRdfResource(self.xml, tag.start) catch continue;
+
+            if (reference) |ref_value| {
+                try result.put(tag_type, ref_value);
+            }
+        }
+
+        return result;
     }
 };

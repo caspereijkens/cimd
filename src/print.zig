@@ -1,5 +1,6 @@
 const std = @import("std");
 const cim_model = @import("cim_model.zig");
+const tag_index = @import("tag_index.zig");
 
 /// Format and print an error message to stderr, then exit with an exit code of 1.
 pub fn stderr(comptime fmt_str: []const u8, args: anytype) noreturn {
@@ -44,4 +45,68 @@ pub fn displayObjectInventory(gpa: std.mem.Allocator, model: cim_model.CimModel)
     }
 
     try stdout("Total: {d} objects\n\n", .{total});
+}
+
+pub fn displayObject(gpa: std.mem.Allocator, obj: *const tag_index.CimObject) !void {
+    try stdout("Type: {s}\n", .{obj.type_name});
+    try stdout("ID: {s}\n", .{obj.id});
+
+    // Get all properties and references
+    var props = try obj.getAllProperties(gpa);
+    defer props.deinit();
+
+    var refs = try obj.getAllReferences(gpa);
+    defer refs.deinit();
+
+    // Display properties if any
+    if (props.count() > 0) {
+        try stdout("\nProperties:\n", .{});
+
+        // Sort property names for consistent output
+        var prop_names: std.ArrayList([]const u8) = .empty;
+        defer prop_names.deinit(gpa);
+
+        var prop_it = props.iterator();
+        while (prop_it.next()) |entry| {
+            try prop_names.append(gpa, entry.key_ptr.*);
+        }
+
+        std.mem.sort([]const u8, prop_names.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.lessThan);
+
+        for (prop_names.items) |name| {
+            const value = props.get(name).?;
+            try stdout("  {s}: {s}\n", .{ name, value });
+        }
+    }
+
+    // Display references if any
+    if (refs.count() > 0) {
+        try stdout("\nReferences:\n", .{});
+
+        // Sort reference names for consistent output
+        var ref_names: std.ArrayList([]const u8) = .empty;
+        defer ref_names.deinit(gpa);
+
+        var ref_it = refs.iterator();
+        while (ref_it.next()) |entry| {
+            try ref_names.append(gpa, entry.key_ptr.*);
+        }
+
+        std.mem.sort([]const u8, ref_names.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.lessThan);
+
+        for (ref_names.items) |name| {
+            const value = refs.get(name).?;
+            try stdout("  {s}: {s}\n", .{ name, value });
+        }
+    }
+
+    try stdout("\n", .{});
 }
