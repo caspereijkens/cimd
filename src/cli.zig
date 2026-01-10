@@ -50,6 +50,23 @@ const help_find =
     \\
 ;
 
+const help_list =
+    \\Usage: cimd list <type> <file> [<file>...]
+    \\
+    \\List all CIM objects of a specific type. Searches through multiple
+    \\files and displays all matching objects.
+    \\
+    \\Arguments:
+    \\  <type>    The CIM type to search for (e.g., Substation, VoltageLevel)
+    \\  <file>    One or more CGMES files to search (XML or ZIP)
+    \\
+    \\Examples:
+    \\  cimd list Substation data/eq.xml
+    \\  cimd list VoltageLevel data/eq.xml data/ssh.xml
+    \\  cimd list Terminal data/*.xml
+    \\
+;
+
 const help_version =
     \\Usage: cimd version [--verbose]
     \\
@@ -72,6 +89,7 @@ const help_main =
     \\Commands:
     \\  index      Index and parse CGMES files
     \\  find       Find and display a CIM object by ID
+    \\  list       List all objects of a specific type
     \\  extract    Extract CGMES zip files
     \\  version    Print version information
     \\
@@ -89,6 +107,11 @@ pub const Command = union(enum) {
         paths: []const []const u8,
     };
 
+    pub const List = struct {
+        type_name: []const u8,
+        paths: []const []const u8,
+    };
+
     pub const Extract = struct {
         paths: []const []const u8,
     };
@@ -99,6 +122,7 @@ pub const Command = union(enum) {
 
     index: Index,
     find: Find,
+    list: List,
     extract: Extract,
     version: Version,
 };
@@ -120,8 +144,10 @@ pub fn parse_args(args_iterator: *std.process.ArgIterator) Command {
 
     if (std.mem.eql(u8, command_name, "index")) {
         return parse_index_command(args_iterator);
-  } else if (std.mem.eql(u8, command_name, "find")) {
-      return parse_find_command(args_iterator);
+    } else if (std.mem.eql(u8, command_name, "find")) {
+        return parse_find_command(args_iterator);
+    } else if (std.mem.eql(u8, command_name, "list")) {
+        return parse_list_command(args_iterator);
     } else if (std.mem.eql(u8, command_name, "extract")) {
         return parse_extract_command(args_iterator);
     } else if (std.mem.eql(u8, command_name, "version")) {
@@ -191,6 +217,41 @@ fn parse_find_command(args_iterator: *std.process.ArgIterator) Command {
     }
 
     return .{ .find = .{ .id = id.?, .paths = paths_list.items } };
+}
+
+fn parse_list_command(args_iterator: *std.process.ArgIterator) Command {
+    var type_name: ?[]const u8 = null;
+    var paths_list: std.ArrayList([]const u8) = .empty;
+
+    while (args_iterator.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            _ = std.fs.File.stdout().write(help_list) catch std.process.exit(1);
+            std.process.exit(0);
+        }
+
+        if (arg.len > 0 and arg[0] == '-') {
+            print.stderr("list: unknown option '{s}'", .{arg});
+        }
+
+        // First positional arg is type, rest are paths
+        if (type_name == null) {
+            type_name = arg;
+        } else {
+            validate_path(arg, "list <type> <path>");
+            validate_cgmes_file_extension(arg, "list <type> <path>");
+            paths_list.append(std.heap.page_allocator, arg) catch print.stderr("failed to allocate paths array", .{});
+        }
+    }
+
+    if (type_name == null) {
+        print.stderr("list: missing required argument <type>", .{});
+    }
+
+    if (paths_list.items.len == 0) {
+        print.stderr("list: missing required argument <path>", .{});
+    }
+
+    return .{ .list = .{ .type_name = type_name.?, .paths = paths_list.items } };
 }
 
 fn parse_extract_command(args_iterator: *std.process.ArgIterator) Command {
