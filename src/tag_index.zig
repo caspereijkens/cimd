@@ -336,11 +336,15 @@ pub fn getPropertyFromIndices(
     closing_tag_idx: u32,
     property_name: []const u8,
 ) error{MalformedTag}!?[]const u8 {
-    assert(closing_tag_idx > opening_tag_idx);
+    // Self-closing tags have no properties
+    if (closing_tag_idx == opening_tag_idx) return null;
+
     assert(property_name.len > 0);
     assert(closing_tag_idx < boundaries.len);
 
+    // Neighbouring tags have no properties
     if (closing_tag_idx == opening_tag_idx + 1) return null;
+
     for (boundaries[opening_tag_idx + 1 .. closing_tag_idx], opening_tag_idx + 1..) |tag, i| {
         if (xml[tag.start + 1] == '/' or xml[tag.end - 1] == '/') {
             // Skip closing and self-closing tags
@@ -361,11 +365,15 @@ pub fn getReferenceFromIndices(
     closing_tag_idx: u32,
     property_name: []const u8,
 ) error{MalformedTag}!?[]const u8 {
-    assert(closing_tag_idx > opening_tag_idx);
+    // Self-closing tags have no properties
+    if (closing_tag_idx == opening_tag_idx) return null;
+
     assert(property_name.len > 0);
     assert(closing_tag_idx < boundaries.len);
 
+    // Neighbouring tags have no properties
     if (closing_tag_idx == opening_tag_idx + 1) return null;
+
     for (boundaries[opening_tag_idx + 1 .. closing_tag_idx]) |tag| {
         if (xml[tag.start + 1] == '/') {
             // Skip closing tags

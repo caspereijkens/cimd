@@ -1827,3 +1827,112 @@ test "tag_index.CimObject - multiple objects from same XML" {
     try std.testing.expectEqual(obj1.xml.ptr, obj2.xml.ptr);
     try std.testing.expectEqual(obj1.boundaries.ptr, obj2.boundaries.ptr);
 }
+
+test "tag_index.CimObject - self-closing tag" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:ID="_SS1"/>
+        \\</rdf:RDF>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    // The Substation is at index 1
+    const closing = tag_index.findClosingTag(xml, boundaries.items, 1) catch |err| blk: {
+        try std.testing.expectEqual(error.SelfClosingTag, err);
+        break :blk 1; // Use same index for self-closing
+    };
+    try std.testing.expectEqual(@as(u32, 1), closing); // Self-closing returns same index
+
+    const obj = try tag_index.CimObject.init(xml, boundaries.items, 1, closing);
+
+    try std.testing.expectEqualStrings("_SS1", obj.id);
+    try std.testing.expectEqualStrings("Substation", obj.type_name);
+
+    // Self-closing tags should have no properties
+    const prop = try obj.getProperty("SomeProperty");
+    try std.testing.expect(prop == null);
+
+    // Self-closing tags should have no references
+    const ref = try obj.getReference("SomeReference");
+    try std.testing.expect(ref == null);
+}
+
+test "tag_index.CimObject - getProperty on self-closing tag returns null" {
+    const gpa = std.testing.allocator;
+
+    const xml = "<cim:Terminal rdf:ID=\"_T1\"/>";
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = tag_index.findClosingTag(xml, boundaries.items, 0) catch |err| blk: {
+        try std.testing.expectEqual(error.SelfClosingTag, err);
+        break :blk 0; // Use same index for self-closing
+    };
+    const obj = try tag_index.CimObject.init(xml, boundaries.items, 0, closing);
+
+    // Verify self-closing
+    try std.testing.expectEqual(obj.object_tag_idx, obj.closing_tag_idx);
+
+    // All property lookups should return null
+    const name = try obj.getProperty("IdentifiedObject.name");
+    try std.testing.expect(name == null);
+
+    const desc = try obj.getProperty("IdentifiedObject.description");
+    try std.testing.expect(desc == null);
+}
+
+test "tag_index.CimObject - getReference on self-closing tag returns null" {
+    const gpa = std.testing.allocator;
+
+    const xml = "<cim:Terminal rdf:ID=\"_T1\"/>";
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = tag_index.findClosingTag(xml, boundaries.items, 0) catch |err| blk: {
+        try std.testing.expectEqual(error.SelfClosingTag, err);
+        break :blk 0; // Use same index for self-closing
+    };
+    const obj = try tag_index.CimObject.init(xml, boundaries.items, 0, closing);
+
+    // Verify self-closing
+    try std.testing.expectEqual(obj.object_tag_idx, obj.closing_tag_idx);
+
+    // All reference lookups should return null
+    const ref1 = try obj.getReference("Terminal.ConductingEquipment");
+    try std.testing.expect(ref1 == null);
+
+    const ref2 = try obj.getReference("Terminal.ConnectivityNode");
+    try std.testing.expect(ref2 == null);
+}
+
+test "tag_index.getPropertyFromIndices - self-closing tag returns null" {
+    const gpa = std.testing.allocator;
+
+    const xml = "<cim:Substation rdf:ID=\"_SS1\"/>";
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    // For self-closing tag, opening_idx == closing_idx
+    const result = try tag_index.getPropertyFromIndices(xml, boundaries.items, 0, 0, "SomeProperty");
+    try std.testing.expect(result == null);
+}
+
+test "tag_index.getReferenceFromIndices - self-closing tag returns null" {
+    const gpa = std.testing.allocator;
+
+    const xml = "<cim:Substation rdf:ID=\"_SS1\"/>";
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    // For self-closing tag, opening_idx == closing_idx
+    const result = try tag_index.getReferenceFromIndices(xml, boundaries.items, 0, 0, "SomeReference");
+    try std.testing.expect(result == null);
+}
