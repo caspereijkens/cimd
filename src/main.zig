@@ -6,6 +6,7 @@ const print = @import("print.zig");
 const assert = std.debug.assert;
 const zip = @import("zip.zig");
 const tag_index = @import("tag_index.zig");
+const cim_model = @import("cim_model.zig");
 
 pub fn main() !void {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -45,8 +46,6 @@ fn command_index(gpa: std.mem.Allocator, paths: []const []const u8) !void {
     const cwd = std.fs.cwd();
     var buffer: [4096]u8 = undefined;
 
-    var total_tags: usize = 0;
-
     for (paths) |path| {
         const file = try cwd.openFile(path, .{});
         defer file.close();
@@ -63,30 +62,27 @@ fn command_index(gpa: std.mem.Allocator, paths: []const []const u8) !void {
             }
 
             for (extracted_files.items) |extracted_file| {
-                try print.stdout("Processing: {s}\n", .{extracted_file.filename});
+                try print.stdout("File: {s}\n", .{extracted_file.filename});
 
-                var boundaries = try tag_index.findTagBoundaries(gpa, extracted_file.data);
-                defer boundaries.deinit(gpa);
+                var model = try cim_model.CimModel.init(gpa, extracted_file.data);
+                defer model.deinit(gpa);
 
-                try print.stdout("  Found {d} tags\n", .{boundaries.items.len});
-                total_tags += boundaries.items.len;
+                try print.displayObjectInventory(gpa, model);
+                try print.stdout("\n", .{});
             }
         } else {
             // Regular XML file: read to memory and process
-            try print.stdout("Processing: {s}\n", .{path});
+            try print.stdout("File: {s}\n", .{path});
 
             const xml = try readFileToMemory(gpa, file);
             defer gpa.free(xml);
 
-            var boundaries = try tag_index.findTagBoundaries(gpa, xml);
-            defer boundaries.deinit(gpa);
+            var model = try cim_model.CimModel.init(gpa, xml);
+            defer model.deinit(gpa);
 
-            try print.stdout("  Found {d} tags\n", .{boundaries.items.len});
-            total_tags += boundaries.items.len;
+            try print.displayObjectInventory(gpa, model);
         }
     }
-
-    try print.stdout("\nTotal: {d} tags across all files\n", .{total_tags});
 }
 
 fn command_not_implemented(comptime command_name: []const u8) !void {
