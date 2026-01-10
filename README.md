@@ -22,3 +22,42 @@ cimd is a pipeline of the following stages:
    The metadata collected in step 2c is what makes up the CimModel struct. The CimModel struct is the fundament where each feature of cimd will build on. It is like a big index of where what is in the text, but without storing any content. The content stays in the original xml, and only when the content is really needed, we look them up via the index that is created. 
 
 This system design is what should make CIMD very fast.
+
+## Visual Example
+Here's what's actually stored in the `CimModel` when parsing a simple XML file:
+
+Original XML:
+```xml
+<cim:Substation rdf:ID="_SS1">
+  <cim:IdentifiedObject.name>North Station</cim:IdentifiedObject.name>
+</cim:Substation>
+```
+
+CimModel structure:
+```
+CimModel
+├── xml: "<cim:Substation rdf:ID=\"_SS1\">..." → [pointer to original buffer]
+│
+├── boundaries: []TagBoundary
+│   ├── [0] { start: 0, end: 33 }      → <cim:Substation rdf:ID="_SS1">
+│   ├── [1] { start: 34, end: 63 }     → <cim:IdentifiedObject.name>
+│   ├── [2] { start: 64, end: 99 }     → </cim:IdentifiedObject.name>
+│   └── [3] { start: 100, end: 116 }   → </cim:Substation>
+│
+├── objects: []CimObject
+│   └── [0] CimObject
+│       ├── xml → [pointer to same buffer]
+│       ├── boundaries → [pointer to same boundaries array]
+│       ├── object_tag_idx: 0          → points to boundaries[0]
+│       ├── closing_tag_idx: 3         → points to boundaries[3]
+│       ├── id: "_SS1"                 → slice of xml[29..33]
+│       └── type_name: "Substation"    → slice of xml[5..15]
+│
+├── id_to_index: HashMap<string, u32>
+│   └── "_SS1" → 0                     → points to objects[0]
+│
+└── type_index: HashMap<string, []u32>
+    └── "Substation" → [0]             → [objects[0]]
+```
+
+And this should hold all the information to perform the cimd operations.
