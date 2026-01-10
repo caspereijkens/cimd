@@ -1,6 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const tag_index = @import("tag_index.zig");
+const CimObject = tag_index.CimObject;
 
 test "tag_index.findByteSIMD - finds all angle brackets" {
     const gpa = std.testing.allocator;
@@ -1935,4 +1936,151 @@ test "tag_index.getReferenceFromIndices - self-closing tag returns null" {
     // For self-closing tag, opening_idx == closing_idx
     const result = try tag_index.getReferenceFromIndices(xml, boundaries.items, 0, 0, "SomeReference");
     try std.testing.expect(result == null);
+}
+
+test "CimObject.getAllProperties - returns all text properties" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Substation rdf:ID="_SS1">
+        \\  <cim:IdentifiedObject.name>North Station</cim:IdentifiedObject.name>
+        \\  <cim:IdentifiedObject.description>Main substation</cim:IdentifiedObject.description>
+        \\  <cim:Substation.Region rdf:resource="#_Region1"/>
+        \\</cim:Substation>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+    const obj = try CimObject.init(xml, boundaries.items, 0, closing);
+
+    var props = try obj.getAllProperties(gpa);
+    defer props.deinit();
+
+    // Should have 2 properties (not the reference)
+    try std.testing.expectEqual(2, props.count());
+
+    // Check property values
+    const name = props.get("IdentifiedObject.name");
+    try std.testing.expect(name != null);
+    try std.testing.expectEqualStrings("North Station", name.?);
+
+    const desc = props.get("IdentifiedObject.description");
+    try std.testing.expect(desc != null);
+    try std.testing.expectEqualStrings("Main substation", desc.?);
+
+    // Should NOT include the reference
+    try std.testing.expect(props.get("Substation.Region") == null);
+}
+
+test "CimObject.getAllReferences - returns all rdf:resource references" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Substation rdf:ID="_SS1">
+        \\  <cim:IdentifiedObject.name>North Station</cim:IdentifiedObject.name>
+        \\  <cim:Substation.Region rdf:resource="#_Region1"/>
+        \\  <cim:Substation.VoltageLevel rdf:resource="#_VL1"/>
+        \\</cim:Substation>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+    const obj = try CimObject.init(xml, boundaries.items, 0, closing);
+
+    var refs = try obj.getAllReferences(gpa);
+    defer refs.deinit();
+
+    // Should have 2 references
+    try std.testing.expectEqual(2, refs.count());
+
+    // Check reference values
+    const region = refs.get("Substation.Region");
+    try std.testing.expect(region != null);
+    try std.testing.expectEqualStrings("#_Region1", region.?);
+
+    const vl = refs.get("Substation.VoltageLevel");
+    try std.testing.expect(vl != null);
+    try std.testing.expectEqualStrings("#_VL1", vl.?);
+
+    // Should NOT include text properties
+    try std.testing.expect(refs.get("IdentifiedObject.name") == null);
+}
+
+test "CimObject.getAllProperties - empty object returns empty map" {
+    const gpa = std.testing.allocator;
+
+    const xml = "<cim:Substation rdf:ID=\"_SS1\"/>";
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = tag_index.findClosingTag(xml, boundaries.items, 0) catch |err| blk: {
+        try std.testing.expectEqual(error.SelfClosingTag, err);
+        break :blk 0;
+    };
+    const obj = try CimObject.init(xml, boundaries.items, 0, closing);
+
+    var props = try obj.getAllProperties(gpa);
+    defer props.deinit();
+
+    try std.testing.expectEqual(0, props.count());
+}
+
+test "CimObject.getAllReferences - empty object returns empty map" {
+    const gpa = std.testing.allocator;
+
+    const xml = "<cim:Substation rdf:ID=\"_SS1\"/>";
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = tag_index.findClosingTag(xml, boundaries.items, 0) catch |err| blk: {
+        try std.testing.expectEqual(error.SelfClosingTag, err);
+        break :blk 0;
+    };
+    const obj = try CimObject.init(xml, boundaries.items, 0, closing);
+
+    var refs = try obj.getAllReferences(gpa);
+    defer refs.deinit();
+
+    try std.testing.expectEqual(0, refs.count());
+}
+
+test "CimObject.getAllProperties - handles mixed properties and references" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Terminal rdf:ID="_T1">
+        \\  <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\  <cim:Terminal.ConductingEquipment rdf:resource="#_Line1"/>
+        \\  <cim:IdentifiedObject.name>Terminal 1</cim:IdentifiedObject.name>
+        \\  <cim:Terminal.ConnectivityNode rdf:resource="#_Node1"/>
+        \\</cim:Terminal>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+    const obj = try CimObject.init(xml, boundaries.items, 0, closing);
+
+    var props = try obj.getAllProperties(gpa);
+    defer props.deinit();
+
+    var refs = try obj.getAllReferences(gpa);
+    defer refs.deinit();
+
+    // Should have 2 properties
+    try std.testing.expectEqual(2, props.count());
+    try std.testing.expectEqualStrings("1", props.get("ACDCTerminal.sequenceNumber").?);
+    try std.testing.expectEqualStrings("Terminal 1", props.get("IdentifiedObject.name").?);
+
+    // Should have 2 references
+    try std.testing.expectEqual(2, refs.count());
+    try std.testing.expectEqualStrings("#_Line1", refs.get("Terminal.ConductingEquipment").?);
+    try std.testing.expectEqualStrings("#_Node1", refs.get("Terminal.ConnectivityNode").?);
 }
