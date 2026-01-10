@@ -5,6 +5,8 @@ const build_options = @import("build_options");
 const print = @import("print.zig");
 const assert = std.debug.assert;
 const zip = @import("zip.zig");
+const tag_index = @import("tag_index.zig");
+const cim_model = @import("cim_model.zig");
 
 pub fn main() !void {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -18,8 +20,9 @@ pub fn main() !void {
     const command = cli.parse_args(&arg_iterator);
 
     switch (command) {
-        .version => |_| try command_version(command.version.verbose),
         .index => |_| try command_index(gpa, command.index.paths),
+        .extract => |_| try command_extract(gpa, command.extract.paths),
+        .version => |_| try command_version(command.version.verbose),
     }
 }
 
@@ -41,6 +44,53 @@ fn command_version(verbose: bool) !void {
 
 fn command_index(gpa: std.mem.Allocator, paths: []const []const u8) !void {
     const cwd = std.fs.cwd();
+    var buffer: [4096]u8 = undefined;
+
+    for (paths) |path| {
+        const file = try cwd.openFile(path, .{});
+        defer file.close();
+
+        if (try zip.isZipFile(file)) {
+            // ZIP file: extract to memory and process each contained file
+            var file_reader = file.reader(&buffer);
+            var extracted_files = try zip.extractToMemory(gpa, &file_reader, .{});
+            defer {
+                for (extracted_files.items) |extracted_file| {
+                    extracted_file.deinit(gpa);
+                }
+                extracted_files.deinit(gpa);
+            }
+
+            for (extracted_files.items) |extracted_file| {
+                try print.stdout("File: {s}\n", .{extracted_file.filename});
+
+                var model = try cim_model.CimModel.init(gpa, extracted_file.data);
+                defer model.deinit(gpa);
+
+                try print.displayObjectInventory(gpa, model);
+                try print.stdout("\n", .{});
+            }
+        } else {
+            // Regular XML file: read to memory and process
+            try print.stdout("File: {s}\n", .{path});
+
+            const xml = try readFileToMemory(gpa, file);
+            defer gpa.free(xml);
+
+            var model = try cim_model.CimModel.init(gpa, xml);
+            defer model.deinit(gpa);
+
+            try print.displayObjectInventory(gpa, model);
+        }
+    }
+}
+
+fn command_not_implemented(comptime command_name: []const u8) !void {
+    try print.stdout("Command '{s}' - to be implemented\n", .{command_name});
+}
+
+fn command_extract(gpa: std.mem.Allocator, paths: []const []const u8) !void {
+    const cwd = std.fs.cwd();
     const dest = try cwd.openDir(".cimd", .{});
     var buffer: [4096]u8 = undefined;
     var extracted_paths: std.ArrayList([]const u8) = .empty;
@@ -53,6 +103,7 @@ fn command_index(gpa: std.mem.Allocator, paths: []const []const u8) !void {
 
     for (paths) |path| {
         const file = try cwd.openFile(path, .{});
+        defer file.close();
         if (try zip.isZipFile(file)) {
             var file_reader = file.reader(&buffer);
             var extracted_files = try zip.extract(gpa, dest, &file_reader, .{});
@@ -66,17 +117,21 @@ fn command_index(gpa: std.mem.Allocator, paths: []const []const u8) !void {
                 const filename_copy = try gpa.dupe(u8, filename);
                 try extracted_paths.append(gpa, filename_copy);
             }
-        } else {
-            try print.stdout("Normal file! Let's do something with it!\n", .{});
-            try extracted_paths.append(gpa, path);
         }
-    }
-
-    for (extracted_paths.items) |filename| {
-        try print.stdout("{s}\n", .{filename});
     }
 }
 
-fn command_not_implemented(comptime command_name: []const u8) !void {
-    try print.stdout("Command '{s}' - to be implemented\n", .{command_name});
+/// Read file into memory (used for unzipped usecase)
+pub fn readFileToMemory(
+    gpa: std.mem.Allocator,
+    file: std.fs.File,
+) ![]u8 {
+    const file_size = try file.getEndPos();
+
+    // Reject files >4GB (matches our u32 indexing limit)
+    if (file_size > std.math.maxInt(u32)) {
+        return error.FileTooLarge;
+    }
+
+    return try file.readToEndAlloc(gpa, file_size);
 }
