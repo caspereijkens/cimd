@@ -22,6 +22,7 @@ pub fn main() !void {
     switch (command) {
         .index => |_| try command_index(gpa, command.index.paths),
         .find => |_| try command_find(gpa, command.find.id, command.find.paths),
+        .list => |_| try command_list(gpa, command.list.type_name, command.list.paths),
         .extract => |_| try command_extract(gpa, command.extract.paths),
         .version => |_| try command_version(command.version.verbose),
     }
@@ -133,6 +134,64 @@ fn command_find(gpa: std.mem.Allocator, id: []const u8, paths: []const []const u
 
     // Not found in any file
     try print.stdout("Object '{s}' not found in any of the provided files\n", .{id});
+}
+
+fn command_list(gpa: std.mem.Allocator, type_name: []const u8, paths: []const []const u8) !void {
+    const cwd = std.fs.cwd();
+    var buffer: [4096]u8 = undefined;
+
+    var total_found: usize = 0;
+
+    for (paths) |path| {
+        const file = try cwd.openFile(path, .{});
+        defer file.close();
+
+        if (try zip.isZipFile(file)) {
+            // ZIP: search through extracted files
+            var file_reader = file.reader(&buffer);
+            var extracted_files = try zip.extractToMemory(gpa, &file_reader, .{});
+            defer {
+                for (extracted_files.items) |extracted_file| {
+                    extracted_file.deinit(gpa);
+                }
+                extracted_files.deinit(gpa);
+            }
+
+            for (extracted_files.items) |extracted_file| {
+                var model = try cim_model.CimModel.init(gpa, extracted_file.data);
+                defer model.deinit(gpa);
+
+                const objects = try model.getObjectsByType(gpa, type_name);
+                defer gpa.free(objects);
+
+                if (objects.len > 0) {
+                    try print.stdout("Found {d} {s} objects in {s} (in {s})\n\n", .{ objects.len, type_name, extracted_file.filename, path });
+                    try print.displayObjectList(gpa, objects);
+                    total_found += objects.len;
+                }
+            }
+        } else {
+            // Regular XML file
+            const xml = try readFileToMemory(gpa, file);
+            defer gpa.free(xml);
+
+            var model = try cim_model.CimModel.init(gpa, xml);
+            defer model.deinit(gpa);
+
+            const objects = try model.getObjectsByType(gpa, type_name);
+            defer gpa.free(objects);
+
+            if (objects.len > 0) {
+                try print.stdout("Found {d} {s} objects in {s}\n\n", .{ objects.len, type_name, path });
+                try print.displayObjectList(gpa, objects);
+                total_found += objects.len;
+            }
+        }
+    }
+
+    if (total_found == 0) {
+        try print.stdout("No {s} objects found in any of the provided files\n", .{type_name});
+    }
 }
 
 fn command_not_implemented(comptime command_name: []const u8) !void {

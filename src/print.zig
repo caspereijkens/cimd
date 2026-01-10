@@ -110,3 +110,10 @@ pub fn displayObject(gpa: std.mem.Allocator, obj: *const tag_index.CimObject) !v
 
     try stdout("\n", .{});
 }
+
+pub fn displayObjectList(gpa: std.mem.Allocator, objects: []const tag_index.CimObject) !void {
+    for (objects, 1..) |obj, i| {
+        try stdout("[{d}] {s}\n", .{ i, obj.id });
+        try displayObject(gpa, &obj);
+    }
+}
