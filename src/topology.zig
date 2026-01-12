@@ -55,6 +55,13 @@ pub const TopologyResolver = struct {
         const eq_terminals = try equipment_model.getObjectsByType(gpa, "Terminal");
         defer gpa.free(eq_terminals);
 
+        // PERF: Pre-allocate HashMaps if init time becomes a bottleneck.
+        // Code:
+        //   const num_terminals = eq_terminals.len;
+        //   try resolver.terminal_to_equipment.ensureTotalCapacity(num_terminals);
+        //   try resolver.terminal_to_node.ensureTotalCapacity(num_terminals);
+        //   try resolver.equipment_terminals.ensureTotalCapacity(num_terminals / 2);
+
         for (eq_terminals) |terminal| {
             const equipment_ref = try terminal.getReference("Terminal.ConductingEquipment");
             if (equipment_ref == null) return error.MissingConductingEquipmentReference;
@@ -71,11 +78,51 @@ pub const TopologyResolver = struct {
             try result.value_ptr.append(gpa, TerminalInfo{ .id = terminal.id, .sequence = sequence_number, .node_id = null });
         }
 
-        // STEP 3: Process topology model (if provided)
-        // For now, just skip this - we'll add it in the next test
-        // Use if (topology_model) |tp_model| { ... } to handle optional
+        if (topology_model) |tp_model| {
+            const topological_nodes = try tp_model.getObjectsByType(gpa, "TopologicalNode");
+            defer gpa.free(topological_nodes);
+
+            if (topological_nodes.len > 0) {
+                resolver.mode = .bus_breaker;
+            }
+
+            const tp_terminals = try tp_model.getObjectsByType(gpa, "Terminal");
+            defer gpa.free(tp_terminals);
+
+            for (tp_terminals) |terminal| {
+                const node_ref = try terminal.getReference("Terminal.TopologicalNode") orelse continue;
+
+                const node_id = stripHash(node_ref);
+
+                try resolver.terminal_to_node.put(terminal.id, node_id);
+                const equipment_id = resolver.terminal_to_equipment.get(terminal.id) orelse continue;
+                const terminal_infos = resolver.equipment_terminals.get(equipment_id) orelse continue;
+                for (terminal_infos.items) |*terminal_info| blk: {
+                    if (std.mem.eql(u8, terminal_info.id, terminal.id)) {
+                        terminal_info.node_id = node_id;
+                        break :blk;
+                    }
+                }
+            }
+        }
 
         return resolver;
+    }
+
+    /// Get bus ID for equipment terminal (primary API for Stage 5)
+    pub fn getEquipmentBus(
+        self: TopologyResolver,
+        equipment_id: []const u8,
+        terminal_sequence: u32,
+    ) ?[]const u8 {
+        const terminals = self.getEquipmentTerminals(equipment_id) orelse return null;
+        for (terminals) |terminal| {
+            if (terminal.sequence == terminal_sequence) {
+                return terminal.node_id;
+            }
+        }
+
+        return null;
     }
 
     pub fn deinit(self: *TopologyResolver) void {
