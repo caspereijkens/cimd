@@ -14,6 +14,13 @@ pub const TerminalInfo = struct {
     node_id: ?[]const u8,
 };
 
+pub const TopologyStats = struct {
+    terminal_count: usize,
+    equipment_count: usize,
+    connected_terminals: usize,
+    topology_mode: TopologyMode,
+};
+
 pub const TopologyResolver = struct {
     gpa: std.mem.Allocator,
     equipment_model: *const CimModel,
@@ -109,7 +116,7 @@ pub const TopologyResolver = struct {
         return resolver;
     }
 
-    /// Get bus ID for equipment terminal (primary API for Stage 5)
+    /// Get bus ID for equipment terminal
     pub fn getEquipmentBus(
         self: TopologyResolver,
         equipment_id: []const u8,
@@ -143,6 +150,16 @@ pub const TopologyResolver = struct {
     ) ?[]const TerminalInfo {
         const terminals = self.equipment_terminals.get(equipment_id) orelse return null;
         return terminals.items;
+    }
+
+    /// Get terminal count, equipment count and other statistics of a processed model. 
+    pub fn getStats(self: TopologyResolver) TopologyStats {
+        return .{
+            .terminal_count = self.terminal_to_equipment.count(),
+            .equipment_count = self.equipment_terminals.count(),
+            .connected_terminals = self.terminal_to_node.count(),
+            .topology_mode = self.mode,
+        };
     }
 };
 

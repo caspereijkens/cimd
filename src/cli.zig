@@ -50,6 +50,21 @@ const help_find =
     \\
 ;
 
+const help_topology =
+    \\Usage: cimd topology --eq <file> [--tp <file>]
+    \\
+    \\Analyze topology and connectivity of CGMES models.
+    \\
+    \\Options:
+    \\  --eq <file>    Equipment profile (required)
+    \\  --tp <file>    Topology profile (optional)
+    \\
+    \\Examples:
+    \\  cimd topology --eq data/eq.xml
+    \\  cimd topology --eq data/eq.xml --tp data/tp.xml
+    \\
+;
+
 const help_list =
     \\Usage: cimd list <type> <file> [<file>...]
     \\
@@ -90,6 +105,7 @@ const help_main =
     \\  index      Index and parse CGMES files
     \\  find       Find and display a CIM object by ID
     \\  list       List all objects of a specific type
+    \\  topology   Analyze topology and connectivity
     \\  extract    Extract CGMES zip files
     \\  version    Print version information
     \\
@@ -120,9 +136,15 @@ pub const Command = union(enum) {
         verbose: bool,
     };
 
+    pub const Topology = struct {
+        eq_path: []const u8,
+        tp_path: ?[]const u8,
+    };
+
     index: Index,
     find: Find,
     list: List,
+    topology: Topology,
     extract: Extract,
     version: Version,
 };
@@ -133,7 +155,7 @@ pub fn parse_args(args_iterator: *std.process.ArgIterator) Command {
     assert(args_iterator.skip()); // Skip executable name
 
     const command_name = args_iterator.next() orelse print.stderr(
-        "subcommand required, expected 'index', 'extract' or 'version'\nTry '--help' for more information.",
+        "subcommand required, expected 'index', 'find', 'list', 'topology', 'extract' or 'version'\nTry '--help' for more information.",
         .{},
     );
 
@@ -148,6 +170,8 @@ pub fn parse_args(args_iterator: *std.process.ArgIterator) Command {
         return parse_find_command(args_iterator);
     } else if (std.mem.eql(u8, command_name, "list")) {
         return parse_list_command(args_iterator);
+    } else if (std.mem.eql(u8, command_name, "topology")) {
+        return parse_topology_command(args_iterator);
     } else if (std.mem.eql(u8, command_name, "extract")) {
         return parse_extract_command(args_iterator);
     } else if (std.mem.eql(u8, command_name, "version")) {
@@ -252,6 +276,38 @@ fn parse_list_command(args_iterator: *std.process.ArgIterator) Command {
     }
 
     return .{ .list = .{ .type_name = type_name.?, .paths = paths_list.items } };
+}
+
+fn parse_topology_command(args_iterator: *std.process.ArgIterator) Command {
+    var eq_path: ?[]const u8 = null;
+    var tp_path: ?[]const u8 = null;
+
+    while (args_iterator.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            _ = std.fs.File.stdout().write(help_topology) catch std.process.exit(1);
+            std.process.exit(0);
+        }
+
+        if (std.mem.eql(u8, arg, "--eq")) {
+            eq_path = args_iterator.next() orelse
+                print.stderr("topology: --eq requires a file path", .{});
+            validate_path(eq_path.?, "topology --eq <path>");
+            validate_cgmes_file_extension(eq_path.?, "topology --eq <path>");
+        } else if (std.mem.eql(u8, arg, "--tp")) {
+            tp_path = args_iterator.next() orelse
+                print.stderr("topology: --tp requires a file path", .{});
+            validate_path(tp_path.?, "topology --tp <path>");
+            validate_cgmes_file_extension(tp_path.?, "topology --tp <path>");
+        } else {
+            print.stderr("topology: unknown option '{s}'", .{arg});
+        }
+    }
+
+    if (eq_path == null) {
+        print.stderr("topology: --eq <file> is required", .{});
+    }
+
+    return .{ .topology = .{ .eq_path = eq_path.?, .tp_path = tp_path } };
 }
 
 fn parse_extract_command(args_iterator: *std.process.ArgIterator) Command {

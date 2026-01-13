@@ -7,6 +7,7 @@ const assert = std.debug.assert;
 const zip = @import("zip.zig");
 const tag_index = @import("tag_index.zig");
 const cim_model = @import("cim_model.zig");
+const topology = @import("topology.zig");
 
 pub fn main() !void {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -23,6 +24,7 @@ pub fn main() !void {
         .index => |_| try command_index(gpa, command.index.paths),
         .find => |_| try command_find(gpa, command.find.id, command.find.paths),
         .list => |_| try command_list(gpa, command.list.type_name, command.list.paths),
+        .topology => |_| try command_topology(gpa, command.topology.eq_path, command.topology.tp_path),
         .extract => |_| try command_extract(gpa, command.extract.paths),
         .version => |_| try command_version(command.version.verbose),
     }
@@ -196,6 +198,56 @@ fn command_list(gpa: std.mem.Allocator, type_name: []const u8, paths: []const []
 
 fn command_not_implemented(comptime command_name: []const u8) !void {
     try print.stdout("Command '{s}' - to be implemented\n", .{command_name});
+}
+
+fn command_topology(gpa: std.mem.Allocator, eq_path: []const u8, tp_path: ?[]const u8) !void {
+    const cwd = std.fs.cwd();
+
+    // Load EQ model (required)
+    const eq_file = try cwd.openFile(eq_path, .{});
+    defer eq_file.close();
+
+    const eq_xml = try readFileToMemory(gpa, eq_file);
+    defer gpa.free(eq_xml);
+
+    var eq_model = try cim_model.CimModel.init(gpa, eq_xml);
+    defer eq_model.deinit(gpa);
+
+    // Load TP model (optional)
+    var tp_model_opt: ?cim_model.CimModel = null;
+    defer if (tp_model_opt) |*tp| tp.deinit(gpa);
+
+    if (tp_path) |path| {
+        const tp_file = try cwd.openFile(path, .{});
+        defer tp_file.close();
+
+        const tp_xml = try readFileToMemory(gpa, tp_file);
+        defer gpa.free(tp_xml);
+
+        tp_model_opt = try cim_model.CimModel.init(gpa, tp_xml);
+    }
+
+    // Create topology resolver
+    var resolver = try topology.TopologyResolver.init(
+        gpa,
+        &eq_model,
+        if (tp_model_opt) |*tp| tp else null,
+    );
+    defer resolver.deinit();
+
+    // Display statistics
+    const stats = resolver.getStats();
+
+    try print.stdout("Topology Analysis:\n", .{});
+    try print.stdout("  Mode:                 {s}\n", .{@tagName(stats.topology_mode)});
+    try print.stdout("  Total Terminals:      {d}\n", .{stats.terminal_count});
+    try print.stdout("  Equipment Count:      {d}\n", .{stats.equipment_count});
+    try print.stdout("  Connected Terminals:  {d}\n", .{stats.connected_terminals});
+
+    if (stats.topology_mode == .no_topology) {
+        try print.stdout("\nNote: No topology information found. Terminal→equipment mappings available, but no bus connections.\n", .{});
+        try print.stdout("      Include --tp <file> to load topology profile.\n", .{});
+    }
 }
 
 fn command_extract(gpa: std.mem.Allocator, paths: []const []const u8) !void {
