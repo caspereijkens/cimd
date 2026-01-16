@@ -206,3 +206,152 @@ test "TopologyResolver.getEquipmentBus - returns bus for equipment terminal" {
     const bus_wrong_seq = resolver.getEquipmentBus("Load1", 99);
     try std.testing.expect(bus_wrong_seq == null);
 }
+
+test "TopologyResolver.init - node_breaker mode detection" {
+    const gpa = std.testing.allocator;
+
+    // Node-breaker model: EQ file has ConnectivityNode objects
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <cim:ConnectivityNode rdf:ID="CN1">
+        \\    <cim:IdentifiedObject.name>Connectivity Node 1</cim:IdentifiedObject.name>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:Terminal rdf:ID="T1">
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#Load1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN1"/>
+        \\  </cim:Terminal>
+        \\  <cim:EnergyConsumer rdf:ID="Load1"/>
+        \\</rdf:RDF>
+    ;
+
+    var eq_model = try CimModel.init(gpa, eq_xml);
+    defer eq_model.deinit(gpa);
+
+    var resolver = try TopologyResolver.init(gpa, &eq_model, null);
+    defer resolver.deinit();
+
+    // Should detect node_breaker mode (ConnectivityNode exists in EQ)
+    try std.testing.expectEqual(TopologyMode.node_breaker, resolver.mode);
+}
+
+test "TopologyResolver.getEquipmentBus - node_breaker mode returns connectivity node" {
+    const gpa = std.testing.allocator;
+
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <cim:ConnectivityNode rdf:ID="CN1"/>
+        \\  <cim:ConnectivityNode rdf:ID="CN2"/>
+        \\  <cim:Terminal rdf:ID="T1">
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#Load1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="T2">
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#Gen1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN2"/>
+        \\  </cim:Terminal>
+        \\  <cim:EnergyConsumer rdf:ID="Load1"/>
+        \\  <cim:SynchronousMachine rdf:ID="Gen1"/>
+        \\</rdf:RDF>
+    ;
+
+    var eq_model = try CimModel.init(gpa, eq_xml);
+    defer eq_model.deinit(gpa);
+
+    var resolver = try TopologyResolver.init(gpa, &eq_model, null);
+    defer resolver.deinit();
+
+    try std.testing.expectEqual(TopologyMode.node_breaker, resolver.mode);
+
+    // These will FAIL with your current implementation
+    const cn1 = resolver.getEquipmentBus("Load1", 1);
+    try std.testing.expect(cn1 != null);
+    try std.testing.expectEqualStrings("CN1", cn1.?);
+
+    const cn2 = resolver.getEquipmentBus("Gen1", 1);
+    try std.testing.expect(cn2 != null);
+    try std.testing.expectEqualStrings("CN2", cn2.?);
+}
+
+test "TopologyResolver.getStats - includes node counts" {
+    const gpa = std.testing.allocator;
+
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <cim:ConnectivityNode rdf:ID="CN1"/>
+        \\  <cim:ConnectivityNode rdf:ID="CN2"/>
+        \\  <cim:ConnectivityNode rdf:ID="CN3"/>
+        \\  <cim:Terminal rdf:ID="T1">
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#Load1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="T2">
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#Load2"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN1"/>
+        \\  </cim:Terminal>
+        \\  <cim:EnergyConsumer rdf:ID="Load1"/>
+        \\  <cim:EnergyConsumer rdf:ID="Load2"/>
+        \\</rdf:RDF>
+    ;
+
+    var eq_model = try CimModel.init(gpa, eq_xml);
+    defer eq_model.deinit(gpa);
+
+    var resolver = try TopologyResolver.init(gpa, &eq_model, null);
+    defer resolver.deinit();
+
+    const stats = resolver.getStats();
+
+    try std.testing.expectEqual(TopologyMode.node_breaker, stats.topology_mode);
+    try std.testing.expectEqual(@as(usize, 2), stats.terminal_count);
+    try std.testing.expectEqual(@as(usize, 2), stats.equipment_count);
+    try std.testing.expectEqual(@as(usize, 2), stats.connected_terminals);
+    // New: count of unique ConnectivityNodes referenced
+    try std.testing.expectEqual(@as(usize, 1), stats.connected_nodes);
+}
+
+test "TopologyResolver.init - dangling ConnectivityNode reference fails" {
+    const gpa = std.testing.allocator;
+
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <cim:Terminal rdf:ID="T1">
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#Load1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#NonExistent"/>
+        \\  </cim:Terminal>
+        \\  <cim:EnergyConsumer rdf:ID="Load1"/>
+        \\</rdf:RDF>
+    ;
+
+    var eq_model = try CimModel.init(gpa, eq_xml);
+    defer eq_model.deinit(gpa);
+
+    const result = TopologyResolver.init(gpa, &eq_model, null);
+    try std.testing.expectError(error.DanglingConnectivityNodeReference, result);
+}
+
+test "TopologyResolver.init - dangling ConductingEquipment reference fails" {
+    const gpa = std.testing.allocator;
+
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <cim:ConnectivityNode rdf:ID="CN1"/>
+        \\  <cim:Terminal rdf:ID="T1">
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#NonExistentLoad"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+
+    var eq_model = try CimModel.init(gpa, eq_xml);
+    defer eq_model.deinit(gpa);
+
+    const result = TopologyResolver.init(gpa, &eq_model, null);
+    try std.testing.expectError(error.DanglingConductingEquipmentReference, result);
+}

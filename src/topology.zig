@@ -6,6 +6,7 @@ const CimModel = cim_model.CimModel;
 pub const TopologyMode = enum {
     no_topology,
     bus_breaker,
+    node_breaker,
 };
 
 pub const TerminalInfo = struct {
@@ -19,6 +20,50 @@ pub const TopologyStats = struct {
     equipment_count: usize,
     connected_terminals: usize,
     topology_mode: TopologyMode,
+    connected_nodes: usize,
+};
+
+/// All CIM ConductingEquipment subtypes that can be referenced by Terminal.ConductingEquipment
+const conducting_equipment_types = [_][]const u8{
+    // Loads
+    "EnergyConsumer",
+    "ConformLoad",
+    "NonConformLoad",
+    "StationSupply",
+    // Generators
+    "SynchronousMachine",
+    "AsynchronousMachine",
+    // Lines and cables
+    "ACLineSegment",
+    "DCLineSegment",
+    // Transformers
+    "PowerTransformer",
+    // Switches
+    "Breaker",
+    "Disconnector",
+    "LoadBreakSwitch",
+    "Switch",
+    "ProtectedSwitch",
+    "GroundDisconnector",
+    "Jumper",
+    "Fuse",
+    "Cut",
+    "Ground",
+    // Compensators
+    "SeriesCompensator",
+    "LinearShuntCompensator",
+    "NonlinearShuntCompensator",
+    "StaticVarCompensator",
+    // Equivalents
+    "EquivalentInjection",
+    "EquivalentBranch",
+    "EquivalentShunt",
+    // Other
+    "ExternalNetworkInjection",
+    "EnergySource",
+    "BusbarSection",
+    "PetersenCoil",
+    "GroundingImpedance",
 };
 
 pub const TopologyResolver = struct {
@@ -27,6 +72,7 @@ pub const TopologyResolver = struct {
     topology_model: ?*const CimModel,
     terminal_to_equipment: std.StringHashMap([]const u8),
     terminal_to_node: std.StringHashMap([]const u8),
+    connected_node_ids: std.StringHashMap(void),
     equipment_terminals: std.StringHashMap(std.ArrayList(TerminalInfo)),
     mode: TopologyMode,
 
@@ -41,6 +87,9 @@ pub const TopologyResolver = struct {
         var terminal_to_node = std.StringHashMap([]const u8).init(gpa);
         errdefer terminal_to_node.deinit();
 
+        var connected_node_ids = std.StringHashMap(void).init(gpa);
+        errdefer connected_node_ids.deinit();
+
         var equipment_terminals = std.StringHashMap(std.ArrayList(TerminalInfo)).init(gpa);
         errdefer {
             var it = equipment_terminals.valueIterator();
@@ -53,16 +102,35 @@ pub const TopologyResolver = struct {
             .topology_model = topology_model,
             .terminal_to_equipment = terminal_to_equipment,
             .terminal_to_node = terminal_to_node,
+            .connected_node_ids = connected_node_ids,
             .equipment_terminals = equipment_terminals,
             .mode = .no_topology,
         };
 
         errdefer resolver.deinit();
 
+        var valid_equipment_ids = std.StringHashMap(void).init(gpa);
+        defer valid_equipment_ids.deinit();
+        for (conducting_equipment_types) |eq_type| {
+            const equipment = try equipment_model.getObjectsByType(gpa, eq_type);
+            defer gpa.free(equipment);
+            for (equipment) |eq| {
+                try valid_equipment_ids.put(eq.id, {});
+            }
+        }
+
         const eq_terminals = try equipment_model.getObjectsByType(gpa, "Terminal");
         defer gpa.free(eq_terminals);
 
-        // PERF: Pre-allocate HashMaps if init time becomes a bottleneck.
+        // Build valid ConnectivityNode ID set - O(c) where c = connectivity nodes
+        const connectivity_nodes = try equipment_model.getObjectsByType(gpa, "ConnectivityNode");
+        defer gpa.free(connectivity_nodes);
+
+        var valid_cn_ids = std.StringHashMap(void).init(gpa);
+        defer valid_cn_ids.deinit();
+        for (connectivity_nodes) |cn| {
+            try valid_cn_ids.put(cn.id, {});
+        }
         // Code:
         //   const num_terminals = eq_terminals.len;
         //   try resolver.terminal_to_equipment.ensureTotalCapacity(num_terminals);
@@ -70,9 +138,14 @@ pub const TopologyResolver = struct {
         //   try resolver.equipment_terminals.ensureTotalCapacity(num_terminals / 2);
 
         for (eq_terminals) |terminal| {
-            const equipment_ref = try terminal.getReference("Terminal.ConductingEquipment");
-            if (equipment_ref == null) return error.MissingConductingEquipmentReference;
-            const equipment_id = stripHash(equipment_ref.?);
+            const equipment_ref = try terminal.getReference("Terminal.ConductingEquipment") orelse
+                return error.MissingConductingEquipmentReference;
+            const equipment_id = stripHash(equipment_ref);
+
+            if (valid_equipment_ids.get(equipment_id) == null) {
+                return error.DanglingConductingEquipmentReference;
+            }
+
             try resolver.terminal_to_equipment.put(terminal.id, equipment_id);
             const sequence_number_str = try terminal.getProperty("ACDCTerminal.sequenceNumber") orelse "1";
             const sequence_number = std.fmt.parseInt(u32, sequence_number_str, 10) catch 1;
@@ -82,7 +155,27 @@ pub const TopologyResolver = struct {
                 // First object of this type - create new ArrayList
                 result.value_ptr.* = .empty;
             }
-            try result.value_ptr.append(gpa, TerminalInfo{ .id = terminal.id, .sequence = sequence_number, .node_id = null });
+
+            var node_id: ?[]const u8 = null;
+            if (try terminal.getReference("Terminal.ConnectivityNode")) |node_ref| {
+                node_id = stripHash(node_ref);
+                if (valid_cn_ids.get(node_id.?) == null) {
+                    return error.DanglingConnectivityNodeReference;
+                }
+                try resolver.terminal_to_node.put(terminal.id, node_id.?);
+                try resolver.connected_node_ids.put(node_id.?, {});
+            }
+
+            try result.value_ptr.append(gpa, TerminalInfo{
+                .id = terminal.id,
+                .sequence = sequence_number,
+                .node_id = node_id,
+            });
+        }
+
+        if (resolver.terminal_to_node.count() > 0) {
+            resolver.mode = .node_breaker;
+            return resolver;
         }
 
         if (topology_model) |tp_model| {
@@ -141,6 +234,7 @@ pub const TopologyResolver = struct {
         self.terminal_to_equipment.deinit();
         self.terminal_to_node.deinit();
         self.equipment_terminals.deinit();
+        self.connected_node_ids.deinit();
     }
 
     /// Get all terminals for an equipment_id.
@@ -152,13 +246,14 @@ pub const TopologyResolver = struct {
         return terminals.items;
     }
 
-    /// Get terminal count, equipment count and other statistics of a processed model. 
+    /// Get terminal count, equipment count and other statistics of a processed model.
     pub fn getStats(self: TopologyResolver) TopologyStats {
         return .{
             .terminal_count = self.terminal_to_equipment.count(),
             .equipment_count = self.equipment_terminals.count(),
             .connected_terminals = self.terminal_to_node.count(),
             .topology_mode = self.mode,
+            .connected_nodes = self.connected_node_ids.count(),
         };
     }
 };
