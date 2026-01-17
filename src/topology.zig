@@ -259,7 +259,7 @@ pub const TopologyResolver = struct {
 };
 
 /// Helper function to strip leading '#' from rdf:resource references
-fn stripHash(ref: []const u8) []const u8 {
+pub fn stripHash(ref: []const u8) []const u8 {
     assert(ref.len > 0);
 
     if (ref[0] != '#') return ref;
