@@ -23,12 +23,16 @@ pub const Converter = struct {
         const substations = try self.convertSubstations();
         const voltage_levels = try self.convertVoltageLevels();
         const loads = try self.convertLoads();
+        const generators = try self.convertGenerators();
+        const lines = try self.convertLines();
         return .{
             .id = "network",
             .case_date = null,
             .substations = substations,
             .voltage_levels = voltage_levels,
             .loads = loads,
+            .generators = generators,
+            .lines = lines,
         };
     }
 
@@ -100,6 +104,13 @@ pub const Converter = struct {
         try iidm_loads.ensureTotalCapacity(self.gpa, loads.len);
 
         for (loads) |load| {
+            // Get bus from topology resolver (sequence 1 for single-terminal equipment)
+            const connectivity_node_id = self.topology_resolver.getEquipmentBus(load.id, 1) orelse return error.MalformedXML;
+            // Get the ConnectivityNode to find its container (VoltageLevel)
+            const connectivity_node = self.model.getObjectById(connectivity_node_id) orelse return error.MalformedXML;
+            const voltage_level_ref = try connectivity_node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+            const voltage_level_id = topology.stripHash(voltage_level_ref);
+
             const name = try load.getProperty("IdentifiedObject.name") orelse return error.MalformedXML;
 
             const p0_str = try load.getProperty("EnergyConsumer.p") orelse return error.MalformedXML;
@@ -107,11 +118,6 @@ pub const Converter = struct {
 
             const q0_str = try load.getProperty("EnergyConsumer.q") orelse return error.MalformedXML;
             const q0 = try std.fmt.parseFloat(f64, q0_str);
-
-            const connectivity_node_id = self.topology_resolver.getEquipmentBus(load.id, 1) orelse return error.MalformedXML;
-            const connectivity_node = self.model.getObjectById(connectivity_node_id) orelse return error.MalformedXML;
-            const voltage_level_ref = try connectivity_node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
-            const voltage_level_id = topology.stripHash(voltage_level_ref);
 
             iidm_loads.appendAssumeCapacity(.{
                 .id = load.id,
@@ -123,5 +129,102 @@ pub const Converter = struct {
             });
         }
         return iidm_loads;
+    }
+
+    fn convertGenerators(self: *const Converter) !std.ArrayList(iidm.Generator) {
+        var iidm_generators: std.ArrayList(iidm.Generator) = .empty;
+        errdefer iidm_generators.deinit(self.gpa);
+
+        const generators = try self.model.getObjectsByType(self.gpa, "SynchronousMachine");
+        defer self.gpa.free(generators);
+        try iidm_generators.ensureTotalCapacity(self.gpa, generators.len);
+
+        for (generators) |generator| {
+            // Get bus from topology resolver (sequence 1 for single-terminal equipment)
+            const connectivity_node_id = self.topology_resolver.getEquipmentBus(generator.id, 1) orelse return error.MalformedXML;
+
+            // Get the ConnectivityNode to find its container (VoltageLevel)
+            const connectivity_node = self.model.getObjectById(connectivity_node_id) orelse return error.MalformedXML;
+            const voltage_level_ref = try connectivity_node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+            const voltage_level_id = topology.stripHash(voltage_level_ref);
+
+            const generating_unit_ref = try generator.getReference("RotatingMachine.GeneratingUnit") orelse return error.MalformedXML;
+            const generating_unit_id = topology.stripHash(generating_unit_ref);
+            const generating_unit = self.model.getObjectById(generating_unit_id) orelse return error.MalformedXML;
+
+            const name = try generator.getProperty("IdentifiedObject.name") orelse return error.MalformedXML;
+
+            const min_p_str = try generating_unit.getProperty("GeneratingUnit.minOperatingP") orelse return error.MalformedXML;
+            const min_p = try std.fmt.parseFloat(f64, min_p_str);
+
+            const max_p_str = try generating_unit.getProperty("GeneratingUnit.maxOperatingP") orelse return error.MalformedXML;
+            const max_p = try std.fmt.parseFloat(f64, max_p_str);
+
+            const target_p_str = try generating_unit.getProperty("GeneratingUnit.initialP") orelse return error.MalformedXML;
+            const target_p = try std.fmt.parseFloat(f64, target_p_str);
+            iidm_generators.appendAssumeCapacity(.{
+                .id = generator.id,
+                .name = name,
+                .voltage_level_id = voltage_level_id,
+                .bus = connectivity_node_id,
+                .min_p = min_p,
+                .max_p = max_p,
+                .target_p = target_p,
+                .target_q = 0,
+            });
+        }
+        return iidm_generators;
+    }
+
+    fn convertLines(self: *const Converter) !std.ArrayList(iidm.Line) {
+        var iidm_lines: std.ArrayList(iidm.Line) = .empty;
+        errdefer iidm_lines.deinit(self.gpa);
+
+        const lines = try self.model.getObjectsByType(self.gpa, "ACLineSegment");
+        defer self.gpa.free(lines);
+        try iidm_lines.ensureTotalCapacity(self.gpa, lines.len);
+
+        for (lines) |line| {
+            // Get bus from topology resolver (sequence 1, 2 for double-terminal equipment)
+            const connectivity_node_id1 = self.topology_resolver.getEquipmentBus(line.id, 1) orelse return error.MalformedXML;
+            const connectivity_node_id2 = self.topology_resolver.getEquipmentBus(line.id, 2) orelse return error.MalformedXML;
+
+            // Get the ConnectivityNode to find its container (VoltageLevel)
+            const connectivity_node1 = self.model.getObjectById(connectivity_node_id1) orelse return error.MalformedXML;
+            const connectivity_node2 = self.model.getObjectById(connectivity_node_id2) orelse return error.MalformedXML;
+
+            const voltage_level_ref1 = try connectivity_node1.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+            const voltage_level_ref2 = try connectivity_node2.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+
+            const voltage_level_id1 = topology.stripHash(voltage_level_ref1);
+            const voltage_level_id2 = topology.stripHash(voltage_level_ref2);
+
+            const name = try line.getProperty("IdentifiedObject.name") orelse return error.MalformedXML;
+
+            const r_str = try line.getProperty("ACLineSegment.r") orelse return error.MalformedXML;
+            const r = try std.fmt.parseFloat(f64, r_str);
+
+            const x_str = try line.getProperty("ACLineSegment.x") orelse return error.MalformedXML;
+            const x = try std.fmt.parseFloat(f64, x_str);
+
+            const bch_str = try line.getProperty("ACLineSegment.bch") orelse return error.MalformedXML;
+            const bch = try std.fmt.parseFloat(f64, bch_str);
+
+            iidm_lines.appendAssumeCapacity(.{
+                .id = line.id,
+                .name = name,
+                .voltage_level_id1 = voltage_level_id1,
+                .voltage_level_id2 = voltage_level_id2,
+                .bus1 = connectivity_node_id1,
+                .bus2 = connectivity_node_id2,
+                .r = r,
+                .x = x,
+                .g1 = 0,
+                .g2 = 0,
+                .b1 = bch / 2,
+                .b2 = bch / 2,
+            });
+        }
+        return iidm_lines;
     }
 };
