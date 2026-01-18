@@ -16,12 +16,15 @@ pub const Network = struct {
     loads: std.ArrayList(Load),
     generators: std.ArrayList(Generator),
     lines: std.ArrayList(Line),
+    transformers: std.ArrayList(TwoWindingsTransformer),
+
     pub fn deinit(self: *Network, gpa: std.mem.Allocator) void {
         self.substations.deinit(gpa);
         self.voltage_levels.deinit(gpa);
         self.loads.deinit(gpa);
         self.generators.deinit(gpa);
         self.lines.deinit(gpa);
+        self.transformers.deinit(gpa);
     }
 };
 
@@ -67,4 +70,19 @@ pub const Line = struct {
     g2: f64,
     b1: f64,
     b2: f64,
+};
+
+pub const TwoWindingsTransformer = struct {
+    id: []const u8,
+    name: ?[]const u8,
+    voltage_level_id1: []const u8,
+    voltage_level_id2: []const u8,
+    bus1: ?[]const u8,
+    bus2: ?[]const u8,
+    rated_u1: f64,
+    rated_u2: f64,
+    r: f64,
+    x: f64,
+    g: f64,
+    b: f64,
 };

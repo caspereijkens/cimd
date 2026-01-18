@@ -256,3 +256,92 @@ test "Converter - converts ACLineSegment to Line" {
     try std.testing.expectEqual(@as(f64, 0.00005), line.b1); // half of bch
     try std.testing.expectEqual(@as(f64, 0.00005), line.b2);
 }
+
+test "Converter - converts PowerTransformer to TwoWindingsTransformer" {
+    const gpa = std.testing.allocator;
+
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:ID="Sub1">
+        \\    <cim:IdentifiedObject.name>Station</cim:IdentifiedObject.name>
+        \\  </cim:Substation>
+        \\  <cim:VoltageLevel rdf:ID="VL1">
+        \\    <cim:IdentifiedObject.name>110kV</cim:IdentifiedObject.name>
+        \\    <cim:VoltageLevel.Substation rdf:resource="#Sub1"/>
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#BV1"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:VoltageLevel rdf:ID="VL2">
+        \\    <cim:IdentifiedObject.name>20kV</cim:IdentifiedObject.name>
+        \\    <cim:VoltageLevel.Substation rdf:resource="#Sub1"/>
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#BV2"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:BaseVoltage rdf:ID="BV1">
+        \\    <cim:BaseVoltage.nominalVoltage>110</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\  <cim:BaseVoltage rdf:ID="BV2">
+        \\    <cim:BaseVoltage.nominalVoltage>20</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\  <cim:ConnectivityNode rdf:ID="CN1">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#VL1"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:ConnectivityNode rdf:ID="CN2">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#VL2"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:PowerTransformer rdf:ID="TR1">
+        \\    <cim:IdentifiedObject.name>Main Transformer</cim:IdentifiedObject.name>
+        \\  </cim:PowerTransformer>
+        \\  <cim:PowerTransformerEnd rdf:ID="TR1_End1">
+        \\    <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
+        \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#TR1"/>
+        \\    <cim:PowerTransformerEnd.ratedU>110</cim:PowerTransformerEnd.ratedU>
+        \\    <cim:PowerTransformerEnd.r>0.5</cim:PowerTransformerEnd.r>
+        \\    <cim:PowerTransformerEnd.x>25</cim:PowerTransformerEnd.x>
+        \\    <cim:PowerTransformerEnd.g>0</cim:PowerTransformerEnd.g>
+        \\    <cim:PowerTransformerEnd.b>0</cim:PowerTransformerEnd.b>
+        \\    <cim:TransformerEnd.Terminal rdf:resource="#T1"/>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PowerTransformerEnd rdf:ID="TR1_End2">
+        \\    <cim:TransformerEnd.endNumber>2</cim:TransformerEnd.endNumber>
+        \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#TR1"/>
+        \\    <cim:PowerTransformerEnd.ratedU>20</cim:PowerTransformerEnd.ratedU>
+        \\    <cim:PowerTransformerEnd.r>0</cim:PowerTransformerEnd.r>
+        \\    <cim:PowerTransformerEnd.x>0</cim:PowerTransformerEnd.x>
+        \\    <cim:PowerTransformerEnd.g>0</cim:PowerTransformerEnd.g>
+        \\    <cim:PowerTransformerEnd.b>0</cim:PowerTransformerEnd.b>
+        \\    <cim:TransformerEnd.Terminal rdf:resource="#T2"/>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:Terminal rdf:ID="T1">
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#TR1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="T2">
+        \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#TR1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN2"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+
+    var model = try CimModel.init(gpa, eq_xml);
+    defer model.deinit(gpa);
+
+    var topo = try TopologyResolver.init(gpa, &model, null);
+    defer topo.deinit();
+
+    var conv = Converter.init(gpa, &model, &topo);
+    var network = try conv.convert();
+    defer network.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 1), network.transformers.items.len);
+
+    const tr = network.transformers.items[0];
+    try std.testing.expectEqualStrings("TR1", tr.id);
+    try std.testing.expectEqualStrings("Main Transformer", tr.name.?);
+    try std.testing.expectEqualStrings("VL1", tr.voltage_level_id1);
+    try std.testing.expectEqualStrings("VL2", tr.voltage_level_id2);
+    try std.testing.expectEqual(@as(f64, 110.0), tr.rated_u1);
+    try std.testing.expectEqual(@as(f64, 20.0), tr.rated_u2);
+    try std.testing.expectEqual(@as(f64, 0.5), tr.r);
+    try std.testing.expectEqual(@as(f64, 25.0), tr.x);
+}
