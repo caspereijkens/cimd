@@ -3,8 +3,17 @@ const cim_model = @import("cim_model.zig");
 const topology = @import("topology.zig");
 const iidm = @import("iidm.zig");
 
+const assert = std.debug.assert;
 const CimModel = cim_model.CimModel;
 const TopologyResolver = topology.TopologyResolver;
+
+const SwitchKind = iidm.SwitchKind;
+
+const switch_type_mapping = [_]struct { cim_type: []const u8, kind: SwitchKind }{
+    .{ .cim_type = "Breaker", .kind = .breaker },
+    .{ .cim_type = "Disconnector", .kind = .disconnector },
+    .{ .cim_type = "LoadBreakSwitch", .kind = .load_break_switch },
+};
 
 pub const Converter = struct {
     gpa: std.mem.Allocator,
@@ -25,7 +34,8 @@ pub const Converter = struct {
         const loads = try self.convertLoads();
         const generators = try self.convertGenerators();
         const lines = try self.convertLines();
-        const transformers = try self.convertTransformers();
+        const transformer_result = try self.convertTransformers();
+        const switches = try self.convertSwitches();
         return .{
             .id = "network",
             .case_date = null,
@@ -34,7 +44,9 @@ pub const Converter = struct {
             .loads = loads,
             .generators = generators,
             .lines = lines,
-            .transformers = transformers,
+            .two_winding_transformers = transformer_result.two_winding,
+            .three_winding_transformers = transformer_result.three_winding,
+            .switches = switches,
         };
     }
 
@@ -230,9 +242,17 @@ pub const Converter = struct {
         return iidm_lines;
     }
 
-    fn convertTransformers(self: *const Converter) !std.ArrayList(iidm.TwoWindingsTransformer) {
-        var result: std.ArrayList(iidm.TwoWindingsTransformer) = .empty;
-        errdefer result.deinit(self.gpa);
+    const TransformerResult = struct {
+        two_winding: std.ArrayList(iidm.TwoWindingsTransformer),
+        three_winding: std.ArrayList(iidm.ThreeWindingsTransformer),
+    };
+
+    fn convertTransformers(self: *const Converter) !TransformerResult {
+        var two_winding: std.ArrayList(iidm.TwoWindingsTransformer) = .empty;
+        errdefer two_winding.deinit(self.gpa);
+
+        var three_winding: std.ArrayList(iidm.ThreeWindingsTransformer) = .empty;
+        errdefer three_winding.deinit(self.gpa);
 
         const transformers = try self.model.getObjectsByType(self.gpa, "PowerTransformer");
         defer self.gpa.free(transformers);
@@ -240,9 +260,9 @@ pub const Converter = struct {
         const all_ends = try self.model.getObjectsByType(self.gpa, "PowerTransformerEnd");
         defer self.gpa.free(all_ends);
 
-        // Build transformer_id → [end1, end2] lookup for electrical parameters
-        const EndPair = struct { end1: ?cim_model.CimObject = null, end2: ?cim_model.CimObject = null };
-        var ends_by_transformer = std.StringHashMap(EndPair).init(self.gpa);
+        // Build transformer_id → [end1, end2, end3] lookup for electrical parameters
+        const EndArray = struct { ends: [3]?cim_model.CimObject = .{ null, null, null } };
+        var ends_by_transformer = std.StringHashMap(EndArray).init(self.gpa);
         defer ends_by_transformer.deinit();
 
         for (all_ends) |end| {
@@ -253,48 +273,126 @@ pub const Converter = struct {
 
             const gop = try ends_by_transformer.getOrPut(transformer_id);
             if (!gop.found_existing) gop.value_ptr.* = .{};
-            if (end_num == 1) gop.value_ptr.end1 = end;
-            if (end_num == 2) gop.value_ptr.end2 = end;
+            if (end_num >= 1 and end_num <= 3) {
+                gop.value_ptr.ends[end_num - 1] = end;
+            }
         }
 
-        try result.ensureTotalCapacity(self.gpa, transformers.len);
-
         for (transformers) |transformer| {
-            // Use TopologyResolver like other two-terminal equipment
-            const cn1_id = self.topology_resolver.getEquipmentBus(transformer.id, 1) orelse return error.MalformedXML;
-            const cn2_id = self.topology_resolver.getEquipmentBus(transformer.id, 2) orelse return error.MalformedXML;
-
-            const cn1 = self.model.getObjectById(cn1_id) orelse return error.MalformedXML;
-            const cn2 = self.model.getObjectById(cn2_id) orelse return error.MalformedXML;
-            const vl1_ref = try cn1.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
-            const vl2_ref = try cn2.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
-
             const ends = ends_by_transformer.get(transformer.id) orelse return error.MalformedXML;
-            const end1 = ends.end1 orelse return error.MalformedXML;
-            const end2 = ends.end2 orelse return error.MalformedXML;
-
+            const end1 = ends.ends[0] orelse return error.MalformedXML;
+            const end2 = ends.ends[1] orelse return error.MalformedXML;
             const name = try transformer.getProperty("IdentifiedObject.name");
-            const rated_u1 = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.ratedU") orelse return error.MalformedXML);
-            const rated_u2 = try std.fmt.parseFloat(f64, try end2.getProperty("PowerTransformerEnd.ratedU") orelse return error.MalformedXML);
-            const r = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.r") orelse return error.MalformedXML);
-            const x = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.x") orelse return error.MalformedXML);
-            const g = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.g") orelse return error.MalformedXML);
-            const b = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.b") orelse return error.MalformedXML);
 
-            result.appendAssumeCapacity(.{
-                .id = transformer.id,
-                .name = name,
-                .voltage_level_id1 = topology.stripHash(vl1_ref),
-                .voltage_level_id2 = topology.stripHash(vl2_ref),
-                .bus1 = cn1_id,
-                .bus2 = cn2_id,
-                .rated_u1 = rated_u1,
-                .rated_u2 = rated_u2,
-                .r = r,
-                .x = x,
-                .g = g,
-                .b = b,
-            });
+            if (ends.ends[2]) |end3| {
+                // 3-winding transformer
+                const cn1_id = self.topology_resolver.getEquipmentBus(transformer.id, 1) orelse return error.MalformedXML;
+                const cn2_id = self.topology_resolver.getEquipmentBus(transformer.id, 2) orelse return error.MalformedXML;
+                const cn3_id = self.topology_resolver.getEquipmentBus(transformer.id, 3) orelse return error.MalformedXML;
+
+                const cn1 = self.model.getObjectById(cn1_id) orelse return error.MalformedXML;
+                const cn2 = self.model.getObjectById(cn2_id) orelse return error.MalformedXML;
+                const cn3 = self.model.getObjectById(cn3_id) orelse return error.MalformedXML;
+
+                const vl1_ref = try cn1.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+                const vl2_ref = try cn2.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+                const vl3_ref = try cn3.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+
+                try three_winding.append(self.gpa, .{
+                    .id = transformer.id,
+                    .name = name,
+                    .voltage_level_id1 = topology.stripHash(vl1_ref),
+                    .voltage_level_id2 = topology.stripHash(vl2_ref),
+                    .voltage_level_id3 = topology.stripHash(vl3_ref),
+                    .bus1 = cn1_id,
+                    .bus2 = cn2_id,
+                    .bus3 = cn3_id,
+                    .rated_u1 = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.ratedU") orelse return error.MalformedXML),
+                    .rated_u2 = try std.fmt.parseFloat(f64, try end2.getProperty("PowerTransformerEnd.ratedU") orelse return error.MalformedXML),
+                    .rated_u3 = try std.fmt.parseFloat(f64, try end3.getProperty("PowerTransformerEnd.ratedU") orelse return error.MalformedXML),
+                    .r1 = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.r") orelse return error.MalformedXML),
+                    .r2 = try std.fmt.parseFloat(f64, try end2.getProperty("PowerTransformerEnd.r") orelse return error.MalformedXML),
+                    .r3 = try std.fmt.parseFloat(f64, try end3.getProperty("PowerTransformerEnd.r") orelse return error.MalformedXML),
+                    .x1 = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.x") orelse return error.MalformedXML),
+                    .x2 = try std.fmt.parseFloat(f64, try end2.getProperty("PowerTransformerEnd.x") orelse return error.MalformedXML),
+                    .x3 = try std.fmt.parseFloat(f64, try end3.getProperty("PowerTransformerEnd.x") orelse return error.MalformedXML),
+                    .g1 = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.g") orelse return error.MalformedXML),
+                    .g2 = try std.fmt.parseFloat(f64, try end2.getProperty("PowerTransformerEnd.g") orelse return error.MalformedXML),
+                    .g3 = try std.fmt.parseFloat(f64, try end3.getProperty("PowerTransformerEnd.g") orelse return error.MalformedXML),
+                    .b1 = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.b") orelse return error.MalformedXML),
+                    .b2 = try std.fmt.parseFloat(f64, try end2.getProperty("PowerTransformerEnd.b") orelse return error.MalformedXML),
+                    .b3 = try std.fmt.parseFloat(f64, try end3.getProperty("PowerTransformerEnd.b") orelse return error.MalformedXML),
+                });
+            } else {
+                // 2-winding transformer
+                const cn1_id = self.topology_resolver.getEquipmentBus(transformer.id, 1) orelse return error.MalformedXML;
+                const cn2_id = self.topology_resolver.getEquipmentBus(transformer.id, 2) orelse return error.MalformedXML;
+
+                const cn1 = self.model.getObjectById(cn1_id) orelse return error.MalformedXML;
+                const cn2 = self.model.getObjectById(cn2_id) orelse return error.MalformedXML;
+
+                const vl1_ref = try cn1.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+                const vl2_ref = try cn2.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+
+                try two_winding.append(self.gpa, .{
+                    .id = transformer.id,
+                    .name = name,
+                    .voltage_level_id1 = topology.stripHash(vl1_ref),
+                    .voltage_level_id2 = topology.stripHash(vl2_ref),
+                    .bus1 = cn1_id,
+                    .bus2 = cn2_id,
+                    .rated_u1 = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.ratedU") orelse return error.MalformedXML),
+                    .rated_u2 = try std.fmt.parseFloat(f64, try end2.getProperty("PowerTransformerEnd.ratedU") orelse return error.MalformedXML),
+                    .r = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.r") orelse return error.MalformedXML),
+                    .x = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.x") orelse return error.MalformedXML),
+                    .g = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.g") orelse return error.MalformedXML),
+                    .b = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.b") orelse return error.MalformedXML),
+                });
+            }
+        }
+
+        return .{ .two_winding = two_winding, .three_winding = three_winding };
+    }
+
+    fn convertSwitches(self: *const Converter) !std.ArrayList(iidm.Switch) {
+        var result: std.ArrayList(iidm.Switch) = .empty;
+        errdefer result.deinit(self.gpa);
+
+        var total_count: usize = 0;
+        for (switch_type_mapping) |mapping| {
+            if (self.model.type_index.get(mapping.cim_type)) |indices| {
+                total_count += indices.items.len;
+            }
+        }
+        try result.ensureTotalCapacity(self.gpa, total_count);
+
+        for (switch_type_mapping) |mapping| {
+            const switches = try self.model.getObjectsByType(self.gpa, mapping.cim_type);
+            defer self.gpa.free(switches);
+
+            for (switches) |@"switch"| {
+                const cn1_id = self.topology_resolver.getEquipmentBus(@"switch".id, 1) orelse return error.MalformedXML;
+                const cn2_id = self.topology_resolver.getEquipmentBus(@"switch".id, 2) orelse return error.MalformedXML;
+
+                const cn1 = self.model.getObjectById(cn1_id) orelse return error.MalformedXML;
+                const cn2 = self.model.getObjectById(cn2_id) orelse return error.MalformedXML;
+                const vl1_ref = try cn1.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+                const vl2_ref = try cn2.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+                if (!std.mem.eql(u8, vl1_ref, vl2_ref)) {
+                    return error.MalformedXML;
+                }
+                const name = try @"switch".getProperty("IdentifiedObject.name");
+                const open_str = try @"switch".getProperty("Switch.open") orelse "false";
+                result.appendAssumeCapacity(.{
+                    .id = @"switch".id,
+                    .name = name,
+                    .voltage_level_id = topology.stripHash(vl1_ref),
+                    .bus1 = cn1_id,
+                    .bus2 = cn2_id,
+                    .open = std.mem.eql(u8, open_str, "true"),
+                    .kind = mapping.kind,
+                });
+            }
         }
 
         return result;

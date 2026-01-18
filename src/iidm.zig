@@ -16,7 +16,9 @@ pub const Network = struct {
     loads: std.ArrayList(Load),
     generators: std.ArrayList(Generator),
     lines: std.ArrayList(Line),
-    transformers: std.ArrayList(TwoWindingsTransformer),
+    two_winding_transformers: std.ArrayList(TwoWindingsTransformer),
+    three_winding_transformers: std.ArrayList(ThreeWindingsTransformer),
+    switches: std.ArrayList(Switch),
 
     pub fn deinit(self: *Network, gpa: std.mem.Allocator) void {
         self.substations.deinit(gpa);
@@ -24,7 +26,9 @@ pub const Network = struct {
         self.loads.deinit(gpa);
         self.generators.deinit(gpa);
         self.lines.deinit(gpa);
-        self.transformers.deinit(gpa);
+        self.two_winding_transformers.deinit(gpa);
+        self.three_winding_transformers.deinit(gpa);
+        self.switches.deinit(gpa);
     }
 };
 
@@ -85,4 +89,46 @@ pub const TwoWindingsTransformer = struct {
     x: f64,
     g: f64,
     b: f64,
+};
+
+pub const ThreeWindingsTransformer = struct {
+    id: []const u8,
+    name: ?[]const u8,
+    voltage_level_id1: []const u8,
+    voltage_level_id2: []const u8,
+    voltage_level_id3: []const u8,
+    bus1: ?[]const u8,
+    bus2: ?[]const u8,
+    bus3: ?[]const u8,
+    rated_u1: f64,
+    rated_u2: f64,
+    rated_u3: f64,
+    r1: f64,
+    r2: f64,
+    r3: f64,
+    x1: f64,
+    x2: f64,
+    x3: f64,
+    g1: f64,
+    g2: f64,
+    g3: f64,
+    b1: f64,
+    b2: f64,
+    b3: f64,
+};
+
+pub const SwitchKind = enum {
+    breaker,
+    disconnector,
+    load_break_switch,
+};
+
+pub const Switch = struct {
+    id: []const u8,
+    name: ?[]const u8,
+    voltage_level_id: []const u8,
+    bus1: ?[]const u8,
+    bus2: ?[]const u8,
+    open: bool,
+    kind: SwitchKind,
 };
