@@ -27,6 +27,7 @@ test "Converter - converts Substation with name" {
     defer topo.deinit();
 
     var conv = Converter.init(gpa, &model, &topo);
+    defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
 
@@ -63,15 +64,16 @@ test "Converter - converts VoltageLevel with nominal voltage" {
     defer topo.deinit();
 
     var conv = Converter.init(gpa, &model, &topo);
+    defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
 
-    try std.testing.expectEqual(@as(usize, 1), network.voltage_levels.items.len);
+    try std.testing.expectEqual(@as(usize, 1), network.substations.items.len);
+    try std.testing.expectEqual(@as(usize, 1), network.substations.items[0].voltage_levels.items.len);
 
-    const vl = network.voltage_levels.items[0];
+    const vl = network.substations.items[0].voltage_levels.items[0];
     try std.testing.expectEqualStrings("VL1", vl.id);
     try std.testing.expectEqualStrings("110kV", vl.name.?);
-    try std.testing.expectEqualStrings("Sub1", vl.substation_id);
     try std.testing.expectEqual(@as(f64, 110.0), vl.nominal_voltage.?);
 }
 
@@ -114,15 +116,16 @@ test "Converter - converts EnergyConsumer to Load" {
     defer topo.deinit();
 
     var conv = Converter.init(gpa, &model, &topo);
+    defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
 
-    try std.testing.expectEqual(@as(usize, 1), network.loads.items.len);
+    const vl = &network.substations.items[0].voltage_levels.items[0];
+    try std.testing.expectEqual(@as(usize, 1), vl.loads.items.len);
 
-    const load = network.loads.items[0];
+    const load = vl.loads.items[0];
     try std.testing.expectEqualStrings("Load1", load.id);
     try std.testing.expectEqualStrings("City Load", load.name.?);
-    try std.testing.expectEqualStrings("VL1", load.voltage_level_id);
     try std.testing.expectEqualStrings("CN1", load.bus.?);
     try std.testing.expectEqual(@as(f64, 100.0), load.p0);
     try std.testing.expectEqual(@as(f64, 50.0), load.q0);
@@ -171,15 +174,16 @@ test "Converter - converts SynchronousMachine to Generator" {
     defer topo.deinit();
 
     var conv = Converter.init(gpa, &model, &topo);
+    defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
 
-    try std.testing.expectEqual(@as(usize, 1), network.generators.items.len);
+    const vl = &network.substations.items[0].voltage_levels.items[0];
+    try std.testing.expectEqual(@as(usize, 1), vl.generators.items.len);
 
-    const gen = network.generators.items[0];
+    const gen = vl.generators.items[0];
     try std.testing.expectEqualStrings("Gen1", gen.id);
     try std.testing.expectEqualStrings("Main Generator", gen.name.?);
-    try std.testing.expectEqualStrings("VL1", gen.voltage_level_id);
     try std.testing.expectEqual(@as(f64, 10.0), gen.min_p.?);
     try std.testing.expectEqual(@as(f64, 200.0), gen.max_p.?);
     try std.testing.expectEqual(@as(f64, 150.0), gen.target_p);
@@ -241,6 +245,7 @@ test "Converter - converts ACLineSegment to Line" {
     defer topo.deinit();
 
     var conv = Converter.init(gpa, &model, &topo);
+    defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
 
@@ -249,8 +254,6 @@ test "Converter - converts ACLineSegment to Line" {
     const line = network.lines.items[0];
     try std.testing.expectEqualStrings("Line1", line.id);
     try std.testing.expectEqualStrings("Line A-B", line.name.?);
-    try std.testing.expectEqualStrings("VL1", line.voltage_level_id1);
-    try std.testing.expectEqualStrings("VL2", line.voltage_level_id2);
     try std.testing.expectEqualStrings("CN1", line.bus1.?);
     try std.testing.expectEqualStrings("CN2", line.bus2.?);
     try std.testing.expectEqual(@as(f64, 1.5), line.r);
@@ -332,17 +335,19 @@ test "Converter - converts PowerTransformer to TwoWindingsTransformer" {
     defer topo.deinit();
 
     var conv = Converter.init(gpa, &model, &topo);
+    defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
 
-    try std.testing.expectEqual(@as(usize, 1), network.two_winding_transformers.items.len);
-    try std.testing.expectEqual(@as(usize, 0), network.three_winding_transformers.items.len);
+    const sub = &network.substations.items[0];
+    try std.testing.expectEqual(@as(usize, 1), sub.two_winding_transformers.items.len);
+    try std.testing.expectEqual(@as(usize, 0), sub.three_winding_transformers.items.len);
 
-    const tr = network.two_winding_transformers.items[0];
+    const tr = sub.two_winding_transformers.items[0];
     try std.testing.expectEqualStrings("TR1", tr.id);
     try std.testing.expectEqualStrings("Main Transformer", tr.name.?);
-    try std.testing.expectEqualStrings("VL1", tr.voltage_level_id1);
-    try std.testing.expectEqualStrings("VL2", tr.voltage_level_id2);
+    try std.testing.expectEqualStrings("CN1", tr.bus1.?);
+    try std.testing.expectEqualStrings("CN2", tr.bus2.?);
     try std.testing.expectEqual(@as(f64, 110.0), tr.rated_u1);
     try std.testing.expectEqual(@as(f64, 20.0), tr.rated_u2);
     try std.testing.expectEqual(@as(f64, 0.5), tr.r);
@@ -445,18 +450,17 @@ test "Converter - converts PowerTransformer to ThreeWindingsTransformer" {
     defer topo.deinit();
 
     var conv = Converter.init(gpa, &model, &topo);
+    defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
 
-    try std.testing.expectEqual(@as(usize, 0), network.two_winding_transformers.items.len);
-    try std.testing.expectEqual(@as(usize, 1), network.three_winding_transformers.items.len);
+    const sub = &network.substations.items[0];
+    try std.testing.expectEqual(@as(usize, 0), sub.two_winding_transformers.items.len);
+    try std.testing.expectEqual(@as(usize, 1), sub.three_winding_transformers.items.len);
 
-    const tr = network.three_winding_transformers.items[0];
+    const tr = sub.three_winding_transformers.items[0];
     try std.testing.expectEqualStrings("TR3W", tr.id);
     try std.testing.expectEqualStrings("Three Winding Trafo", tr.name.?);
-    try std.testing.expectEqualStrings("VL1", tr.voltage_level_id1);
-    try std.testing.expectEqualStrings("VL2", tr.voltage_level_id2);
-    try std.testing.expectEqualStrings("VL3", tr.voltage_level_id3);
     try std.testing.expectEqualStrings("CN1", tr.bus1.?);
     try std.testing.expectEqualStrings("CN2", tr.bus2.?);
     try std.testing.expectEqualStrings("CN3", tr.bus3.?);
@@ -517,17 +521,18 @@ test "Converter - converts Breaker to Switch" {
     defer topo.deinit();
 
     var conv = Converter.init(gpa, &model, &topo);
+    defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
 
-    try std.testing.expectEqual(@as(usize, 1), network.switches.items.len);
+    const vl = &network.substations.items[0].voltage_levels.items[0];
+    try std.testing.expectEqual(@as(usize, 1), vl.switches.items.len);
 
-    const sw = network.switches.items[0];
+    const sw = vl.switches.items[0];
     try std.testing.expectEqualStrings("BRK1", sw.id);
     try std.testing.expectEqualStrings("Bus Coupler", sw.name.?);
-    try std.testing.expectEqualStrings("VL1", sw.voltage_level_id);
     try std.testing.expectEqualStrings("CN1", sw.bus1.?);
     try std.testing.expectEqualStrings("CN2", sw.bus2.?);
     try std.testing.expectEqual(false, sw.open);
-    try std.testing.expectEqual(.breaker, sw.kind);
+    try std.testing.expectEqual(SwitchKind.breaker, sw.kind);
 }
