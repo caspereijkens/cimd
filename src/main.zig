@@ -90,7 +90,6 @@ fn command_not_implemented(comptime command_name: []const u8) !void {
     try print.stdout("Command '{s}' - to be implemented\n", .{command_name});
 }
 
-
 /// Read file into memory (used for unzipped usecase)
 pub fn readFileToMemory(
     gpa: std.mem.Allocator,
