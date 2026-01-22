@@ -8,6 +8,7 @@ const zip = @import("zip.zig");
 const tag_index = @import("tag_index.zig");
 const cim_model = @import("cim_model.zig");
 const topology = @import("topology.zig");
+const converter = @import("converter.zig");
 
 pub fn main() !void {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -22,7 +23,7 @@ pub fn main() !void {
 
     switch (command) {
         .index => |_| try command_index(gpa, command.index.paths),
-        .convert => |_| try command_not_implemented("convert"),
+        .convert => |c| try command_convert(gpa, c.input_path, c.output_path),
         .version => |_| try command_version(command.version.verbose),
     }
 }
@@ -84,6 +85,46 @@ fn command_index(gpa: std.mem.Allocator, paths: []const []const u8) !void {
             try print.displayObjectInventory(gpa, model);
         }
     }
+}
+
+fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, output_path: ?[]const u8) !void {
+    const cwd = std.fs.cwd();
+
+    const file = try cwd.openFile(input_path, .{});
+    defer file.close();
+
+    var zip_buffer: [4096]u8 = undefined;
+    const xml = if (try zip.isZipFile(file)) blk: {
+        var file_reader = file.reader(&zip_buffer);
+        const extracted_files = try zip.extractToMemory(gpa, &file_reader, .{});
+        break :blk extracted_files.items[0].data;
+    } else try readFileToMemory(gpa, file);
+    defer gpa.free(xml);
+
+    var model = try cim_model.CimModel.init(gpa, xml);
+    defer model.deinit(gpa);
+
+    var topo = try topology.TopologyResolver.init(gpa, &model);
+    defer topo.deinit();
+
+    var conv = converter.Converter.init(gpa, &model, &topo);
+    var network = try conv.convert();
+    defer network.deinit(gpa);
+
+    // Create output file or use stdout
+    const output_file = if (output_path) |path|
+        try cwd.createFile(path, .{})
+    else
+        std.fs.File.stdout();
+    defer if (output_path != null) output_file.close();
+
+    // Create File.Writer with buffer, then use its .interface
+    var write_buffer: [4096]u8 = undefined;
+    var file_writer = std.fs.File.Writer.init(output_file, &write_buffer);
+
+    try std.json.Stringify.value(network, .{}, &file_writer.interface);
+    try file_writer.interface.writeByte('\n');
+    try file_writer.interface.flush();
 }
 
 fn command_not_implemented(comptime command_name: []const u8) !void {

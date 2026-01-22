@@ -45,6 +45,27 @@ pub const VoltageLevel = struct {
     loads: std.ArrayListUnmanaged(Load),
     switches: std.ArrayListUnmanaged(Switch),
 
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("id");
+        try jws.write(self.id);
+        try jws.objectField("name");
+        try jws.write(self.name);
+        try jws.objectField("nominal_voltage");
+        try jws.write(self.nominal_voltage);
+        try jws.objectField("low_voltage_limit");
+        try jws.write(self.low_voltage_limit);
+        try jws.objectField("high_voltage_limit");
+        try jws.write(self.high_voltage_limit);
+        try jws.objectField("generators");
+        try jws.write(self.generators.items);
+        try jws.objectField("loads");
+        try jws.write(self.loads.items);
+        try jws.objectField("switches");
+        try jws.write(self.switches.items);
+        try jws.endObject();
+    }
+
     pub fn deinit(self: *VoltageLevel, allocator: std.mem.Allocator) void {
         self.generators.deinit(allocator);
         self.loads.deinit(allocator);
@@ -101,6 +122,25 @@ pub const Substation = struct {
     two_winding_transformers: std.ArrayListUnmanaged(TwoWindingsTransformer),
     three_winding_transformers: std.ArrayListUnmanaged(ThreeWindingsTransformer),
 
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("id");
+        try jws.write(self.id);
+        try jws.objectField("name");
+        try jws.write(self.name);
+        try jws.objectField("country");
+        try jws.write(self.country);
+        try jws.objectField("geo_tags");
+        try jws.write(self.geo_tags);
+        try jws.objectField("voltage_levels");
+        try jws.write(self.voltage_levels.items);
+        try jws.objectField("two_winding_transformers");
+        try jws.write(self.two_winding_transformers.items);
+        try jws.objectField("three_winding_transformers");
+        try jws.write(self.three_winding_transformers.items);
+        try jws.endObject();
+    }
+
     pub fn deinit(self: *Substation, allocator: std.mem.Allocator) void {
         for (self.voltage_levels.items) |*vl| {
             vl.deinit(allocator);
@@ -129,6 +169,19 @@ pub const Network = struct {
     case_date: ?[]const u8,
     substations: std.ArrayListUnmanaged(Substation),
     lines: std.ArrayListUnmanaged(Line),
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("id");
+        try jws.write(self.id);
+        try jws.objectField("case_date");
+        try jws.write(self.case_date);
+        try jws.objectField("substations");
+        try jws.write(self.substations.items);
+        try jws.objectField("lines");
+        try jws.write(self.lines.items);
+        try jws.endObject();
+    }
 
     pub fn deinit(self: *Network, allocator: std.mem.Allocator) void {
         for (self.substations.items) |*sub| {

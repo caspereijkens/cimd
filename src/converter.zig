@@ -147,8 +147,15 @@ pub const Converter = struct {
             const voltage_level = self.getVoltageLevel(network, voltage_level_id) orelse return error.MalformedXML;
 
             const name = try load.getProperty("IdentifiedObject.name");
-            const p0 = try std.fmt.parseFloat(f64, try load.getProperty("EnergyConsumer.p") orelse return error.MalformedXML);
-            const q0 = try std.fmt.parseFloat(f64, try load.getProperty("EnergyConsumer.q") orelse return error.MalformedXML);
+            // p and q are in SSH profile, not EQ - default to 0 if missing
+            const p0 = if (try load.getProperty("EnergyConsumer.p")) |p_str|
+                try std.fmt.parseFloat(f64, p_str)
+            else
+                0.0;
+            const q0 = if (try load.getProperty("EnergyConsumer.q")) |q_str|
+                try std.fmt.parseFloat(f64, q_str)
+            else
+                0.0;
 
             try voltage_level.loads.append(self.gpa, .{
                 .id = load.id,
@@ -176,9 +183,20 @@ pub const Converter = struct {
             const generating_unit = self.model.getObjectById(topology.stripHash(generating_unit_ref)) orelse return error.MalformedXML;
 
             const name = try generator.getProperty("IdentifiedObject.name");
-            const min_p = try std.fmt.parseFloat(f64, try generating_unit.getProperty("GeneratingUnit.minOperatingP") orelse return error.MalformedXML);
-            const max_p = try std.fmt.parseFloat(f64, try generating_unit.getProperty("GeneratingUnit.maxOperatingP") orelse return error.MalformedXML);
-            const target_p = try std.fmt.parseFloat(f64, try generating_unit.getProperty("GeneratingUnit.initialP") orelse return error.MalformedXML);
+            // minOperatingP and maxOperatingP may be optional
+            const min_p = if (try generating_unit.getProperty("GeneratingUnit.minOperatingP")) |v|
+                try std.fmt.parseFloat(f64, v)
+            else
+                null;
+            const max_p = if (try generating_unit.getProperty("GeneratingUnit.maxOperatingP")) |v|
+                try std.fmt.parseFloat(f64, v)
+            else
+                null;
+            // initialP is often in SSH, not EQ
+            const target_p = if (try generating_unit.getProperty("GeneratingUnit.initialP")) |v|
+                try std.fmt.parseFloat(f64, v)
+            else
+                0.0;
 
             try voltage_level.generators.append(self.gpa, .{
                 .id = generator.id,
