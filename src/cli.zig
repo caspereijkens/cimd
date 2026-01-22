@@ -21,49 +21,20 @@ const help_index =
     \\
 ;
 
-const help_extract =
-    \\Usage: cimd extract <file> [<file>...]
+const help_convert =
+    \\Usage: cimd convert <input> [--output <file>]
     \\
-    \\Extract one or more CGMES zip files. Provide multiple files
-    \\separated by spaces. Extracted files are written to a folder named '.cimd'.
-    \\
-    \\Examples:
-    \\  cimd extract data/model.zip
-    \\  cimd extract data/eq.zip data/ssh.zip data/tp.zip
-    \\
-;
-
-const help_find =
-    \\Usage: cimd find <id> <file> [<file>...]
-    \\
-    \\Find and display a CIM object by its rdf:ID. Searches through multiple
-    \\files until the object is found.
+    \\Convert a CGMES file to IIDM JSON format.
     \\
     \\Arguments:
-    \\  <id>      The rdf:ID of the object to find (e.g., _SS1)
-    \\  <file>    One or more CGMES files to search (XML or ZIP)
+    \\  <input>           EQ profile file to convert (XML or ZIP)
+    \\
+    \\Options:
+    \\  --output <file>   Write output to file (default: stdout)
     \\
     \\Examples:
-    \\  cimd find _SS1 data/eq.xml
-    \\  cimd find _VL1 data/eq.xml data/ssh.xml data/tp.xml
-    \\  cimd find _T1 data/*.xml
-    \\
-;
-
-const help_list =
-    \\Usage: cimd list <type> <file> [<file>...]
-    \\
-    \\List all CIM objects of a specific type. Searches through multiple
-    \\files and displays all matching objects.
-    \\
-    \\Arguments:
-    \\  <type>    The CIM type to search for (e.g., Substation, VoltageLevel)
-    \\  <file>    One or more CGMES files to search (XML or ZIP)
-    \\
-    \\Examples:
-    \\  cimd list Substation data/eq.xml
-    \\  cimd list VoltageLevel data/eq.xml data/ssh.xml
-    \\  cimd list Terminal data/*.xml
+    \\  cimd convert data/eq.zip
+    \\  cimd convert data/eq.xml --output network.json
     \\
 ;
 
@@ -88,9 +59,7 @@ const help_main =
     \\
     \\Commands:
     \\  index      Index and parse CGMES files
-    \\  find       Find and display a CIM object by ID
-    \\  list       List all objects of a specific type
-    \\  extract    Extract CGMES zip files
+    \\  convert    Convert EQ profile to JIIDM format
     \\  version    Print version information
     \\
     \\Use 'cimd <command> --help' for more information about a command.
@@ -102,18 +71,9 @@ pub const Command = union(enum) {
         paths: []const []const u8,
     };
 
-    pub const Find = struct {
-        id: []const u8,
-        paths: []const []const u8,
-    };
-
-    pub const List = struct {
-        type_name: []const u8,
-        paths: []const []const u8,
-    };
-
-    pub const Extract = struct {
-        paths: []const []const u8,
+    pub const Convert = struct {
+        input_path: []const u8,
+        output_path: ?[]const u8,
     };
 
     pub const Version = struct {
@@ -121,9 +81,7 @@ pub const Command = union(enum) {
     };
 
     index: Index,
-    find: Find,
-    list: List,
-    extract: Extract,
+    convert: Convert,
     version: Version,
 };
 
@@ -133,7 +91,7 @@ pub fn parse_args(args_iterator: *std.process.ArgIterator) Command {
     assert(args_iterator.skip()); // Skip executable name
 
     const command_name = args_iterator.next() orelse print.stderr(
-        "subcommand required, expected 'index', 'extract' or 'version'\nTry '--help' for more information.",
+        "subcommand required, expected 'index', 'convert' or 'version'\nTry '--help' for more information.",
         .{},
     );
 
@@ -144,12 +102,8 @@ pub fn parse_args(args_iterator: *std.process.ArgIterator) Command {
 
     if (std.mem.eql(u8, command_name, "index")) {
         return parse_index_command(args_iterator);
-    } else if (std.mem.eql(u8, command_name, "find")) {
-        return parse_find_command(args_iterator);
-    } else if (std.mem.eql(u8, command_name, "list")) {
-        return parse_list_command(args_iterator);
-    } else if (std.mem.eql(u8, command_name, "extract")) {
-        return parse_extract_command(args_iterator);
+    } else if (std.mem.eql(u8, command_name, "convert")) {
+        return parse_convert_command(args_iterator);
     } else if (std.mem.eql(u8, command_name, "version")) {
         return parse_version_command(args_iterator);
     } else {
@@ -184,102 +138,38 @@ fn parse_index_command(args_iterator: *std.process.ArgIterator) Command {
     return .{ .index = .{ .paths = paths_list.items } };
 }
 
-fn parse_find_command(args_iterator: *std.process.ArgIterator) Command {
-    var id: ?[]const u8 = null;
-    var paths_list: std.ArrayList([]const u8) = .empty;
+fn parse_convert_command(args_iterator: *std.process.ArgIterator) Command {
+    var input_path: ?[]const u8 = null;
+    var output_path: ?[]const u8 = null;
 
     while (args_iterator.next()) |arg| {
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            _ = std.fs.File.stdout().write(help_find) catch std.process.exit(1);
+            _ = std.fs.File.stdout().write(help_convert) catch std.process.exit(1);
             std.process.exit(0);
         }
 
-        if (arg.len > 0 and arg[0] == '-') {
-            print.stderr("find: unknown option '{s}'", .{arg});
-        }
-
-        // First positional arg is ID, rest are paths
-        if (id == null) {
-            id = arg;
+        if (std.mem.eql(u8, arg, "--output") or std.mem.eql(u8, arg, "-o")) {
+            output_path = args_iterator.next() orelse
+                print.stderr("convert: --output requires a file path", .{});
+        } else if (arg.len > 0 and arg[0] == '-') {
+            print.stderr("convert: unknown option '{s}'", .{arg});
         } else {
-            validate_path(arg, "find <id> <path>");
-            validate_cgmes_file_extension(arg, "find <id> <path>");
-            paths_list.append(std.heap.page_allocator, arg) catch print.stderr("failed to allocate paths array", .{});
+            if (input_path != null) {
+                print.stderr("convert: unexpected argument '{s}'", .{arg});
+            }
+            validate_path(arg, "convert <input>");
+            validate_cgmes_file_extension(arg, "convert <input>");
+            input_path = arg;
         }
     }
 
-    if (id == null) {
-        print.stderr("find: missing required argument <id>", .{});
+    if (input_path == null) {
+        print.stderr("convert: missing required argument <input>", .{});
     }
 
-    if (paths_list.items.len == 0) {
-        print.stderr("find: missing required argument <path>", .{});
-    }
-
-    return .{ .find = .{ .id = id.?, .paths = paths_list.items } };
+    return .{ .convert = .{ .input_path = input_path.?, .output_path = output_path } };
 }
 
-fn parse_list_command(args_iterator: *std.process.ArgIterator) Command {
-    var type_name: ?[]const u8 = null;
-    var paths_list: std.ArrayList([]const u8) = .empty;
-
-    while (args_iterator.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            _ = std.fs.File.stdout().write(help_list) catch std.process.exit(1);
-            std.process.exit(0);
-        }
-
-        if (arg.len > 0 and arg[0] == '-') {
-            print.stderr("list: unknown option '{s}'", .{arg});
-        }
-
-        // First positional arg is type, rest are paths
-        if (type_name == null) {
-            type_name = arg;
-        } else {
-            validate_path(arg, "list <type> <path>");
-            validate_cgmes_file_extension(arg, "list <type> <path>");
-            paths_list.append(std.heap.page_allocator, arg) catch print.stderr("failed to allocate paths array", .{});
-        }
-    }
-
-    if (type_name == null) {
-        print.stderr("list: missing required argument <type>", .{});
-    }
-
-    if (paths_list.items.len == 0) {
-        print.stderr("list: missing required argument <path>", .{});
-    }
-
-    return .{ .list = .{ .type_name = type_name.?, .paths = paths_list.items } };
-}
-
-fn parse_extract_command(args_iterator: *std.process.ArgIterator) Command {
-    var paths_list: std.ArrayList([]const u8) = .empty;
-
-    while (args_iterator.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            _ = std.fs.File.stdout().write(help_extract) catch std.process.exit(1);
-            std.process.exit(0);
-        }
-
-        if (arg.len > 0 and arg[0] == '-') {
-            print.stderr("extract: unknown option '{s}'", .{arg});
-        }
-
-        // Validate the file path
-        validate_path(arg, "extract <path>");
-        validate_zip_file_extension(arg, "extract <path>");
-
-        paths_list.append(std.heap.page_allocator, arg) catch print.stderr("failed to allocate paths array", .{});
-    }
-
-    if (paths_list.items.len == 0) {
-        print.stderr("extract: at least one file path is required", .{});
-    }
-
-    return .{ .extract = .{ .paths = paths_list.items } };
-}
 fn parse_version_command(args_iterator: *std.process.ArgIterator) Command {
     var verbose = false;
 

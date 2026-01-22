@@ -1,6 +1,6 @@
 const std = @import("std");
 const tag_index = @import("tag_index.zig");
-const CimObject = tag_index.CimObject;
+pub const CimObject = tag_index.CimObject;
 const TagBoundary = tag_index.TagBoundary;
 
 pub const CimModel = struct {

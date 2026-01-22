@@ -7,6 +7,8 @@ const assert = std.debug.assert;
 const zip = @import("zip.zig");
 const tag_index = @import("tag_index.zig");
 const cim_model = @import("cim_model.zig");
+const topology = @import("topology.zig");
+const converter = @import("converter.zig");
 
 pub fn main() !void {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -21,9 +23,7 @@ pub fn main() !void {
 
     switch (command) {
         .index => |_| try command_index(gpa, command.index.paths),
-        .find => |_| try command_find(gpa, command.find.id, command.find.paths),
-        .list => |_| try command_list(gpa, command.list.type_name, command.list.paths),
-        .extract => |_| try command_extract(gpa, command.extract.paths),
+        .convert => |c| try command_convert(gpa, c.input_path, c.output_path),
         .version => |_| try command_version(command.version.verbose),
     }
 }
@@ -87,147 +87,48 @@ fn command_index(gpa: std.mem.Allocator, paths: []const []const u8) !void {
     }
 }
 
-fn command_find(gpa: std.mem.Allocator, id: []const u8, paths: []const []const u8) !void {
+fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, output_path: ?[]const u8) !void {
     const cwd = std.fs.cwd();
-    var buffer: [4096]u8 = undefined;
 
-    for (paths) |path| {
-        const file = try cwd.openFile(path, .{});
-        defer file.close();
+    const file = try cwd.openFile(input_path, .{});
+    defer file.close();
 
-        if (try zip.isZipFile(file)) {
-            // ZIP: search through extracted files
-            var file_reader = file.reader(&buffer);
-            var extracted_files = try zip.extractToMemory(gpa, &file_reader, .{});
-            defer {
-                for (extracted_files.items) |extracted_file| {
-                    extracted_file.deinit(gpa);
-                }
-                extracted_files.deinit(gpa);
-            }
+    var zip_buffer: [4096]u8 = undefined;
+    const xml = if (try zip.isZipFile(file)) blk: {
+        var file_reader = file.reader(&zip_buffer);
+        const extracted_files = try zip.extractToMemory(gpa, &file_reader, .{});
+        break :blk extracted_files.items[0].data;
+    } else try readFileToMemory(gpa, file);
+    defer gpa.free(xml);
 
-            for (extracted_files.items) |extracted_file| {
-                var model = try cim_model.CimModel.init(gpa, extracted_file.data);
-                defer model.deinit(gpa);
+    var model = try cim_model.CimModel.init(gpa, xml);
+    defer model.deinit(gpa);
 
-                if (model.getObjectById(id)) |obj| {
-                    try print.stdout("Found in: {s} (in {s})\n\n", .{ extracted_file.filename, path });
-                    try print.displayObject(gpa, obj);
-                    return; // Found it, we're done!
-                }
-            }
-        } else {
-            // Regular XML file
-            const xml = try readFileToMemory(gpa, file);
-            defer gpa.free(xml);
+    var topo = try topology.TopologyResolver.init(gpa, &model);
+    defer topo.deinit();
 
-            var model = try cim_model.CimModel.init(gpa, xml);
-            defer model.deinit(gpa);
+    var conv = converter.Converter.init(gpa, &model, &topo);
+    var network = try conv.convert();
+    defer network.deinit(gpa);
 
-            if (model.getObjectById(id)) |obj| {
-                try print.stdout("Found in: {s}\n\n", .{path});
-                try print.displayObject(gpa, obj);
-                return; // Found it, we're done!
-            }
-        }
-    }
+    // Create output file or use stdout
+    const output_file = if (output_path) |path|
+        try cwd.createFile(path, .{})
+    else
+        std.fs.File.stdout();
+    defer if (output_path != null) output_file.close();
 
-    // Not found in any file
-    try print.stdout("Object '{s}' not found in any of the provided files\n", .{id});
-}
+    // Create File.Writer with buffer, then use its .interface
+    var write_buffer: [4096]u8 = undefined;
+    var file_writer = std.fs.File.Writer.init(output_file, &write_buffer);
 
-fn command_list(gpa: std.mem.Allocator, type_name: []const u8, paths: []const []const u8) !void {
-    const cwd = std.fs.cwd();
-    var buffer: [4096]u8 = undefined;
-
-    var total_found: usize = 0;
-
-    for (paths) |path| {
-        const file = try cwd.openFile(path, .{});
-        defer file.close();
-
-        if (try zip.isZipFile(file)) {
-            // ZIP: search through extracted files
-            var file_reader = file.reader(&buffer);
-            var extracted_files = try zip.extractToMemory(gpa, &file_reader, .{});
-            defer {
-                for (extracted_files.items) |extracted_file| {
-                    extracted_file.deinit(gpa);
-                }
-                extracted_files.deinit(gpa);
-            }
-
-            for (extracted_files.items) |extracted_file| {
-                var model = try cim_model.CimModel.init(gpa, extracted_file.data);
-                defer model.deinit(gpa);
-
-                const objects = try model.getObjectsByType(gpa, type_name);
-                defer gpa.free(objects);
-
-                if (objects.len > 0) {
-                    try print.stdout("Found {d} {s} objects in {s} (in {s})\n\n", .{ objects.len, type_name, extracted_file.filename, path });
-                    try print.displayObjectList(gpa, objects);
-                    total_found += objects.len;
-                }
-            }
-        } else {
-            // Regular XML file
-            const xml = try readFileToMemory(gpa, file);
-            defer gpa.free(xml);
-
-            var model = try cim_model.CimModel.init(gpa, xml);
-            defer model.deinit(gpa);
-
-            const objects = try model.getObjectsByType(gpa, type_name);
-            defer gpa.free(objects);
-
-            if (objects.len > 0) {
-                try print.stdout("Found {d} {s} objects in {s}\n\n", .{ objects.len, type_name, path });
-                try print.displayObjectList(gpa, objects);
-                total_found += objects.len;
-            }
-        }
-    }
-
-    if (total_found == 0) {
-        try print.stdout("No {s} objects found in any of the provided files\n", .{type_name});
-    }
+    try std.json.Stringify.value(network, .{}, &file_writer.interface);
+    try file_writer.interface.writeByte('\n');
+    try file_writer.interface.flush();
 }
 
 fn command_not_implemented(comptime command_name: []const u8) !void {
     try print.stdout("Command '{s}' - to be implemented\n", .{command_name});
-}
-
-fn command_extract(gpa: std.mem.Allocator, paths: []const []const u8) !void {
-    const cwd = std.fs.cwd();
-    const dest = try cwd.openDir(".cimd", .{});
-    var buffer: [4096]u8 = undefined;
-    var extracted_paths: std.ArrayList([]const u8) = .empty;
-    defer {
-        for (extracted_paths.items) |filename| {
-            gpa.free(filename);
-        }
-        extracted_paths.deinit(gpa);
-    }
-
-    for (paths) |path| {
-        const file = try cwd.openFile(path, .{});
-        defer file.close();
-        if (try zip.isZipFile(file)) {
-            var file_reader = file.reader(&buffer);
-            var extracted_files = try zip.extract(gpa, dest, &file_reader, .{});
-            defer {
-                for (extracted_files.items) |filename| {
-                    gpa.free(filename);
-                }
-                extracted_files.deinit(gpa);
-            }
-            for (extracted_files.items) |filename| {
-                const filename_copy = try gpa.dupe(u8, filename);
-                try extracted_paths.append(gpa, filename_copy);
-            }
-        }
-    }
 }
 
 /// Read file into memory (used for unzipped usecase)
