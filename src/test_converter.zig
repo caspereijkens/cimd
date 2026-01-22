@@ -23,7 +23,7 @@ test "Converter - converts Substation with name" {
     var model = try CimModel.init(gpa, eq_xml);
     defer model.deinit(gpa);
 
-    var topo = try TopologyResolver.init(gpa, &model, null);
+    var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
     var conv = Converter.init(gpa, &model, &topo);
@@ -60,7 +60,7 @@ test "Converter - converts VoltageLevel with nominal voltage" {
     var model = try CimModel.init(gpa, eq_xml);
     defer model.deinit(gpa);
 
-    var topo = try TopologyResolver.init(gpa, &model, null);
+    var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
     var conv = Converter.init(gpa, &model, &topo);
@@ -112,7 +112,7 @@ test "Converter - converts EnergyConsumer to Load" {
     var model = try CimModel.init(gpa, eq_xml);
     defer model.deinit(gpa);
 
-    var topo = try TopologyResolver.init(gpa, &model, null);
+    var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
     var conv = Converter.init(gpa, &model, &topo);
@@ -126,7 +126,7 @@ test "Converter - converts EnergyConsumer to Load" {
     const load = vl.loads.items[0];
     try std.testing.expectEqualStrings("Load1", load.id);
     try std.testing.expectEqualStrings("City Load", load.name.?);
-    try std.testing.expectEqualStrings("CN1", load.bus.?);
+    try std.testing.expectEqualStrings("CN1", load.node.?);
     try std.testing.expectEqual(@as(f64, 100.0), load.p0);
     try std.testing.expectEqual(@as(f64, 50.0), load.q0);
 }
@@ -170,7 +170,7 @@ test "Converter - converts SynchronousMachine to Generator" {
     var model = try CimModel.init(gpa, eq_xml);
     defer model.deinit(gpa);
 
-    var topo = try TopologyResolver.init(gpa, &model, null);
+    var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
     var conv = Converter.init(gpa, &model, &topo);
@@ -241,7 +241,7 @@ test "Converter - converts ACLineSegment to Line" {
     var model = try CimModel.init(gpa, eq_xml);
     defer model.deinit(gpa);
 
-    var topo = try TopologyResolver.init(gpa, &model, null);
+    var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
     var conv = Converter.init(gpa, &model, &topo);
@@ -254,8 +254,8 @@ test "Converter - converts ACLineSegment to Line" {
     const line = network.lines.items[0];
     try std.testing.expectEqualStrings("Line1", line.id);
     try std.testing.expectEqualStrings("Line A-B", line.name.?);
-    try std.testing.expectEqualStrings("CN1", line.bus1.?);
-    try std.testing.expectEqualStrings("CN2", line.bus2.?);
+    try std.testing.expectEqualStrings("CN1", line.node1.?);
+    try std.testing.expectEqualStrings("CN2", line.node2.?);
     try std.testing.expectEqual(@as(f64, 1.5), line.r);
     try std.testing.expectEqual(@as(f64, 15.0), line.x);
     try std.testing.expectEqual(@as(f64, 0.00005), line.b1); // half of bch
@@ -331,7 +331,7 @@ test "Converter - converts PowerTransformer to TwoWindingsTransformer" {
     var model = try CimModel.init(gpa, eq_xml);
     defer model.deinit(gpa);
 
-    var topo = try TopologyResolver.init(gpa, &model, null);
+    var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
     var conv = Converter.init(gpa, &model, &topo);
@@ -346,8 +346,8 @@ test "Converter - converts PowerTransformer to TwoWindingsTransformer" {
     const tr = sub.two_winding_transformers.items[0];
     try std.testing.expectEqualStrings("TR1", tr.id);
     try std.testing.expectEqualStrings("Main Transformer", tr.name.?);
-    try std.testing.expectEqualStrings("CN1", tr.bus1.?);
-    try std.testing.expectEqualStrings("CN2", tr.bus2.?);
+    try std.testing.expectEqualStrings("CN1", tr.node1.?);
+    try std.testing.expectEqualStrings("CN2", tr.node2.?);
     try std.testing.expectEqual(@as(f64, 110.0), tr.rated_u1);
     try std.testing.expectEqual(@as(f64, 20.0), tr.rated_u2);
     try std.testing.expectEqual(@as(f64, 0.5), tr.r);
@@ -446,7 +446,7 @@ test "Converter - converts PowerTransformer to ThreeWindingsTransformer" {
     var model = try CimModel.init(gpa, eq_xml);
     defer model.deinit(gpa);
 
-    var topo = try TopologyResolver.init(gpa, &model, null);
+    var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
     var conv = Converter.init(gpa, &model, &topo);
@@ -461,9 +461,9 @@ test "Converter - converts PowerTransformer to ThreeWindingsTransformer" {
     const tr = sub.three_winding_transformers.items[0];
     try std.testing.expectEqualStrings("TR3W", tr.id);
     try std.testing.expectEqualStrings("Three Winding Trafo", tr.name.?);
-    try std.testing.expectEqualStrings("CN1", tr.bus1.?);
-    try std.testing.expectEqualStrings("CN2", tr.bus2.?);
-    try std.testing.expectEqualStrings("CN3", tr.bus3.?);
+    try std.testing.expectEqualStrings("CN1", tr.node1.?);
+    try std.testing.expectEqualStrings("CN2", tr.node2.?);
+    try std.testing.expectEqualStrings("CN3", tr.node3.?);
     try std.testing.expectEqual(@as(f64, 220.0), tr.rated_u1);
     try std.testing.expectEqual(@as(f64, 110.0), tr.rated_u2);
     try std.testing.expectEqual(@as(f64, 20.0), tr.rated_u3);
@@ -517,7 +517,7 @@ test "Converter - converts Breaker to Switch" {
     var model = try CimModel.init(gpa, eq_xml);
     defer model.deinit(gpa);
 
-    var topo = try TopologyResolver.init(gpa, &model, null);
+    var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
     var conv = Converter.init(gpa, &model, &topo);
@@ -531,8 +531,8 @@ test "Converter - converts Breaker to Switch" {
     const sw = vl.switches.items[0];
     try std.testing.expectEqualStrings("BRK1", sw.id);
     try std.testing.expectEqualStrings("Bus Coupler", sw.name.?);
-    try std.testing.expectEqualStrings("CN1", sw.bus1.?);
-    try std.testing.expectEqualStrings("CN2", sw.bus2.?);
+    try std.testing.expectEqualStrings("CN1", sw.node1.?);
+    try std.testing.expectEqualStrings("CN2", sw.node2.?);
     try std.testing.expectEqual(false, sw.open);
     try std.testing.expectEqual(SwitchKind.breaker, sw.kind);
 }

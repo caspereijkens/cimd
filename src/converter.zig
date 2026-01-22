@@ -139,7 +139,7 @@ pub const Converter = struct {
         defer self.gpa.free(loads);
 
         for (loads) |load| {
-            const connectivity_node_id = self.topology_resolver.getEquipmentBus(load.id, 1) orelse return error.MalformedXML;
+            const connectivity_node_id = self.topology_resolver.getEquipmentNode(load.id, 1) orelse return error.MalformedXML;
             const connectivity_node = self.model.getObjectById(connectivity_node_id) orelse return error.MalformedXML;
 
             const voltage_level_ref = try connectivity_node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
@@ -153,7 +153,7 @@ pub const Converter = struct {
             try voltage_level.loads.append(self.gpa, .{
                 .id = load.id,
                 .name = name,
-                .bus = connectivity_node_id,
+                .node = connectivity_node_id,
                 .p0 = p0,
                 .q0 = q0,
             });
@@ -165,7 +165,7 @@ pub const Converter = struct {
         defer self.gpa.free(generators);
 
         for (generators) |generator| {
-            const connectivity_node_id = self.topology_resolver.getEquipmentBus(generator.id, 1) orelse return error.MalformedXML;
+            const connectivity_node_id = self.topology_resolver.getEquipmentNode(generator.id, 1) orelse return error.MalformedXML;
             const connectivity_node = self.model.getObjectById(connectivity_node_id) orelse return error.MalformedXML;
             const voltage_level_ref = try connectivity_node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
             const voltage_level_id = topology.stripHash(voltage_level_ref);
@@ -183,7 +183,7 @@ pub const Converter = struct {
             try voltage_level.generators.append(self.gpa, .{
                 .id = generator.id,
                 .name = name,
-                .bus = connectivity_node_id,
+                .node = connectivity_node_id,
                 .min_p = min_p,
                 .max_p = max_p,
                 .target_p = target_p,
@@ -198,8 +198,8 @@ pub const Converter = struct {
             defer self.gpa.free(switches);
 
             for (switches) |sw| {
-                const connectivity_node1_id = self.topology_resolver.getEquipmentBus(sw.id, 1) orelse return error.MalformedXML;
-                const connectivity_node2_id = self.topology_resolver.getEquipmentBus(sw.id, 2) orelse return error.MalformedXML;
+                const connectivity_node1_id = self.topology_resolver.getEquipmentNode(sw.id, 1) orelse return error.MalformedXML;
+                const connectivity_node2_id = self.topology_resolver.getEquipmentNode(sw.id, 2) orelse return error.MalformedXML;
 
                 const connectivity_node1 = self.model.getObjectById(connectivity_node1_id) orelse return error.MalformedXML;
                 const voltage_level1_ref = try connectivity_node1.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
@@ -217,8 +217,8 @@ pub const Converter = struct {
                 try voltage_level.switches.append(self.gpa, .{
                     .id = sw.id,
                     .name = name,
-                    .bus1 = connectivity_node1_id,
-                    .bus2 = connectivity_node2_id,
+                    .node1 = connectivity_node1_id,
+                    .node2 = connectivity_node2_id,
                     .open = std.mem.eql(u8, open_str, "true"),
                     .kind = mapping.kind,
                 });
@@ -254,24 +254,24 @@ pub const Converter = struct {
             const name = try transformer.getProperty("IdentifiedObject.name");
 
             // Get substation via first voltage level
-            const connectivity_node1_id = self.topology_resolver.getEquipmentBus(transformer.id, 1) orelse return error.MalformedXML;
+            const connectivity_node1_id = self.topology_resolver.getEquipmentNode(transformer.id, 1) orelse return error.MalformedXML;
             const connectivity_node1 = self.model.getObjectById(connectivity_node1_id) orelse return error.MalformedXML;
             const voltage_level1_ref = try connectivity_node1.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
             const voltage_level1_id = topology.stripHash(voltage_level1_ref);
             const voltage_level_ref = self.voltage_level_map.get(voltage_level1_id) orelse return error.MalformedXML;
             const substation = &network.substations.items[voltage_level_ref.substation_idx];
 
-            const connectivity_node2_id = self.topology_resolver.getEquipmentBus(transformer.id, 2) orelse return error.MalformedXML;
+            const connectivity_node2_id = self.topology_resolver.getEquipmentNode(transformer.id, 2) orelse return error.MalformedXML;
 
             if (ends.ends[2]) |end3| {
-                const connectivity_node3_id = self.topology_resolver.getEquipmentBus(transformer.id, 3) orelse return error.MalformedXML;
+                const connectivity_node3_id = self.topology_resolver.getEquipmentNode(transformer.id, 3) orelse return error.MalformedXML;
 
                 try substation.three_winding_transformers.append(self.gpa, .{
                     .id = transformer.id,
                     .name = name,
-                    .bus1 = connectivity_node1_id,
-                    .bus2 = connectivity_node2_id,
-                    .bus3 = connectivity_node3_id,
+                    .node1 = connectivity_node1_id,
+                    .node2 = connectivity_node2_id,
+                    .node3 = connectivity_node3_id,
                     .rated_u1 = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.ratedU") orelse return error.MalformedXML),
                     .rated_u2 = try std.fmt.parseFloat(f64, try end2.getProperty("PowerTransformerEnd.ratedU") orelse return error.MalformedXML),
                     .rated_u3 = try std.fmt.parseFloat(f64, try end3.getProperty("PowerTransformerEnd.ratedU") orelse return error.MalformedXML),
@@ -292,8 +292,8 @@ pub const Converter = struct {
                 try substation.two_winding_transformers.append(self.gpa, .{
                     .id = transformer.id,
                     .name = name,
-                    .bus1 = connectivity_node1_id,
-                    .bus2 = connectivity_node2_id,
+                    .node1 = connectivity_node1_id,
+                    .node2 = connectivity_node2_id,
                     .rated_u1 = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.ratedU") orelse return error.MalformedXML),
                     .rated_u2 = try std.fmt.parseFloat(f64, try end2.getProperty("PowerTransformerEnd.ratedU") orelse return error.MalformedXML),
                     .r = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.r") orelse return error.MalformedXML),
@@ -312,8 +312,8 @@ pub const Converter = struct {
         try network.lines.ensureTotalCapacity(self.gpa, lines.len);
 
         for (lines) |line| {
-            const connectivity_node1_id = self.topology_resolver.getEquipmentBus(line.id, 1) orelse return error.MalformedXML;
-            const connectivity_node2_id = self.topology_resolver.getEquipmentBus(line.id, 2) orelse return error.MalformedXML;
+            const connectivity_node1_id = self.topology_resolver.getEquipmentNode(line.id, 1) orelse return error.MalformedXML;
+            const connectivity_node2_id = self.topology_resolver.getEquipmentNode(line.id, 2) orelse return error.MalformedXML;
 
             const name = try line.getProperty("IdentifiedObject.name") orelse return error.MalformedXML;
             const r = try std.fmt.parseFloat(f64, try line.getProperty("ACLineSegment.r") orelse return error.MalformedXML);
@@ -323,8 +323,8 @@ pub const Converter = struct {
             network.lines.appendAssumeCapacity(.{
                 .id = line.id,
                 .name = name,
-                .bus1 = connectivity_node1_id,
-                .bus2 = connectivity_node2_id,
+                .node1 = connectivity_node1_id,
+                .node2 = connectivity_node2_id,
                 .r = r,
                 .x = x,
                 .g1 = 0,

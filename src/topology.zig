@@ -3,12 +3,6 @@ const assert = std.debug.assert;
 const cim_model = @import("cim_model.zig");
 const CimModel = cim_model.CimModel;
 
-pub const TopologyMode = enum {
-    no_topology,
-    bus_breaker,
-    node_breaker,
-};
-
 pub const TerminalInfo = struct {
     id: []const u8,
     sequence: u32,
@@ -19,7 +13,6 @@ pub const TopologyStats = struct {
     terminal_count: usize,
     equipment_count: usize,
     connected_terminals: usize,
-    topology_mode: TopologyMode,
     connected_nodes: usize,
 };
 
@@ -69,17 +62,14 @@ const conducting_equipment_types = [_][]const u8{
 pub const TopologyResolver = struct {
     gpa: std.mem.Allocator,
     equipment_model: *const CimModel,
-    topology_model: ?*const CimModel,
     terminal_to_equipment: std.StringHashMap([]const u8),
     terminal_to_node: std.StringHashMap([]const u8),
     connected_node_ids: std.StringHashMap(void),
     equipment_terminals: std.StringHashMap(std.ArrayList(TerminalInfo)),
-    mode: TopologyMode,
 
     pub fn init(
         gpa: std.mem.Allocator,
         equipment_model: *const CimModel,
-        topology_model: ?*const CimModel,
     ) !TopologyResolver {
         var terminal_to_equipment = std.StringHashMap([]const u8).init(gpa);
         errdefer terminal_to_equipment.deinit();
@@ -99,12 +89,10 @@ pub const TopologyResolver = struct {
         var resolver = TopologyResolver{
             .gpa = gpa,
             .equipment_model = equipment_model,
-            .topology_model = topology_model,
             .terminal_to_equipment = terminal_to_equipment,
             .terminal_to_node = terminal_to_node,
             .connected_node_ids = connected_node_ids,
             .equipment_terminals = equipment_terminals,
-            .mode = .no_topology,
         };
 
         errdefer resolver.deinit();
@@ -173,44 +161,11 @@ pub const TopologyResolver = struct {
             });
         }
 
-        if (resolver.terminal_to_node.count() > 0) {
-            resolver.mode = .node_breaker;
-            return resolver;
-        }
-
-        if (topology_model) |tp_model| {
-            const topological_nodes = try tp_model.getObjectsByType(gpa, "TopologicalNode");
-            defer gpa.free(topological_nodes);
-
-            if (topological_nodes.len > 0) {
-                resolver.mode = .bus_breaker;
-            }
-
-            const tp_terminals = try tp_model.getObjectsByType(gpa, "Terminal");
-            defer gpa.free(tp_terminals);
-
-            for (tp_terminals) |terminal| {
-                const node_ref = try terminal.getReference("Terminal.TopologicalNode") orelse continue;
-
-                const node_id = stripHash(node_ref);
-
-                try resolver.terminal_to_node.put(terminal.id, node_id);
-                const equipment_id = resolver.terminal_to_equipment.get(terminal.id) orelse continue;
-                const terminal_infos = resolver.equipment_terminals.get(equipment_id) orelse continue;
-                for (terminal_infos.items) |*terminal_info| blk: {
-                    if (std.mem.eql(u8, terminal_info.id, terminal.id)) {
-                        terminal_info.node_id = node_id;
-                        break :blk;
-                    }
-                }
-            }
-        }
-
         return resolver;
     }
 
-    /// Get bus ID for equipment terminal
-    pub fn getEquipmentBus(
+    /// Get node ID for equipment terminal
+    pub fn getEquipmentNode(
         self: TopologyResolver,
         equipment_id: []const u8,
         terminal_sequence: u32,
@@ -252,7 +207,6 @@ pub const TopologyResolver = struct {
             .terminal_count = self.terminal_to_equipment.count(),
             .equipment_count = self.equipment_terminals.count(),
             .connected_terminals = self.terminal_to_node.count(),
-            .topology_mode = self.mode,
             .connected_nodes = self.connected_node_ids.count(),
         };
     }

@@ -3,7 +3,7 @@ const std = @import("std");
 pub const Load = struct {
     id: []const u8,
     name: ?[]const u8,
-    bus: ?[]const u8,
+    node: ?[]const u8,
     p0: f64,
     q0: f64,
 };
@@ -11,7 +11,7 @@ pub const Load = struct {
 pub const Generator = struct {
     id: []const u8,
     name: ?[]const u8,
-    bus: ?[]const u8,
+    node: ?[]const u8,
     min_p: ?f64,
     max_p: ?f64,
     target_p: f64,
@@ -27,8 +27,8 @@ pub const SwitchKind = enum {
 pub const Switch = struct {
     id: []const u8,
     name: ?[]const u8,
-    bus1: ?[]const u8,
-    bus2: ?[]const u8,
+    node1: ?[]const u8,
+    node2: ?[]const u8,
     open: bool,
     kind: SwitchKind,
 };
@@ -57,8 +57,8 @@ pub const VoltageLevel = struct {
 pub const TwoWindingsTransformer = struct {
     id: []const u8,
     name: ?[]const u8,
-    bus1: ?[]const u8,
-    bus2: ?[]const u8,
+    node1: ?[]const u8,
+    node2: ?[]const u8,
     rated_u1: f64,
     rated_u2: f64,
     r: f64,
@@ -70,9 +70,9 @@ pub const TwoWindingsTransformer = struct {
 pub const ThreeWindingsTransformer = struct {
     id: []const u8,
     name: ?[]const u8,
-    bus1: ?[]const u8,
-    bus2: ?[]const u8,
-    bus3: ?[]const u8,
+    node1: ?[]const u8,
+    node2: ?[]const u8,
+    node3: ?[]const u8,
     rated_u1: f64,
     rated_u2: f64,
     rated_u3: f64,
@@ -114,8 +114,8 @@ pub const Substation = struct {
 pub const Line = struct {
     id: []const u8,
     name: ?[]const u8,
-    bus1: ?[]const u8,
-    bus2: ?[]const u8,
+    node1: ?[]const u8,
+    node2: ?[]const u8,
     r: f64,
     x: f64,
     g1: f64,
