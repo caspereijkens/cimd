@@ -619,5 +619,6 @@ test "converter populates geographicalTags from SubGeographicalRegion" {
     var network = try conv.convert();
     defer network.deinit(gpa);
 
-    try std.testing.expectEqualStrings("default region", network.substations.items[0].geo_tags.?);
+    try std.testing.expectEqual(@as(usize, 1), network.substations.items[0].geo_tags.items.len);
+    try std.testing.expectEqualStrings("default region", network.substations.items[0].geo_tags.items[0]);
 }
