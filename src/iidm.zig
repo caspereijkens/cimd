@@ -165,8 +165,8 @@ pub const Line = struct {
 };
 
 pub const Network = struct {
-    id: []const u8,
-    case_date: ?[]const u8,
+    id: []const u8, // taken from FullModel rdf:about
+    case_date: ?[]const u8, // taken from FullModel -> Model.scenarioTime
     substations: std.ArrayListUnmanaged(Substation),
     lines: std.ArrayListUnmanaged(Line),
 

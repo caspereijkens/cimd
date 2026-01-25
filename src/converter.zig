@@ -39,8 +39,13 @@ pub const Converter = struct {
     }
 
     pub fn convert(self: *Converter) !iidm.Network {
+        const full_model_list = try self.model.getObjectsByType(self.gpa, "FullModel");
+        if (full_model_list.len != 1) {
+            return error.MalformedXML;
+        }
+        const full_model = full_model_list[0];
         var network: iidm.Network = .{
-            .id = "network",
+            .id = full_model.id,
             .case_date = null,
             .substations = .empty,
             .lines = .empty,

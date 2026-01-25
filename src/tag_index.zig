@@ -273,6 +273,28 @@ pub fn extractRdfId(slice: []const u8, start_idx: u32) error{ NoRdfId, Malformed
     return slice[value_start_idx..value_end_idx];
 }
 
+/// Extract rdf:about value from an XML tag
+/// Example: "<md:FullModel rdf:about="urn:uuid:...">" → "urn:uuid:..."
+/// Returns error.NoRdfAbout if tag doesn't have rdf:about
+/// Returns error.MalformedTag if rdf:about exists but is malformed
+pub fn extractRdfAbout(slice: []const u8, start_idx: u32) error{ NoRdfAbout, MalformedTag }![]const u8 {
+    const gt_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, '>') orelse return error.MalformedTag;
+
+    const pattern = "rdf:about=\"";
+
+    const tag_content = slice[start_idx..gt_idx];
+    const pattern_offset = std.mem.indexOf(u8, tag_content, pattern) orelse return error.NoRdfAbout;
+    const pattern_start_idx = start_idx + pattern_offset;
+
+    const value_start_idx = pattern_start_idx + pattern.len;
+    const value_end_idx = std.mem.indexOfScalarPos(u8, slice, value_start_idx, '"') orelse return error.MalformedTag;
+
+    // Check if closing quote is within this tag
+    if (value_end_idx >= gt_idx) return error.MalformedTag;
+
+    return slice[value_start_idx..value_end_idx];
+}
+
 /// Extract rdf:Resource value from an XML tag
 /// Returns error.NoRdfResource if tag doesn't have rdf:Resource
 /// Returns error.MalformedTag if rdf:Resource exists but is malformed
@@ -404,13 +426,18 @@ pub const CimObject = struct {
         boundaries: []const TagBoundary,
         object_tag_idx: u32,
         closing_tag_idx: u32,
-    ) error{ NoRdfId, MalformedTag }!CimObject {
+    ) error{ NoRdfId, NoRdfAbout, MalformedTag }!CimObject {
+        const start = boundaries[object_tag_idx].start;
+        const id = extractRdfId(xml, start) catch |err| switch (err) {
+            error.NoRdfId => try extractRdfAbout(xml, start),
+            error.MalformedTag => return error.MalformedTag,
+        };
         return .{
             .xml = xml,
             .boundaries = boundaries,
             .object_tag_idx = object_tag_idx,
             .closing_tag_idx = closing_tag_idx,
-            .id = try extractRdfId(xml, boundaries[object_tag_idx].start),
+            .id = id,
             .type_name = try extractTagType(xml, boundaries[object_tag_idx].start),
         };
     }

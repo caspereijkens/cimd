@@ -536,3 +536,5 @@ test "Converter - converts Breaker to Switch" {
     try std.testing.expectEqual(false, sw.open);
     try std.testing.expectEqual(SwitchKind.breaker, sw.kind);
 }
+
+

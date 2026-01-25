@@ -30,7 +30,11 @@ pub const CimModel = struct {
         }
 
         for (boundaries.items, 0..) |tag, i| {
-            const id = tag_index.extractRdfId(xml, tag.start) catch continue;
+            // Try rdf:ID first, then fall back to rdf:about (for FullModel etc.)
+            const id = tag_index.extractRdfId(xml, tag.start) catch |err| switch (err) {
+                error.NoRdfId => tag_index.extractRdfAbout(xml, tag.start) catch continue,
+                error.MalformedTag => continue,
+            };
             if (id.len > 0) {
                 const closing_tag: u32 = tag_index.findClosingTag(xml, boundaries.items, @intCast(i)) catch |err| blk: {
                     // Handle self-closing tags by using the same index for open and close
