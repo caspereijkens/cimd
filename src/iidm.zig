@@ -51,7 +51,7 @@ pub const VoltageLevel = struct {
         try jws.write(self.id);
         try jws.objectField("name");
         try jws.write(self.name);
-        try jws.objectField("nominal_voltage");
+        try jws.objectField("nominalV");
         try jws.write(self.nominal_voltage);
         try jws.objectField("low_voltage_limit");
         try jws.write(self.low_voltage_limit);
@@ -130,7 +130,7 @@ pub const Substation = struct {
         try jws.write(self.name);
         try jws.objectField("country");
         try jws.write(self.country);
-        try jws.objectField("geo_tags");
+        try jws.objectField("geographicalTags");
         try jws.write(self.geo_tags);
         try jws.objectField("voltage_levels");
         try jws.write(self.voltage_levels.items);
@@ -174,8 +174,10 @@ pub const Network = struct {
         try jws.beginObject();
         try jws.objectField("id");
         try jws.write(self.id);
-        try jws.objectField("case_date");
+        try jws.objectField("caseDate");
         try jws.write(self.case_date);
+        try jws.objectField("sourceFormat");
+        try jws.write("CGMES");
         try jws.objectField("substations");
         try jws.write(self.substations.items);
         try jws.objectField("lines");

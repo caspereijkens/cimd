@@ -40,13 +40,18 @@ pub const Converter = struct {
 
     pub fn convert(self: *Converter) !iidm.Network {
         const full_model_list = try self.model.getObjectsByType(self.gpa, "FullModel");
-        if (full_model_list.len != 1) {
+        if (full_model_list.len == 0) {
             return error.MalformedXML;
+        } else if (full_model_list.len > 1) {
+            return error.TooManyFullModelTags;
         }
         const full_model = full_model_list[0];
+
+        const case_date = try full_model.getProperty("Model.scenarioTime");
+
         var network: iidm.Network = .{
             .id = full_model.id,
-            .case_date = null,
+            .case_date = case_date,
             .substations = .empty,
             .lines = .empty,
         };
