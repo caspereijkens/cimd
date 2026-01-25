@@ -117,7 +117,7 @@ pub const Substation = struct {
     id: []const u8,
     name: ?[]const u8,
     country: ?[]const u8,
-    geo_tags: ?[]const u8,
+    geo_tags: std.ArrayListUnmanaged([]const u8),
     voltage_levels: std.ArrayListUnmanaged(VoltageLevel),
     two_winding_transformers: std.ArrayListUnmanaged(TwoWindingsTransformer),
     three_winding_transformers: std.ArrayListUnmanaged(ThreeWindingsTransformer),
@@ -131,12 +131,12 @@ pub const Substation = struct {
         try jws.objectField("country");
         try jws.write(self.country);
         try jws.objectField("geographicalTags");
-        try jws.write(self.geo_tags);
-        try jws.objectField("voltage_levels");
+        try jws.write(self.geo_tags.items);
+        try jws.objectField("voltageLevels");
         try jws.write(self.voltage_levels.items);
-        try jws.objectField("two_winding_transformers");
+        try jws.objectField("twoWindingsTransformers");
         try jws.write(self.two_winding_transformers.items);
-        try jws.objectField("three_winding_transformers");
+        try jws.objectField("threeWindingsTransformers");
         try jws.write(self.three_winding_transformers.items);
         try jws.endObject();
     }
@@ -148,6 +148,7 @@ pub const Substation = struct {
         self.voltage_levels.deinit(allocator);
         self.two_winding_transformers.deinit(allocator);
         self.three_winding_transformers.deinit(allocator);
+        self.geo_tags.deinit(allocator);
     }
 };
 

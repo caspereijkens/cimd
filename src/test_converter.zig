@@ -14,6 +14,9 @@ test "Converter - converts Substation with name" {
 
     const eq_xml =
         \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test">
+        \\    <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
         \\  <cim:Substation rdf:ID="Sub1">
         \\    <cim:IdentifiedObject.name>North Station</cim:IdentifiedObject.name>
         \\  </cim:Substation>
@@ -43,6 +46,9 @@ test "Converter - converts VoltageLevel with nominal voltage" {
 
     const eq_xml =
         \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test">
+        \\    <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
         \\  <cim:Substation rdf:ID="Sub1">
         \\    <cim:IdentifiedObject.name>North Station</cim:IdentifiedObject.name>
         \\  </cim:Substation>
@@ -82,6 +88,9 @@ test "Converter - converts EnergyConsumer to Load" {
 
     const eq_xml =
         \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test">
+        \\    <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
         \\  <cim:Substation rdf:ID="Sub1">
         \\    <cim:IdentifiedObject.name>North Station</cim:IdentifiedObject.name>
         \\  </cim:Substation>
@@ -136,6 +145,9 @@ test "Converter - converts SynchronousMachine to Generator" {
 
     const eq_xml =
         \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test">
+        \\    <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
         \\  <cim:Substation rdf:ID="Sub1">
         \\    <cim:IdentifiedObject.name>PowerPlant</cim:IdentifiedObject.name>
         \\  </cim:Substation>
@@ -194,6 +206,9 @@ test "Converter - converts ACLineSegment to Line" {
 
     const eq_xml =
         \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test">
+        \\    <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
         \\  <cim:Substation rdf:ID="Sub1">
         \\    <cim:IdentifiedObject.name>Station A</cim:IdentifiedObject.name>
         \\  </cim:Substation>
@@ -267,6 +282,9 @@ test "Converter - converts PowerTransformer to TwoWindingsTransformer" {
 
     const eq_xml =
         \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test">
+        \\    <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
         \\  <cim:Substation rdf:ID="Sub1">
         \\    <cim:IdentifiedObject.name>Station</cim:IdentifiedObject.name>
         \\  </cim:Substation>
@@ -359,6 +377,9 @@ test "Converter - converts PowerTransformer to ThreeWindingsTransformer" {
 
     const eq_xml =
         \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test">
+        \\    <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
         \\  <cim:Substation rdf:ID="Sub1">
         \\    <cim:IdentifiedObject.name>Station</cim:IdentifiedObject.name>
         \\  </cim:Substation>
@@ -480,6 +501,9 @@ test "Converter - converts Breaker to Switch" {
 
     const eq_xml =
         \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test">
+        \\    <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
         \\  <cim:Substation rdf:ID="Sub1">
         \\    <cim:IdentifiedObject.name>Station</cim:IdentifiedObject.name>
         \\  </cim:Substation>
@@ -537,4 +561,63 @@ test "Converter - converts Breaker to Switch" {
     try std.testing.expectEqual(SwitchKind.breaker, sw.kind);
 }
 
+test "converter uses mRID for substation id" {
+    const xml =
+        \\<?xml version="1.0"?>
+        \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"xmlns:cim="http://iec.ch/TC57/CIM100#"xmlns:md="http://iec.ch/TC57/61970-552/ModelDescription/1#">
+        \\<md:FullModel rdf:about="urn:uuid:test">
+        \\  <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\</md:FullModel>
+        \\<cim:Substation rdf:ID="_S1">
+        \\  <cim:IdentifiedObject.mRID>S1</cim:IdentifiedObject.mRID>
+        \\  <cim:IdentifiedObject.name>Station 1</cim:IdentifiedObject.name>
+        \\</cim:Substation>
+        \\</rdf:RDF>
+    ;
 
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, xml);
+    defer model.deinit(gpa);
+    var resolver = try TopologyResolver.init(gpa, &model);
+    defer resolver.deinit();
+    var conv = Converter.init(gpa, &model, &resolver);
+    defer conv.deinit();
+
+    var network = try conv.convert();
+    defer network.deinit(gpa);
+
+    // Should use mRID "S1", not rdf:ID "_S1"
+    try std.testing.expectEqualStrings("S1", network.substations.items[0].id);
+}
+
+test "converter populates geographicalTags from SubGeographicalRegion" {
+    const xml =
+        \\<?xml version="1.0"?>
+        \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"xmlns:cim="http://iec.ch/TC57/CIM100#"xmlns:md="http://iec.ch/TC57/61970-552/ModelDescription/1#">
+        \\<md:FullModel rdf:about="urn:uuid:test">
+        \\  <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\</md:FullModel>
+        \\<cim:SubGeographicalRegion rdf:ID="_region_SGR">
+        \\  <cim:IdentifiedObject.name>default region</cim:IdentifiedObject.name>
+        \\</cim:SubGeographicalRegion>
+        \\<cim:Substation rdf:ID="_S1">
+        \\  <cim:IdentifiedObject.mRID>S1</cim:IdentifiedObject.mRID>
+        \\  <cim:IdentifiedObject.name>Station 1</cim:IdentifiedObject.name>
+        \\  <cim:Substation.Region rdf:resource="#_region_SGR"/>
+        \\</cim:Substation>
+        \\</rdf:RDF>
+    ;
+
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, xml);
+    defer model.deinit(gpa);
+    var resolver = try TopologyResolver.init(gpa, &model);
+    defer resolver.deinit();
+    var conv = Converter.init(gpa, &model, &resolver);
+    defer conv.deinit();
+
+    var network = try conv.convert();
+    defer network.deinit(gpa);
+
+    try std.testing.expectEqualStrings("default region", network.substations.items[0].geo_tags.?);
+}

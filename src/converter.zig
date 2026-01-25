@@ -40,6 +40,8 @@ pub const Converter = struct {
 
     pub fn convert(self: *Converter) !iidm.Network {
         const full_model_list = try self.model.getObjectsByType(self.gpa, "FullModel");
+        defer self.gpa.free(full_model_list);
+
         if (full_model_list.len == 0) {
             return error.MalformedXML;
         } else if (full_model_list.len > 1) {
@@ -80,12 +82,24 @@ pub const Converter = struct {
         try self.substation_map.ensureTotalCapacity(self.gpa, @intCast(substations.len));
 
         for (substations, 0..) |substation, idx| {
+            const id = try substation.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(substation.id);
             const name = try substation.getProperty("IdentifiedObject.name");
+
+            // Resolve geo_tags from Substation.Region -> SubGeographicalRegion.name
+            var geo_tags: std.ArrayListUnmanaged([]const u8) = .empty;
+            if (try substation.getReference("Substation.Region")) |region_ref| {
+                if (self.model.getObjectById(topology.stripHash(region_ref))) |region| {
+                    if (try region.getProperty("IdentifiedObject.name")) |region_name| {
+                        try geo_tags.append(self.gpa, region_name);
+                    }
+                }
+            }
+
             network.substations.appendAssumeCapacity(.{
-                .id = substation.id,
+                .id = id,
                 .name = name,
                 .country = null,
-                .geo_tags = null,
+                .geo_tags = geo_tags,
                 .voltage_levels = .empty,
                 .two_winding_transformers = .empty,
                 .three_winding_transformers = .empty,

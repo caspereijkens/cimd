@@ -220,3 +220,12 @@ pub fn stripHash(ref: []const u8) []const u8 {
 
     return ref[1..];
 }
+
+/// Helper function to strip leading '_' from rdf:ID
+pub fn stripUnderscore(ref: []const u8) []const u8 {
+    assert(ref.len > 0);
+
+    if (ref[0] != '_') return ref;
+
+    return ref[1..];
+}
