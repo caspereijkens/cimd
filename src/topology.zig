@@ -57,6 +57,9 @@ const conducting_equipment_types = [_][]const u8{
     "BusbarSection",
     "PetersenCoil",
     "GroundingImpedance",
+    // HVDC converters
+    "CsConverter",
+    "VsConverter",
 };
 
 pub const TopologyResolver = struct {

@@ -3,7 +3,7 @@ const std = @import("std");
 pub const Load = struct {
     id: []const u8,
     name: ?[]const u8,
-    node: ?[]const u8,
+    node: u32,
     p0: f64,
     q0: f64,
 };
@@ -11,7 +11,7 @@ pub const Load = struct {
 pub const Generator = struct {
     id: []const u8,
     name: ?[]const u8,
-    node: ?[]const u8,
+    node: u32,
     min_p: ?f64,
     max_p: ?f64,
     target_p: f64,
@@ -22,15 +22,49 @@ pub const SwitchKind = enum {
     breaker,
     disconnector,
     load_break_switch,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.write(switch (self) {
+            .breaker => "BREAKER",
+            .disconnector => "DISCONNECTOR",
+            .load_break_switch => "LOAD_BREAK_SWITCH",
+        });
+    }
 };
 
 pub const Switch = struct {
     id: []const u8,
     name: ?[]const u8,
-    node1: ?[]const u8,
-    node2: ?[]const u8,
-    open: bool,
     kind: SwitchKind,
+    open: bool,
+    retained: bool = true,
+    node1: u32,
+    node2: u32,
+};
+
+pub const BusbarSection = struct {
+    id: []const u8,
+    name: ?[]const u8,
+    node: u32,
+};
+
+pub const NodeBreakerTopology = struct {
+    busbar_sections: std.ArrayListUnmanaged(BusbarSection),
+    switches: std.ArrayListUnmanaged(Switch),
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("busbarSections");
+        try jws.write(self.busbar_sections.items);
+        try jws.objectField("switches");
+        try jws.write(self.switches.items);
+        try jws.endObject();
+    }
+
+    pub fn deinit(self: *NodeBreakerTopology, allocator: std.mem.Allocator) void {
+        self.busbar_sections.deinit(allocator);
+        self.switches.deinit(allocator);
+    }
 };
 
 // VoltageLevel contains equipment
@@ -43,7 +77,7 @@ pub const VoltageLevel = struct {
     high_voltage_limit: ?f64,
     generators: std.ArrayListUnmanaged(Generator),
     loads: std.ArrayListUnmanaged(Load),
-    switches: std.ArrayListUnmanaged(Switch),
+    node_breaker_topology: NodeBreakerTopology,
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
         try jws.beginObject();
@@ -53,23 +87,25 @@ pub const VoltageLevel = struct {
         try jws.write(self.name);
         try jws.objectField("nominalV");
         try jws.write(self.nominal_voltage);
-        try jws.objectField("low_voltage_limit");
+        try jws.objectField("lowVoltageLimit");
         try jws.write(self.low_voltage_limit);
-        try jws.objectField("high_voltage_limit");
+        try jws.objectField("highVoltageLimit");
         try jws.write(self.high_voltage_limit);
+        try jws.objectField("topologyKind");
+        try jws.write("NODE_BREAKER");
+        try jws.objectField("nodeBreakerTopology");
+        try jws.write(self.node_breaker_topology);
         try jws.objectField("generators");
         try jws.write(self.generators.items);
         try jws.objectField("loads");
         try jws.write(self.loads.items);
-        try jws.objectField("switches");
-        try jws.write(self.switches.items);
         try jws.endObject();
     }
 
     pub fn deinit(self: *VoltageLevel, allocator: std.mem.Allocator) void {
         self.generators.deinit(allocator);
         self.loads.deinit(allocator);
-        self.switches.deinit(allocator);
+        self.node_breaker_topology.deinit(allocator);
     }
 };
 
