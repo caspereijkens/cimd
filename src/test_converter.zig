@@ -135,7 +135,7 @@ test "Converter - converts EnergyConsumer to Load" {
     const load = vl.loads.items[0];
     try std.testing.expectEqualStrings("Load1", load.id);
     try std.testing.expectEqualStrings("City Load", load.name.?);
-    try std.testing.expectEqualStrings("CN1", load.node.?);
+    try std.testing.expectEqual(0, load.node);
     try std.testing.expectEqual(@as(f64, 100.0), load.p0);
     try std.testing.expectEqual(@as(f64, 50.0), load.q0);
 }
@@ -162,14 +162,15 @@ test "Converter - converts SynchronousMachine to Generator" {
         \\  <cim:ConnectivityNode rdf:ID="CN1">
         \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#VL1"/>
         \\  </cim:ConnectivityNode>
-        \\  <cim:GeneratingUnit rdf:ID="GU1">
+        \\  <cim:HydroGeneratingUnit rdf:ID="GU1">
         \\    <cim:GeneratingUnit.minOperatingP>10</cim:GeneratingUnit.minOperatingP>
         \\    <cim:GeneratingUnit.maxOperatingP>200</cim:GeneratingUnit.maxOperatingP>
         \\    <cim:GeneratingUnit.initialP>150</cim:GeneratingUnit.initialP>
-        \\  </cim:GeneratingUnit>
+        \\  </cim:HydroGeneratingUnit>
         \\  <cim:SynchronousMachine rdf:ID="Gen1">
         \\    <cim:IdentifiedObject.name>Main Generator</cim:IdentifiedObject.name>
         \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#GU1"/>
+        \\    <cim:RotatingMachine.ratedS>250.5</cim:RotatingMachine.ratedS>
         \\  </cim:SynchronousMachine>
         \\  <cim:Terminal rdf:ID="T1">
         \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
@@ -196,9 +197,99 @@ test "Converter - converts SynchronousMachine to Generator" {
     const gen = vl.generators.items[0];
     try std.testing.expectEqualStrings("Gen1", gen.id);
     try std.testing.expectEqualStrings("Main Generator", gen.name.?);
+    try std.testing.expectEqual(iidm.EnergySource.hydro, gen.energy_source);
     try std.testing.expectEqual(@as(f64, 10.0), gen.min_p.?);
     try std.testing.expectEqual(@as(f64, 200.0), gen.max_p.?);
+    try std.testing.expectEqual(@as(f64, 250.5), gen.rated_s.?);
+    try std.testing.expectEqual(false, gen.voltage_regulator_on);
     try std.testing.expectEqual(@as(f64, 150.0), gen.target_p);
+    try std.testing.expectEqual(@as(usize, 0), gen.reactive_capability_curve_points.items.len);
+}
+
+test "Converter - converts SynchronousMachine with ReactiveCapabilityCurve" {
+    const gpa = std.testing.allocator;
+
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test">
+        \\    <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
+        \\  <cim:Substation rdf:ID="Sub1">
+        \\    <cim:IdentifiedObject.name>PowerPlant</cim:IdentifiedObject.name>
+        \\  </cim:Substation>
+        \\  <cim:VoltageLevel rdf:ID="VL1">
+        \\    <cim:IdentifiedObject.name>20kV</cim:IdentifiedObject.name>
+        \\    <cim:VoltageLevel.Substation rdf:resource="#Sub1"/>
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#BV1"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:BaseVoltage rdf:ID="BV1">
+        \\    <cim:BaseVoltage.nominalVoltage>20</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\  <cim:ConnectivityNode rdf:ID="CN1">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#VL1"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:ThermalGeneratingUnit rdf:ID="GU1">
+        \\    <cim:GeneratingUnit.minOperatingP>0</cim:GeneratingUnit.minOperatingP>
+        \\    <cim:GeneratingUnit.maxOperatingP>100</cim:GeneratingUnit.maxOperatingP>
+        \\  </cim:ThermalGeneratingUnit>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="RCC1"/>
+        \\  <cim:CurveData rdf:ID="CD1">
+        \\    <cim:CurveData.Curve rdf:resource="#RCC1"/>
+        \\    <cim:CurveData.xvalue>0</cim:CurveData.xvalue>
+        \\    <cim:CurveData.y1value>-769.3</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>860.0</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="CD2">
+        \\    <cim:CurveData.Curve rdf:resource="#RCC1"/>
+        \\    <cim:CurveData.xvalue>100</cim:CurveData.xvalue>
+        \\    <cim:CurveData.y1value>-864.55</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>946.25</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\  <cim:SynchronousMachine rdf:ID="Gen1">
+        \\    <cim:IdentifiedObject.name>Thermal Gen</cim:IdentifiedObject.name>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#GU1"/>
+        \\    <cim:RotatingMachine.ratedS>951.5</cim:RotatingMachine.ratedS>
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#RCC1"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:Terminal rdf:ID="T1">
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#Gen1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+
+    var model = try CimModel.init(gpa, eq_xml);
+    defer model.deinit(gpa);
+
+    var topo = try TopologyResolver.init(gpa, &model);
+    defer topo.deinit();
+
+    var conv = Converter.init(gpa, &model, &topo);
+    defer conv.deinit();
+    var network = try conv.convert();
+    defer network.deinit(gpa);
+
+    const vl = &network.substations.items[0].voltage_levels.items[0];
+    try std.testing.expectEqual(@as(usize, 1), vl.generators.items.len);
+
+    const gen = vl.generators.items[0];
+    try std.testing.expectEqualStrings("Gen1", gen.id);
+    try std.testing.expectEqual(iidm.EnergySource.thermal, gen.energy_source);
+    try std.testing.expectEqual(@as(f64, 951.5), gen.rated_s.?);
+
+    // Reactive capability curve should have 2 points
+    try std.testing.expectEqual(@as(usize, 2), gen.reactive_capability_curve_points.items.len);
+
+    const pt0 = gen.reactive_capability_curve_points.items[0];
+    try std.testing.expectEqual(@as(f64, 0.0), pt0.p);
+    try std.testing.expectEqual(@as(f64, -769.3), pt0.min_q);
+    try std.testing.expectEqual(@as(f64, 860.0), pt0.max_q);
+
+    const pt1 = gen.reactive_capability_curve_points.items[1];
+    try std.testing.expectEqual(@as(f64, 100.0), pt1.p);
+    try std.testing.expectEqual(@as(f64, -864.55), pt1.min_q);
+    try std.testing.expectEqual(@as(f64, 946.25), pt1.max_q);
 }
 
 test "Converter - converts ACLineSegment to Line" {
@@ -364,12 +455,16 @@ test "Converter - converts PowerTransformer to TwoWindingsTransformer" {
     const tr = sub.two_winding_transformers.items[0];
     try std.testing.expectEqualStrings("TR1", tr.id);
     try std.testing.expectEqualStrings("Main Transformer", tr.name.?);
-    try std.testing.expectEqualStrings("CN1", tr.node1.?);
-    try std.testing.expectEqualStrings("CN2", tr.node2.?);
+    try std.testing.expectEqualStrings("VL1", tr.voltage_level_id1);
+    try std.testing.expectEqual(@as(u32, 0), tr.node1);
+    try std.testing.expectEqualStrings("VL2", tr.voltage_level_id2);
+    try std.testing.expectEqual(@as(u32, 0), tr.node2);
     try std.testing.expectEqual(@as(f64, 110.0), tr.rated_u1);
     try std.testing.expectEqual(@as(f64, 20.0), tr.rated_u2);
-    try std.testing.expectEqual(@as(f64, 0.5), tr.r);
-    try std.testing.expectEqual(@as(f64, 25.0), tr.x);
+    // IIDM convention: impedances referred to side 2, so r_iidm = r_cgmes * (ratedU2/ratedU1)²
+    const ratio_sq = (20.0 / 110.0) * (20.0 / 110.0);
+    try std.testing.expectApproxEqRel(@as(f64, 0.5 * ratio_sq), tr.r, 1e-12);
+    try std.testing.expectApproxEqRel(@as(f64, 25.0 * ratio_sq), tr.x, 1e-12);
 }
 
 test "Converter - converts PowerTransformer to ThreeWindingsTransformer" {
@@ -550,13 +645,13 @@ test "Converter - converts Breaker to Switch" {
     defer network.deinit(gpa);
 
     const vl = &network.substations.items[0].voltage_levels.items[0];
-    try std.testing.expectEqual(@as(usize, 1), vl.switches.items.len);
+    try std.testing.expectEqual(@as(usize, 1), vl.node_breaker_topology.switches.items.len);
 
-    const sw = vl.switches.items[0];
+    const sw = vl.node_breaker_topology.switches.items[0];
     try std.testing.expectEqualStrings("BRK1", sw.id);
     try std.testing.expectEqualStrings("Bus Coupler", sw.name.?);
-    try std.testing.expectEqualStrings("CN1", sw.node1.?);
-    try std.testing.expectEqualStrings("CN2", sw.node2.?);
+    try std.testing.expectEqual(0, sw.node1);
+    try std.testing.expectEqual(1, sw.node2);
     try std.testing.expectEqual(false, sw.open);
     try std.testing.expectEqual(SwitchKind.breaker, sw.kind);
 }
@@ -621,4 +716,127 @@ test "converter populates geographicalTags from SubGeographicalRegion" {
 
     try std.testing.expectEqual(@as(usize, 1), network.substations.items[0].geo_tags.items.len);
     try std.testing.expectEqualStrings("default region", network.substations.items[0].geo_tags.items[0]);
+}
+
+test "Converter - converts RatioTapChanger on TwoWindingsTransformer" {
+    const gpa = std.testing.allocator;
+
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test">
+        \\    <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
+        \\  <cim:Substation rdf:ID="Sub1"/>
+        \\  <cim:VoltageLevel rdf:ID="VL1">
+        \\    <cim:VoltageLevel.Substation rdf:resource="#Sub1"/>
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#BV1"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:VoltageLevel rdf:ID="VL2">
+        \\    <cim:VoltageLevel.Substation rdf:resource="#Sub1"/>
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#BV2"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:BaseVoltage rdf:ID="BV1">
+        \\    <cim:BaseVoltage.nominalVoltage>225</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\  <cim:BaseVoltage rdf:ID="BV2">
+        \\    <cim:BaseVoltage.nominalVoltage>400</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\  <cim:ConnectivityNode rdf:ID="CN1">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#VL1"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:ConnectivityNode rdf:ID="CN2">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#VL2"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:PowerTransformer rdf:ID="TR1">
+        \\    <cim:IdentifiedObject.name>Tap Transformer</cim:IdentifiedObject.name>
+        \\  </cim:PowerTransformer>
+        \\  <cim:PowerTransformerEnd rdf:ID="TR1_End1">
+        \\    <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
+        \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#TR1"/>
+        \\    <cim:PowerTransformerEnd.ratedU>225</cim:PowerTransformerEnd.ratedU>
+        \\    <cim:PowerTransformerEnd.ratedS>100</cim:PowerTransformerEnd.ratedS>
+        \\    <cim:PowerTransformerEnd.r>2</cim:PowerTransformerEnd.r>
+        \\    <cim:PowerTransformerEnd.x>14</cim:PowerTransformerEnd.x>
+        \\    <cim:PowerTransformerEnd.g>0</cim:PowerTransformerEnd.g>
+        \\    <cim:PowerTransformerEnd.b>0</cim:PowerTransformerEnd.b>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PowerTransformerEnd rdf:ID="TR1_End2">
+        \\    <cim:TransformerEnd.endNumber>2</cim:TransformerEnd.endNumber>
+        \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#TR1"/>
+        \\    <cim:PowerTransformerEnd.ratedU>400</cim:PowerTransformerEnd.ratedU>
+        \\    <cim:PowerTransformerEnd.r>0</cim:PowerTransformerEnd.r>
+        \\    <cim:PowerTransformerEnd.x>0</cim:PowerTransformerEnd.x>
+        \\    <cim:PowerTransformerEnd.g>0</cim:PowerTransformerEnd.g>
+        \\    <cim:PowerTransformerEnd.b>0</cim:PowerTransformerEnd.b>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:Terminal rdf:ID="T1">
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#TR1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="T2">
+        \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#TR1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN2"/>
+        \\  </cim:Terminal>
+        \\  <cim:RatioTapChanger rdf:ID="RTC1">
+        \\    <cim:RatioTapChanger.TransformerEnd rdf:resource="#TR1_End1"/>
+        \\    <cim:TapChanger.lowStep>0</cim:TapChanger.lowStep>
+        \\    <cim:TapChanger.highStep>2</cim:TapChanger.highStep>
+        \\    <cim:TapChanger.neutralStep>1</cim:TapChanger.neutralStep>
+        \\    <cim:TapChanger.normalStep>1</cim:TapChanger.normalStep>
+        \\    <cim:TapChanger.ltcFlag>true</cim:TapChanger.ltcFlag>
+        \\    <cim:RatioTapChanger.RatioTapChangerTable rdf:resource="#RTC1_Table"/>
+        \\  </cim:RatioTapChanger>
+        \\  <cim:RatioTapChangerTable rdf:ID="RTC1_Table"/>
+        \\  <cim:RatioTapChangerTablePoint rdf:ID="RTC1_P0">
+        \\    <cim:RatioTapChangerTablePoint.RatioTapChangerTable rdf:resource="#RTC1_Table"/>
+        \\    <cim:TapChangerTablePoint.step>0</cim:TapChangerTablePoint.step>
+        \\    <cim:TapChangerTablePoint.ratio>0.85</cim:TapChangerTablePoint.ratio>
+        \\  </cim:RatioTapChangerTablePoint>
+        \\  <cim:RatioTapChangerTablePoint rdf:ID="RTC1_P1">
+        \\    <cim:RatioTapChangerTablePoint.RatioTapChangerTable rdf:resource="#RTC1_Table"/>
+        \\    <cim:TapChangerTablePoint.step>1</cim:TapChangerTablePoint.step>
+        \\    <cim:TapChangerTablePoint.ratio>1.0</cim:TapChangerTablePoint.ratio>
+        \\  </cim:RatioTapChangerTablePoint>
+        \\  <cim:RatioTapChangerTablePoint rdf:ID="RTC1_P2">
+        \\    <cim:RatioTapChangerTablePoint.RatioTapChangerTable rdf:resource="#RTC1_Table"/>
+        \\    <cim:TapChangerTablePoint.step>2</cim:TapChangerTablePoint.step>
+        \\    <cim:TapChangerTablePoint.ratio>1.15</cim:TapChangerTablePoint.ratio>
+        \\  </cim:RatioTapChangerTablePoint>
+        \\</rdf:RDF>
+    ;
+
+    var model = try CimModel.init(gpa, eq_xml);
+    defer model.deinit(gpa);
+
+    var topo = try TopologyResolver.init(gpa, &model);
+    defer topo.deinit();
+
+    var conv = Converter.init(gpa, &model, &topo);
+    defer conv.deinit();
+    var network = try conv.convert();
+    defer network.deinit(gpa);
+
+    const sub = &network.substations.items[0];
+    try std.testing.expectEqual(@as(usize, 1), sub.two_winding_transformers.items.len);
+
+    const tr = sub.two_winding_transformers.items[0];
+    try std.testing.expectEqualStrings("TR1", tr.id);
+
+    // Check ratio tap changer
+    try std.testing.expect(tr.ratio_tap_changer != null);
+    const rtc = tr.ratio_tap_changer.?;
+    try std.testing.expectEqual(@as(i32, 0), rtc.low_tap_position);
+    try std.testing.expectEqual(@as(i32, 1), rtc.tap_position); // normalStep
+    try std.testing.expectEqual(true, rtc.load_tap_changing_capabilities);
+    try std.testing.expectEqual(false, rtc.regulating); // no SSH data
+
+    // Check steps (should be 3: positions 0, 1, 2)
+    try std.testing.expectEqual(@as(usize, 3), rtc.steps.items.len);
+
+    // CGMES ratio is inverted for IIDM: rho = 1/cgmes_ratio
+    try std.testing.expectApproxEqRel(@as(f64, 1.0 / 0.85), rtc.steps.items[0].rho, 1e-9);
+    try std.testing.expectApproxEqRel(@as(f64, 1.0), rtc.steps.items[1].rho, 1e-9);
+    try std.testing.expectApproxEqRel(@as(f64, 1.0 / 1.15), rtc.steps.items[2].rho, 1e-9);
 }
