@@ -926,3 +926,63 @@ test "Converter - converts VsConverter to VscConverterStation" {
     try std.testing.expectEqual(@as(f64, -550.0), pt1.min_q);
     try std.testing.expectEqual(@as(f64, 570.0), pt1.max_q);
 }
+
+test "Converter - converts CsConverter to LccConverterStation" {
+    const gpa = std.testing.allocator;
+
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test">
+        \\    <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
+        \\  <cim:Substation rdf:ID="Sub1">
+        \\    <cim:IdentifiedObject.name>HVDC Station</cim:IdentifiedObject.name>
+        \\  </cim:Substation>
+        \\  <cim:VoltageLevel rdf:ID="VL1">
+        \\    <cim:IdentifiedObject.name>400kV</cim:IdentifiedObject.name>
+        \\    <cim:VoltageLevel.Substation rdf:resource="#Sub1"/>
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#BV1"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:BaseVoltage rdf:ID="BV1">
+        \\    <cim:BaseVoltage.nominalVoltage>400</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\  <cim:ConnectivityNode rdf:ID="CN1">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#VL1"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:CsConverter rdf:ID="LCC1">
+        \\    <cim:IdentifiedObject.mRID>LCC1</cim:IdentifiedObject.mRID>
+        \\    <cim:IdentifiedObject.name>LCC1</cim:IdentifiedObject.name>
+        \\    <cim:ACDCConverter.ratedUdc>400</cim:ACDCConverter.ratedUdc>
+        \\    <cim:ACDCConverter.idleLoss>1.5</cim:ACDCConverter.idleLoss>
+        \\    <cim:ACDCConverter.switchingLoss>0</cim:ACDCConverter.switchingLoss>
+        \\    <cim:ACDCConverter.resistiveLoss>0</cim:ACDCConverter.resistiveLoss>
+        \\  </cim:CsConverter>
+        \\  <cim:Terminal rdf:ID="LCC1_T1">
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#LCC1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+
+    var model = try CimModel.init(gpa, eq_xml);
+    defer model.deinit(gpa);
+
+    var topo = try TopologyResolver.init(gpa, &model);
+    defer topo.deinit();
+
+    var conv = Converter.init(gpa, &model, &topo);
+    defer conv.deinit();
+    var network = try conv.convert();
+    defer network.deinit(gpa);
+
+    const vl = &network.substations.items[0].voltage_levels.items[0];
+    try std.testing.expectEqual(@as(usize, 1), vl.lcc_converter_stations.items.len);
+
+    const lcc = vl.lcc_converter_stations.items[0];
+    try std.testing.expectEqualStrings("LCC1", lcc.id);
+    try std.testing.expectEqualStrings("LCC1", lcc.name.?);
+    try std.testing.expectEqual(@as(f64, 1.5), lcc.loss_factor);
+    try std.testing.expectEqual(@as(f64, 0.8), lcc.power_factor); // default value
+    try std.testing.expectEqual(@as(u32, 0), lcc.node);
+}

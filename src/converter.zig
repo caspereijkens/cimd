@@ -138,6 +138,7 @@ pub const Converter = struct {
         try self.convertShunts(&network);
         try self.convertGenerators(&network);
         try self.convertVsConverters(&network);
+        try self.convertCsConverters(&network);
 
         try self.convertTransformers(&network);
 
@@ -229,6 +230,7 @@ pub const Converter = struct {
                 .loads = .empty,
                 .shunts = .empty,
                 .vs_converter_stations = .empty,
+                .lcc_converter_stations = .empty,
             });
 
             self.voltage_level_map.putAssumeCapacity(voltage_level.id, .{ .substation_idx = substation_idx, .voltage_level_idx = voltage_level_idx });
@@ -350,6 +352,44 @@ pub const Converter = struct {
                 .node = node_index,
                 .reactive_power_setpoint = 0,
                 .reactive_capability_curve_points = curve_points,
+            });
+        }
+    }
+
+    fn convertCsConverters(self: *Converter, network: *iidm.Network) !void {
+        const cs_converters = try self.model.getObjectsByType(self.gpa, "CsConverter");
+        defer self.gpa.free(cs_converters);
+
+        for (cs_converters) |cs_converter| {
+            const connectivity_node_id = self.topology_resolver.getEquipmentNode(cs_converter.id, 1) orelse return error.MalformedXML;
+            const connectivity_node = self.model.getObjectById(connectivity_node_id) orelse return error.MalformedXML;
+            const voltage_level_ref = try connectivity_node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+            const voltage_level_id = topology.stripHash(voltage_level_ref);
+
+            const voltage_level = self.getVoltageLevel(network, voltage_level_id) orelse return error.MalformedXML;
+
+            const id = try cs_converter.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(cs_converter.id);
+            const name = try cs_converter.getProperty("IdentifiedObject.name");
+
+            const loss_factor = if (try cs_converter.getProperty("ACDCConverter.idleLoss")) |v|
+                try std.fmt.parseFloat(f64, v)
+            else
+                0.0;
+
+            // Power factor defaults to 0.8 for LCC converters (typical value)
+            const power_factor = if (try cs_converter.getProperty("CsConverter.ratedPowerFactor")) |v|
+                try std.fmt.parseFloat(f64, v)
+            else
+                0.8;
+
+            const node_index = try self.getNodeIndex(voltage_level_id, connectivity_node_id);
+
+            try voltage_level.lcc_converter_stations.append(self.gpa, .{
+                .id = id,
+                .name = name,
+                .loss_factor = loss_factor,
+                .power_factor = power_factor,
+                .node = node_index,
             });
         }
     }

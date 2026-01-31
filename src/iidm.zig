@@ -98,6 +98,29 @@ pub const VsConverterStation = struct {
     }
 };
 
+pub const LccConverterStation = struct {
+    id: []const u8,
+    name: ?[]const u8,
+    loss_factor: f64,
+    power_factor: f64,
+    node: u32,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("id");
+        try jws.write(self.id);
+        try jws.objectField("name");
+        try jws.write(self.name);
+        try jws.objectField("lossFactor");
+        try jws.write(self.loss_factor);
+        try jws.objectField("powerFactor");
+        try jws.write(self.power_factor);
+        try jws.objectField("node");
+        try jws.write(self.node);
+        try jws.endObject();
+    }
+};
+
 pub const EnergySource = enum {
     hydro,
     thermal,
@@ -249,6 +272,7 @@ pub const VoltageLevel = struct {
     loads: std.ArrayListUnmanaged(Load),
     shunts: std.ArrayListUnmanaged(Shunt),
     vs_converter_stations: std.ArrayListUnmanaged(VsConverterStation),
+    lcc_converter_stations: std.ArrayListUnmanaged(LccConverterStation),
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
         try jws.beginObject();
@@ -274,6 +298,8 @@ pub const VoltageLevel = struct {
         try jws.write(self.shunts.items);
         try jws.objectField("vscConverterStations");
         try jws.write(self.vs_converter_stations.items);
+        try jws.objectField("lccConverterStations");
+        try jws.write(self.lcc_converter_stations.items);
         try jws.endObject();
     }
 
@@ -289,6 +315,7 @@ pub const VoltageLevel = struct {
         self.loads.deinit(allocator);
         self.shunts.deinit(allocator);
         self.vs_converter_stations.deinit(allocator);
+        self.lcc_converter_stations.deinit(allocator);
     }
 };
 
