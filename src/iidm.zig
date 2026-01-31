@@ -1,11 +1,63 @@
 const std = @import("std");
 
+pub const LoadType = enum {
+    other,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.write(switch (self) {
+            .other => "UNDEFINED",
+        });
+    }
+};
+
 pub const Load = struct {
     id: []const u8,
     name: ?[]const u8,
+    load_type: LoadType,
     node: u32,
-    p0: f64,
-    q0: f64,
+};
+
+pub const ShuntLinearModel = struct {
+    b_per_section: f64,
+    g_per_section: f64,
+    max_section_count: u32,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("bPerSection");
+        try jws.write(self.b_per_section);
+        try jws.objectField("gPerSection");
+        try jws.write(self.g_per_section);
+        try jws.objectField("maximumSectionCount");
+        try jws.write(self.max_section_count);
+        try jws.endObject();
+    }
+};
+
+pub const Shunt = struct {
+    id: []const u8,
+    name: ?[]const u8,
+    section_count: u32,
+    voltage_regulator_on: bool,
+    node: u32,
+    shunt_linear_model: ShuntLinearModel,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("id");
+        try jws.write(self.id);
+        try jws.objectField("name");
+        try jws.write(self.name);
+        try jws.objectField("sectionCount");
+        try jws.write(self.section_count);
+        try jws.objectField("voltageRegulatorOn");
+        try jws.write(self.voltage_regulator_on);
+        try jws.objectField("node");
+        try jws.write(self.node);
+        try jws.objectField("shuntLinearModel");
+        try jws.write(self.shunt_linear_model);
+        try jws.endObject();
+    }
 };
 
 pub const EnergySource = enum {
@@ -154,9 +206,10 @@ pub const VoltageLevel = struct {
     nominal_voltage: ?f64,
     low_voltage_limit: ?f64,
     high_voltage_limit: ?f64,
+    node_breaker_topology: NodeBreakerTopology,
     generators: std.ArrayListUnmanaged(Generator),
     loads: std.ArrayListUnmanaged(Load),
-    node_breaker_topology: NodeBreakerTopology,
+    shunts: std.ArrayListUnmanaged(Shunt),
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
         try jws.beginObject();
@@ -178,6 +231,8 @@ pub const VoltageLevel = struct {
         try jws.write(self.generators.items);
         try jws.objectField("loads");
         try jws.write(self.loads.items);
+        try jws.objectField("shunts");
+        try jws.write(self.shunts.items);
         try jws.endObject();
     }
 
@@ -187,6 +242,7 @@ pub const VoltageLevel = struct {
         }
         self.generators.deinit(allocator);
         self.loads.deinit(allocator);
+        self.shunts.deinit(allocator);
         self.node_breaker_topology.deinit(allocator);
     }
 };

@@ -136,8 +136,6 @@ test "Converter - converts EnergyConsumer to Load" {
     try std.testing.expectEqualStrings("Load1", load.id);
     try std.testing.expectEqualStrings("City Load", load.name.?);
     try std.testing.expectEqual(0, load.node);
-    try std.testing.expectEqual(@as(f64, 100.0), load.p0);
-    try std.testing.expectEqual(@as(f64, 50.0), load.q0);
 }
 
 test "Converter - converts SynchronousMachine to Generator" {

@@ -28,8 +28,8 @@ pub const Converter = struct {
         cn_to_index: std.StringHashMapUnmanaged(u32),
         next_index: u32,
 
-        fn getOrAssign(self: *NodeIndexMap, gpa: std.mem.Allocator, cn_id: []const u8) !u32 {
-            const gop = try self.cn_to_index.getOrPut(gpa, cn_id);
+        fn getOrAssign(self: *NodeIndexMap, gpa: std.mem.Allocator, contingency_node_id: []const u8) !u32 {
+            const gop = try self.cn_to_index.getOrPut(gpa, contingency_node_id);
             if (!gop.found_existing) {
                 gop.value_ptr.* = self.next_index;
                 self.next_index += 1;
@@ -63,12 +63,12 @@ pub const Converter = struct {
         self.node_index_maps.deinit(self.gpa);
     }
 
-    fn getNodeIndex(self: *Converter, voltage_level_id: []const u8, cn_id: []const u8) !u32 {
+    fn getNodeIndex(self: *Converter, voltage_level_id: []const u8, contingency_node_id: []const u8) !u32 {
         const gop = try self.node_index_maps.getOrPut(self.gpa, voltage_level_id);
         if (!gop.found_existing) {
             gop.value_ptr.* = .{ .cn_to_index = .empty, .next_index = 0 };
         }
-        return gop.value_ptr.getOrAssign(self.gpa, cn_id);
+        return gop.value_ptr.getOrAssign(self.gpa, contingency_node_id);
     }
 
     pub fn convert(self: *Converter) !iidm.Network {
@@ -99,6 +99,7 @@ pub const Converter = struct {
         try self.convertBusbarSections(&network);
         try self.convertSwitches(&network);
         try self.convertLoads(&network);
+        try self.convertShunts(&network);
         try self.convertGenerators(&network);
 
         try self.convertTransformers(&network);
@@ -188,6 +189,7 @@ pub const Converter = struct {
                 .high_voltage_limit = high_voltage_limit,
                 .generators = .empty,
                 .loads = .empty,
+                .shunts = .empty,
                 .node_breaker_topology = .{ .busbar_sections = .empty, .switches = .empty },
             });
 
@@ -205,18 +207,18 @@ pub const Converter = struct {
         defer self.gpa.free(energy_consumers);
 
         for (energy_consumers) |load| {
-            try self.addLoad(network, load, "EnergyConsumer.p", "EnergyConsumer.q");
+            try self.addLoad(network, load);
         }
 
         const energy_sources = try self.model.getObjectsByType(self.gpa, "EnergySource");
         defer self.gpa.free(energy_sources);
 
         for (energy_sources) |load| {
-            try self.addLoad(network, load, "EnergySource.activePower", "EnergySource.reactivePower");
+            try self.addLoad(network, load);
         }
     }
 
-    fn addLoad(self: *Converter, network: *iidm.Network, load: cim_model.CimObject, p_prop: []const u8, q_prop: []const u8) !void {
+    fn addLoad(self: *Converter, network: *iidm.Network, load: cim_model.CimObject) !void {
         const connectivity_node_id = self.topology_resolver.getEquipmentNode(load.id, 1) orelse return error.MalformedXML;
         const connectivity_node = self.model.getObjectById(connectivity_node_id) orelse return error.MalformedXML;
 
@@ -226,25 +228,46 @@ pub const Converter = struct {
 
         const id = try load.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(load.id);
         const name = try load.getProperty("IdentifiedObject.name");
-        // p and q are in SSH profile, not EQ - default to 0 if missing
-        const p0 = if (try load.getProperty(p_prop)) |p_str|
-            try std.fmt.parseFloat(f64, p_str)
-        else
-            0.0;
-        const q0 = if (try load.getProperty(q_prop)) |q_str|
-            try std.fmt.parseFloat(f64, q_str)
-        else
-            0.0;
 
         const node_index = try self.getNodeIndex(voltage_level_id, connectivity_node_id);
 
         try voltage_level.loads.append(self.gpa, .{
             .id = id,
             .name = name,
+            .load_type = .other,
             .node = node_index,
-            .p0 = p0,
-            .q0 = q0,
         });
+    }
+
+    fn convertShunts(self: *Converter, network: *iidm.Network) !void {
+        const linear_shunt_compensators = try self.model.getObjectsByType(self.gpa, "LinearShuntCompensator");
+        defer self.gpa.free(linear_shunt_compensators);
+
+        for (linear_shunt_compensators) |linear_shunt_compensator| {
+            const id = try linear_shunt_compensator.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(linear_shunt_compensator.id);
+            const name = try linear_shunt_compensator.getProperty("IdentifiedObject.name");
+            const connectivity_node_id = self.topology_resolver.getEquipmentNode(linear_shunt_compensator.id, 1) orelse return error.MalformedXML;
+            const connectivity_node = self.model.getObjectById(connectivity_node_id) orelse return error.MalformedXML;
+
+            const voltage_level_ref = try connectivity_node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+            const voltage_level_id = topology.stripHash(voltage_level_ref);
+            const voltage_level = self.getVoltageLevel(network, voltage_level_id) orelse return error.MalformedXML;
+            const shunt_linear_model: iidm.ShuntLinearModel = .{
+                .b_per_section = try std.fmt.parseFloat(f64, try linear_shunt_compensator.getProperty("LinearShuntCompensator.bPerSection") orelse return error.MalformedXML),
+                .g_per_section = try std.fmt.parseFloat(f64, try linear_shunt_compensator.getProperty("LinearShuntCompensator.gPerSection") orelse return error.MalformedXML),
+                .max_section_count = try std.fmt.parseInt(u32, try linear_shunt_compensator.getProperty("ShuntCompensator.maximumSections") orelse return error.MalformedXML, 10),
+            };
+
+            const node_index = try self.getNodeIndex(voltage_level_id, connectivity_node_id);
+            try voltage_level.shunts.append(self.gpa, .{
+                .id = id,
+                .name = name,
+                .section_count = 0,
+                .voltage_regulator_on = false,
+                .node = node_index,
+                .shunt_linear_model = shunt_linear_model,
+            });
+        }
     }
 
     fn mapEnergySource(type_name: []const u8) iidm.EnergySource {
