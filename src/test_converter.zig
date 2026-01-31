@@ -838,3 +838,91 @@ test "Converter - converts RatioTapChanger on TwoWindingsTransformer" {
     try std.testing.expectApproxEqRel(@as(f64, 1.0), rtc.steps.items[1].rho, 1e-9);
     try std.testing.expectApproxEqRel(@as(f64, 1.0 / 1.15), rtc.steps.items[2].rho, 1e-9);
 }
+
+test "Converter - converts VsConverter to VscConverterStation" {
+    const gpa = std.testing.allocator;
+
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test">
+        \\    <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
+        \\  <cim:Substation rdf:ID="Sub1">
+        \\    <cim:IdentifiedObject.name>HVDC Station</cim:IdentifiedObject.name>
+        \\  </cim:Substation>
+        \\  <cim:VoltageLevel rdf:ID="VL1">
+        \\    <cim:IdentifiedObject.name>400kV</cim:IdentifiedObject.name>
+        \\    <cim:VoltageLevel.Substation rdf:resource="#Sub1"/>
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#BV1"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:BaseVoltage rdf:ID="BV1">
+        \\    <cim:BaseVoltage.nominalVoltage>400</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\  <cim:ConnectivityNode rdf:ID="CN1">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#VL1"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="VSC1_RCC"/>
+        \\  <cim:CurveData rdf:ID="VSC1_CD1">
+        \\    <cim:CurveData.Curve rdf:resource="#VSC1_RCC"/>
+        \\    <cim:CurveData.xvalue>-100</cim:CurveData.xvalue>
+        \\    <cim:CurveData.y1value>-550</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>570</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="VSC1_CD2">
+        \\    <cim:CurveData.Curve rdf:resource="#VSC1_RCC"/>
+        \\    <cim:CurveData.xvalue>100</cim:CurveData.xvalue>
+        \\    <cim:CurveData.y1value>-550</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>570</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\  <cim:VsConverter rdf:ID="VSC1">
+        \\    <cim:IdentifiedObject.mRID>VSC1</cim:IdentifiedObject.mRID>
+        \\    <cim:IdentifiedObject.name>VSC1</cim:IdentifiedObject.name>
+        \\    <cim:ACDCConverter.ratedUdc>400</cim:ACDCConverter.ratedUdc>
+        \\    <cim:ACDCConverter.idleLoss>0</cim:ACDCConverter.idleLoss>
+        \\    <cim:ACDCConverter.switchingLoss>0</cim:ACDCConverter.switchingLoss>
+        \\    <cim:ACDCConverter.resistiveLoss>0</cim:ACDCConverter.resistiveLoss>
+        \\    <cim:VsConverter.CapabilityCurve rdf:resource="#VSC1_RCC"/>
+        \\  </cim:VsConverter>
+        \\  <cim:Terminal rdf:ID="VSC1_T1">
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#VSC1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+
+    var model = try CimModel.init(gpa, eq_xml);
+    defer model.deinit(gpa);
+
+    var topo = try TopologyResolver.init(gpa, &model);
+    defer topo.deinit();
+
+    var conv = Converter.init(gpa, &model, &topo);
+    defer conv.deinit();
+    var network = try conv.convert();
+    defer network.deinit(gpa);
+
+    const vl = &network.substations.items[0].voltage_levels.items[0];
+    try std.testing.expectEqual(@as(usize, 1), vl.vs_converter_stations.items.len);
+
+    const vsc = vl.vs_converter_stations.items[0];
+    try std.testing.expectEqualStrings("VSC1", vsc.id);
+    try std.testing.expectEqualStrings("VSC1", vsc.name.?);
+    try std.testing.expectEqual(false, vsc.voltage_regulator_on);
+    try std.testing.expectEqual(@as(f64, 0.0), vsc.loss_factor);
+    try std.testing.expectEqual(@as(f64, 0.0), vsc.reactive_power_setpoint);
+    try std.testing.expectEqual(@as(u32, 0), vsc.node);
+
+    // Reactive capability curve should have 2 points
+    try std.testing.expectEqual(@as(usize, 2), vsc.reactive_capability_curve_points.items.len);
+
+    const pt0 = vsc.reactive_capability_curve_points.items[0];
+    try std.testing.expectEqual(@as(f64, -100.0), pt0.p);
+    try std.testing.expectEqual(@as(f64, -550.0), pt0.min_q);
+    try std.testing.expectEqual(@as(f64, 570.0), pt0.max_q);
+
+    const pt1 = vsc.reactive_capability_curve_points.items[1];
+    try std.testing.expectEqual(@as(f64, 100.0), pt1.p);
+    try std.testing.expectEqual(@as(f64, -550.0), pt1.min_q);
+    try std.testing.expectEqual(@as(f64, 570.0), pt1.max_q);
+}

@@ -60,6 +60,44 @@ pub const Shunt = struct {
     }
 };
 
+pub const VsConverterStation = struct {
+    id: []const u8,
+    name: ?[]const u8,
+    voltage_regulator_on: bool,
+    loss_factor: f64,
+    reactive_power_setpoint: f64,
+    node: u32,
+    reactive_capability_curve_points: std.ArrayListUnmanaged(ReactiveCapabilityCurvePoint),
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("id");
+        try jws.write(self.id);
+        try jws.objectField("name");
+        try jws.write(self.name);
+        try jws.objectField("voltageRegulatorOn");
+        try jws.write(self.voltage_regulator_on);
+        try jws.objectField("lossFactor");
+        try jws.write(self.loss_factor);
+        try jws.objectField("reactivePowerSetpoint");
+        try jws.write(self.reactive_power_setpoint);
+        try jws.objectField("node");
+        try jws.write(self.node);
+        if (self.reactive_capability_curve_points.items.len > 0) {
+            try jws.objectField("reactiveCapabilityCurve");
+            try jws.beginObject();
+            try jws.objectField("points");
+            try jws.write(self.reactive_capability_curve_points.items);
+            try jws.endObject();
+        }
+        try jws.endObject();
+    }
+
+    pub fn deinit(self: *VsConverterStation, allocator: std.mem.Allocator) void {
+        self.reactive_capability_curve_points.deinit(allocator);
+    }
+};
+
 pub const EnergySource = enum {
     hydro,
     thermal,
@@ -210,6 +248,7 @@ pub const VoltageLevel = struct {
     generators: std.ArrayListUnmanaged(Generator),
     loads: std.ArrayListUnmanaged(Load),
     shunts: std.ArrayListUnmanaged(Shunt),
+    vs_converter_stations: std.ArrayListUnmanaged(VsConverterStation),
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
         try jws.beginObject();
@@ -233,6 +272,8 @@ pub const VoltageLevel = struct {
         try jws.write(self.loads.items);
         try jws.objectField("shunts");
         try jws.write(self.shunts.items);
+        try jws.objectField("vscConverterStations");
+        try jws.write(self.vs_converter_stations.items);
         try jws.endObject();
     }
 
@@ -240,10 +281,14 @@ pub const VoltageLevel = struct {
         for (self.generators.items) |*gen| {
             gen.deinit(allocator);
         }
+        for (self.vs_converter_stations.items) |*vsc| {
+            vsc.deinit(allocator);
+        }
+        self.node_breaker_topology.deinit(allocator);
         self.generators.deinit(allocator);
         self.loads.deinit(allocator);
         self.shunts.deinit(allocator);
-        self.node_breaker_topology.deinit(allocator);
+        self.vs_converter_stations.deinit(allocator);
     }
 };
 

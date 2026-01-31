@@ -21,6 +21,7 @@ pub const Converter = struct {
     substation_map: std.StringHashMapUnmanaged(usize),
     voltage_level_map: std.StringHashMapUnmanaged(VoltageLevelRef),
     node_index_maps: std.StringHashMapUnmanaged(NodeIndexMap),
+    curve_points_map: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(iidm.ReactiveCapabilityCurvePoint)),
 
     const VoltageLevelRef = struct { substation_idx: usize, voltage_level_idx: usize };
 
@@ -50,6 +51,7 @@ pub const Converter = struct {
             .substation_map = .empty,
             .voltage_level_map = .empty,
             .node_index_maps = .empty,
+            .curve_points_map = .empty,
         };
     }
 
@@ -61,6 +63,38 @@ pub const Converter = struct {
             map.deinit(self.gpa);
         }
         self.node_index_maps.deinit(self.gpa);
+        self.freeCurvePointsMap();
+    }
+
+    fn buildCurvePointsMap(self: *Converter) !void {
+        const curve_datas = try self.model.getObjectsByType(self.gpa, "CurveData");
+        defer self.gpa.free(curve_datas);
+
+        for (curve_datas) |curve_data| {
+            const curve_ref = try curve_data.getReference("CurveData.Curve") orelse continue;
+            const curve_id = topology.stripHash(curve_ref);
+            const x_value = try std.fmt.parseFloat(f64, try curve_data.getProperty("CurveData.xvalue") orelse continue);
+            const y1_value = try std.fmt.parseFloat(f64, try curve_data.getProperty("CurveData.y1value") orelse continue);
+            const y2_value = try std.fmt.parseFloat(f64, try curve_data.getProperty("CurveData.y2value") orelse continue);
+
+            const gop = try self.curve_points_map.getOrPut(self.gpa, curve_id);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.gpa, .{ .p = x_value, .min_q = y1_value, .max_q = y2_value });
+        }
+    }
+
+    fn freeCurvePointsMap(self: *Converter) void {
+        var it = self.curve_points_map.valueIterator();
+        while (it.next()) |list| list.deinit(self.gpa);
+        self.curve_points_map.deinit(self.gpa);
+    }
+
+    fn getCurvePoints(self: *Converter, curve_id: []const u8) !std.ArrayListUnmanaged(iidm.ReactiveCapabilityCurvePoint) {
+        var points: std.ArrayListUnmanaged(iidm.ReactiveCapabilityCurvePoint) = .empty;
+        if (self.curve_points_map.get(curve_id)) |src| {
+            try points.appendSlice(self.gpa, src.items);
+        }
+        return points;
     }
 
     fn getNodeIndex(self: *Converter, voltage_level_id: []const u8, contingency_node_id: []const u8) !u32 {
@@ -96,11 +130,14 @@ pub const Converter = struct {
 
         try self.convertVoltageLevels(&network);
 
+        try self.buildCurvePointsMap();
+
         try self.convertBusbarSections(&network);
         try self.convertSwitches(&network);
         try self.convertLoads(&network);
         try self.convertShunts(&network);
         try self.convertGenerators(&network);
+        try self.convertVsConverters(&network);
 
         try self.convertTransformers(&network);
 
@@ -187,10 +224,11 @@ pub const Converter = struct {
                 .nominal_voltage = nominal_voltages.get(base_voltage_id),
                 .low_voltage_limit = low_voltage_limit,
                 .high_voltage_limit = high_voltage_limit,
+                .node_breaker_topology = .{ .busbar_sections = .empty, .switches = .empty },
                 .generators = .empty,
                 .loads = .empty,
                 .shunts = .empty,
-                .node_breaker_topology = .{ .busbar_sections = .empty, .switches = .empty },
+                .vs_converter_stations = .empty,
             });
 
             self.voltage_level_map.putAssumeCapacity(voltage_level.id, .{ .substation_idx = substation_idx, .voltage_level_idx = voltage_level_idx });
@@ -270,6 +308,52 @@ pub const Converter = struct {
         }
     }
 
+    fn convertVsConverters(self: *Converter, network: *iidm.Network) !void {
+        const vs_converters = try self.model.getObjectsByType(self.gpa, "VsConverter");
+        defer self.gpa.free(vs_converters);
+
+        for (vs_converters) |vs_converter| {
+            const connectivity_node_id = self.topology_resolver.getEquipmentNode(vs_converter.id, 1) orelse return error.MalformedXML;
+            const connectivity_node = self.model.getObjectById(connectivity_node_id) orelse return error.MalformedXML;
+            const voltage_level_ref = try connectivity_node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+            const voltage_level_id = topology.stripHash(voltage_level_ref);
+
+            const voltage_level = self.getVoltageLevel(network, voltage_level_id) orelse return error.MalformedXML;
+
+            const id = try vs_converter.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(vs_converter.id);
+            const name = try vs_converter.getProperty("IdentifiedObject.name");
+
+            const voltage_regulator_on = if (try vs_converter.getProperty("RegulatingCondEq.controlEnabled")) |v|
+                std.mem.eql(u8, v, "true")
+            else
+                false;
+
+            const loss_factor = if (try vs_converter.getProperty("ACDCConverter.idleLoss")) |v|
+                try std.fmt.parseFloat(f64, v)
+            else
+                0.0;
+
+            var curve_points: std.ArrayListUnmanaged(iidm.ReactiveCapabilityCurvePoint) = .empty;
+            errdefer curve_points.deinit(self.gpa);
+
+            if (try vs_converter.getReference("VsConverter.CapabilityCurve")) |curve_ref| {
+                curve_points = try self.getCurvePoints(topology.stripHash(curve_ref));
+            }
+
+            const node_index = try self.getNodeIndex(voltage_level_id, connectivity_node_id);
+
+            try voltage_level.vs_converter_stations.append(self.gpa, .{
+                .id = id,
+                .name = name,
+                .voltage_regulator_on = voltage_regulator_on,
+                .loss_factor = loss_factor,
+                .node = node_index,
+                .reactive_power_setpoint = 0,
+                .reactive_capability_curve_points = curve_points,
+            });
+        }
+    }
+
     fn mapEnergySource(type_name: []const u8) iidm.EnergySource {
         if (std.mem.eql(u8, type_name, "HydroGeneratingUnit")) return .hydro;
         if (std.mem.eql(u8, type_name, "ThermalGeneratingUnit")) return .thermal;
@@ -282,28 +366,6 @@ pub const Converter = struct {
     fn convertGenerators(self: *Converter, network: *iidm.Network) !void {
         const generators = try self.model.getObjectsByType(self.gpa, "SynchronousMachine");
         defer self.gpa.free(generators);
-
-        const curve_datas = try self.model.getObjectsByType(self.gpa, "CurveData");
-        defer self.gpa.free(curve_datas);
-
-        var curve_points_map: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(iidm.ReactiveCapabilityCurvePoint)) = .empty;
-        defer {
-            var it = curve_points_map.valueIterator();
-            while (it.next()) |list| list.deinit(self.gpa);
-            curve_points_map.deinit(self.gpa);
-        }
-
-        for (curve_datas) |curve_data| {
-            const curve_ref = try curve_data.getReference("CurveData.Curve") orelse continue;
-            const curve_id = topology.stripHash(curve_ref);
-            const x_value = try std.fmt.parseFloat(f64, try curve_data.getProperty("CurveData.xvalue") orelse continue);
-            const y1_value = try std.fmt.parseFloat(f64, try curve_data.getProperty("CurveData.y1value") orelse continue);
-            const y2_value = try std.fmt.parseFloat(f64, try curve_data.getProperty("CurveData.y2value") orelse continue);
-
-            const gop = try curve_points_map.getOrPut(self.gpa, curve_id);
-            if (!gop.found_existing) gop.value_ptr.* = .empty;
-            try gop.value_ptr.append(self.gpa, .{ .p = x_value, .min_q = y1_value, .max_q = y2_value });
-        }
 
         for (generators) |generator| {
             const connectivity_node_id = self.topology_resolver.getEquipmentNode(generator.id, 1) orelse return error.MalformedXML;
@@ -351,10 +413,7 @@ pub const Converter = struct {
             errdefer curve_points.deinit(self.gpa);
 
             if (try generator.getReference("SynchronousMachine.InitialReactiveCapabilityCurve")) |curve_ref| {
-                const curve_id = topology.stripHash(curve_ref);
-                if (curve_points_map.get(curve_id)) |points| {
-                    try curve_points.appendSlice(self.gpa, points.items);
-                }
+                curve_points = try self.getCurvePoints(topology.stripHash(curve_ref));
             }
 
             const node_index = try self.getNodeIndex(voltage_level_id, connectivity_node_id);
