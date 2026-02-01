@@ -839,6 +839,144 @@ test "Converter - converts RatioTapChanger on TwoWindingsTransformer" {
     try std.testing.expectApproxEqRel(@as(f64, 1.0 / 1.15), rtc.steps.items[2].rho, 1e-9);
 }
 
+test "Converter - converts PhaseTapChanger on TwoWindingsTransformer" {
+    const gpa = std.testing.allocator;
+
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test">
+        \\    <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
+        \\  <cim:Substation rdf:ID="Sub1"/>
+        \\  <cim:VoltageLevel rdf:ID="VL1">
+        \\    <cim:VoltageLevel.Substation rdf:resource="#Sub1"/>
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#BV1"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:VoltageLevel rdf:ID="VL2">
+        \\    <cim:VoltageLevel.Substation rdf:resource="#Sub1"/>
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#BV2"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:BaseVoltage rdf:ID="BV1">
+        \\    <cim:BaseVoltage.nominalVoltage>225</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\  <cim:BaseVoltage rdf:ID="BV2">
+        \\    <cim:BaseVoltage.nominalVoltage>400</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\  <cim:ConnectivityNode rdf:ID="CN1">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#VL1"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:ConnectivityNode rdf:ID="CN2">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#VL2"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:PowerTransformer rdf:ID="TR1">
+        \\    <cim:IdentifiedObject.name>Phase Shifting Transformer</cim:IdentifiedObject.name>
+        \\  </cim:PowerTransformer>
+        \\  <cim:PowerTransformerEnd rdf:ID="TR1_End1">
+        \\    <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
+        \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#TR1"/>
+        \\    <cim:PowerTransformerEnd.ratedU>225</cim:PowerTransformerEnd.ratedU>
+        \\    <cim:PowerTransformerEnd.ratedS>100</cim:PowerTransformerEnd.ratedS>
+        \\    <cim:PowerTransformerEnd.r>2</cim:PowerTransformerEnd.r>
+        \\    <cim:PowerTransformerEnd.x>14</cim:PowerTransformerEnd.x>
+        \\    <cim:PowerTransformerEnd.g>0</cim:PowerTransformerEnd.g>
+        \\    <cim:PowerTransformerEnd.b>0</cim:PowerTransformerEnd.b>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PowerTransformerEnd rdf:ID="TR1_End2">
+        \\    <cim:TransformerEnd.endNumber>2</cim:TransformerEnd.endNumber>
+        \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#TR1"/>
+        \\    <cim:PowerTransformerEnd.ratedU>400</cim:PowerTransformerEnd.ratedU>
+        \\    <cim:PowerTransformerEnd.r>0</cim:PowerTransformerEnd.r>
+        \\    <cim:PowerTransformerEnd.x>0</cim:PowerTransformerEnd.x>
+        \\    <cim:PowerTransformerEnd.g>0</cim:PowerTransformerEnd.g>
+        \\    <cim:PowerTransformerEnd.b>0</cim:PowerTransformerEnd.b>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:Terminal rdf:ID="T1">
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#TR1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="T2">
+        \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#TR1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN2"/>
+        \\  </cim:Terminal>
+        \\  <cim:PhaseTapChangerTabular rdf:ID="PTC1">
+        \\    <cim:PhaseTapChanger.TransformerEnd rdf:resource="#TR1_End1"/>
+        \\    <cim:TapChanger.lowStep>0</cim:TapChanger.lowStep>
+        \\    <cim:TapChanger.highStep>2</cim:TapChanger.highStep>
+        \\    <cim:TapChanger.normalStep>1</cim:TapChanger.normalStep>
+        \\    <cim:TapChanger.ltcFlag>true</cim:TapChanger.ltcFlag>
+        \\    <cim:PhaseTapChangerTabular.PhaseTapChangerTable rdf:resource="#PTC1_Table"/>
+        \\  </cim:PhaseTapChangerTabular>
+        \\  <cim:PhaseTapChangerTable rdf:ID="PTC1_Table"/>
+        \\  <cim:PhaseTapChangerTablePoint rdf:ID="PTC1_P0">
+        \\    <cim:PhaseTapChangerTablePoint.PhaseTapChangerTable rdf:resource="#PTC1_Table"/>
+        \\    <cim:TapChangerTablePoint.step>0</cim:TapChangerTablePoint.step>
+        \\    <cim:PhaseTapChangerTablePoint.angle>-10.5</cim:PhaseTapChangerTablePoint.angle>
+        \\    <cim:TapChangerTablePoint.r>1.0</cim:TapChangerTablePoint.r>
+        \\    <cim:TapChangerTablePoint.x>2.0</cim:TapChangerTablePoint.x>
+        \\    <cim:TapChangerTablePoint.ratio>1.0</cim:TapChangerTablePoint.ratio>
+        \\  </cim:PhaseTapChangerTablePoint>
+        \\  <cim:PhaseTapChangerTablePoint rdf:ID="PTC1_P1">
+        \\    <cim:PhaseTapChangerTablePoint.PhaseTapChangerTable rdf:resource="#PTC1_Table"/>
+        \\    <cim:TapChangerTablePoint.step>1</cim:TapChangerTablePoint.step>
+        \\    <cim:PhaseTapChangerTablePoint.angle>0.0</cim:PhaseTapChangerTablePoint.angle>
+        \\    <cim:TapChangerTablePoint.r>0.0</cim:TapChangerTablePoint.r>
+        \\    <cim:TapChangerTablePoint.x>0.0</cim:TapChangerTablePoint.x>
+        \\    <cim:TapChangerTablePoint.ratio>1.0</cim:TapChangerTablePoint.ratio>
+        \\  </cim:PhaseTapChangerTablePoint>
+        \\  <cim:PhaseTapChangerTablePoint rdf:ID="PTC1_P2">
+        \\    <cim:PhaseTapChangerTablePoint.PhaseTapChangerTable rdf:resource="#PTC1_Table"/>
+        \\    <cim:TapChangerTablePoint.step>2</cim:TapChangerTablePoint.step>
+        \\    <cim:PhaseTapChangerTablePoint.angle>10.5</cim:PhaseTapChangerTablePoint.angle>
+        \\    <cim:TapChangerTablePoint.r>1.0</cim:TapChangerTablePoint.r>
+        \\    <cim:TapChangerTablePoint.x>2.0</cim:TapChangerTablePoint.x>
+        \\    <cim:TapChangerTablePoint.ratio>1.0</cim:TapChangerTablePoint.ratio>
+        \\  </cim:PhaseTapChangerTablePoint>
+        \\</rdf:RDF>
+    ;
+
+    var model = try CimModel.init(gpa, eq_xml);
+    defer model.deinit(gpa);
+
+    var topo = try TopologyResolver.init(gpa, &model);
+    defer topo.deinit();
+
+    var conv = Converter.init(gpa, &model, &topo);
+    defer conv.deinit();
+    var network = try conv.convert();
+    defer network.deinit(gpa);
+
+    const sub = &network.substations.items[0];
+    try std.testing.expectEqual(@as(usize, 1), sub.two_winding_transformers.items.len);
+
+    const tr = sub.two_winding_transformers.items[0];
+    try std.testing.expectEqualStrings("TR1", tr.id);
+
+    // Check phase tap changer
+    try std.testing.expect(tr.phase_tap_changer != null);
+    const ptc = tr.phase_tap_changer.?;
+    try std.testing.expectEqual(@as(i32, 0), ptc.low_tap_position);
+    try std.testing.expectEqual(@as(i32, 1), ptc.tap_position);
+    try std.testing.expectEqual(true, ptc.load_tap_changing_capabilities);
+    try std.testing.expectEqual(false, ptc.regulating);
+
+    // Check steps (should be 3: positions 0, 1, 2)
+    try std.testing.expectEqual(@as(usize, 3), ptc.steps.items.len);
+
+    // Step 0: angle=-10.5, r=1.0, x=2.0
+    try std.testing.expectEqual(@as(f64, -10.5), ptc.steps.items[0].alpha);
+    try std.testing.expectEqual(@as(f64, 1.0), ptc.steps.items[0].r);
+    try std.testing.expectEqual(@as(f64, 2.0), ptc.steps.items[0].x);
+    try std.testing.expectEqual(@as(f64, 1.0), ptc.steps.items[0].rho);
+
+    // Step 1: neutral position (angle=0)
+    try std.testing.expectEqual(@as(f64, 0.0), ptc.steps.items[1].alpha);
+
+    // Step 2: angle=10.5
+    try std.testing.expectEqual(@as(f64, 10.5), ptc.steps.items[2].alpha);
+}
+
 test "Converter - converts VsConverter to VscConverterStation" {
     const gpa = std.testing.allocator;
 

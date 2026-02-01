@@ -342,6 +342,33 @@ pub const RatioTapChangerStep = struct {
     }
 };
 
+// New step type with alpha
+pub const PhaseTapChangerStep = struct {
+    r: f64,
+    x: f64,
+    g: f64,
+    b: f64,
+    rho: f64,
+    alpha: f64, // phase shift angle in degrees
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("r");
+        try jws.write(self.r);
+        try jws.objectField("x");
+        try jws.write(self.x);
+        try jws.objectField("g");
+        try jws.write(self.g);
+        try jws.objectField("b");
+        try jws.write(self.b);
+        try jws.objectField("rho");
+        try jws.write(self.rho);
+        try jws.objectField("alpha");
+        try jws.write(self.alpha);
+        try jws.endObject();
+    }
+};
+
 pub const RatioTapChanger = struct {
     low_tap_position: i32,
     tap_position: i32,
@@ -369,7 +396,32 @@ pub const RatioTapChanger = struct {
     }
 };
 
-// Transformers at substation level
+pub const PhaseTapChanger = struct {
+    low_tap_position: i32,
+    tap_position: i32,
+    load_tap_changing_capabilities: bool,
+    regulating: bool,
+    steps: std.ArrayListUnmanaged(PhaseTapChangerStep),
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("lowTapPosition");
+        try jws.write(self.low_tap_position);
+        try jws.objectField("tapPosition");
+        try jws.write(self.tap_position);
+        try jws.objectField("loadTapChangingCapabilities");
+        try jws.write(self.load_tap_changing_capabilities);
+        try jws.objectField("regulating");
+        try jws.write(self.regulating);
+        try jws.objectField("steps");
+        try jws.write(self.steps.items);
+        try jws.endObject();
+    }
+
+    pub fn deinit(self: *PhaseTapChanger, allocator: std.mem.Allocator) void {
+        self.steps.deinit(allocator);
+    }
+};
 
 pub const TwoWindingsTransformer = struct {
     id: []const u8,
@@ -386,6 +438,7 @@ pub const TwoWindingsTransformer = struct {
     voltage_level_id2: []const u8,
     node2: u32,
     ratio_tap_changer: ?RatioTapChanger,
+    phase_tap_changer: ?PhaseTapChanger,
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
         try jws.beginObject();
@@ -421,12 +474,19 @@ pub const TwoWindingsTransformer = struct {
             try jws.objectField("ratioTapChanger");
             try jws.write(tc);
         }
+        if (self.phase_tap_changer) |tc| {
+            try jws.objectField("phaseTapChanger");
+            try jws.write(tc);
+        }
         try jws.endObject();
     }
 
     pub fn deinit(self: *TwoWindingsTransformer, allocator: std.mem.Allocator) void {
         if (self.ratio_tap_changer) |*rtc| {
             rtc.deinit(allocator);
+        }
+        if (self.phase_tap_changer) |*ptc| {
+            ptc.deinit(allocator);
         }
     }
 };

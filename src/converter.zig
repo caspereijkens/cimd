@@ -552,8 +552,14 @@ pub const Converter = struct {
         const ratio_tap_changers = try self.model.getObjectsByType(self.gpa, "RatioTapChanger");
         defer self.gpa.free(ratio_tap_changers);
 
+        const phase_tap_changers = try self.model.getObjectsByType(self.gpa, "PhaseTapChangerTabular");
+        defer self.gpa.free(phase_tap_changers);
+
         const table_points = try self.model.getObjectsByType(self.gpa, "RatioTapChangerTablePoint");
         defer self.gpa.free(table_points);
+
+        const phase_table_points = try self.model.getObjectsByType(self.gpa, "PhaseTapChangerTablePoint");
+        defer self.gpa.free(phase_table_points);
 
         var ends_map: std.StringHashMapUnmanaged(EndArray) = .empty;
         defer ends_map.deinit(self.gpa);
@@ -562,11 +568,22 @@ pub const Converter = struct {
         defer ratio_tap_changer_map.deinit(self.gpa);
         try ratio_tap_changer_map.ensureTotalCapacity(self.gpa, @intCast(ratio_tap_changers.len));
 
+        var phase_tap_changer_map: std.StringHashMapUnmanaged(cim_model.CimObject) = .empty;
+        defer phase_tap_changer_map.deinit(self.gpa);
+        try phase_tap_changer_map.ensureTotalCapacity(self.gpa, @intCast(phase_tap_changers.len));
+
         var table_points_map: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(iidm.RatioTapChangerStep)) = .empty;
         defer {
             var it = table_points_map.valueIterator();
             while (it.next()) |list| list.deinit(self.gpa);
             table_points_map.deinit(self.gpa);
+        }
+
+        var phase_table_points_map: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(iidm.PhaseTapChangerStep)) = .empty;
+        defer {
+            var it = phase_table_points_map.valueIterator();
+            while (it.next()) |list| list.deinit(self.gpa);
+            phase_table_points_map.deinit(self.gpa);
         }
 
         for (ratio_tap_changers) |ratio_tap_changer| {
@@ -597,6 +614,38 @@ pub const Converter = struct {
                 .g = g,
                 .b = b,
                 .rho = rho,
+            });
+        }
+
+        for (phase_tap_changers) |phase_tap_changer| {
+            const transformer_end_ref = try phase_tap_changer.getReference("PhaseTapChanger.TransformerEnd") orelse return error.MalformedXML;
+            const transformer_end_id = topology.stripHash(transformer_end_ref);
+
+            phase_tap_changer_map.putAssumeCapacity(transformer_end_id, phase_tap_changer);
+        }
+
+        for (phase_table_points) |table_point| {
+            const table_ref = try table_point.getReference("PhaseTapChangerTablePoint.PhaseTapChangerTable") orelse continue;
+            const table_id = topology.stripHash(table_ref);
+
+            const r = if (try table_point.getProperty("TapChangerTablePoint.r")) |r_str| try std.fmt.parseFloat(f64, r_str) else 0.0;
+            const x = if (try table_point.getProperty("TapChangerTablePoint.x")) |x_str| try std.fmt.parseFloat(f64, x_str) else 0.0;
+            const g = if (try table_point.getProperty("TapChangerTablePoint.g")) |g_str| try std.fmt.parseFloat(f64, g_str) else 0.0;
+            const b = if (try table_point.getProperty("TapChangerTablePoint.b")) |b_str| try std.fmt.parseFloat(f64, b_str) else 0.0;
+            const cgmes_ratio = try std.fmt.parseFloat(f64, try table_point.getProperty("TapChangerTablePoint.ratio") orelse continue);
+            // IIDM uses inverse of CGMES ratio convention
+            const rho = if (cgmes_ratio != 0) 1.0 / cgmes_ratio else 1.0;
+            const alpha = if (try table_point.getProperty("PhaseTapChangerTablePoint.angle")) |alpha_str| try std.fmt.parseFloat(f64, alpha_str) else 0.0;
+
+            const gop = try phase_table_points_map.getOrPut(self.gpa, table_id);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.gpa, .{
+                .r = r,
+                .x = x,
+                .g = g,
+                .b = b,
+                .rho = rho,
+                .alpha = alpha,
             });
         }
 
@@ -685,31 +734,10 @@ pub const Converter = struct {
                 const node2_index = try self.getNodeIndex(voltage_level2_id, connectivity_node2_id);
 
                 // Build ratio tap changer if present on end1
-                var ratio_tap_changer: ?iidm.RatioTapChanger = null;
-                if (ratio_tap_changer_map.get(end1.id)) |rtc_obj| {
-                    const low_step = try std.fmt.parseInt(i32, try rtc_obj.getProperty("TapChanger.lowStep") orelse return error.MalformedXML, 10);
-                    const normal_step = try std.fmt.parseInt(i32, try rtc_obj.getProperty("TapChanger.normalStep") orelse return error.MalformedXML, 10);
-                    const ltc_flag_str = try rtc_obj.getProperty("TapChanger.ltcFlag") orelse "false";
-                    const ltc_flag = std.mem.eql(u8, ltc_flag_str, "true");
+                const ratio_tap_changer = try self.buildRatioTapChanger(end1.id, &ratio_tap_changer_map, &table_points_map);
 
-                    var steps: std.ArrayListUnmanaged(iidm.RatioTapChangerStep) = .empty;
-                    errdefer steps.deinit(self.gpa);
-
-                    if (try rtc_obj.getReference("RatioTapChanger.RatioTapChangerTable")) |table_ref| {
-                        const table_id = topology.stripHash(table_ref);
-                        if (table_points_map.get(table_id)) |points| {
-                            try steps.appendSlice(self.gpa, points.items);
-                        }
-                    }
-
-                    ratio_tap_changer = .{
-                        .low_tap_position = low_step,
-                        .tap_position = normal_step, // Use normalStep for EQ-only (step is in SSH)
-                        .load_tap_changing_capabilities = ltc_flag,
-                        .regulating = false, // SSH profile
-                        .steps = steps,
-                    };
-                }
+                // Build phase tap changer if present on end1
+                const phase_tap_changer = try self.buildPhaseTapChanger(end1.id, &phase_tap_changer_map, &phase_table_points_map);
 
                 try substation.two_winding_transformers.append(self.gpa, .{
                     .id = id,
@@ -726,9 +754,74 @@ pub const Converter = struct {
                     .voltage_level_id2 = vl2.id,
                     .node2 = node2_index,
                     .ratio_tap_changer = ratio_tap_changer,
+                    .phase_tap_changer = phase_tap_changer,
                 });
             }
         }
+    }
+
+    fn buildRatioTapChanger(
+        self: *Converter,
+        end_id: []const u8,
+        tap_changer_map: *const std.StringHashMapUnmanaged(cim_model.CimObject),
+        points_map: *const std.StringHashMapUnmanaged(std.ArrayListUnmanaged(iidm.RatioTapChangerStep)),
+    ) !?iidm.RatioTapChanger {
+        const rtc_obj = tap_changer_map.get(end_id) orelse return null;
+
+        const low_step = try std.fmt.parseInt(i32, try rtc_obj.getProperty("TapChanger.lowStep") orelse return error.MalformedXML, 10);
+        const normal_step = try std.fmt.parseInt(i32, try rtc_obj.getProperty("TapChanger.normalStep") orelse return error.MalformedXML, 10);
+        const ltc_flag_str = try rtc_obj.getProperty("TapChanger.ltcFlag") orelse "false";
+        const ltc_flag = std.mem.eql(u8, ltc_flag_str, "true");
+
+        var steps: std.ArrayListUnmanaged(iidm.RatioTapChangerStep) = .empty;
+        errdefer steps.deinit(self.gpa);
+
+        if (try rtc_obj.getReference("RatioTapChanger.RatioTapChangerTable")) |table_ref| {
+            const table_id = topology.stripHash(table_ref);
+            if (points_map.get(table_id)) |points| {
+                try steps.appendSlice(self.gpa, points.items);
+            }
+        }
+
+        return .{
+            .low_tap_position = low_step,
+            .tap_position = normal_step,
+            .load_tap_changing_capabilities = ltc_flag,
+            .regulating = false,
+            .steps = steps,
+        };
+    }
+
+    fn buildPhaseTapChanger(
+        self: *Converter,
+        end_id: []const u8,
+        tap_changer_map: *const std.StringHashMapUnmanaged(cim_model.CimObject),
+        points_map: *const std.StringHashMapUnmanaged(std.ArrayListUnmanaged(iidm.PhaseTapChangerStep)),
+    ) !?iidm.PhaseTapChanger {
+        const ptc_obj = tap_changer_map.get(end_id) orelse return null;
+
+        const low_step = try std.fmt.parseInt(i32, try ptc_obj.getProperty("TapChanger.lowStep") orelse return error.MalformedXML, 10);
+        const normal_step = try std.fmt.parseInt(i32, try ptc_obj.getProperty("TapChanger.normalStep") orelse return error.MalformedXML, 10);
+        const ltc_flag_str = try ptc_obj.getProperty("TapChanger.ltcFlag") orelse "false";
+        const ltc_flag = std.mem.eql(u8, ltc_flag_str, "true");
+
+        var steps: std.ArrayListUnmanaged(iidm.PhaseTapChangerStep) = .empty;
+        errdefer steps.deinit(self.gpa);
+
+        if (try ptc_obj.getReference("PhaseTapChangerTabular.PhaseTapChangerTable")) |table_ref| {
+            const table_id = topology.stripHash(table_ref);
+            if (points_map.get(table_id)) |points| {
+                try steps.appendSlice(self.gpa, points.items);
+            }
+        }
+
+        return .{
+            .low_tap_position = low_step,
+            .tap_position = normal_step,
+            .load_tap_changing_capabilities = ltc_flag,
+            .regulating = false,
+            .steps = steps,
+        };
     }
 
     fn convertLines(self: *Converter, network: *iidm.Network) !void {
