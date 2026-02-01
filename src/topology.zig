@@ -232,3 +232,23 @@ pub fn stripUnderscore(ref: []const u8) []const u8 {
 
     return ref[1..];
 }
+
+/// Decode URL-encoded string (converts '+' to space)
+pub fn urlDecode(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
+    // Check if decoding is needed
+    var needs_decode = false;
+    for (input) |c| {
+        if (c == '+') {
+            needs_decode = true;
+            break;
+        }
+    }
+    if (!needs_decode) return input;
+
+    // Allocate and decode
+    const result = try allocator.alloc(u8, input.len);
+    for (input, 0..) |c, i| {
+        result[i] = if (c == '+') ' ' else c;
+    }
+    return result;
+}

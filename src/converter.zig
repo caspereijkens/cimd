@@ -211,12 +211,26 @@ pub const Converter = struct {
             const id = try substation.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(substation.id);
             const name = try substation.getProperty("IdentifiedObject.name");
 
-            // Resolve geo_tags from Substation.Region -> SubGeographicalRegion.name
+            // Resolve geo_tags and properties from Substation.Region -> SubGeographicalRegion
             var geo_tags: std.ArrayListUnmanaged([]const u8) = .empty;
-            if (try substation.getReference("Substation.Region")) |region_ref| {
-                if (self.model.getObjectById(topology.stripHash(region_ref))) |region| {
-                    if (try region.getProperty("IdentifiedObject.name")) |region_name| {
+            var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
+            if (try substation.getReference("Substation.Region")) |sub_region_ref| {
+                if (self.model.getObjectById(topology.stripHash(sub_region_ref))) |sub_region| {
+                    if (try sub_region.getProperty("IdentifiedObject.name")) |region_name| {
                         try geo_tags.append(self.gpa, region_name);
+                        try properties.append(self.gpa, .{ .name = "CGMES.regionName", .value = region_name });
+                    }
+                    // SubGeographicalRegion ID (URL decode to convert + to space)
+                    const sub_region_id_raw = try sub_region.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(sub_region.id);
+                    const sub_region_id = try topology.urlDecode(self.gpa, sub_region_id_raw);
+                    try properties.append(self.gpa, .{ .name = "CGMES.subRegionId", .value = sub_region_id });
+                    // GeographicalRegion ID from SubGeographicalRegion.Region
+                    if (try sub_region.getReference("SubGeographicalRegion.Region")) |geo_region_ref| {
+                        if (self.model.getObjectById(topology.stripHash(geo_region_ref))) |geo_region| {
+                            const geo_region_id_raw = try geo_region.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(geo_region.id);
+                            const geo_region_id = try topology.urlDecode(self.gpa, geo_region_id_raw);
+                            try properties.append(self.gpa, .{ .name = "CGMES.regionId", .value = geo_region_id });
+                        }
                     }
                 }
             }
@@ -226,6 +240,7 @@ pub const Converter = struct {
                 .name = name,
                 .country = null,
                 .geo_tags = geo_tags,
+                .properties = properties,
                 .voltage_levels = .empty,
                 .two_winding_transformers = .empty,
                 .three_winding_transformers = .empty,
@@ -260,14 +275,26 @@ pub const Converter = struct {
             const substation_id = topology.stripHash(substation_ref);
             const base_voltage_ref = try voltage_level.getReference("VoltageLevel.BaseVoltage") orelse return error.MalformedXML;
             const base_voltage_id = topology.stripHash(base_voltage_ref);
-            const low_voltage_limit: ?f64 = if (try voltage_level.getProperty("VoltageLevel.lowVoltageLimit")) |val|
+            const low_voltage_limit_str = try voltage_level.getProperty("VoltageLevel.lowVoltageLimit");
+            const high_voltage_limit_str = try voltage_level.getProperty("VoltageLevel.highVoltageLimit");
+            const low_voltage_limit: ?f64 = if (low_voltage_limit_str) |val|
                 try std.fmt.parseFloat(f64, val)
             else
                 null;
-            const high_voltage_limit: ?f64 = if (try voltage_level.getProperty("VoltageLevel.highVoltageLimit")) |val|
+            const high_voltage_limit: ?f64 = if (high_voltage_limit_str) |val|
                 try std.fmt.parseFloat(f64, val)
             else
                 null;
+
+            // Build properties for CGMES voltage limits (formatted with decimal point)
+            var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
+            if (low_voltage_limit_str) |val| {
+                try properties.append(self.gpa, .{ .name = "CGMES.lowVoltageLimit", .value = try iidm.formatFloatStr(self.gpa, val) });
+            }
+            if (high_voltage_limit_str) |val| {
+                try properties.append(self.gpa, .{ .name = "CGMES.highVoltageLimit", .value = try iidm.formatFloatStr(self.gpa, val) });
+            }
+
             const substation_idx = self.substation_map.get(substation_id) orelse return error.MalformedXML;
             const substation = &network.substations.items[substation_idx];
 
@@ -278,6 +305,7 @@ pub const Converter = struct {
                 .nominal_voltage = nominal_voltages.get(base_voltage_id),
                 .low_voltage_limit = low_voltage_limit,
                 .high_voltage_limit = high_voltage_limit,
+                .properties = properties,
                 .node_breaker_topology = .{ .busbar_sections = .empty, .switches = .empty },
                 .generators = .empty,
                 .loads = .empty,
@@ -300,18 +328,18 @@ pub const Converter = struct {
         defer self.gpa.free(energy_consumers);
 
         for (energy_consumers) |load| {
-            try self.addLoad(network, load);
+            try self.addLoad(network, load, "EnergyConsumer");
         }
 
         const energy_sources = try self.model.getObjectsByType(self.gpa, "EnergySource");
         defer self.gpa.free(energy_sources);
 
         for (energy_sources) |load| {
-            try self.addLoad(network, load);
+            try self.addLoad(network, load, "EnergySource");
         }
     }
 
-    fn addLoad(self: *Converter, network: *iidm.Network, load: cim_model.CimObject) !void {
+    fn addLoad(self: *Converter, network: *iidm.Network, load: cim_model.CimObject, original_class: []const u8) !void {
         const connectivity_node_id = self.topology_resolver.getEquipmentNode(load.id, 1) orelse return error.MalformedXML;
         const connectivity_node = self.model.getObjectById(connectivity_node_id) orelse return error.MalformedXML;
 
@@ -324,11 +352,32 @@ pub const Converter = struct {
 
         const node_index = try self.getNodeIndex(voltage_level_id, connectivity_node_id);
 
+        // Build aliases from terminal ID
+        var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
+        if (self.topology_resolver.getEquipmentTerminals(load.id)) |term_infos| {
+            for (term_infos) |info| {
+                if (self.model.getObjectById(info.id)) |terminal| {
+                    const terminal_mrid = try terminal.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(terminal.id);
+                    try aliases.append(self.gpa, .{ .@"type" = "CGMES.Terminal1", .content = terminal_mrid });
+                }
+            }
+        }
+
+        // Build properties (pFixed, originalClass, qFixed)
+        var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
+        const p_fixed = try load.getProperty("EnergyConsumer.pFixed") orelse "0.0";
+        const q_fixed = try load.getProperty("EnergyConsumer.qFixed") orelse "0.0";
+        try properties.append(self.gpa, .{ .name = "CGMES.pFixed", .value = try iidm.formatFloatStr(self.gpa, p_fixed) });
+        try properties.append(self.gpa, .{ .name = "CGMES.originalClass", .value = original_class });
+        try properties.append(self.gpa, .{ .name = "CGMES.qFixed", .value = try iidm.formatFloatStr(self.gpa, q_fixed) });
+
         try voltage_level.loads.append(self.gpa, .{
             .id = id,
             .name = name,
             .load_type = .other,
             .node = node_index,
+            .aliases = aliases,
+            .properties = properties,
         });
     }
 
@@ -556,6 +605,34 @@ pub const Converter = struct {
                 const node1_index = try self.getNodeIndex(voltage_level_id, connectivity_node1_id);
                 const node2_index = try self.getNodeIndex(voltage_level_id, connectivity_node2_id);
 
+                // Build aliases from terminal IDs (Terminal2 first, then Terminal1)
+                var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
+                if (self.topology_resolver.getEquipmentTerminals(sw.id)) |term_infos| {
+                    // First pass: add Terminal2
+                    for (term_infos) |info| {
+                        if (info.sequence == 2) {
+                            if (self.model.getObjectById(info.id)) |terminal| {
+                                const terminal_mrid = try terminal.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(terminal.id);
+                                try aliases.append(self.gpa, .{ .@"type" = "CGMES.Terminal2", .content = terminal_mrid });
+                            }
+                        }
+                    }
+                    // Second pass: add Terminal1
+                    for (term_infos) |info| {
+                        if (info.sequence == 1) {
+                            if (self.model.getObjectById(info.id)) |terminal| {
+                                const terminal_mrid = try terminal.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(terminal.id);
+                                try aliases.append(self.gpa, .{ .@"type" = "CGMES.Terminal1", .content = terminal_mrid });
+                            }
+                        }
+                    }
+                }
+
+                // Build properties
+                var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
+                try properties.append(self.gpa, .{ .name = "CGMES.originalClass", .value = mapping.cim_type });
+                try properties.append(self.gpa, .{ .name = "CGMES.normalOpen", .value = open_str });
+
                 try voltage_level.node_breaker_topology.switches.append(self.gpa, .{
                     .id = id,
                     .name = name,
@@ -564,6 +641,8 @@ pub const Converter = struct {
                     .retained = mapping.kind == .breaker, // only breakers retained in bus/breaker topology
                     .node1 = node1_index,
                     .node2 = node2_index,
+                    .aliases = aliases,
+                    .properties = properties,
                 });
             }
         }
@@ -585,10 +664,22 @@ pub const Converter = struct {
             const name = try busbar_section.getProperty("IdentifiedObject.name");
             const node_index = try self.getNodeIndex(voltage_level_id, connectivity_node_id);
 
+            // Build aliases from terminal IDs
+            var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
+            if (self.topology_resolver.getEquipmentTerminals(busbar_section.id)) |term_infos| {
+                for (term_infos) |info| {
+                    if (self.model.getObjectById(info.id)) |terminal| {
+                        const terminal_mrid = try terminal.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(terminal.id);
+                        try aliases.append(self.gpa, .{ .@"type" = "CGMES.Terminal1", .content = terminal_mrid });
+                    }
+                }
+            }
+
             try voltage_level.node_breaker_topology.busbar_sections.append(self.gpa, .{
                 .id = id,
                 .name = name,
                 .node = node_index,
+                .aliases = aliases,
             });
         }
     }
@@ -912,26 +1003,6 @@ pub const Converter = struct {
         const lines = try self.model.getObjectsByType(self.gpa, "ACLineSegment");
         defer self.gpa.free(lines);
 
-        // Build terminal lookup: equipment_id -> (terminal1_id, terminal2_id)
-        const terminals = try self.model.getObjectsByType(self.gpa, "Terminal");
-        defer self.gpa.free(terminals);
-
-        const TerminalPair = struct { t1: ?[]const u8 = null, t2: ?[]const u8 = null };
-        var equipment_terminals: std.StringHashMapUnmanaged(TerminalPair) = .empty;
-        defer equipment_terminals.deinit(self.gpa);
-
-        for (terminals) |terminal| {
-            const equip_ref = try terminal.getReference("Terminal.ConductingEquipment") orelse continue;
-            const equip_id = topology.stripHash(equip_ref);
-            const seq_str = try terminal.getProperty("ACDCTerminal.sequenceNumber") orelse continue;
-            const seq = std.fmt.parseInt(u32, seq_str, 10) catch continue;
-
-            const gop = try equipment_terminals.getOrPut(self.gpa, equip_id);
-            if (!gop.found_existing) gop.value_ptr.* = .{};
-            if (seq == 1) gop.value_ptr.t1 = terminal.id;
-            if (seq == 2) gop.value_ptr.t2 = terminal.id;
-        }
-
         try network.lines.ensureTotalCapacity(self.gpa, lines.len);
 
         for (lines) |line| {
@@ -946,18 +1017,27 @@ pub const Converter = struct {
             // gch is optional in CGMES, default to 0 if not present
             const gch = try std.fmt.parseFloat(f64, try line.getProperty("ACLineSegment.gch") orelse "0");
 
+            // Get terminal IDs from topology resolver (O(1) lookup, already built)
+            var t1_id: ?[]const u8 = null;
+            var t2_id: ?[]const u8 = null;
+            if (self.topology_resolver.getEquipmentTerminals(line.id)) |term_infos| {
+                for (term_infos) |info| {
+                    if (info.sequence == 1) t1_id = info.id;
+                    if (info.sequence == 2) t2_id = info.id;
+                }
+            }
+
             // Build operational limits from terminal references
-            const term_pair = equipment_terminals.get(line.id) orelse TerminalPair{};
             var op_lims_1: std.ArrayListUnmanaged(iidm.OperationalLimitsGroup) = .empty;
             errdefer op_lims_1.deinit(self.gpa);
             var op_lims_2: std.ArrayListUnmanaged(iidm.OperationalLimitsGroup) = .empty;
             errdefer op_lims_2.deinit(self.gpa);
 
-            if (term_pair.t1) |t1_id| {
-                op_lims_1 = try self.buildOperationalLimitsGroups(t1_id);
+            if (t1_id) |tid| {
+                op_lims_1 = try self.buildOperationalLimitsGroups(tid);
             }
-            if (term_pair.t2) |t2_id| {
-                op_lims_2 = try self.buildOperationalLimitsGroups(t2_id);
+            if (t2_id) |tid| {
+                op_lims_2 = try self.buildOperationalLimitsGroups(tid);
             }
 
             network.lines.appendAssumeCapacity(.{
