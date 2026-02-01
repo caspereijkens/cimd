@@ -750,6 +750,7 @@ test "Converter - converts RatioTapChanger on TwoWindingsTransformer" {
         \\  </cim:PowerTransformer>
         \\  <cim:PowerTransformerEnd rdf:ID="TR1_End1">
         \\    <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
+        \\    <cim:TransformerEnd.Terminal rdf:resource="#T1"/>
         \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#TR1"/>
         \\    <cim:PowerTransformerEnd.ratedU>225</cim:PowerTransformerEnd.ratedU>
         \\    <cim:PowerTransformerEnd.ratedS>100</cim:PowerTransformerEnd.ratedS>
@@ -760,6 +761,7 @@ test "Converter - converts RatioTapChanger on TwoWindingsTransformer" {
         \\  </cim:PowerTransformerEnd>
         \\  <cim:PowerTransformerEnd rdf:ID="TR1_End2">
         \\    <cim:TransformerEnd.endNumber>2</cim:TransformerEnd.endNumber>
+        \\    <cim:TransformerEnd.Terminal rdf:resource="#T2"/>
         \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#TR1"/>
         \\    <cim:PowerTransformerEnd.ratedU>400</cim:PowerTransformerEnd.ratedU>
         \\    <cim:PowerTransformerEnd.r>0</cim:PowerTransformerEnd.r>
@@ -873,6 +875,7 @@ test "Converter - converts PhaseTapChanger on TwoWindingsTransformer" {
         \\  </cim:PowerTransformer>
         \\  <cim:PowerTransformerEnd rdf:ID="TR1_End1">
         \\    <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
+        \\    <cim:TransformerEnd.Terminal rdf:resource="#T1"/>
         \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#TR1"/>
         \\    <cim:PowerTransformerEnd.ratedU>225</cim:PowerTransformerEnd.ratedU>
         \\    <cim:PowerTransformerEnd.ratedS>100</cim:PowerTransformerEnd.ratedS>
@@ -883,6 +886,7 @@ test "Converter - converts PhaseTapChanger on TwoWindingsTransformer" {
         \\  </cim:PowerTransformerEnd>
         \\  <cim:PowerTransformerEnd rdf:ID="TR1_End2">
         \\    <cim:TransformerEnd.endNumber>2</cim:TransformerEnd.endNumber>
+        \\    <cim:TransformerEnd.Terminal rdf:resource="#T2"/>
         \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#TR1"/>
         \\    <cim:PowerTransformerEnd.ratedU>400</cim:PowerTransformerEnd.ratedU>
         \\    <cim:PowerTransformerEnd.r>0</cim:PowerTransformerEnd.r>
@@ -1123,4 +1127,122 @@ test "Converter - converts CsConverter to LccConverterStation" {
     try std.testing.expectEqual(@as(f64, 1.5), lcc.loss_factor);
     try std.testing.expectEqual(@as(f64, 0.8), lcc.power_factor); // default value
     try std.testing.expectEqual(@as(u32, 0), lcc.node);
+}
+
+test "Converter - converts two-winding transformer with operational limits" {
+    const gpa = std.testing.allocator;
+
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test">
+        \\    <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
+        \\  <cim:Substation rdf:ID="SUB1">
+        \\    <cim:IdentifiedObject.name>Sub1</cim:IdentifiedObject.name>
+        \\  </cim:Substation>
+        \\  <cim:VoltageLevel rdf:ID="VL1">
+        \\    <cim:IdentifiedObject.name>VL1</cim:IdentifiedObject.name>
+        \\    <cim:VoltageLevel.Substation rdf:resource="#SUB1"/>
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#BV400"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:VoltageLevel rdf:ID="VL2">
+        \\    <cim:IdentifiedObject.name>VL2</cim:IdentifiedObject.name>
+        \\    <cim:VoltageLevel.Substation rdf:resource="#SUB1"/>
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#BV225"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:BaseVoltage rdf:ID="BV400">
+        \\    <cim:BaseVoltage.nominalVoltage>400</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\  <cim:BaseVoltage rdf:ID="BV225">
+        \\    <cim:BaseVoltage.nominalVoltage>225</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\  <cim:PowerTransformer rdf:ID="PT1">
+        \\    <cim:IdentifiedObject.name>Trafo1</cim:IdentifiedObject.name>
+        \\    <cim:Equipment.EquipmentContainer rdf:resource="#SUB1"/>
+        \\  </cim:PowerTransformer>
+        \\  <cim:PowerTransformerEnd rdf:ID="PT1_E1">
+        \\    <cim:TransformerEnd.Terminal rdf:resource="#T_PT1_1"/>
+        \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#PT1"/>
+        \\    <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
+        \\    <cim:PowerTransformerEnd.ratedU>400</cim:PowerTransformerEnd.ratedU>
+        \\    <cim:PowerTransformerEnd.r>1.0</cim:PowerTransformerEnd.r>
+        \\    <cim:PowerTransformerEnd.x>10.0</cim:PowerTransformerEnd.x>
+        \\    <cim:PowerTransformerEnd.g>0.0</cim:PowerTransformerEnd.g>
+        \\    <cim:PowerTransformerEnd.b>0.0</cim:PowerTransformerEnd.b>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PowerTransformerEnd rdf:ID="PT1_E2">
+        \\    <cim:TransformerEnd.Terminal rdf:resource="#T_PT1_2"/>
+        \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#PT1"/>
+        \\    <cim:TransformerEnd.endNumber>2</cim:TransformerEnd.endNumber>
+        \\    <cim:PowerTransformerEnd.ratedU>225</cim:PowerTransformerEnd.ratedU>
+        \\    <cim:PowerTransformerEnd.r>0.0</cim:PowerTransformerEnd.r>
+        \\    <cim:PowerTransformerEnd.x>0.0</cim:PowerTransformerEnd.x>
+        \\    <cim:PowerTransformerEnd.g>0.0</cim:PowerTransformerEnd.g>
+        \\    <cim:PowerTransformerEnd.b>0.0</cim:PowerTransformerEnd.b>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:Terminal rdf:ID="T_PT1_1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#PT1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="T_PT1_2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#PT1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN2"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\  <cim:ConnectivityNode rdf:ID="CN1">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#VL1"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:ConnectivityNode rdf:ID="CN2">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#VL2"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:OperationalLimitSet rdf:ID="OLS1">
+        \\    <cim:OperationalLimitSet.Terminal rdf:resource="#T_PT1_1"/>
+        \\  </cim:OperationalLimitSet>
+        \\  <cim:OperationalLimitSet rdf:ID="OLS2">
+        \\    <cim:OperationalLimitSet.Terminal rdf:resource="#T_PT1_2"/>
+        \\  </cim:OperationalLimitSet>
+        \\  <cim:CurrentLimit rdf:ID="CL1">
+        \\    <cim:OperationalLimit.OperationalLimitSet rdf:resource="#OLS1"/>
+        \\    <cim:OperationalLimit.OperationalLimitType rdf:resource="#PATL"/>
+        \\    <cim:CurrentLimit.normalValue>1031.0</cim:CurrentLimit.normalValue>
+        \\  </cim:CurrentLimit>
+        \\  <cim:CurrentLimit rdf:ID="CL2">
+        \\    <cim:OperationalLimit.OperationalLimitSet rdf:resource="#OLS2"/>
+        \\    <cim:OperationalLimit.OperationalLimitType rdf:resource="#PATL"/>
+        \\    <cim:CurrentLimit.normalValue>1031.0</cim:CurrentLimit.normalValue>
+        \\  </cim:CurrentLimit>
+        \\  <cim:OperationalLimitType rdf:ID="PATL">
+        \\    <cim:IdentifiedObject.name>PATL</cim:IdentifiedObject.name>
+        \\    <cim:OperationalLimitType.isInfiniteDuration>true</cim:OperationalLimitType.isInfiniteDuration>
+        \\  </cim:OperationalLimitType>
+        \\</rdf:RDF>
+    ;
+
+    var model = try CimModel.init(gpa, eq_xml);
+    defer model.deinit(gpa);
+
+    var topo = try TopologyResolver.init(gpa, &model);
+    defer topo.deinit();
+
+    var conv = Converter.init(gpa, &model, &topo);
+    defer conv.deinit();
+    var network = try conv.convert();
+    defer network.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 1), network.substations.items.len);
+    const transformers = network.substations.items[0].two_winding_transformers.items;
+    try std.testing.expectEqual(@as(usize, 1), transformers.len);
+
+    const t = transformers[0];
+
+    // Check operational limits on side 1
+    try std.testing.expectEqual(@as(usize, 1), t.op_lims_groups_1.items.len);
+    try std.testing.expectEqualStrings("OLS1", t.op_lims_groups_1.items[0].id);
+    try std.testing.expectEqual(@as(f64, 1031.0), t.op_lims_groups_1.items[0].current_limits.?.permanent_limit);
+
+    // Check operational limits on side 2
+    try std.testing.expectEqual(@as(usize, 1), t.op_lims_groups_2.items.len);
+    try std.testing.expectEqualStrings("OLS2", t.op_lims_groups_2.items[0].id);
+    try std.testing.expectEqual(@as(f64, 1031.0), t.op_lims_groups_2.items[0].current_limits.?.permanent_limit);
 }

@@ -423,6 +423,33 @@ pub const PhaseTapChanger = struct {
     }
 };
 
+pub const CurrentLimits = struct {
+    permanent_limit: f64,
+
+    pub fn jsonStringify(self: CurrentLimits, jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("permanentLimit");
+        try jws.write(self.permanent_limit);
+        try jws.endObject();
+    }
+};
+
+pub const OperationalLimitsGroup = struct {
+    id: []const u8,
+    current_limits: ?CurrentLimits = null,
+
+    pub fn jsonStringify(self: OperationalLimitsGroup, jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("id");
+        try jws.write(self.id);
+        if (self.current_limits) |cl| {
+            try jws.objectField("currentLimits");
+            try cl.jsonStringify(jws);
+        }
+        try jws.endObject();
+    }
+};
+
 pub const TwoWindingsTransformer = struct {
     id: []const u8,
     name: ?[]const u8,
@@ -439,6 +466,8 @@ pub const TwoWindingsTransformer = struct {
     node2: u32,
     ratio_tap_changer: ?RatioTapChanger,
     phase_tap_changer: ?PhaseTapChanger,
+    op_lims_groups_1: std.ArrayListUnmanaged(OperationalLimitsGroup),
+    op_lims_groups_2: std.ArrayListUnmanaged(OperationalLimitsGroup),
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
         try jws.beginObject();
@@ -478,6 +507,22 @@ pub const TwoWindingsTransformer = struct {
             try jws.objectField("phaseTapChanger");
             try jws.write(tc);
         }
+        if (self.op_lims_groups_1.items.len > 0) {
+            try jws.objectField("operationalLimitsGroups1");
+            try jws.beginArray();
+            for (self.op_lims_groups_1.items) |olg| {
+                try olg.jsonStringify(jws);
+            }
+            try jws.endArray();
+        }
+        if (self.op_lims_groups_2.items.len > 0) {
+            try jws.objectField("operationalLimitsGroups2");
+            try jws.beginArray();
+            for (self.op_lims_groups_2.items) |olg| {
+                try olg.jsonStringify(jws);
+            }
+            try jws.endArray();
+        }
         try jws.endObject();
     }
 
@@ -488,6 +533,8 @@ pub const TwoWindingsTransformer = struct {
         if (self.phase_tap_changer) |*ptc| {
             ptc.deinit(allocator);
         }
+        self.op_lims_groups_1.deinit(allocator);
+        self.op_lims_groups_2.deinit(allocator);
     }
 };
 
@@ -569,6 +616,54 @@ pub const Line = struct {
     g2: f64,
     b1: f64,
     b2: f64,
+    op_lims_groups_1: std.ArrayListUnmanaged(OperationalLimitsGroup),
+    op_lims_groups_2: std.ArrayListUnmanaged(OperationalLimitsGroup),
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("id");
+        try jws.write(self.id);
+        try jws.objectField("name");
+        try jws.write(self.name);
+        try jws.objectField("node1");
+        try jws.write(self.node1);
+        try jws.objectField("node2");
+        try jws.write(self.node2);
+        try jws.objectField("r");
+        try jws.write(self.r);
+        try jws.objectField("x");
+        try jws.write(self.x);
+        try jws.objectField("g1");
+        try jws.write(self.g1);
+        try jws.objectField("g2");
+        try jws.write(self.g2);
+        try jws.objectField("b1");
+        try jws.write(self.b1);
+        try jws.objectField("b2");
+        try jws.write(self.b2);
+        if (self.op_lims_groups_1.items.len > 0) {
+            try jws.objectField("operationalLimitsGroups1");
+            try jws.beginArray();
+            for (self.op_lims_groups_1.items) |olg| {
+                try olg.jsonStringify(jws);
+            }
+            try jws.endArray();
+        }
+        if (self.op_lims_groups_2.items.len > 0) {
+            try jws.objectField("operationalLimitsGroups2");
+            try jws.beginArray();
+            for (self.op_lims_groups_2.items) |olg| {
+                try olg.jsonStringify(jws);
+            }
+            try jws.endArray();
+        }
+        try jws.endObject();
+    }
+
+    pub fn deinit(self: *Line, allocator: std.mem.Allocator) void {
+        self.op_lims_groups_1.deinit(allocator);
+        self.op_lims_groups_2.deinit(allocator);
+    }
 };
 
 pub const Network = struct {
@@ -597,6 +692,9 @@ pub const Network = struct {
             sub.deinit(allocator);
         }
         self.substations.deinit(allocator);
+        for (self.lines.items) |*line| {
+            line.deinit(allocator);
+        }
         self.lines.deinit(allocator);
     }
 };

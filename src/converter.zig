@@ -586,6 +586,55 @@ pub const Converter = struct {
             phase_table_points_map.deinit(self.gpa);
         }
 
+        const op_lim_sets = try self.model.getObjectsByType(self.gpa, "OperationalLimitSet");
+        defer self.gpa.free(op_lim_sets);
+
+        var terminal_to_limit_set_map: std.StringHashMapUnmanaged([]const u8) = .empty;
+        defer terminal_to_limit_set_map.deinit(self.gpa);
+        try terminal_to_limit_set_map.ensureTotalCapacity(self.gpa, @intCast(op_lim_sets.len));
+
+        for (op_lim_sets) |op_lim_set| {
+            const terminal_ref = try op_lim_set.getReference("OperationalLimitSet.Terminal") orelse continue;
+            const terminal_id = topology.stripHash(terminal_ref);
+            terminal_to_limit_set_map.putAssumeCapacity(terminal_id, op_lim_set.id);
+        }
+
+        // Build set of PATL (permanent) limit type IDs
+        const limit_types = try self.model.getObjectsByType(self.gpa, "OperationalLimitType");
+        defer self.gpa.free(limit_types);
+
+        var patl_type_ids: std.StringHashMapUnmanaged(void) = .empty;
+        defer patl_type_ids.deinit(self.gpa);
+
+        for (limit_types) |limit_type| {
+            // Check if this is a PATL type (infinite duration = permanent limit)
+            const is_infinite = try limit_type.getProperty("OperationalLimitType.isInfiniteDuration") orelse "false";
+            if (std.mem.eql(u8, is_infinite, "true")) {
+                try patl_type_ids.put(self.gpa, limit_type.id, {});
+            }
+        }
+
+        // Operational limits: OperationalLimitSet ID → permanent limit value (PATL only)
+        const current_limits = try self.model.getObjectsByType(self.gpa, "CurrentLimit");
+        defer self.gpa.free(current_limits);
+
+        var limit_set_to_value_map: std.StringHashMapUnmanaged(f64) = .empty;
+        defer limit_set_to_value_map.deinit(self.gpa);
+        try limit_set_to_value_map.ensureTotalCapacity(self.gpa, @intCast(current_limits.len));
+
+        for (current_limits) |current_limit| {
+            // Only use PATL (permanent) limits
+            const type_ref = try current_limit.getReference("OperationalLimit.OperationalLimitType") orelse continue;
+            const type_id = topology.stripHash(type_ref);
+            if (!patl_type_ids.contains(type_id)) continue;
+
+            const set_ref = try current_limit.getReference("OperationalLimit.OperationalLimitSet") orelse continue;
+            const set_id = topology.stripHash(set_ref);
+            const value_str = try current_limit.getProperty("CurrentLimit.normalValue") orelse continue;
+            const value = try std.fmt.parseFloat(f64, value_str);
+            limit_set_to_value_map.putAssumeCapacity(set_id, value);
+        }
+
         for (ratio_tap_changers) |ratio_tap_changer| {
             const transformer_end_ref = try ratio_tap_changer.getReference("RatioTapChanger.TransformerEnd") orelse return error.MalformedXML;
             const transformer_end_id = topology.stripHash(transformer_end_ref);
@@ -739,6 +788,16 @@ pub const Converter = struct {
                 // Build phase tap changer if present on end1
                 const phase_tap_changer = try self.buildPhaseTapChanger(end1.id, &phase_tap_changer_map, &phase_table_points_map);
 
+                // Build operational limits from terminal references
+                const terminal1_ref = try end1.getReference("TransformerEnd.Terminal") orelse return error.MalformedXML;
+                const terminal1_id = topology.stripHash(terminal1_ref);
+                const terminal2_ref = try end2.getReference("TransformerEnd.Terminal") orelse return error.MalformedXML;
+                const terminal2_id = topology.stripHash(terminal2_ref);
+
+                var op_lims_1 = try self.buildOperationalLimitsGroups(terminal1_id, &terminal_to_limit_set_map, &limit_set_to_value_map);
+                errdefer op_lims_1.deinit(self.gpa);
+                const op_lims_2 = try self.buildOperationalLimitsGroups(terminal2_id, &terminal_to_limit_set_map, &limit_set_to_value_map);
+
                 try substation.two_winding_transformers.append(self.gpa, .{
                     .id = id,
                     .name = name,
@@ -755,6 +814,8 @@ pub const Converter = struct {
                     .node2 = node2_index,
                     .ratio_tap_changer = ratio_tap_changer,
                     .phase_tap_changer = phase_tap_changer,
+                    .op_lims_groups_1 = op_lims_1,
+                    .op_lims_groups_2 = op_lims_2,
                 });
             }
         }
@@ -824,9 +885,102 @@ pub const Converter = struct {
         };
     }
 
+    fn buildOperationalLimitsGroups(
+        self: *Converter,
+        terminal_id: []const u8,
+        terminal_to_set_map: *const std.StringHashMapUnmanaged([]const u8),
+        set_to_value_map: *const std.StringHashMapUnmanaged(f64),
+    ) !std.ArrayListUnmanaged(iidm.OperationalLimitsGroup) {
+        var groups: std.ArrayListUnmanaged(iidm.OperationalLimitsGroup) = .empty;
+        errdefer groups.deinit(self.gpa);
+
+        if (terminal_to_set_map.get(terminal_id)) |set_id| {
+            const current_limits: ?iidm.CurrentLimits = if (set_to_value_map.get(set_id)) |value|
+                .{ .permanent_limit = value }
+            else
+                null;
+
+            try groups.append(self.gpa, .{
+                .id = set_id,
+                .current_limits = current_limits,
+            });
+        }
+
+        return groups;
+    }
+
     fn convertLines(self: *Converter, network: *iidm.Network) !void {
         const lines = try self.model.getObjectsByType(self.gpa, "ACLineSegment");
         defer self.gpa.free(lines);
+
+        // Build terminal lookup: equipment_id -> (terminal1_id, terminal2_id)
+        const terminals = try self.model.getObjectsByType(self.gpa, "Terminal");
+        defer self.gpa.free(terminals);
+
+        const TerminalPair = struct { t1: ?[]const u8 = null, t2: ?[]const u8 = null };
+        var equipment_terminals: std.StringHashMapUnmanaged(TerminalPair) = .empty;
+        defer equipment_terminals.deinit(self.gpa);
+
+        for (terminals) |terminal| {
+            const equip_ref = try terminal.getReference("Terminal.ConductingEquipment") orelse continue;
+            const equip_id = topology.stripHash(equip_ref);
+            const seq_str = try terminal.getProperty("ACDCTerminal.sequenceNumber") orelse continue;
+            const seq = std.fmt.parseInt(u32, seq_str, 10) catch continue;
+
+            const gop = try equipment_terminals.getOrPut(self.gpa, equip_id);
+            if (!gop.found_existing) gop.value_ptr.* = .{};
+            if (seq == 1) gop.value_ptr.t1 = terminal.id;
+            if (seq == 2) gop.value_ptr.t2 = terminal.id;
+        }
+
+        // Operational limits: Terminal ID → OperationalLimitSet
+        const op_lim_sets = try self.model.getObjectsByType(self.gpa, "OperationalLimitSet");
+        defer self.gpa.free(op_lim_sets);
+
+        var terminal_to_limit_set_map: std.StringHashMapUnmanaged([]const u8) = .empty;
+        defer terminal_to_limit_set_map.deinit(self.gpa);
+        try terminal_to_limit_set_map.ensureTotalCapacity(self.gpa, @intCast(op_lim_sets.len));
+
+        for (op_lim_sets) |op_lim_set| {
+            const terminal_ref = try op_lim_set.getReference("OperationalLimitSet.Terminal") orelse continue;
+            const terminal_id = topology.stripHash(terminal_ref);
+            terminal_to_limit_set_map.putAssumeCapacity(terminal_id, op_lim_set.id);
+        }
+
+        // Build set of PATL (permanent) limit type IDs
+        const limit_types = try self.model.getObjectsByType(self.gpa, "OperationalLimitType");
+        defer self.gpa.free(limit_types);
+
+        var patl_type_ids: std.StringHashMapUnmanaged(void) = .empty;
+        defer patl_type_ids.deinit(self.gpa);
+
+        for (limit_types) |limit_type| {
+            const is_infinite = try limit_type.getProperty("OperationalLimitType.isInfiniteDuration") orelse "false";
+            if (std.mem.eql(u8, is_infinite, "true")) {
+                try patl_type_ids.put(self.gpa, limit_type.id, {});
+            }
+        }
+
+        // Operational limits: OperationalLimitSet ID → permanent limit value (PATL only)
+        const current_limits = try self.model.getObjectsByType(self.gpa, "CurrentLimit");
+        defer self.gpa.free(current_limits);
+
+        var limit_set_to_value_map: std.StringHashMapUnmanaged(f64) = .empty;
+        defer limit_set_to_value_map.deinit(self.gpa);
+        try limit_set_to_value_map.ensureTotalCapacity(self.gpa, @intCast(current_limits.len));
+
+        for (current_limits) |current_limit| {
+            // Only use PATL (permanent) limits
+            const type_ref = try current_limit.getReference("OperationalLimit.OperationalLimitType") orelse continue;
+            const type_id = topology.stripHash(type_ref);
+            if (!patl_type_ids.contains(type_id)) continue;
+
+            const set_ref = try current_limit.getReference("OperationalLimit.OperationalLimitSet") orelse continue;
+            const set_id = topology.stripHash(set_ref);
+            const value_str = try current_limit.getProperty("CurrentLimit.normalValue") orelse continue;
+            const value = try std.fmt.parseFloat(f64, value_str);
+            limit_set_to_value_map.putAssumeCapacity(set_id, value);
+        }
 
         try network.lines.ensureTotalCapacity(self.gpa, lines.len);
 
@@ -842,6 +996,20 @@ pub const Converter = struct {
             // gch is optional in CGMES, default to 0 if not present
             const gch = try std.fmt.parseFloat(f64, try line.getProperty("ACLineSegment.gch") orelse "0");
 
+            // Build operational limits from terminal references
+            const term_pair = equipment_terminals.get(line.id) orelse TerminalPair{};
+            var op_lims_1: std.ArrayListUnmanaged(iidm.OperationalLimitsGroup) = .empty;
+            errdefer op_lims_1.deinit(self.gpa);
+            var op_lims_2: std.ArrayListUnmanaged(iidm.OperationalLimitsGroup) = .empty;
+            errdefer op_lims_2.deinit(self.gpa);
+
+            if (term_pair.t1) |t1_id| {
+                op_lims_1 = try self.buildOperationalLimitsGroups(t1_id, &terminal_to_limit_set_map, &limit_set_to_value_map);
+            }
+            if (term_pair.t2) |t2_id| {
+                op_lims_2 = try self.buildOperationalLimitsGroups(t2_id, &terminal_to_limit_set_map, &limit_set_to_value_map);
+            }
+
             network.lines.appendAssumeCapacity(.{
                 .id = id,
                 .name = name,
@@ -853,6 +1021,8 @@ pub const Converter = struct {
                 .g2 = gch / 2,
                 .b1 = bch / 2,
                 .b2 = bch / 2,
+                .op_lims_groups_1 = op_lims_1,
+                .op_lims_groups_2 = op_lims_2,
             });
         }
     }
