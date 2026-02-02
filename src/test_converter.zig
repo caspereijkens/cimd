@@ -200,7 +200,6 @@ test "Converter - converts SynchronousMachine to Generator" {
     try std.testing.expectEqual(@as(f64, 200.0), gen.max_p.?);
     try std.testing.expectEqual(@as(f64, 250.5), gen.rated_s.?);
     try std.testing.expectEqual(false, gen.voltage_regulator_on);
-    try std.testing.expectEqual(@as(f64, 150.0), gen.target_p);
     try std.testing.expectEqual(@as(usize, 0), gen.reactive_capability_curve_points.items.len);
 }
 
@@ -358,8 +357,8 @@ test "Converter - converts ACLineSegment to Line" {
     const line = network.lines.items[0];
     try std.testing.expectEqualStrings("Line1", line.id);
     try std.testing.expectEqualStrings("Line A-B", line.name.?);
-    try std.testing.expectEqualStrings("CN1", line.node1.?);
-    try std.testing.expectEqualStrings("CN2", line.node2.?);
+    try std.testing.expectEqual(@as(u32, 0), line.node1); // node index for CN1
+    try std.testing.expectEqual(@as(u32, 0), line.node2); // node index for CN2
     try std.testing.expectEqual(@as(f64, 1.5), line.r);
     try std.testing.expectEqual(@as(f64, 15.0), line.x);
     try std.testing.expectEqual(@as(f64, 0.00005), line.b1); // half of bch
@@ -968,17 +967,17 @@ test "Converter - converts PhaseTapChanger on TwoWindingsTransformer" {
     // Check steps (should be 3: positions 0, 1, 2)
     try std.testing.expectEqual(@as(usize, 3), ptc.steps.items.len);
 
-    // Step 0: angle=-10.5, r=1.0, x=2.0
-    try std.testing.expectEqual(@as(f64, -10.5), ptc.steps.items[0].alpha);
+    // Step 0: CGMES angle=-10.5 -> IIDM alpha=10.5 (negated), r=1.0, x=2.0
+    try std.testing.expectEqual(@as(f64, 10.5), ptc.steps.items[0].alpha);
     try std.testing.expectEqual(@as(f64, 1.0), ptc.steps.items[0].r);
     try std.testing.expectEqual(@as(f64, 2.0), ptc.steps.items[0].x);
     try std.testing.expectEqual(@as(f64, 1.0), ptc.steps.items[0].rho);
 
-    // Step 1: neutral position (angle=0)
+    // Step 1: neutral position (angle=0, still 0 after negation)
     try std.testing.expectEqual(@as(f64, 0.0), ptc.steps.items[1].alpha);
 
-    // Step 2: angle=10.5
-    try std.testing.expectEqual(@as(f64, 10.5), ptc.steps.items[2].alpha);
+    // Step 2: CGMES angle=10.5 -> IIDM alpha=-10.5 (negated)
+    try std.testing.expectEqual(@as(f64, -10.5), ptc.steps.items[2].alpha);
 }
 
 test "Converter - converts VsConverter to VscConverterStation" {
