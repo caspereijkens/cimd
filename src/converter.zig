@@ -167,6 +167,25 @@ pub const Converter = struct {
         return gop.value_ptr.getOrAssign(self.gpa, contingency_node_id);
     }
 
+    /// Get VoltageLevel ID from ConnectivityNode, handling Bay containers.
+    /// ConnectivityNode.ConnectivityNodeContainer can point to either:
+    /// - VoltageLevel directly
+    /// - Bay (which has Bay.VoltageLevel pointing to the actual VoltageLevel)
+    fn getVoltageLevelFromCN(self: *Converter, cn: *const cim_model.CimObject) ![]const u8 {
+        const container_ref = try cn.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+        const container_id = topology.stripHash(container_ref);
+
+        // Check if container is a VoltageLevel (exists in our voltage_level_map)
+        if (self.voltage_level_map.contains(container_id)) {
+            return container_id;
+        }
+
+        // Otherwise, assume it's a Bay - follow Bay.VoltageLevel
+        const container = self.model.getObjectById(container_id) orelse return error.MalformedXML;
+        const voltage_level_ref = try container.getReference("Bay.VoltageLevel") orelse return error.MalformedXML;
+        return topology.stripHash(voltage_level_ref);
+    }
+
     pub fn convert(self: *Converter) !iidm.Network {
         const full_model_list = try self.model.getObjectsByType(self.gpa, "FullModel");
         defer self.gpa.free(full_model_list);
@@ -362,8 +381,7 @@ pub const Converter = struct {
         const connectivity_node_id = self.topology_resolver.getEquipmentNode(load.id, 1) orelse return error.MalformedXML;
         const connectivity_node = self.model.getObjectById(connectivity_node_id) orelse return error.MalformedXML;
 
-        const voltage_level_ref = try connectivity_node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
-        const voltage_level_id = topology.stripHash(voltage_level_ref);
+        const voltage_level_id = try self.getVoltageLevelFromCN(connectivity_node);
         const voltage_level = self.getVoltageLevel(network, voltage_level_id) orelse return error.MalformedXML;
 
         const id = try load.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(load.id);
@@ -410,8 +428,7 @@ pub const Converter = struct {
             const connectivity_node_id = self.topology_resolver.getEquipmentNode(linear_shunt_compensator.id, 1) orelse return error.MalformedXML;
             const connectivity_node = self.model.getObjectById(connectivity_node_id) orelse return error.MalformedXML;
 
-            const voltage_level_ref = try connectivity_node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
-            const voltage_level_id = topology.stripHash(voltage_level_ref);
+            const voltage_level_id = try self.getVoltageLevelFromCN(connectivity_node);
             const voltage_level = self.getVoltageLevel(network, voltage_level_id) orelse return error.MalformedXML;
             const shunt_linear_model: iidm.ShuntLinearModel = .{
                 .b_per_section = try std.fmt.parseFloat(f64, try linear_shunt_compensator.getProperty("LinearShuntCompensator.bPerSection") orelse return error.MalformedXML),
@@ -458,8 +475,7 @@ pub const Converter = struct {
             const connectivity_node_id = self.topology_resolver.getEquipmentNode(svc.id, 1) orelse return error.MalformedXML;
             const connectivity_node = self.model.getObjectById(connectivity_node_id) orelse return error.MalformedXML;
 
-            const voltage_level_ref = try connectivity_node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
-            const voltage_level_id = topology.stripHash(voltage_level_ref);
+            const voltage_level_id = try self.getVoltageLevelFromCN(connectivity_node);
             const voltage_level = self.getVoltageLevel(network, voltage_level_id) orelse return error.MalformedXML;
 
             // Get nominal voltage for susceptance calculation
@@ -553,8 +569,7 @@ pub const Converter = struct {
         for (vs_converters) |vs_converter| {
             const connectivity_node_id = self.topology_resolver.getEquipmentNode(vs_converter.id, 1) orelse return error.MalformedXML;
             const connectivity_node = self.model.getObjectById(connectivity_node_id) orelse return error.MalformedXML;
-            const voltage_level_ref = try connectivity_node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
-            const voltage_level_id = topology.stripHash(voltage_level_ref);
+            const voltage_level_id = try self.getVoltageLevelFromCN(connectivity_node);
 
             const voltage_level = self.getVoltageLevel(network, voltage_level_id) orelse return error.MalformedXML;
 
@@ -642,8 +657,7 @@ pub const Converter = struct {
         for (cs_converters) |cs_converter| {
             const connectivity_node_id = self.topology_resolver.getEquipmentNode(cs_converter.id, 1) orelse return error.MalformedXML;
             const connectivity_node = self.model.getObjectById(connectivity_node_id) orelse return error.MalformedXML;
-            const voltage_level_ref = try connectivity_node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
-            const voltage_level_id = topology.stripHash(voltage_level_ref);
+            const voltage_level_id = try self.getVoltageLevelFromCN(connectivity_node);
 
             const voltage_level = self.getVoltageLevel(network, voltage_level_id) orelse return error.MalformedXML;
 
@@ -719,8 +733,7 @@ pub const Converter = struct {
         for (generators) |generator| {
             const connectivity_node_id = self.topology_resolver.getEquipmentNode(generator.id, 1) orelse return error.MalformedXML;
             const connectivity_node = self.model.getObjectById(connectivity_node_id) orelse return error.MalformedXML;
-            const voltage_level_ref = try connectivity_node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
-            const voltage_level_id = topology.stripHash(voltage_level_ref);
+            const voltage_level_id = try self.getVoltageLevelFromCN(connectivity_node);
 
             const voltage_level = self.getVoltageLevel(network, voltage_level_id) orelse return error.MalformedXML;
 
@@ -832,18 +845,18 @@ pub const Converter = struct {
                 const connectivity_node2_id = self.topology_resolver.getEquipmentNode(sw.id, 2) orelse return error.MalformedXML;
 
                 const connectivity_node1 = self.model.getObjectById(connectivity_node1_id) orelse return error.MalformedXML;
-                const voltage_level1_ref = try connectivity_node1.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+                const voltage_level1_id = try self.getVoltageLevelFromCN(connectivity_node1);
 
                 const connectivity_node2 = self.model.getObjectById(connectivity_node2_id) orelse return error.MalformedXML;
-                const voltage_level2_ref = try connectivity_node2.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+                const voltage_level2_id = try self.getVoltageLevelFromCN(connectivity_node2);
 
                 const name = try sw.getProperty("IdentifiedObject.name");
-                if (!std.mem.eql(u8, voltage_level1_ref, voltage_level2_ref)) {
-                    print.stderr("conversion failed for {s} {s} because of a voltage level mismatch", .{mapping.cim_type, name.?});
+                if (!std.mem.eql(u8, voltage_level1_id, voltage_level2_id)) {
+                    print.stderr("conversion failed for {s} {s} because of a voltage level mismatch", .{ mapping.cim_type, name.? });
                     return error.MalformedXML;
-                } 
+                }
 
-                const voltage_level_id = topology.stripHash(voltage_level1_ref);
+                const voltage_level_id = voltage_level1_id;
                 const voltage_level = self.getVoltageLevel(network, voltage_level_id) orelse return error.MalformedXML;
 
                 // Switch.normalOpen is in EQ profile Switch.open is typically in SSH profile,
@@ -903,8 +916,7 @@ pub const Converter = struct {
             const connectivity_node_id = self.topology_resolver.getEquipmentNode(busbar_section.id, 1) orelse return error.MalformedXML;
             const connectivity_node = self.model.getObjectById(connectivity_node_id) orelse return error.MalformedXML;
 
-            const voltage_level_ref = try connectivity_node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
-            const voltage_level_id = topology.stripHash(voltage_level_ref);
+            const voltage_level_id = try self.getVoltageLevelFromCN(connectivity_node);
             const voltage_level = self.getVoltageLevel(network, voltage_level_id) orelse return error.MalformedXML;
 
             const id = try busbar_section.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(busbar_section.id);
@@ -1061,8 +1073,7 @@ pub const Converter = struct {
             // Get substation via first voltage level
             const connectivity_node1_id = self.topology_resolver.getEquipmentNode(transformer.id, 1) orelse return error.MalformedXML;
             const connectivity_node1 = self.model.getObjectById(connectivity_node1_id) orelse return error.MalformedXML;
-            const voltage_level1_ref = try connectivity_node1.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
-            const voltage_level1_id = topology.stripHash(voltage_level1_ref);
+            const voltage_level1_id = try self.getVoltageLevelFromCN(connectivity_node1);
             const voltage_level_ref = self.voltage_level_map.get(voltage_level1_id) orelse return error.MalformedXML;
             const substation = &network.substations.items[voltage_level_ref.substation_idx];
 
@@ -1114,12 +1125,11 @@ pub const Converter = struct {
 
                 // Get voltage level ID and node index for side 2
                 const connectivity_node2 = self.model.getObjectById(connectivity_node2_id) orelse return error.MalformedXML;
-                const voltage_level2_ref = try connectivity_node2.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
-                const voltage_level2_id = topology.stripHash(voltage_level2_ref);
+                const voltage_level2_id = try self.getVoltageLevelFromCN(connectivity_node2);
 
                 // Get IIDM voltage level IDs (use mRID if available)
-                const vl1 = self.getVoltageLevel(network, voltage_level1_id) orelse return error.MalformedXML;
-                const vl2 = self.getVoltageLevel(network, voltage_level2_id) orelse return error.MalformedXML;
+                const voltage_level1 = self.getVoltageLevel(network, voltage_level1_id) orelse return error.MalformedXML;
+                const voltage_level2 = self.getVoltageLevel(network, voltage_level2_id) orelse return error.MalformedXML;
 
                 const node1_index = try self.getNodeIndex(voltage_level1_id, connectivity_node1_id);
                 const node2_index = try self.getNodeIndex(voltage_level2_id, connectivity_node2_id);
@@ -1182,9 +1192,9 @@ pub const Converter = struct {
                     .rated_u1 = rated_u1,
                     .rated_u2 = rated_u2,
                     .rated_s = rated_s,
-                    .voltage_level_id1 = vl1.id,
+                    .voltage_level_id1 = voltage_level1.id,
                     .node1 = node1_index,
-                    .voltage_level_id2 = vl2.id,
+                    .voltage_level_id2 = voltage_level2.id,
                     .node2 = node2_index,
                     .ratio_tap_changer = ratio_tap_changer,
                     .phase_tap_changer = phase_tap_changer,
@@ -1379,10 +1389,8 @@ pub const Converter = struct {
             // Get voltage level IDs from connectivity nodes
             const cn1 = self.model.getObjectById(connectivity_node1_id) orelse return error.MalformedXML;
             const cn2 = self.model.getObjectById(connectivity_node2_id) orelse return error.MalformedXML;
-            const vl1_ref = try cn1.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
-            const vl2_ref = try cn2.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
-            const voltage_level_id_1 = topology.stripUnderscore(topology.stripHash(vl1_ref));
-            const voltage_level_id_2 = topology.stripUnderscore(topology.stripHash(vl2_ref));
+            const voltage_level_id_1 = topology.stripUnderscore(try self.getVoltageLevelFromCN(cn1));
+            const voltage_level_id_2 = topology.stripUnderscore(try self.getVoltageLevelFromCN(cn2));
 
             // Get node indices
             const node1 = try self.getNodeIndex(voltage_level_id_1, connectivity_node1_id);

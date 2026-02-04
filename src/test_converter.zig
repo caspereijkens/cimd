@@ -1245,3 +1245,75 @@ test "Converter - converts two-winding transformer with operational limits" {
     try std.testing.expectEqualStrings("OLS2", t.op_lims_groups_2.items[0].id);
     try std.testing.expectEqual(@as(f64, 1031.0), t.op_lims_groups_2.items[0].current_limits.?.permanent_limit);
 }
+
+test "Converter - handles ConnectivityNode contained in Bay" {
+    // Tests that ConnectivityNodes can be contained in a Bay (which references
+    // the VoltageLevel via Bay.VoltageLevel) instead of directly in a VoltageLevel.
+    const gpa = std.testing.allocator;
+
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test">
+        \\    <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
+        \\  <cim:Substation rdf:ID="Sub1">
+        \\    <cim:IdentifiedObject.name>Station</cim:IdentifiedObject.name>
+        \\  </cim:Substation>
+        \\  <cim:VoltageLevel rdf:ID="VL1">
+        \\    <cim:IdentifiedObject.name>110kV</cim:IdentifiedObject.name>
+        \\    <cim:VoltageLevel.Substation rdf:resource="#Sub1"/>
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#BV1"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:BaseVoltage rdf:ID="BV1">
+        \\    <cim:BaseVoltage.nominalVoltage>110</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\  <cim:Bay rdf:ID="Bay1">
+        \\    <cim:IdentifiedObject.name>Bay 1</cim:IdentifiedObject.name>
+        \\    <cim:Bay.VoltageLevel rdf:resource="#VL1"/>
+        \\  </cim:Bay>
+        \\  <cim:ConnectivityNode rdf:ID="CN1">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#Bay1"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:ConnectivityNode rdf:ID="CN2">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#Bay1"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:Breaker rdf:ID="BRK1">
+        \\    <cim:IdentifiedObject.name>Bay Breaker</cim:IdentifiedObject.name>
+        \\    <cim:Switch.open>false</cim:Switch.open>
+        \\  </cim:Breaker>
+        \\  <cim:Terminal rdf:ID="T1">
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#BRK1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="T2">
+        \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#BRK1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN2"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+
+    var model = try CimModel.init(gpa, eq_xml);
+    defer model.deinit(gpa);
+
+    var topo = try TopologyResolver.init(gpa, &model);
+    defer topo.deinit();
+
+    var conv = Converter.init(gpa, &model, &topo);
+    defer conv.deinit();
+    var network = try conv.convert();
+    defer network.deinit(gpa);
+
+    // Verify the breaker was converted and placed in the correct voltage level
+    try std.testing.expectEqual(@as(usize, 1), network.substations.items.len);
+    const vl = &network.substations.items[0].voltage_levels.items[0];
+    try std.testing.expectEqualStrings("VL1", vl.id);
+    try std.testing.expectEqual(@as(usize, 1), vl.node_breaker_topology.switches.items.len);
+
+    const sw = vl.node_breaker_topology.switches.items[0];
+    try std.testing.expectEqualStrings("BRK1", sw.id);
+    try std.testing.expectEqualStrings("Bay Breaker", sw.name.?);
+    try std.testing.expectEqual(@as(u32, 0), sw.node1);
+    try std.testing.expectEqual(@as(u32, 1), sw.node2);
+}
