@@ -23,7 +23,7 @@ pub fn main() !void {
 
     switch (command) {
         .index => |_| try command_index(gpa, command.index.paths),
-        .convert => |c| try command_convert(gpa, c.input_path, c.output_path),
+        .convert => |c| try command_convert(gpa, c.input_path, c.eqbd_path, c.output_path),
         .version => |_| try command_version(command.version.verbose),
     }
 }
@@ -87,18 +87,34 @@ fn command_index(gpa: std.mem.Allocator, paths: []const []const u8) !void {
     }
 }
 
-fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, output_path: ?[]const u8) !void {
+fn readPath(gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
     const cwd = std.fs.cwd();
 
-    const file = try cwd.openFile(input_path, .{});
+    const file = try cwd.openFile(file_path, .{});
     defer file.close();
 
-    var zip_buffer: [4096]u8 = undefined;
-    const xml = if (try zip.isZipFile(file)) blk: {
+    if (try zip.isZipFile(file)) {
+        var zip_buffer: [4096]u8 = undefined;
         var file_reader = file.reader(&zip_buffer);
         const extracted_files = try zip.extractToMemory(gpa, &file_reader, .{});
-        break :blk extracted_files.items[0].data;
-    } else try readFileToMemory(gpa, file);
+        return extracted_files.items[0].data;
+    } else {
+        return try readFileToMemory(gpa, file);
+    } 
+}
+
+fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[]const u8, output_path: ?[]const u8) !void {
+    var xml = try readPath(gpa, input_path);
+
+    if (eqbd_path) |path| {
+        const eqbd_xml = try readPath(gpa, path);
+        defer gpa.free(eqbd_xml);
+
+        const merged = try std.mem.concat(gpa, u8, &[_][]const u8{ xml, eqbd_xml });
+        gpa.free(xml);
+
+        xml = merged;
+    }
     defer gpa.free(xml);
 
     var model = try cim_model.CimModel.init(gpa, xml);
@@ -112,6 +128,8 @@ fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, output_path: 
     defer network.deinit(gpa);
 
     // Create output file or use stdout
+    const cwd = std.fs.cwd();
+
     const output_file = if (output_path) |path|
         try cwd.createFile(path, .{})
     else

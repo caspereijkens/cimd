@@ -172,9 +172,12 @@ pub const Converter = struct {
 
         if (full_model_list.len == 0) {
             return error.MalformedXML;
-        } else if (full_model_list.len > 1) {
-            return error.TooManyFullModelTags;
-        }
+        } 
+
+        // There is a convert option to pass an eqbd profile.
+        // My current approach simply concatenates the eqbd to the eq, 
+        // so it is possible to have multiple full_model tags.
+        // Since eqbd is concatenated to eq, we take the first.
         const full_model = full_model_list[0];
 
         const case_date = try full_model.getProperty("Model.scenarioTime");
