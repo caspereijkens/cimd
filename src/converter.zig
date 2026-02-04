@@ -2,6 +2,7 @@ const std = @import("std");
 const cim_model = @import("cim_model.zig");
 const topology = @import("topology.zig");
 const iidm = @import("iidm.zig");
+const print = @import("print.zig");
 
 const CimModel = cim_model.CimModel;
 const TopologyResolver = topology.TopologyResolver;
@@ -836,12 +837,15 @@ pub const Converter = struct {
                 const connectivity_node2 = self.model.getObjectById(connectivity_node2_id) orelse return error.MalformedXML;
                 const voltage_level2_ref = try connectivity_node2.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
 
-                if (!std.mem.eql(u8, voltage_level1_ref, voltage_level2_ref)) return error.MalformedXML;
+                const name = try sw.getProperty("IdentifiedObject.name");
+                if (!std.mem.eql(u8, voltage_level1_ref, voltage_level2_ref)) {
+                    print.stderr("conversion failed at {s}", .{name.?});
+                    return error.MalformedXML;
+                } 
 
                 const voltage_level_id = topology.stripHash(voltage_level1_ref);
                 const voltage_level = self.getVoltageLevel(network, voltage_level_id) orelse return error.MalformedXML;
 
-                const name = try sw.getProperty("IdentifiedObject.name");
                 // Switch.normalOpen is in EQ profile Switch.open is typically in SSH profile,
                 const open_str = try sw.getProperty("Switch.normalOpen") orelse
                     try sw.getProperty("Switch.open") orelse "false";
