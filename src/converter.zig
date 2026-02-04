@@ -839,7 +839,7 @@ pub const Converter = struct {
 
                 const name = try sw.getProperty("IdentifiedObject.name");
                 if (!std.mem.eql(u8, voltage_level1_ref, voltage_level2_ref)) {
-                    print.stderr("conversion failed at {s}", .{name.?});
+                    print.stderr("conversion failed for {s} {s} because of a voltage level mismatch", .{mapping.cim_type, name.?});
                     return error.MalformedXML;
                 } 
 
