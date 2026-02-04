@@ -852,7 +852,9 @@ pub const Converter = struct {
 
                 const name = try sw.getProperty("IdentifiedObject.name");
                 if (!std.mem.eql(u8, voltage_level1_id, voltage_level2_id)) {
-                    print.stderr("conversion failed for {s} {s} because of a voltage level mismatch", .{ mapping.cim_type, name.? });
+                    const voltage_level1 = self.getVoltageLevel(network, voltage_level1_id) orelse return error.MalformedXML;
+                    const voltage_level2 = self.getVoltageLevel(network, voltage_level2_id) orelse return error.MalformedXML;
+                    print.stderr("conversion failed for {s} {s} because of a voltage level mismatch: {s} != {s}", .{ mapping.cim_type, name.?, voltage_level1.name.?, voltage_level2.name.? });
                     return error.MalformedXML;
                 }
 
