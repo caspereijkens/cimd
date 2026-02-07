@@ -182,7 +182,10 @@ pub const Converter = struct {
 
         // Otherwise, assume it's a Bay - follow Bay.VoltageLevel
         const container = self.model.getObjectById(container_id) orelse return error.MalformedXML;
-        const voltage_level_ref = try container.getReference("Bay.VoltageLevel") orelse return error.MalformedXML;
+        const voltage_level_ref = try container.getReference("Bay.VoltageLevel") orelse {
+            print.stderr("Container with id '{s}' is not in a Bay.", .{container_id});
+            return error.MalformedXML;
+        };
         return topology.stripHash(voltage_level_ref);
     }
 
@@ -854,9 +857,8 @@ pub const Converter = struct {
                 if (!std.mem.eql(u8, voltage_level1_id, voltage_level2_id)) {
                     const voltage_level1 = self.getVoltageLevel(network, voltage_level1_id) orelse return error.MalformedXML;
                     const voltage_level2 = self.getVoltageLevel(network, voltage_level2_id) orelse return error.MalformedXML;
-                    try print.stdout("Error: conversion failed for {s} '{s}' because of a voltage level mismatch: '{s}' != '{s}'\n", .{ mapping.cim_type, name.?, voltage_level1.name.?, voltage_level2.name.? });
-                    continue; // TODO revert back to strict check.
-                    // TODO: return error.MalformedXML;
+                    print.stderr("Error: conversion failed for {s} '{s}' because of a voltage level mismatch: '{s}' != '{s}'\n", .{ mapping.cim_type, name.?, voltage_level1.name.?, voltage_level2.name.? });
+                    return error.MalformedXML;
                 }
 
                 const voltage_level_id = voltage_level1_id;
