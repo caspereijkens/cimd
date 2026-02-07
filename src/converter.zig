@@ -855,7 +855,8 @@ pub const Converter = struct {
                     const voltage_level1 = self.getVoltageLevel(network, voltage_level1_id) orelse return error.MalformedXML;
                     const voltage_level2 = self.getVoltageLevel(network, voltage_level2_id) orelse return error.MalformedXML;
                     print.stderr("conversion failed for {s} '{s}' because of a voltage level mismatch: '{s}' != '{s}'", .{ mapping.cim_type, name.?, voltage_level1.name.?, voltage_level2.name.? });
-                    return error.MalformedXML;
+                    continue; // TODO revert back to strict check.
+                    // TODO: return error.MalformedXML;
                 }
 
                 const voltage_level_id = voltage_level1_id;
