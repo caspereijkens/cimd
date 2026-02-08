@@ -152,15 +152,12 @@ fn parse_convert_command(args_iterator: *std.process.ArgIterator) Command {
             std.process.exit(0);
         }
 
-
         if (std.mem.eql(u8, arg, "--output")) {
             output_path = args_iterator.next() orelse
                 print.stderr("convert: --output requires a file path", .{});
-
         } else if (std.mem.eql(u8, arg, "--eqbd")) {
             eqbd_path = args_iterator.next() orelse
                 print.stderr("convert: --eqbd requires a file path", .{});
-
         } else if (arg.len > 0 and arg[0] == '-') {
             print.stderr("convert: unknown option '{s}'", .{arg});
         } else {

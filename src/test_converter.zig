@@ -1236,14 +1236,14 @@ test "Converter - converts two-winding transformer with operational limits" {
     const t = transformers[0];
 
     // Check operational limits on side 1
-    try std.testing.expectEqual(@as(usize, 1), t.op_lims_groups_1.items.len);
-    try std.testing.expectEqualStrings("OLS1", t.op_lims_groups_1.items[0].id);
-    try std.testing.expectEqual(@as(f64, 1031.0), t.op_lims_groups_1.items[0].current_limits.?.permanent_limit);
+    try std.testing.expectEqual(@as(usize, 1), t.op_lims_groups1.items.len);
+    try std.testing.expectEqualStrings("OLS1", t.op_lims_groups1.items[0].id);
+    try std.testing.expectEqual(@as(f64, 1031.0), t.op_lims_groups1.items[0].current_limits.?.permanent_limit);
 
     // Check operational limits on side 2
-    try std.testing.expectEqual(@as(usize, 1), t.op_lims_groups_2.items.len);
-    try std.testing.expectEqualStrings("OLS2", t.op_lims_groups_2.items[0].id);
-    try std.testing.expectEqual(@as(f64, 1031.0), t.op_lims_groups_2.items[0].current_limits.?.permanent_limit);
+    try std.testing.expectEqual(@as(usize, 1), t.op_lims_groups2.items.len);
+    try std.testing.expectEqualStrings("OLS2", t.op_lims_groups2.items[0].id);
+    try std.testing.expectEqual(@as(f64, 1031.0), t.op_lims_groups2.items[0].current_limits.?.permanent_limit);
 }
 
 test "Converter - handles ConnectivityNode contained in Bay" {
@@ -1316,4 +1316,101 @@ test "Converter - handles ConnectivityNode contained in Bay" {
     try std.testing.expectEqualStrings("Bay Breaker", sw.name.?);
     try std.testing.expectEqual(@as(u32, 0), sw.node1);
     try std.testing.expectEqual(@as(u32, 1), sw.node2);
+}
+
+test "Converter - resolves VoltageLevel from CN in Line container via Breaker" {
+    const gpa = std.testing.allocator;
+
+    // Topology:
+    //   Sub1/VL1/CN1 <--Breaker--> CN_boundary (in Line container) <--ACLineSegment--> Sub2/VL2/CN2
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test">
+        \\    <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
+        \\  <cim:Substation rdf:ID="Sub1">
+        \\    <cim:IdentifiedObject.name>Station A</cim:IdentifiedObject.name>
+        \\  </cim:Substation>
+        \\  <cim:Substation rdf:ID="Sub2">
+        \\    <cim:IdentifiedObject.name>Station B</cim:IdentifiedObject.name>
+        \\  </cim:Substation>
+        \\  <cim:VoltageLevel rdf:ID="VL1">
+        \\    <cim:IdentifiedObject.name>110kV</cim:IdentifiedObject.name>
+        \\    <cim:VoltageLevel.Substation rdf:resource="#Sub1"/>
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#BV1"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:VoltageLevel rdf:ID="VL2">
+        \\    <cim:IdentifiedObject.name>110kV</cim:IdentifiedObject.name>
+        \\    <cim:VoltageLevel.Substation rdf:resource="#Sub2"/>
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#BV1"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:BaseVoltage rdf:ID="BV1">
+        \\    <cim:BaseVoltage.nominalVoltage>110</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\  <cim:ConnectivityNode rdf:ID="CN1">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#VL1"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:Line rdf:ID="LineCont1">
+        \\    <cim:IdentifiedObject.name>Boundary Line</cim:IdentifiedObject.name>
+        \\  </cim:Line>
+        \\  <cim:ConnectivityNode rdf:ID="CN_boundary">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#LineCont1"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:ConnectivityNode rdf:ID="CN2">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#VL2"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:Breaker rdf:ID="BRK1">
+        \\    <cim:IdentifiedObject.name>Boundary Breaker</cim:IdentifiedObject.name>
+        \\    <cim:Switch.normalOpen>false</cim:Switch.normalOpen>
+        \\  </cim:Breaker>
+        \\  <cim:Terminal rdf:ID="T_BRK1">
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#BRK1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="T_BRK2">
+        \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#BRK1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN_boundary"/>
+        \\  </cim:Terminal>
+        \\  <cim:ACLineSegment rdf:ID="ALS1">
+        \\    <cim:IdentifiedObject.name>Line A-B</cim:IdentifiedObject.name>
+        \\    <cim:ACLineSegment.r>1.5</cim:ACLineSegment.r>
+        \\    <cim:ACLineSegment.x>15.0</cim:ACLineSegment.x>
+        \\    <cim:ACLineSegment.bch>0.0001</cim:ACLineSegment.bch>
+        \\  </cim:ACLineSegment>
+        \\  <cim:Terminal rdf:ID="T_ALS1">
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#ALS1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN_boundary"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="T_ALS2">
+        \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#ALS1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN2"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+
+    var model = try CimModel.init(gpa, eq_xml);
+    defer model.deinit(gpa);
+
+    var topo = try TopologyResolver.init(gpa, &model);
+    defer topo.deinit();
+
+    var conv = Converter.init(gpa, &model, &topo);
+    defer conv.deinit();
+    var network = try conv.convert();
+    defer network.deinit(gpa);
+
+    // The ACLineSegment should be converted, with CN_boundary resolved to VL1 via the Breaker
+    try std.testing.expectEqual(@as(usize, 1), network.lines.items.len);
+
+    const line = network.lines.items[0];
+    try std.testing.expectEqualStrings("ALS1", line.id);
+    try std.testing.expectEqualStrings("Line A-B", line.name.?);
+    try std.testing.expectEqualStrings("VL1", line.voltage_level1_id);
+    try std.testing.expectEqualStrings("VL2", line.voltage_level2_id);
+    try std.testing.expectEqual(@as(f64, 1.5), line.r);
+    try std.testing.expectEqual(@as(f64, 15.0), line.x);
 }

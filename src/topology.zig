@@ -69,6 +69,7 @@ pub const TopologyResolver = struct {
     terminal_to_node: std.StringHashMap([]const u8),
     connected_node_ids: std.StringHashMap(void),
     equipment_terminals: std.StringHashMap(std.ArrayList(TerminalInfo)),
+    node_to_terminals: std.StringHashMap(std.ArrayList([]const u8)),
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -89,6 +90,12 @@ pub const TopologyResolver = struct {
             while (it.next()) |list| list.deinit(gpa);
             equipment_terminals.deinit();
         }
+        var node_to_terminals = std.StringHashMap(std.ArrayList([]const u8)).init(gpa);
+        errdefer {
+            var nit = node_to_terminals.valueIterator();
+            while (nit.next()) |list| list.deinit(gpa);
+            node_to_terminals.deinit();
+        }
         var resolver = TopologyResolver{
             .gpa = gpa,
             .equipment_model = equipment_model,
@@ -96,6 +103,7 @@ pub const TopologyResolver = struct {
             .terminal_to_node = terminal_to_node,
             .connected_node_ids = connected_node_ids,
             .equipment_terminals = equipment_terminals,
+            .node_to_terminals = node_to_terminals,
         };
 
         errdefer resolver.deinit();
@@ -155,6 +163,13 @@ pub const TopologyResolver = struct {
                 }
                 try resolver.terminal_to_node.put(terminal.id, node_id.?);
                 try resolver.connected_node_ids.put(node_id.?, {});
+
+                // Also build reverse map: CN -> terminals.
+                const gop = try resolver.node_to_terminals.getOrPut(node_id.?);
+                if (!gop.found_existing) {
+                    gop.value_ptr.* = .empty;
+                }
+                try gop.value_ptr.append(gpa, terminal.id);
             }
 
             try result.value_ptr.append(gpa, TerminalInfo{
@@ -183,18 +198,6 @@ pub const TopologyResolver = struct {
         return null;
     }
 
-    pub fn deinit(self: *TopologyResolver) void {
-        var it = self.equipment_terminals.valueIterator();
-        while (it.next()) |list| {
-            list.deinit(self.gpa);
-        }
-
-        self.terminal_to_equipment.deinit();
-        self.terminal_to_node.deinit();
-        self.equipment_terminals.deinit();
-        self.connected_node_ids.deinit();
-    }
-
     /// Get all terminals for an equipment_id.
     pub fn getEquipmentTerminals(
         self: TopologyResolver,
@@ -212,6 +215,27 @@ pub const TopologyResolver = struct {
             .connected_terminals = self.terminal_to_node.count(),
             .connected_nodes = self.connected_node_ids.count(),
         };
+    }
+
+    pub fn getNodeTerminals(self: TopologyResolver, node_id: []const u8) ?[]const []const u8 {
+        const list = self.node_to_terminals.get(node_id) orelse return null;
+        return list.items;
+    }
+
+    pub fn deinit(self: *TopologyResolver) void {
+        var it = self.equipment_terminals.valueIterator();
+        while (it.next()) |list| {
+            list.deinit(self.gpa);
+        }
+        self.equipment_terminals.deinit();
+        self.terminal_to_equipment.deinit();
+        self.terminal_to_node.deinit();
+        self.connected_node_ids.deinit();
+        var nit = self.node_to_terminals.valueIterator();
+        while (nit.next()) |list| {
+            list.deinit(self.gpa);
+        }
+        self.node_to_terminals.deinit();
     }
 };
 

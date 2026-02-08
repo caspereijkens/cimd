@@ -559,13 +559,13 @@ pub const Switch = struct {
 };
 
 pub const Alias = struct {
-    @"type": []const u8,
+    type: []const u8,
     content: []const u8,
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
         try jws.beginObject();
         try jws.objectField("type");
-        try jws.write(self.@"type");
+        try jws.write(self.type);
         try jws.objectField("content");
         try jws.write(self.content);
         try jws.endObject();
@@ -929,10 +929,10 @@ pub const TwoWindingsTransformer = struct {
     node2: u32,
     ratio_tap_changer: ?RatioTapChanger,
     phase_tap_changer: ?PhaseTapChanger,
-    selected_op_lims_group_id_1: ?[]const u8,
-    selected_op_lims_group_id_2: ?[]const u8,
-    op_lims_groups_1: std.ArrayListUnmanaged(OperationalLimitsGroup),
-    op_lims_groups_2: std.ArrayListUnmanaged(OperationalLimitsGroup),
+    selected_op_lims_group1_id: ?[]const u8,
+    selected_op_lims_group2_id: ?[]const u8,
+    op_lims_groups1: std.ArrayListUnmanaged(OperationalLimitsGroup),
+    op_lims_groups2: std.ArrayListUnmanaged(OperationalLimitsGroup),
     aliases: std.ArrayListUnmanaged(Alias),
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
@@ -965,11 +965,11 @@ pub const TwoWindingsTransformer = struct {
         try jws.write(self.voltage_level_id2);
         try jws.objectField("node2");
         try jws.write(self.node2);
-        if (self.selected_op_lims_group_id_1) |id| {
+        if (self.selected_op_lims_group1_id) |id| {
             try jws.objectField("selectedOperationalLimitsGroupId1");
             try jws.write(id);
         }
-        if (self.selected_op_lims_group_id_2) |id| {
+        if (self.selected_op_lims_group2_id) |id| {
             try jws.objectField("selectedOperationalLimitsGroupId2");
             try jws.write(id);
         }
@@ -985,18 +985,18 @@ pub const TwoWindingsTransformer = struct {
             try jws.objectField("phaseTapChanger");
             try jws.write(tc);
         }
-        if (self.op_lims_groups_1.items.len > 0) {
+        if (self.op_lims_groups1.items.len > 0) {
             try jws.objectField("operationalLimitsGroups1");
             try jws.beginArray();
-            for (self.op_lims_groups_1.items) |olg| {
+            for (self.op_lims_groups1.items) |olg| {
                 try olg.jsonStringify(jws);
             }
             try jws.endArray();
         }
-        if (self.op_lims_groups_2.items.len > 0) {
+        if (self.op_lims_groups2.items.len > 0) {
             try jws.objectField("operationalLimitsGroups2");
             try jws.beginArray();
-            for (self.op_lims_groups_2.items) |olg| {
+            for (self.op_lims_groups2.items) |olg| {
                 try olg.jsonStringify(jws);
             }
             try jws.endArray();
@@ -1011,14 +1011,14 @@ pub const TwoWindingsTransformer = struct {
         if (self.phase_tap_changer) |*ptc| {
             ptc.deinit(allocator);
         }
-        for (self.op_lims_groups_1.items) |*olg| {
+        for (self.op_lims_groups1.items) |*olg| {
             olg.deinit(allocator);
         }
-        self.op_lims_groups_1.deinit(allocator);
-        for (self.op_lims_groups_2.items) |*olg| {
+        self.op_lims_groups1.deinit(allocator);
+        for (self.op_lims_groups2.items) |*olg| {
             olg.deinit(allocator);
         }
-        self.op_lims_groups_2.deinit(allocator);
+        self.op_lims_groups2.deinit(allocator);
         self.aliases.deinit(allocator);
     }
 };
@@ -1094,8 +1094,8 @@ pub const Substation = struct {
     }
 
     pub fn deinit(self: *Substation, allocator: std.mem.Allocator) void {
-        for (self.voltage_levels.items) |*vl| {
-            vl.deinit(allocator);
+        for (self.voltage_levels.items) |*voltage_level| {
+            voltage_level.deinit(allocator);
         }
         self.voltage_levels.deinit(allocator);
         for (self.two_winding_transformers.items) |*twt| {
@@ -1111,9 +1111,9 @@ pub const Substation = struct {
 pub const Line = struct {
     id: []const u8,
     name: ?[]const u8,
-    voltage_level_id_1: []const u8,
+    voltage_level1_id: []const u8,
     node1: u32,
-    voltage_level_id_2: []const u8,
+    voltage_level2_id: []const u8,
     node2: u32,
     r: f64,
     x: f64,
@@ -1121,12 +1121,12 @@ pub const Line = struct {
     g2: f64,
     b1: f64,
     b2: f64,
-    selected_op_lims_group_id_1: ?[]const u8 = null,
-    selected_op_lims_group_id_2: ?[]const u8 = null,
+    selected_op_lims_group1_id: ?[]const u8 = null,
+    selected_op_lims_group2_id: ?[]const u8 = null,
     aliases: std.ArrayListUnmanaged(Alias),
     properties: std.ArrayListUnmanaged(Property),
-    op_lims_groups_1: std.ArrayListUnmanaged(OperationalLimitsGroup),
-    op_lims_groups_2: std.ArrayListUnmanaged(OperationalLimitsGroup),
+    op_lims_groups1: std.ArrayListUnmanaged(OperationalLimitsGroup),
+    op_lims_groups2: std.ArrayListUnmanaged(OperationalLimitsGroup),
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
         try jws.beginObject();
@@ -1147,18 +1147,18 @@ pub const Line = struct {
         try jws.objectField("b2");
         try writeFloat(jws, self.b2);
         try jws.objectField("voltageLevelId1");
-        try jws.write(self.voltage_level_id_1);
+        try jws.write(self.voltage_level1_id);
         try jws.objectField("node1");
         try jws.write(self.node1);
         try jws.objectField("voltageLevelId2");
-        try jws.write(self.voltage_level_id_2);
+        try jws.write(self.voltage_level2_id);
         try jws.objectField("node2");
         try jws.write(self.node2);
-        if (self.selected_op_lims_group_id_1) |id| {
+        if (self.selected_op_lims_group1_id) |id| {
             try jws.objectField("selectedOperationalLimitsGroupId1");
             try jws.write(id);
         }
-        if (self.selected_op_lims_group_id_2) |id| {
+        if (self.selected_op_lims_group2_id) |id| {
             try jws.objectField("selectedOperationalLimitsGroupId2");
             try jws.write(id);
         }
@@ -1170,18 +1170,18 @@ pub const Line = struct {
             try jws.objectField("properties");
             try jws.write(self.properties.items);
         }
-        if (self.op_lims_groups_1.items.len > 0) {
+        if (self.op_lims_groups1.items.len > 0) {
             try jws.objectField("operationalLimitsGroups1");
             try jws.beginArray();
-            for (self.op_lims_groups_1.items) |olg| {
+            for (self.op_lims_groups1.items) |olg| {
                 try olg.jsonStringify(jws);
             }
             try jws.endArray();
         }
-        if (self.op_lims_groups_2.items.len > 0) {
+        if (self.op_lims_groups2.items.len > 0) {
             try jws.objectField("operationalLimitsGroups2");
             try jws.beginArray();
-            for (self.op_lims_groups_2.items) |olg| {
+            for (self.op_lims_groups2.items) |olg| {
                 try olg.jsonStringify(jws);
             }
             try jws.endArray();
@@ -1192,14 +1192,14 @@ pub const Line = struct {
     pub fn deinit(self: *Line, allocator: std.mem.Allocator) void {
         self.aliases.deinit(allocator);
         self.properties.deinit(allocator);
-        for (self.op_lims_groups_1.items) |*olg| {
+        for (self.op_lims_groups1.items) |*olg| {
             olg.deinit(allocator);
         }
-        self.op_lims_groups_1.deinit(allocator);
-        for (self.op_lims_groups_2.items) |*olg| {
+        self.op_lims_groups1.deinit(allocator);
+        for (self.op_lims_groups2.items) |*olg| {
             olg.deinit(allocator);
         }
-        self.op_lims_groups_2.deinit(allocator);
+        self.op_lims_groups2.deinit(allocator);
     }
 };
 

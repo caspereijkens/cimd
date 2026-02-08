@@ -100,7 +100,7 @@ fn readPath(gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
         return extracted_files.items[0].data;
     } else {
         return try readFileToMemory(gpa, file);
-    } 
+    }
 }
 
 fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[]const u8, output_path: ?[]const u8) !void {
