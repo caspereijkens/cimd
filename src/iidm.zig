@@ -452,6 +452,7 @@ pub const Generator = struct {
     voltage_regulator_on: bool,
     node: u32,
     reactive_capability_curve_points: std.ArrayListUnmanaged(ReactiveCapabilityCurvePoint),
+    min_max_reactive_limits: ?MinMaxReactiveLimits = null,
     aliases: std.ArrayListUnmanaged(Alias),
     properties: std.ArrayListUnmanaged(Property),
 
@@ -489,6 +490,9 @@ pub const Generator = struct {
             try jws.objectField("points");
             try jws.write(self.reactive_capability_curve_points.items);
             try jws.endObject();
+        } else if (self.min_max_reactive_limits) |limits| {
+            try jws.objectField("minMaxReactiveLimits");
+            try limits.jsonStringify(jws);
         }
         try jws.endObject();
     }
@@ -598,14 +602,33 @@ pub const BusbarSection = struct {
     }
 };
 
+pub const InternalConnection = struct {
+    node1: u32,
+    node2: u32,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("node1");
+        try jws.write(self.node1);
+        try jws.objectField("node2");
+        try jws.write(self.node2);
+        try jws.endObject();
+    }
+};
+
 pub const NodeBreakerTopology = struct {
     busbar_sections: std.ArrayListUnmanaged(BusbarSection),
     switches: std.ArrayListUnmanaged(Switch),
+    internal_connections: std.ArrayListUnmanaged(InternalConnection),
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
         try jws.beginObject();
         try jws.objectField("busbarSections");
         try jws.write(self.busbar_sections.items);
+        if (self.internal_connections.items.len > 0) {
+            try jws.objectField("internalConnections");
+            try jws.write(self.internal_connections.items);
+        }
         try jws.objectField("switches");
         try jws.write(self.switches.items);
         try jws.endObject();
@@ -620,6 +643,7 @@ pub const NodeBreakerTopology = struct {
             sw.deinit(allocator);
         }
         self.switches.deinit(allocator);
+        self.internal_connections.deinit(allocator);
     }
 };
 
@@ -791,19 +815,6 @@ pub const RatioTapChanger = struct {
         try jws.write(self.tap_position);
         try jws.objectField("loadTapChangingCapabilities");
         try jws.write(self.load_tap_changing_capabilities);
-        if (self.regulation_mode) |mode| {
-            try jws.objectField("regulationMode");
-            try jws.write(mode);
-        }
-        if (self.terminal_ref) |tr| {
-            try jws.objectField("terminalRef");
-            try jws.beginObject();
-            try jws.objectField("id");
-            try jws.write(tr.id);
-            try jws.objectField("side");
-            try jws.write(tr.side);
-            try jws.endObject();
-        }
         try jws.objectField("steps");
         try jws.write(self.steps.items);
         try jws.endObject();

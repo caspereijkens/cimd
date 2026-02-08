@@ -39,20 +39,28 @@ pub const Converter = struct {
     const VoltageLevelRef = struct { substation_idx: usize, voltage_level_idx: usize };
 
     const NodeIndexMap = struct {
-        node_to_index: std.StringHashMapUnmanaged(u32),
+        cn_to_nodes: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(u32)),
         next_index: u32,
 
-        fn getOrAssign(self: *NodeIndexMap, gpa: std.mem.Allocator, contingency_node_id: []const u8) !u32 {
-            const gop = try self.node_to_index.getOrPut(gpa, contingency_node_id);
+        fn assignNewIndex(self: *NodeIndexMap, gpa: std.mem.Allocator, connectivity_node_id: []const u8) !u32 {
+            const index = self.next_index;
+            self.next_index += 1;
+
+            const gop = try self.cn_to_nodes.getOrPut(gpa, connectivity_node_id);
             if (!gop.found_existing) {
-                gop.value_ptr.* = self.next_index;
-                self.next_index += 1;
+                gop.value_ptr.* = .empty;
             }
-            return gop.value_ptr.*;
+            try gop.value_ptr.append(gpa, index);
+
+            return index;
         }
 
         fn deinit(self: *NodeIndexMap, gpa: std.mem.Allocator) void {
-            self.node_to_index.deinit(gpa);
+            var iterator = self.cn_to_nodes.valueIterator();
+            while (iterator.next()) |list| {
+                list.deinit(gpa);
+            }
+            self.cn_to_nodes.deinit(gpa);
         }
     };
 
@@ -188,12 +196,58 @@ pub const Converter = struct {
         return points;
     }
 
-    fn getNodeIndex(self: *Converter, voltage_level_id: []const u8, contingency_node_id: []const u8) !u32 {
+    fn getNodeIndex(self: *Converter, voltage_level_id: []const u8, connectivity_node_id: []const u8) !u32 {
         const gop = try self.node_index_maps.getOrPut(self.gpa, voltage_level_id);
         if (!gop.found_existing) {
-            gop.value_ptr.* = .{ .node_to_index = .empty, .next_index = 0 };
+            gop.value_ptr.* = .{ .cn_to_nodes = .empty, .next_index = 0 };
         }
-        return gop.value_ptr.getOrAssign(self.gpa, contingency_node_id);
+        return gop.value_ptr.assignNewIndex(self.gpa, connectivity_node_id);
+    }
+
+    /// Pre-assign one base node index per ConnectivityNode in each VoltageLevel.
+    /// This ensures CN base nodes get the lowest indices, matching pypowsybl behavior.
+    /// Only CNs with 3+ terminals get a base node; 2-terminal CNs are directly connected.
+    fn preassignConnectivityNodes(self: *Converter) !void {
+        const connectivity_nodes = self.model.getObjectsByType("ConnectivityNode");
+        for (connectivity_nodes) |cn| {
+            const voltage_level_id = self.resolveNodeToVoltageLevel(cn.id) catch continue orelse continue;
+
+            // Count terminals referencing this CN
+            const terminal_ids = self.topology_resolver.getNodeTerminals(cn.id) orelse continue;
+            if (terminal_ids.len >= 3) {
+                // Assign a base node index for this CN (hub for star topology)
+                _ = try self.getNodeIndex(voltage_level_id, cn.id);
+            }
+        }
+    }
+
+    /// Build internal connections for all voltage levels.
+    /// The first node per CN (preassigned by preassignConnectivityNodes) serves as the hub.
+    /// Each subsequent terminal node connects to the hub via an internal connection.
+    fn buildInternalConnections(self: *Converter, network: *iidm.Network) !void {
+        var map_iterator = self.node_index_maps.iterator();
+        while (map_iterator.next()) |entry| {
+            const voltage_level_id = entry.key_ptr.*;
+            const node_index_map = entry.value_ptr;
+
+            const voltage_level = self.getVoltageLevel(network, voltage_level_id) orelse continue;
+
+            var cn_iterator = node_index_map.cn_to_nodes.valueIterator();
+            while (cn_iterator.next()) |node_list| {
+                const nodes = node_list.items;
+                // Need at least 2 nodes (base + 1 terminal) to create ICs
+                if (nodes.len <= 1) continue;
+
+                // First node is the preassigned CN base node (hub)
+                const hub = nodes[0];
+                for (nodes[1..]) |terminal_node| {
+                    try voltage_level.node_breaker_topology.internal_connections.append(self.gpa, .{
+                        .node1 = hub,
+                        .node2 = terminal_node,
+                    });
+                }
+            }
+        }
     }
 
     /// Get VoltageLevel ID from ConnectivityNode, handling Bay and Line containers.
@@ -334,6 +388,9 @@ pub const Converter = struct {
         try self.buildOperationalLimitsMaps();
         self.printSubTiming("OperationalLimits", &timer);
 
+        try self.preassignConnectivityNodes();
+        self.printSubTiming("PreassignCNs", &timer);
+
         try self.convertBusbarSections(&network);
         self.printSubTiming("BusbarSections", &timer);
 
@@ -363,6 +420,9 @@ pub const Converter = struct {
 
         try self.convertLines(&network);
         self.printSubTiming("Lines", &timer);
+
+        try self.buildInternalConnections(&network);
+        self.printSubTiming("InternalConnections", &timer);
 
         try self.convertHvdcLines(&network);
         self.printSubTiming("HvdcLines", &timer);
@@ -486,7 +546,7 @@ pub const Converter = struct {
                 .low_voltage_limit = low_voltage_limit,
                 .high_voltage_limit = high_voltage_limit,
                 .properties = properties,
-                .node_breaker_topology = .{ .busbar_sections = .empty, .switches = .empty },
+                .node_breaker_topology = .{ .busbar_sections = .empty, .switches = .empty, .internal_connections = .empty },
                 .generators = .empty,
                 .loads = .empty,
                 .shunts = .empty,
@@ -906,6 +966,19 @@ pub const Converter = struct {
                 curve_points = try self.getCurvePoints(topology.stripHash(curve_ref));
             }
 
+            // Min/max reactive limits (used when no capability curve)
+            const min_max_reactive_limits: ?iidm.MinMaxReactiveLimits = if (curve_points.items.len == 0) blk: {
+                const min_q = if (try generator.getProperty("SynchronousMachine.minQ")) |v|
+                    try std.fmt.parseFloat(f64, v)
+                else
+                    -std.math.floatMax(f64);
+                const max_q = if (try generator.getProperty("SynchronousMachine.maxQ")) |v|
+                    try std.fmt.parseFloat(f64, v)
+                else
+                    std.math.floatMax(f64);
+                break :blk .{ .min_q = min_q, .max_q = max_q };
+            } else null;
+
             const node_index = try self.getNodeIndex(voltage_level_id, connectivity_node_id);
 
             var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
@@ -962,6 +1035,7 @@ pub const Converter = struct {
                 .voltage_regulator_on = voltage_regulator_on,
                 .node = node_index,
                 .reactive_capability_curve_points = curve_points,
+                .min_max_reactive_limits = min_max_reactive_limits,
                 .aliases = aliases,
                 .properties = properties,
             });
@@ -1511,8 +1585,12 @@ pub const Converter = struct {
             // Get voltage level IDs from connectivity nodes
             const node1 = self.model.getObjectById(node1_id) orelse return error.MalformedXML;
             const node2 = self.model.getObjectById(node2_id) orelse return error.MalformedXML;
-            const voltage_level1_id = topology.stripUnderscore(try self.getVoltageLevelFromNode(node1));
-            const voltage_level2_id = topology.stripUnderscore(try self.getVoltageLevelFromNode(node2));
+            const voltage_level1_id = try self.getVoltageLevelFromNode(node1);
+            const voltage_level2_id = try self.getVoltageLevelFromNode(node2);
+
+            // Get IIDM voltage level IDs for the Line struct
+            const voltage_level1 = self.getVoltageLevel(network, voltage_level1_id) orelse return error.MalformedXML;
+            const voltage_level2 = self.getVoltageLevel(network, voltage_level2_id) orelse return error.MalformedXML;
 
             // Get node indices
             const node1_idx = try self.getNodeIndex(voltage_level1_id, node1_id);
@@ -1575,9 +1653,9 @@ pub const Converter = struct {
             network.lines.appendAssumeCapacity(.{
                 .id = id,
                 .name = name,
-                .voltage_level1_id = voltage_level1_id,
+                .voltage_level1_id = voltage_level1.id,
                 .node1 = node1_idx,
-                .voltage_level2_id = voltage_level2_id,
+                .voltage_level2_id = voltage_level2.id,
                 .node2 = node2_idx,
                 .r = r,
                 .x = x,
