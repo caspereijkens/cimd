@@ -31,6 +31,11 @@ pub const Converter = struct {
     tatl_type_durations: std.StringHashMapUnmanaged([]const u8),
     limit_set_to_value_map: std.StringHashMapUnmanaged(f64),
 
+    op_limit_sets_by_terminal: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(cim_model.CimObject)),
+    current_limits_by_set: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(cim_model.CimObject)),
+
+    voltage_level_cache: std.StringHashMapUnmanaged([]const u8),
+
     const VoltageLevelRef = struct { substation_idx: usize, voltage_level_idx: usize };
 
     const NodeIndexMap = struct {
@@ -65,6 +70,9 @@ pub const Converter = struct {
             .patl_type_ids = .empty,
             .tatl_type_durations = .empty,
             .limit_set_to_value_map = .empty,
+            .op_limit_sets_by_terminal = .empty,
+            .current_limits_by_set = .empty,
+            .voltage_level_cache = .empty,
         };
     }
 
@@ -81,6 +89,16 @@ pub const Converter = struct {
         self.patl_type_ids.deinit(self.gpa);
         self.tatl_type_durations.deinit(self.gpa);
         self.limit_set_to_value_map.deinit(self.gpa);
+
+        var op_lim_it = self.op_limit_sets_by_terminal.valueIterator();
+        while (op_lim_it.next()) |list| list.deinit(self.gpa);
+        self.op_limit_sets_by_terminal.deinit(self.gpa);
+
+        var cl_it = self.current_limits_by_set.valueIterator();
+        while (cl_it.next()) |list| list.deinit(self.gpa);
+        self.current_limits_by_set.deinit(self.gpa);
+
+        self.voltage_level_cache.deinit(self.gpa);
     }
 
     fn buildCurvePointsMap(self: *Converter) !void {
@@ -117,6 +135,11 @@ pub const Converter = struct {
             const terminal_id = topology.stripHash(terminal_ref);
             const set_id = try op_lim_set.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(op_lim_set.id);
             self.terminal_to_limit_set_map.putAssumeCapacity(terminal_id, set_id);
+
+            // Group OperationalLimitSets by terminal ID 
+            const gop = try self.op_limit_sets_by_terminal.getOrPut(self.gpa, terminal_id);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.gpa, op_lim_set);
         }
 
         // Build set of PATL (permanent) and TATL (temporary) limit type IDs
@@ -136,17 +159,25 @@ pub const Converter = struct {
         }
 
         // OperationalLimitSet ID → permanent limit value (PATL only)
+        // Also group CurrentLimits by OperationalLimitSet ID 
         const current_limits = try self.model.getObjectsByType(self.gpa, "CurrentLimit");
         defer self.gpa.free(current_limits);
 
         try self.limit_set_to_value_map.ensureTotalCapacity(self.gpa, @intCast(current_limits.len));
         for (current_limits) |current_limit| {
+            // Group by OperationalLimitSet 
+            const set_ref = try current_limit.getReference("OperationalLimit.OperationalLimitSet") orelse continue;
+            const set_id = topology.stripHash(set_ref);
+
+            const cl_gop = try self.current_limits_by_set.getOrPut(self.gpa, set_id);
+            if (!cl_gop.found_existing) cl_gop.value_ptr.* = .empty;
+            try cl_gop.value_ptr.append(self.gpa, current_limit);
+
+            // PATL limit value map (existing behavior)
             const type_ref = try current_limit.getReference("OperationalLimit.OperationalLimitType") orelse continue;
             const type_id = topology.stripHash(type_ref);
             if (!self.patl_type_ids.contains(type_id)) continue;
 
-            const set_ref = try current_limit.getReference("OperationalLimit.OperationalLimitSet") orelse continue;
-            const set_id = topology.stripHash(set_ref);
             const value_str = try current_limit.getProperty("CurrentLimit.normalValue") orelse continue;
             const value = try std.fmt.parseFloat(f64, value_str);
             self.limit_set_to_value_map.putAssumeCapacity(set_id, value);
@@ -175,11 +206,17 @@ pub const Converter = struct {
     /// - Bay (which has Bay.VoltageLevel pointing to the actual VoltageLevel)
     /// - Line (trace through equipment connections via BFS to find a VoltageLevel)
     fn getVoltageLevelFromNode(self: *Converter, node: *const cim_model.CimObject) ![]const u8 {
+        // Check cache first
+        if (self.voltage_level_cache.get(node.id)) |cached| {
+            return cached;
+        }
+
         if (try self.resolveNodeToVoltageLevel(node.id)) |voltage_level_id| {
+            try self.voltage_level_cache.put(self.gpa, node.id, voltage_level_id);
             return voltage_level_id;
         }
 
-        // BFS through equipment connections to find a VoltageLevel.
+        // Breadth-First Search through equipment connections to find a VoltageLevel.
         // Handles chains of ConnectivityNodes inside Line containers.
         const max_depth = 16;
         var queue: [max_depth][]const u8 = undefined;
@@ -207,6 +244,7 @@ pub const Converter = struct {
             head += 1;
 
             if (try self.resolveNodeToVoltageLevel(current_node_id)) |voltage_level_id| {
+                try self.voltage_level_cache.put(self.gpa, node.id, voltage_level_id);
                 return voltage_level_id;
             }
 
@@ -1401,14 +1439,10 @@ pub const Converter = struct {
         var groups: std.ArrayListUnmanaged(iidm.OperationalLimitsGroup) = .empty;
         errdefer groups.deinit(self.gpa);
 
-        // Find OperationalLimitSet for this terminal
-        const op_lim_sets = try self.model.getObjectsByType(self.gpa, "OperationalLimitSet");
-        defer self.gpa.free(op_lim_sets);
+        // Get OperationalLimitSets for this terminal
+        const op_lim_sets = self.op_limit_sets_by_terminal.get(terminal_id) orelse return groups;
 
-        for (op_lim_sets) |op_lim_set| {
-            const set_terminal_ref = try op_lim_set.getReference("OperationalLimitSet.Terminal") orelse continue;
-            if (!std.mem.eql(u8, topology.stripHash(set_terminal_ref), terminal_id)) continue;
-
+        for (op_lim_sets.items) |op_lim_set| {
             const set_id = try op_lim_set.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(op_lim_set.id);
             const set_name = try op_lim_set.getProperty("IdentifiedObject.name") orelse "DEFAULT";
 
@@ -1418,50 +1452,47 @@ pub const Converter = struct {
             var patl_limit_id: ?[]const u8 = null;
             var temporary_limits: std.ArrayListUnmanaged(iidm.TemporaryLimit) = .empty;
 
-            const current_limits_objs = try self.model.getObjectsByType(self.gpa, "CurrentLimit");
-            defer self.gpa.free(current_limits_objs);
-
             // Build properties list
             var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
 
-            for (current_limits_objs) |cl| {
-                const cl_set_ref = try cl.getReference("OperationalLimit.OperationalLimitSet") orelse continue;
-                if (!std.mem.eql(u8, topology.stripHash(cl_set_ref), op_lim_set.id)) continue;
+            // Get CurrentLimits for this OperationalLimitSet
+            if (self.current_limits_by_set.get(op_lim_set.id)) |current_limits_for_set| {
+                for (current_limits_for_set.items) |cl| {
+                    const type_ref = try cl.getReference("OperationalLimit.OperationalLimitType") orelse continue;
+                    const type_id = topology.stripHash(type_ref);
 
-                const type_ref = try cl.getReference("OperationalLimit.OperationalLimitType") orelse continue;
-                const type_id = topology.stripHash(type_ref);
+                    const cl_value_str = try cl.getProperty("CurrentLimit.normalValue");
+                    const cl_id = try cl.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(cl.id);
 
-                const cl_value_str = try cl.getProperty("CurrentLimit.normalValue");
-                const cl_id = try cl.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(cl.id);
+                    // Check if PATL type
+                    if (self.patl_type_ids.contains(type_id)) {
+                        patl_value_str = cl_value_str;
+                        if (cl_value_str) |val_str| {
+                            patl_value = try std.fmt.parseFloat(f64, val_str);
+                        }
+                        patl_limit_id = cl_id;
+                    } else if (self.tatl_type_durations.get(type_id)) |duration| {
+                        // TATL type - add properties with duration suffix
+                        if (cl_value_str) |val| {
+                            const prop_name = try std.fmt.allocPrint(self.gpa, "CGMES.normalValue_CurrentLimit_tatl_{s}", .{duration});
+                            try properties.append(self.gpa, .{ .name = prop_name, .value = try iidm.formatFloatStr(self.gpa, val) });
+                        }
+                        const limit_prop_name = try std.fmt.allocPrint(self.gpa, "CGMES.OperationalLimit_CurrentLimit_tatl_{s}", .{duration});
+                        try properties.append(self.gpa, .{ .name = limit_prop_name, .value = cl_id });
 
-                // Check if PATL type
-                if (self.patl_type_ids.contains(type_id)) {
-                    patl_value_str = cl_value_str;
-                    if (cl_value_str) |val_str| {
-                        patl_value = try std.fmt.parseFloat(f64, val_str);
-                    }
-                    patl_limit_id = cl_id;
-                } else if (self.tatl_type_durations.get(type_id)) |duration| {
-                    // TATL type - add properties with duration suffix
-                    if (cl_value_str) |val| {
-                        const prop_name = try std.fmt.allocPrint(self.gpa, "CGMES.normalValue_CurrentLimit_tatl_{s}", .{duration});
-                        try properties.append(self.gpa, .{ .name = prop_name, .value = try iidm.formatFloatStr(self.gpa, val) });
-                    }
-                    const limit_prop_name = try std.fmt.allocPrint(self.gpa, "CGMES.OperationalLimit_CurrentLimit_tatl_{s}", .{duration});
-                    try properties.append(self.gpa, .{ .name = limit_prop_name, .value = cl_id });
-
-                    // Also add to temporary limits in CurrentLimits
-                    if (cl_value_str) |val_str| {
-                        // Get the name from the CurrentLimit object itself
-                        const limit_name = try cl.getProperty("IdentifiedObject.name") orelse "TATL";
-                        const duration_int = std.fmt.parseInt(u32, duration, 10) catch null;
-                        // Omit acceptableDuration if it's 2147483647 (infinite)
-                        const acceptable_dur: ?u32 = if (duration_int) |d| (if (d == 2147483647) null else d) else null;
-                        try temporary_limits.append(self.gpa, .{
-                            .name = limit_name,
-                            .acceptable_duration = acceptable_dur,
-                            .value = try std.fmt.parseFloat(f64, val_str),
-                        });
+                        // Also add to temporary limits in CurrentLimits
+                        if (cl_value_str) |val_str| {
+                            // Get the name from the CurrentLimit object itself
+                            const limit_name = try cl.getProperty("IdentifiedObject.name") orelse "TATL";
+                            const duration_int = std.fmt.parseInt(u32, duration, 10) catch null;
+                            // Omit acceptableDuration if it's 2147483647 (infinite)
+                            const acceptable_dur: ?u32 = if (duration_int) |d| (if (d == 2147483647) null else d) else null;
+                            try temporary_limits.append(self.gpa, .{
+                                .name = limit_name,
+                                .acceptable_duration = acceptable_dur,
+                                .value = try std.fmt.parseFloat(f64, val_str),
+                            });
+                        }
                     }
                 }
             }
@@ -1521,7 +1552,7 @@ pub const Converter = struct {
             // gch is optional in CGMES, default to 0 if not present
             const gch = try std.fmt.parseFloat(f64, try line.getProperty("ACLineSegment.gch") orelse "0");
 
-            // Get terminal IDs from topology resolver (O(1) lookup, already built)
+            // Get terminal IDs from topology resolver 
             var t1_id: ?[]const u8 = null;
             var t2_id: ?[]const u8 = null;
             if (self.topology_resolver.getEquipmentTerminals(line.id)) |term_infos| {
@@ -1704,81 +1735,90 @@ pub const Converter = struct {
     }
 
     fn buildExtensions(self: *Converter, network: *iidm.Network) !void {
-        // Build tap changer extensions for transformers
+        // Pre-build tap changer maps keyed by PowerTransformer ID
+        var tap_changers_by_transformer: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(iidm.TapChangerInfo)) = .empty;
+        defer {
+            var tc_it = tap_changers_by_transformer.valueIterator();
+            while (tc_it.next()) |list| list.deinit(self.gpa);
+            tap_changers_by_transformer.deinit(self.gpa);
+        }
+
+        // One pass over PhaseTapChangerTabular
+        const phase_tap_changers = try self.model.getObjectsByType(self.gpa, "PhaseTapChangerTabular");
+        defer self.gpa.free(phase_tap_changers);
+
+        for (phase_tap_changers) |ptc| {
+            const tw_ref = try ptc.getReference("PhaseTapChanger.TransformerEnd") orelse continue;
+            const tw_id = topology.stripHash(tw_ref);
+            const tw = self.model.getObjectById(tw_id) orelse continue;
+            const pt_ref = try tw.getReference("TransformerEnd.Terminal") orelse continue;
+            const terminal = self.model.getObjectById(topology.stripHash(pt_ref)) orelse continue;
+            const eq_ref = try terminal.getReference("Terminal.ConductingEquipment") orelse continue;
+            const transformer_id = topology.stripHash(eq_ref);
+
+            const ptc_id = try ptc.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(ptc.id);
+            const step_str = try ptc.getProperty("TapChanger.normalStep") orelse "1";
+            const step = std.fmt.parseInt(u32, step_str, 10) catch 1;
+
+            const gop = try tap_changers_by_transformer.getOrPut(self.gpa, transformer_id);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.gpa, .{
+                .id = ptc_id,
+                .tap_changer_type = "PhaseTapChangerTabular",
+                .step = step,
+                .control_id = null,
+            });
+        }
+
+        // One pass over RatioTapChanger
+        const ratio_tap_changers = try self.model.getObjectsByType(self.gpa, "RatioTapChanger");
+        defer self.gpa.free(ratio_tap_changers);
+
+        for (ratio_tap_changers) |rtc| {
+            const tw_ref = try rtc.getReference("RatioTapChanger.TransformerEnd") orelse continue;
+            const tw_id = topology.stripHash(tw_ref);
+            const tw = self.model.getObjectById(tw_id) orelse continue;
+            const pt_ref = try tw.getReference("TransformerEnd.Terminal") orelse continue;
+            const terminal = self.model.getObjectById(topology.stripHash(pt_ref)) orelse continue;
+            const eq_ref = try terminal.getReference("Terminal.ConductingEquipment") orelse continue;
+            const transformer_id = topology.stripHash(eq_ref);
+
+            const rtc_id = try rtc.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(rtc.id);
+            const step_str = try rtc.getProperty("TapChanger.normalStep") orelse "1";
+            const step = std.fmt.parseInt(u32, step_str, 10) catch 1;
+
+            var control_id: ?[]const u8 = null;
+            if (try rtc.getReference("TapChanger.TapChangerControl")) |tc_ref| {
+                const tc_id = topology.stripHash(tc_ref);
+                if (self.model.getObjectById(tc_id)) |tc| {
+                    control_id = try tc.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(tc.id);
+                }
+            }
+
+            const gop = try tap_changers_by_transformer.getOrPut(self.gpa, transformer_id);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.gpa, .{
+                .id = rtc_id,
+                .tap_changer_type = null,
+                .step = step,
+                .control_id = control_id,
+            });
+        }
+
+        // Iterate PowerTransformers
         const power_transformers = try self.model.getObjectsByType(self.gpa, "PowerTransformer");
         defer self.gpa.free(power_transformers);
 
         for (power_transformers) |pt| {
-            const pt_id = try pt.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(pt.id);
-
-            var tap_changers: std.ArrayListUnmanaged(iidm.TapChangerInfo) = .empty;
-
-            // Find PhaseTapChanger for this transformer
-            const phase_tap_changers = try self.model.getObjectsByType(self.gpa, "PhaseTapChangerTabular");
-            defer self.gpa.free(phase_tap_changers);
-
-            for (phase_tap_changers) |ptc| {
-                const tw_ref = try ptc.getReference("PhaseTapChanger.TransformerEnd") orelse continue;
-                const tw_id = topology.stripHash(tw_ref);
-                // Check if this transformer end belongs to our power transformer
-                if (self.model.getObjectById(tw_id)) |tw| {
-                    const pt_ref = try tw.getReference("TransformerEnd.Terminal") orelse continue;
-                    const terminal = self.model.getObjectById(topology.stripHash(pt_ref)) orelse continue;
-                    const eq_ref = try terminal.getReference("Terminal.ConductingEquipment") orelse continue;
-                    if (!std.mem.eql(u8, topology.stripHash(eq_ref), pt.id)) continue;
-
-                    const ptc_id = try ptc.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(ptc.id);
-                    const step_str = try ptc.getProperty("TapChanger.normalStep") orelse "1";
-                    const step = std.fmt.parseInt(u32, step_str, 10) catch 1;
-
-                    try tap_changers.append(self.gpa, .{
-                        .id = ptc_id,
-                        .tap_changer_type = "PhaseTapChangerTabular",
-                        .step = step,
-                        .control_id = null,
-                    });
-                }
-            }
-
-            // Find RatioTapChanger for this transformer
-            const ratio_tap_changers = try self.model.getObjectsByType(self.gpa, "RatioTapChanger");
-            defer self.gpa.free(ratio_tap_changers);
-
-            for (ratio_tap_changers) |rtc| {
-                const tw_ref = try rtc.getReference("RatioTapChanger.TransformerEnd") orelse continue;
-                const tw_id = topology.stripHash(tw_ref);
-                if (self.model.getObjectById(tw_id)) |tw| {
-                    const pt_ref = try tw.getReference("TransformerEnd.Terminal") orelse continue;
-                    const terminal = self.model.getObjectById(topology.stripHash(pt_ref)) orelse continue;
-                    const eq_ref = try terminal.getReference("Terminal.ConductingEquipment") orelse continue;
-                    if (!std.mem.eql(u8, topology.stripHash(eq_ref), pt.id)) continue;
-
-                    const rtc_id = try rtc.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(rtc.id);
-                    const step_str = try rtc.getProperty("TapChanger.normalStep") orelse "1";
-                    const step = std.fmt.parseInt(u32, step_str, 10) catch 1;
-
-                    var control_id: ?[]const u8 = null;
-                    if (try rtc.getReference("TapChanger.TapChangerControl")) |tc_ref| {
-                        const tc_id = topology.stripHash(tc_ref);
-                        if (self.model.getObjectById(tc_id)) |tc| {
-                            control_id = try tc.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(tc.id);
-                        }
-                    }
-
-                    try tap_changers.append(self.gpa, .{
-                        .id = rtc_id,
-                        .tap_changer_type = null,
-                        .step = step,
-                        .control_id = control_id,
-                    });
-                }
-            }
-
-            if (tap_changers.items.len > 0) {
+            if (tap_changers_by_transformer.getPtr(pt.id)) |tap_changers| {
+                const pt_id = try pt.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(pt.id);
+                // Move ownership of the list to the extension
                 try network.extensions.append(self.gpa, .{
                     .id = pt_id,
-                    .cgmes_tap_changers = .{ .tap_changers = tap_changers },
+                    .cgmes_tap_changers = .{ .tap_changers = tap_changers.* },
                 });
+                // Mark as moved so defer won't double-free
+                tap_changers.* = .empty;
             }
         }
 
