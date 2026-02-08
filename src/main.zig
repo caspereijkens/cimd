@@ -23,7 +23,7 @@ pub fn main() !void {
 
     switch (command) {
         .index => |_| try command_index(gpa, command.index.paths),
-        .convert => |c| try command_convert(gpa, c.input_path, c.eqbd_path, c.output_path),
+        .convert => |c| try command_convert(gpa, c.input_path, c.eqbd_path, c.output_path, c.verbose),
         .version => |_| try command_version(command.version.verbose),
     }
 }
@@ -103,7 +103,10 @@ fn readPath(gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
     }
 }
 
-fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[]const u8, output_path: ?[]const u8) !void {
+fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[]const u8, output_path: ?[]const u8, verbose: bool) !void {
+    var total_timer = std.time.Timer.start() catch unreachable;
+
+    var stage_timer = std.time.Timer.start() catch unreachable;
     var xml = try readPath(gpa, input_path);
 
     if (eqbd_path) |path| {
@@ -116,16 +119,23 @@ fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[
         xml = merged;
     }
     defer gpa.free(xml);
+    if (verbose) printTiming("Read files", stage_timer.read());
 
+    stage_timer.reset();
     var model = try cim_model.CimModel.init(gpa, xml);
     defer model.deinit(gpa);
+    if (verbose) printTiming("Build model", stage_timer.read());
 
+    stage_timer.reset();
     var topo = try topology.TopologyResolver.init(gpa, &model);
     defer topo.deinit();
+    if (verbose) printTiming("Build topology", stage_timer.read());
 
-    var conv = converter.Converter.init(gpa, &model, &topo);
+    stage_timer.reset();
+    var conv = converter.Converter.init(gpa, &model, &topo, verbose);
     var network = try conv.convert();
     defer network.deinit(gpa);
+    if (verbose) printTiming("Convert", stage_timer.read());
 
     // Create output file or use stdout
     const cwd = std.fs.cwd();
@@ -140,9 +150,20 @@ fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[
     var write_buffer: [4096]u8 = undefined;
     var file_writer = std.fs.File.Writer.init(output_file, &write_buffer);
 
+    stage_timer.reset();
     try std.json.Stringify.value(network, .{}, &file_writer.interface);
     try file_writer.interface.writeByte('\n');
     try file_writer.interface.flush();
+    if (verbose) printTiming("JSON serialize", stage_timer.read());
+
+    if (verbose) printTiming("Total", total_timer.read());
+}
+
+fn printTiming(label: []const u8, nanoseconds: u64) void {
+    const milliseconds = @as(f64, @floatFromInt(nanoseconds)) / 1_000_000.0;
+    var buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "[verbose] {s}: {d:.1} ms\n", .{ label, milliseconds }) catch return;
+    _ = std.fs.File.stderr().write(msg) catch {};
 }
 
 fn command_not_implemented(comptime command_name: []const u8) !void {

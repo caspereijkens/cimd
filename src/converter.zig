@@ -18,6 +18,7 @@ pub const Converter = struct {
     gpa: std.mem.Allocator,
     model: *const CimModel,
     topology_resolver: *const TopologyResolver,
+    verbose: bool,
 
     substation_map: std.StringHashMapUnmanaged(usize),
     voltage_level_map: std.StringHashMapUnmanaged(VoltageLevelRef),
@@ -50,11 +51,12 @@ pub const Converter = struct {
         }
     };
 
-    pub fn init(gpa: std.mem.Allocator, model: *const CimModel, topology_resolver: *const TopologyResolver) Converter {
+    pub fn init(gpa: std.mem.Allocator, model: *const CimModel, topology_resolver: *const TopologyResolver, verbose: bool) Converter {
         return .{
             .gpa = gpa,
             .model = model,
             .topology_resolver = topology_resolver,
+            .verbose = verbose,
             .substation_map = .empty,
             .voltage_level_map = .empty,
             .node_index_maps = .empty,
@@ -285,29 +287,67 @@ pub const Converter = struct {
         };
         errdefer network.deinit(self.gpa);
 
+        var timer = std.time.Timer.start() catch unreachable;
+
         try self.convertSubstations(&network);
+        self.printSubTiming("Substations", &timer);
 
         try self.convertVoltageLevels(&network);
+        self.printSubTiming("VoltageLevels", &timer);
 
         try self.buildCurvePointsMap();
+        self.printSubTiming("CurvePointsMap", &timer);
+
         try self.buildOperationalLimitsMaps();
+        self.printSubTiming("OperationalLimits", &timer);
 
         try self.convertBusbarSections(&network);
+        self.printSubTiming("BusbarSections", &timer);
+
         try self.convertSwitches(&network);
+        self.printSubTiming("Switches", &timer);
+
         try self.convertLoads(&network);
+        self.printSubTiming("Loads", &timer);
+
         try self.convertShunts(&network);
+        self.printSubTiming("Shunts", &timer);
+
         try self.convertStaticVarCompensators(&network);
+        self.printSubTiming("StaticVarCompensators", &timer);
+
         try self.convertGenerators(&network);
+        self.printSubTiming("Generators", &timer);
+
         try self.convertVsConverters(&network);
+        self.printSubTiming("VsConverters", &timer);
+
         try self.convertCsConverters(&network);
+        self.printSubTiming("CsConverters", &timer);
 
         try self.convertTransformers(&network);
+        self.printSubTiming("Transformers", &timer);
 
         try self.convertLines(&network);
+        self.printSubTiming("Lines", &timer);
+
         try self.convertHvdcLines(&network);
+        self.printSubTiming("HvdcLines", &timer);
+
         try self.buildExtensions(&network);
+        self.printSubTiming("Extensions", &timer);
 
         return network;
+    }
+
+    fn printSubTiming(self: *const Converter, label: []const u8, timer: *std.time.Timer) void {
+        if (!self.verbose) return;
+        const nanoseconds = timer.read();
+        timer.reset();
+        const milliseconds = @as(f64, @floatFromInt(nanoseconds)) / 1_000_000.0;
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "[verbose]   {s}: {d:.1} ms\n", .{ label, milliseconds }) catch return;
+        _ = std.fs.File.stderr().write(msg) catch {};
     }
 
     fn convertSubstations(self: *Converter, network: *iidm.Network) !void {

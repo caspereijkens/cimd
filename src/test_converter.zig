@@ -29,7 +29,7 @@ test "Converter - converts Substation with name" {
     var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
-    var conv = Converter.init(gpa, &model, &topo);
+    var conv = Converter.init(gpa, &model, &topo, false);
     defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
@@ -69,7 +69,7 @@ test "Converter - converts VoltageLevel with nominal voltage" {
     var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
-    var conv = Converter.init(gpa, &model, &topo);
+    var conv = Converter.init(gpa, &model, &topo, false);
     defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
@@ -124,7 +124,7 @@ test "Converter - converts EnergyConsumer to Load" {
     var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
-    var conv = Converter.init(gpa, &model, &topo);
+    var conv = Converter.init(gpa, &model, &topo, false);
     defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
@@ -184,7 +184,7 @@ test "Converter - converts SynchronousMachine to Generator" {
     var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
-    var conv = Converter.init(gpa, &model, &topo);
+    var conv = Converter.init(gpa, &model, &topo, false);
     defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
@@ -262,7 +262,7 @@ test "Converter - converts SynchronousMachine with ReactiveCapabilityCurve" {
     var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
-    var conv = Converter.init(gpa, &model, &topo);
+    var conv = Converter.init(gpa, &model, &topo, false);
     defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
@@ -347,7 +347,7 @@ test "Converter - converts ACLineSegment to Line" {
     var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
-    var conv = Converter.init(gpa, &model, &topo);
+    var conv = Converter.init(gpa, &model, &topo, false);
     defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
@@ -440,7 +440,7 @@ test "Converter - converts PowerTransformer to TwoWindingsTransformer" {
     var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
-    var conv = Converter.init(gpa, &model, &topo);
+    var conv = Converter.init(gpa, &model, &topo, false);
     defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
@@ -562,7 +562,7 @@ test "Converter - converts PowerTransformer to ThreeWindingsTransformer" {
     var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
-    var conv = Converter.init(gpa, &model, &topo);
+    var conv = Converter.init(gpa, &model, &topo, false);
     defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
@@ -636,7 +636,7 @@ test "Converter - converts Breaker to Switch" {
     var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
-    var conv = Converter.init(gpa, &model, &topo);
+    var conv = Converter.init(gpa, &model, &topo, false);
     defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
@@ -672,7 +672,7 @@ test "converter uses mRID for substation id" {
     defer model.deinit(gpa);
     var resolver = try TopologyResolver.init(gpa, &model);
     defer resolver.deinit();
-    var conv = Converter.init(gpa, &model, &resolver);
+    var conv = Converter.init(gpa, &model, &resolver, false);
     defer conv.deinit();
 
     var network = try conv.convert();
@@ -705,7 +705,7 @@ test "converter populates geographicalTags from SubGeographicalRegion" {
     defer model.deinit(gpa);
     var resolver = try TopologyResolver.init(gpa, &model);
     defer resolver.deinit();
-    var conv = Converter.init(gpa, &model, &resolver);
+    var conv = Converter.init(gpa, &model, &resolver, false);
     defer conv.deinit();
 
     var network = try conv.convert();
@@ -812,7 +812,7 @@ test "Converter - converts RatioTapChanger on TwoWindingsTransformer" {
     var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
-    var conv = Converter.init(gpa, &model, &topo);
+    var conv = Converter.init(gpa, &model, &topo, false);
     defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
@@ -945,7 +945,7 @@ test "Converter - converts PhaseTapChanger on TwoWindingsTransformer" {
     var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
-    var conv = Converter.init(gpa, &model, &topo);
+    var conv = Converter.init(gpa, &model, &topo, false);
     defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
@@ -1038,7 +1038,7 @@ test "Converter - converts VsConverter to VscConverterStation" {
     var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
-    var conv = Converter.init(gpa, &model, &topo);
+    var conv = Converter.init(gpa, &model, &topo, false);
     defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
@@ -1112,7 +1112,7 @@ test "Converter - converts CsConverter to LccConverterStation" {
     var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
-    var conv = Converter.init(gpa, &model, &topo);
+    var conv = Converter.init(gpa, &model, &topo, false);
     defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
@@ -1224,7 +1224,7 @@ test "Converter - converts two-winding transformer with operational limits" {
     var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
-    var conv = Converter.init(gpa, &model, &topo);
+    var conv = Converter.init(gpa, &model, &topo, false);
     defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
@@ -1300,7 +1300,7 @@ test "Converter - handles ConnectivityNode contained in Bay" {
     var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
-    var conv = Converter.init(gpa, &model, &topo);
+    var conv = Converter.init(gpa, &model, &topo, false);
     defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);
@@ -1440,7 +1440,7 @@ test "Converter - resolves VoltageLevel from CN chain in Line container" {
     var topo = try TopologyResolver.init(gpa, &model);
     defer topo.deinit();
 
-    var conv = Converter.init(gpa, &model, &topo);
+    var conv = Converter.init(gpa, &model, &topo, false);
     defer conv.deinit();
     var network = try conv.convert();
     defer network.deinit(gpa);

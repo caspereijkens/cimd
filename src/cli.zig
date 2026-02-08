@@ -22,7 +22,7 @@ const help_index =
 ;
 
 const help_convert =
-    \\Usage: cimd convert <input> [--output <file>]
+    \\Usage: cimd convert <input> [--output <file>] [--verbose]
     \\
     \\Convert a CGMES file to IIDM JSON format.
     \\
@@ -32,11 +32,13 @@ const help_convert =
     \\Options:
     \\  --eqbd <file>     EQBD profile file if needed (XML or ZIP)
     \\  --output <file>   Write output to file (default: stdout)
+    \\  --verbose         Print pipeline timing breakdown to stderr
     \\
     \\Examples:
     \\  cimd convert data/eq.zip
     \\  cimd convert data/eq.zip --eqbd eqbd.zip
     \\  cimd convert data/eq.xml --output network.json
+    \\  cimd convert data/eq.zip --verbose
     \\
 ;
 
@@ -77,6 +79,7 @@ pub const Command = union(enum) {
         input_path: []const u8,
         eqbd_path: ?[]const u8,
         output_path: ?[]const u8,
+        verbose: bool,
     };
 
     pub const Version = struct {
@@ -145,6 +148,7 @@ fn parse_convert_command(args_iterator: *std.process.ArgIterator) Command {
     var input_path: ?[]const u8 = null;
     var eqbd_path: ?[]const u8 = null;
     var output_path: ?[]const u8 = null;
+    var verbose = false;
 
     while (args_iterator.next()) |arg| {
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
@@ -158,6 +162,8 @@ fn parse_convert_command(args_iterator: *std.process.ArgIterator) Command {
         } else if (std.mem.eql(u8, arg, "--eqbd")) {
             eqbd_path = args_iterator.next() orelse
                 print.stderr("convert: --eqbd requires a file path", .{});
+        } else if (std.mem.eql(u8, arg, "--verbose")) {
+            verbose = true;
         } else if (arg.len > 0 and arg[0] == '-') {
             print.stderr("convert: unknown option '{s}'", .{arg});
         } else {
@@ -174,7 +180,7 @@ fn parse_convert_command(args_iterator: *std.process.ArgIterator) Command {
         print.stderr("convert: missing required argument <input>", .{});
     }
 
-    return .{ .convert = .{ .input_path = input_path.?, .eqbd_path = eqbd_path, .output_path = output_path } };
+    return .{ .convert = .{ .input_path = input_path.?, .eqbd_path = eqbd_path, .output_path = output_path, .verbose = verbose } };
 }
 
 fn parse_version_command(args_iterator: *std.process.ArgIterator) Command {
