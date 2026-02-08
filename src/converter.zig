@@ -102,8 +102,7 @@ pub const Converter = struct {
     }
 
     fn buildCurvePointsMap(self: *Converter) !void {
-        const curve_datas = try self.model.getObjectsByType(self.gpa, "CurveData");
-        defer self.gpa.free(curve_datas);
+        const curve_datas = self.model.getObjectsByType("CurveData");
 
         for (curve_datas) |curve_data| {
             const curve_ref = try curve_data.getReference("CurveData.Curve") orelse continue;
@@ -126,8 +125,7 @@ pub const Converter = struct {
 
     fn buildOperationalLimitsMaps(self: *Converter) !void {
         // Terminal ID → OperationalLimitSet ID
-        const op_lim_sets = try self.model.getObjectsByType(self.gpa, "OperationalLimitSet");
-        defer self.gpa.free(op_lim_sets);
+        const op_lim_sets = self.model.getObjectsByType("OperationalLimitSet");
 
         try self.terminal_to_limit_set_map.ensureTotalCapacity(self.gpa, @intCast(op_lim_sets.len));
         for (op_lim_sets) |op_lim_set| {
@@ -143,8 +141,7 @@ pub const Converter = struct {
         }
 
         // Build set of PATL (permanent) and TATL (temporary) limit type IDs
-        const limit_types = try self.model.getObjectsByType(self.gpa, "OperationalLimitType");
-        defer self.gpa.free(limit_types);
+        const limit_types = self.model.getObjectsByType("OperationalLimitType");
 
         for (limit_types) |limit_type| {
             const is_infinite = try limit_type.getProperty("OperationalLimitType.isInfiniteDuration") orelse "false";
@@ -160,8 +157,7 @@ pub const Converter = struct {
 
         // OperationalLimitSet ID → permanent limit value (PATL only)
         // Also group CurrentLimits by OperationalLimitSet ID 
-        const current_limits = try self.model.getObjectsByType(self.gpa, "CurrentLimit");
-        defer self.gpa.free(current_limits);
+        const current_limits = self.model.getObjectsByType("CurrentLimit");
 
         try self.limit_set_to_value_map.ensureTotalCapacity(self.gpa, @intCast(current_limits.len));
         for (current_limits) |current_limit| {
@@ -300,8 +296,7 @@ pub const Converter = struct {
     }
 
     pub fn convert(self: *Converter) !iidm.Network {
-        const full_model_list = try self.model.getObjectsByType(self.gpa, "FullModel");
-        defer self.gpa.free(full_model_list);
+        const full_model_list = self.model.getObjectsByType("FullModel");
 
         if (full_model_list.len == 0) {
             return error.MalformedXML;
@@ -389,8 +384,7 @@ pub const Converter = struct {
     }
 
     fn convertSubstations(self: *Converter, network: *iidm.Network) !void {
-        const substations = try self.model.getObjectsByType(self.gpa, "Substation");
-        defer self.gpa.free(substations);
+        const substations = self.model.getObjectsByType("Substation");
 
         try network.substations.ensureTotalCapacity(self.gpa, substations.len);
         try self.substation_map.ensureTotalCapacity(self.gpa, @intCast(substations.len));
@@ -438,12 +432,10 @@ pub const Converter = struct {
     }
 
     fn convertVoltageLevels(self: *Converter, network: *iidm.Network) !void {
-        const voltage_levels = try self.model.getObjectsByType(self.gpa, "VoltageLevel");
-        defer self.gpa.free(voltage_levels);
+        const voltage_levels = self.model.getObjectsByType("VoltageLevel");
 
         // Build BaseVoltage lookup
-        const base_voltages = try self.model.getObjectsByType(self.gpa, "BaseVoltage");
-        defer self.gpa.free(base_voltages);
+        const base_voltages = self.model.getObjectsByType("BaseVoltage");
 
         var nominal_voltages: std.StringHashMapUnmanaged(f64) = .empty;
         defer nominal_voltages.deinit(self.gpa);
@@ -513,15 +505,13 @@ pub const Converter = struct {
     }
 
     fn convertLoads(self: *Converter, network: *iidm.Network) !void {
-        const energy_consumers = try self.model.getObjectsByType(self.gpa, "EnergyConsumer");
-        defer self.gpa.free(energy_consumers);
+        const energy_consumers = self.model.getObjectsByType("EnergyConsumer");
 
         for (energy_consumers) |load| {
             try self.addLoad(network, load, "EnergyConsumer");
         }
 
-        const energy_sources = try self.model.getObjectsByType(self.gpa, "EnergySource");
-        defer self.gpa.free(energy_sources);
+        const energy_sources = self.model.getObjectsByType("EnergySource");
 
         for (energy_sources) |load| {
             try self.addLoad(network, load, "EnergySource");
@@ -570,8 +560,7 @@ pub const Converter = struct {
     }
 
     fn convertShunts(self: *Converter, network: *iidm.Network) !void {
-        const linear_shunt_compensators = try self.model.getObjectsByType(self.gpa, "LinearShuntCompensator");
-        defer self.gpa.free(linear_shunt_compensators);
+        const linear_shunt_compensators = self.model.getObjectsByType("LinearShuntCompensator");
 
         for (linear_shunt_compensators) |linear_shunt_compensator| {
             const id = try linear_shunt_compensator.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(linear_shunt_compensator.id);
@@ -617,8 +606,7 @@ pub const Converter = struct {
     }
 
     fn convertStaticVarCompensators(self: *Converter, network: *iidm.Network) !void {
-        const svcs = try self.model.getObjectsByType(self.gpa, "StaticVarCompensator");
-        defer self.gpa.free(svcs);
+        const svcs = self.model.getObjectsByType("StaticVarCompensator");
 
         for (svcs) |svc| {
             const id = try svc.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(svc.id);
@@ -711,11 +699,9 @@ pub const Converter = struct {
 
     fn convertVsConverters(self: *Converter, network: *iidm.Network) !void {
         // Build DC terminal lookup: converter_id -> list of DC terminals
-        const dc_terminals = try self.model.getObjectsByType(self.gpa, "ACDCConverterDCTerminal");
-        defer self.gpa.free(dc_terminals);
+        const dc_terminals = self.model.getObjectsByType("ACDCConverterDCTerminal");
 
-        const vs_converters = try self.model.getObjectsByType(self.gpa, "VsConverter");
-        defer self.gpa.free(vs_converters);
+        const vs_converters = self.model.getObjectsByType("VsConverter");
 
         for (vs_converters) |vs_converter| {
             const connectivity_node_id = self.topology_resolver.getEquipmentNode(vs_converter.id, 1) orelse return error.MalformedXML;
@@ -799,11 +785,9 @@ pub const Converter = struct {
     }
 
     fn convertCsConverters(self: *Converter, network: *iidm.Network) !void {
-        const dc_terminals = try self.model.getObjectsByType(self.gpa, "ACDCConverterDCTerminal");
-        defer self.gpa.free(dc_terminals);
+        const dc_terminals = self.model.getObjectsByType("ACDCConverterDCTerminal");
 
-        const cs_converters = try self.model.getObjectsByType(self.gpa, "CsConverter");
-        defer self.gpa.free(cs_converters);
+        const cs_converters = self.model.getObjectsByType("CsConverter");
 
         for (cs_converters) |cs_converter| {
             const connectivity_node_id = self.topology_resolver.getEquipmentNode(cs_converter.id, 1) orelse return error.MalformedXML;
@@ -878,8 +862,7 @@ pub const Converter = struct {
     }
 
     fn convertGenerators(self: *Converter, network: *iidm.Network) !void {
-        const generators = try self.model.getObjectsByType(self.gpa, "SynchronousMachine");
-        defer self.gpa.free(generators);
+        const generators = self.model.getObjectsByType("SynchronousMachine");
 
         for (generators) |generator| {
             const connectivity_node_id = self.topology_resolver.getEquipmentNode(generator.id, 1) orelse return error.MalformedXML;
@@ -987,8 +970,7 @@ pub const Converter = struct {
 
     fn convertSwitches(self: *Converter, network: *iidm.Network) !void {
         for (switch_type_mapping) |mapping| {
-            const switches = try self.model.getObjectsByType(self.gpa, mapping.cim_type);
-            defer self.gpa.free(switches);
+            const switches = self.model.getObjectsByType(mapping.cim_type);
 
             for (switches) |sw| {
                 const id = try sw.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(sw.id);
@@ -1064,8 +1046,7 @@ pub const Converter = struct {
     }
 
     fn convertBusbarSections(self: *Converter, network: *iidm.Network) !void {
-        const busbar_sections = try self.model.getObjectsByType(self.gpa, "BusbarSection");
-        defer self.gpa.free(busbar_sections);
+        const busbar_sections = self.model.getObjectsByType("BusbarSection");
 
         for (busbar_sections) |busbar_section| {
             const connectivity_node_id = self.topology_resolver.getEquipmentNode(busbar_section.id, 1) orelse return error.MalformedXML;
@@ -1100,23 +1081,17 @@ pub const Converter = struct {
     fn convertTransformers(self: *Converter, network: *iidm.Network) !void {
         const EndArray = struct { ends: [3]?cim_model.CimObject = .{ null, null, null } };
 
-        const transformers = try self.model.getObjectsByType(self.gpa, "PowerTransformer");
-        defer self.gpa.free(transformers);
+        const transformers = self.model.getObjectsByType("PowerTransformer");
 
-        const power_transformer_ends = try self.model.getObjectsByType(self.gpa, "PowerTransformerEnd");
-        defer self.gpa.free(power_transformer_ends);
+        const power_transformer_ends = self.model.getObjectsByType("PowerTransformerEnd");
 
-        const ratio_tap_changers = try self.model.getObjectsByType(self.gpa, "RatioTapChanger");
-        defer self.gpa.free(ratio_tap_changers);
+        const ratio_tap_changers = self.model.getObjectsByType("RatioTapChanger");
 
-        const phase_tap_changers = try self.model.getObjectsByType(self.gpa, "PhaseTapChangerTabular");
-        defer self.gpa.free(phase_tap_changers);
+        const phase_tap_changers = self.model.getObjectsByType("PhaseTapChangerTabular");
 
-        const table_points = try self.model.getObjectsByType(self.gpa, "RatioTapChangerTablePoint");
-        defer self.gpa.free(table_points);
+        const table_points = self.model.getObjectsByType("RatioTapChangerTablePoint");
 
-        const phase_table_points = try self.model.getObjectsByType(self.gpa, "PhaseTapChangerTablePoint");
-        defer self.gpa.free(phase_table_points);
+        const phase_table_points = self.model.getObjectsByType("PhaseTapChangerTablePoint");
 
         var ends_map: std.StringHashMapUnmanaged(EndArray) = .empty;
         defer ends_map.deinit(self.gpa);
@@ -1525,8 +1500,7 @@ pub const Converter = struct {
     }
 
     fn convertLines(self: *Converter, network: *iidm.Network) !void {
-        const lines = try self.model.getObjectsByType(self.gpa, "ACLineSegment");
-        defer self.gpa.free(lines);
+        const lines = self.model.getObjectsByType("ACLineSegment");
 
         try network.lines.ensureTotalCapacity(self.gpa, lines.len);
 
@@ -1622,20 +1596,15 @@ pub const Converter = struct {
     }
 
     fn convertHvdcLines(self: *Converter, network: *iidm.Network) !void {
-        const dc_line_segments = try self.model.getObjectsByType(self.gpa, "DCLineSegment");
-        defer self.gpa.free(dc_line_segments);
+        const dc_line_segments = self.model.getObjectsByType("DCLineSegment");
 
-        const dc_terminals = try self.model.getObjectsByType(self.gpa, "DCTerminal");
-        defer self.gpa.free(dc_terminals);
+        const dc_terminals = self.model.getObjectsByType("DCTerminal");
 
-        const conv_dc_terminals = try self.model.getObjectsByType(self.gpa, "ACDCConverterDCTerminal");
-        defer self.gpa.free(conv_dc_terminals);
+        const conv_dc_terminals = self.model.getObjectsByType("ACDCConverterDCTerminal");
 
-        const vs_converters = try self.model.getObjectsByType(self.gpa, "VsConverter");
-        defer self.gpa.free(vs_converters);
+        const vs_converters = self.model.getObjectsByType("VsConverter");
 
-        const cs_converters = try self.model.getObjectsByType(self.gpa, "CsConverter");
-        defer self.gpa.free(cs_converters);
+        const cs_converters = self.model.getObjectsByType("CsConverter");
 
         for (dc_line_segments) |dc_line| {
             const id = try dc_line.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(dc_line.id);
@@ -1744,8 +1713,7 @@ pub const Converter = struct {
         }
 
         // One pass over PhaseTapChangerTabular
-        const phase_tap_changers = try self.model.getObjectsByType(self.gpa, "PhaseTapChangerTabular");
-        defer self.gpa.free(phase_tap_changers);
+        const phase_tap_changers = self.model.getObjectsByType("PhaseTapChangerTabular");
 
         for (phase_tap_changers) |ptc| {
             const tw_ref = try ptc.getReference("PhaseTapChanger.TransformerEnd") orelse continue;
@@ -1771,8 +1739,7 @@ pub const Converter = struct {
         }
 
         // One pass over RatioTapChanger
-        const ratio_tap_changers = try self.model.getObjectsByType(self.gpa, "RatioTapChanger");
-        defer self.gpa.free(ratio_tap_changers);
+        const ratio_tap_changers = self.model.getObjectsByType("RatioTapChanger");
 
         for (ratio_tap_changers) |rtc| {
             const tw_ref = try rtc.getReference("RatioTapChanger.TransformerEnd") orelse continue;
@@ -1806,8 +1773,7 @@ pub const Converter = struct {
         }
 
         // Iterate PowerTransformers
-        const power_transformers = try self.model.getObjectsByType(self.gpa, "PowerTransformer");
-        defer self.gpa.free(power_transformers);
+        const power_transformers = self.model.getObjectsByType("PowerTransformer");
 
         for (power_transformers) |pt| {
             if (tap_changers_by_transformer.getPtr(pt.id)) |tap_changers| {
@@ -1823,8 +1789,7 @@ pub const Converter = struct {
         }
 
         // Build SVC extensions (voltagePerReactivePowerControl)
-        const svcs = try self.model.getObjectsByType(self.gpa, "StaticVarCompensator");
-        defer self.gpa.free(svcs);
+        const svcs = self.model.getObjectsByType("StaticVarCompensator");
 
         for (svcs) |svc| {
             const svc_id = try svc.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(svc.id);
@@ -1846,8 +1811,7 @@ pub const Converter = struct {
         }
 
         // Build metadata extension from FullModel
-        const full_models = try self.model.getObjectsByType(self.gpa, "FullModel");
-        defer self.gpa.free(full_models);
+        const full_models = self.model.getObjectsByType("FullModel");
 
         if (full_models.len > 0) {
             const fm = full_models[0];
@@ -1872,8 +1836,7 @@ pub const Converter = struct {
             });
 
             // Build base voltage mapping
-            const base_voltages = try self.model.getObjectsByType(self.gpa, "BaseVoltage");
-            defer self.gpa.free(base_voltages);
+            const base_voltages = self.model.getObjectsByType("BaseVoltage");
 
             var bv_list: std.ArrayListUnmanaged(iidm.BaseVoltage) = .empty;
             for (base_voltages) |bv| {

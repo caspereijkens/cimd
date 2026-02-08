@@ -111,19 +111,16 @@ pub const TopologyResolver = struct {
         var valid_equipment_ids = std.StringHashMap(void).init(gpa);
         defer valid_equipment_ids.deinit();
         for (conducting_equipment_types) |eq_type| {
-            const equipment = try equipment_model.getObjectsByType(gpa, eq_type);
-            defer gpa.free(equipment);
+            const equipment = equipment_model.getObjectsByType(eq_type);
             for (equipment) |eq| {
                 try valid_equipment_ids.put(eq.id, {});
             }
         }
 
-        const eq_terminals = try equipment_model.getObjectsByType(gpa, "Terminal");
-        defer gpa.free(eq_terminals);
+        const eq_terminals = equipment_model.getObjectsByType("Terminal");
 
         // Build valid ConnectivityNode ID set - O(c) where c = connectivity nodes
-        const connectivity_nodes = try equipment_model.getObjectsByType(gpa, "ConnectivityNode");
-        defer gpa.free(connectivity_nodes);
+        const connectivity_nodes = equipment_model.getObjectsByType("ConnectivityNode");
 
         var valid_cn_ids = std.StringHashMap(void).init(gpa);
         defer valid_cn_ids.deinit();
