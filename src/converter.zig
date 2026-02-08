@@ -212,7 +212,7 @@ pub const Converter = struct {
                 }
             }
         }
-        print.stderr("Container with id '{s}' (type: {s}) cannot be resolved to a VoltageLevel.", .{ container_id, container.type_name });
+        print.stderr("Container of node '{s}' with id '{s}' (type: {s}) cannot be resolved to a VoltageLevel.", .{node.id, container_id, container.type_name });
         return error.MalformedXML;
     }
 
