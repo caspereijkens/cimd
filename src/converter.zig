@@ -167,53 +167,96 @@ pub const Converter = struct {
         return gop.value_ptr.getOrAssign(self.gpa, contingency_node_id);
     }
 
-    /// Get VoltageLevel ID from ConnectivityNode, handling Bay containers.
-    /// ConnectivityNode.ConnectivityNodeContainer can point to either:
+    /// Get VoltageLevel ID from ConnectivityNode, handling Bay and Line containers.
+    /// ConnectivityNode.ConnectivityNodeContainer can point to:
     /// - VoltageLevel directly
     /// - Bay (which has Bay.VoltageLevel pointing to the actual VoltageLevel)
+    /// - Line (trace through equipment connections via BFS to find a VoltageLevel)
     fn getVoltageLevelFromNode(self: *Converter, node: *const cim_model.CimObject) ![]const u8 {
-        const container_ref = try node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
-        const container_id = topology.stripHash(container_ref);
-
-        // Check if container is a VoltageLevel (exists in our voltage_level_map)
-        if (self.voltage_level_map.contains(container_id)) {
-            return container_id;
+        if (try self.resolveNodeToVoltageLevel(node.id)) |voltage_level_id| {
+            return voltage_level_id;
         }
 
-        // Otherwise, look up the container object
-        const container = self.model.getObjectById(container_id) orelse return error.MalformedXML;
+        // BFS through equipment connections to find a VoltageLevel.
+        // Handles chains of ConnectivityNodes inside Line containers.
+        const max_depth = 16;
+        var queue: [max_depth][]const u8 = undefined;
+        var head: usize = 0;
+        var tail: usize = 0;
 
-        // If it's a Bay - follow Bay.VoltageLevel
-        if (try container.getReference("Bay.VoltageLevel")) |voltage_level_ref| {
-            return topology.stripHash(voltage_level_ref);
-        }
-
-        // If it's a Line (or other container), trace through topology:
-        // Find equipment terminals at this ConnectivityNode, then find the other end's VoltageLevel
+        // Seed with neighbor CNs of the starting node
         if (self.topology_resolver.getNodeTerminals(node.id)) |terminal_ids| {
             for (terminal_ids) |terminal_id| {
                 const equipment_id = self.topology_resolver.terminal_to_equipment.get(terminal_id) orelse continue;
-                if (self.topology_resolver.getEquipmentTerminals(equipment_id)) |eq_terminals| {
-                    for (eq_terminals) |other_terminal| {
-                        if (std.mem.eql(u8, other_terminal.id, terminal_id)) continue; // skip same terminal
-                        const other_cn_id = other_terminal.node_id orelse continue;
-                        const other_cn = self.model.getObjectById(other_cn_id) orelse continue;
-                        const other_container_ref = try other_cn.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse continue;
-                        const other_container_id = topology.stripHash(other_container_ref);
-
-                        if (self.voltage_level_map.contains(other_container_id)) {
-                            return other_container_id;
-                        }
-                        const other_container = self.model.getObjectById(other_container_id) orelse continue;
-                        if (try other_container.getReference("Bay.VoltageLevel")) |vl_ref| {
-                            return topology.stripHash(vl_ref);
-                        }
+                const eq_terminals = self.topology_resolver.getEquipmentTerminals(equipment_id) orelse continue;
+                for (eq_terminals) |other_terminal| {
+                    if (std.mem.eql(u8, other_terminal.id, terminal_id)) continue;
+                    const other_node_id = other_terminal.node_id orelse continue;
+                    if (tail < max_depth) {
+                        queue[tail] = other_node_id;
+                        tail += 1;
                     }
                 }
             }
         }
-        print.stderr("Container of node '{s}' with id '{s}' (type: {s}) cannot be resolved to a VoltageLevel.", .{node.id, container_id, container.type_name });
+
+        while (head < tail) {
+            const current_node_id = queue[head];
+            head += 1;
+
+            if (try self.resolveNodeToVoltageLevel(current_node_id)) |voltage_level_id| {
+                return voltage_level_id;
+            }
+
+            // Expand neighbors
+            const terminal_ids = self.topology_resolver.getNodeTerminals(current_node_id) orelse continue;
+            for (terminal_ids) |terminal_id| {
+                const equipment_id = self.topology_resolver.terminal_to_equipment.get(terminal_id) orelse continue;
+                const eq_terminals = self.topology_resolver.getEquipmentTerminals(equipment_id) orelse continue;
+                for (eq_terminals) |other_terminal| {
+                    if (std.mem.eql(u8, other_terminal.id, terminal_id)) continue;
+                    const next_node_id = other_terminal.node_id orelse continue;
+                    // Skip the start node
+                    if (std.mem.eql(u8, next_node_id, node.id)) continue;
+                    // Skip already-queued nodes
+                    var already_queued = false;
+                    for (queue[0..tail]) |queued_id| {
+                        if (std.mem.eql(u8, queued_id, next_node_id)) {
+                            already_queued = true;
+                            break;
+                        }
+                    }
+                    if (!already_queued and tail < max_depth) {
+                        queue[tail] = next_node_id;
+                        tail += 1;
+                    }
+                }
+            }
+        }
+
+        const container_ref = try node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+        const container_id = topology.stripHash(container_ref);
+        const container = self.model.getObjectById(container_id) orelse return error.MalformedXML;
+        print.stderr("Container of node '{s}' with id '{s}' (type: {s}) cannot be resolved to a VoltageLevel.", .{ node.id, container_id, container.type_name });
         return error.MalformedXML;
+    }
+
+    /// Try to resolve a single ConnectivityNode ID to its VoltageLevel directly (VL or Bay container).
+    fn resolveNodeToVoltageLevel(self: *Converter, node_id: []const u8) !?[]const u8 {
+        const node = self.model.getObjectById(node_id) orelse return null;
+        const container_ref = try node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return null;
+        const container_id = topology.stripHash(container_ref);
+
+        if (self.voltage_level_map.contains(container_id)) {
+            return container_id;
+        }
+
+        const container = self.model.getObjectById(container_id) orelse return null;
+        if (try container.getReference("Bay.VoltageLevel")) |voltage_level_ref| {
+            return topology.stripHash(voltage_level_ref);
+        }
+
+        return null;
     }
 
     pub fn convert(self: *Converter) !iidm.Network {
