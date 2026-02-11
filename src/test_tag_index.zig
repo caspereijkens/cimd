@@ -792,6 +792,82 @@ test "tag_index.extractRdfResource - value contains equals sign" {
     try std.testing.expectEqualStrings("x=y+z", resource.?);
 }
 
+// ============================================================================
+// extractRdfAbout Tests
+// ============================================================================
+
+test "tag_index.extractRdfAbout - simple FullModel tag" {
+    const xml = "<md:FullModel rdf:about=\"urn:uuid:ieee9cdf_N_EQUIPMENT\">";
+    const about = try tag_index.extractRdfAbout(xml, 0);
+    try std.testing.expectEqualStrings("urn:uuid:ieee9cdf_N_EQUIPMENT", about);
+}
+
+test "tag_index.extractRdfAbout - with timestamp in value" {
+    const xml = "<md:FullModel rdf:about=\"urn:uuid:ieee9cdf_N_EQUIPMENT_2009-04-26T00:00:00Z_1_1D__FM\">";
+    const about = try tag_index.extractRdfAbout(xml, 0);
+    try std.testing.expectEqualStrings("urn:uuid:ieee9cdf_N_EQUIPMENT_2009-04-26T00:00:00Z_1_1D__FM", about);
+}
+
+test "tag_index.extractRdfAbout - multiple attributes" {
+    const xml = "<md:FullModel xmlns:md=\"http://example.com\" rdf:about=\"urn:uuid:test\" other=\"value\">";
+    const about = try tag_index.extractRdfAbout(xml, 0);
+    try std.testing.expectEqualStrings("urn:uuid:test", about);
+}
+
+test "tag_index.extractRdfAbout - self-closing tag" {
+    const xml = "<md:Model rdf:about=\"urn:uuid:model123\"/>";
+    const about = try tag_index.extractRdfAbout(xml, 0);
+    try std.testing.expectEqualStrings("urn:uuid:model123", about);
+}
+
+test "tag_index.extractRdfAbout - no rdf:about (error)" {
+    const xml = "<md:FullModel name=\"test\">";
+    const result = tag_index.extractRdfAbout(xml, 0);
+    try std.testing.expectError(error.NoRdfAbout, result);
+}
+
+test "tag_index.extractRdfAbout - malformed (no closing quote)" {
+    const xml = "<md:FullModel rdf:about=\"urn:uuid:test>";
+    const result = tag_index.extractRdfAbout(xml, 0);
+    try std.testing.expectError(error.MalformedTag, result);
+}
+
+test "tag_index.extractRdfAbout - closing quote after tag boundary" {
+    const xml = "<md:FullModel rdf:about=\"urn:uuid:test> later text \"";
+    const result = tag_index.extractRdfAbout(xml, 0);
+    try std.testing.expectError(error.MalformedTag, result);
+}
+
+test "tag_index.extractRdfAbout - no tag close bracket" {
+    const xml = "<md:FullModel rdf:about=\"urn:uuid:test\"";
+    const result = tag_index.extractRdfAbout(xml, 0);
+    try std.testing.expectError(error.MalformedTag, result);
+}
+
+test "tag_index.extractRdfAbout - start_index in middle of document" {
+    const xml = "prefix text <md:FullModel rdf:about=\"urn:uuid:test\"> more text";
+    const about = try tag_index.extractRdfAbout(xml, 12);
+    try std.testing.expectEqualStrings("urn:uuid:test", about);
+}
+
+test "tag_index.extractRdfAbout - empty value" {
+    const xml = "<md:FullModel rdf:about=\"\"/>";
+    const about = try tag_index.extractRdfAbout(xml, 0);
+    try std.testing.expectEqualStrings("", about);
+}
+
+test "tag_index.extractRdfAbout - pattern appears after tag close" {
+    const xml = "<md:FullModel> rdf:about=\"urn:uuid:test\"";
+    const result = tag_index.extractRdfAbout(xml, 0);
+    try std.testing.expectError(error.NoRdfAbout, result);
+}
+
+test "tag_index.extractRdfAbout - has rdf:ID but not rdf:about" {
+    const xml = "<cim:Substation rdf:ID=\"_SS1\">";
+    const result = tag_index.extractRdfAbout(xml, 0);
+    try std.testing.expectError(error.NoRdfAbout, result);
+}
+
 test "tag_index.findClosingTag - simple opening and closing tag" {
     const gpa = std.testing.allocator;
 

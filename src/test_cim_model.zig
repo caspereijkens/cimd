@@ -24,10 +24,13 @@ test "CimModel.init - parses all top-level CIM objects" {
     // Should find 3 CIM objects (not the rdf:RDF wrapper)
     try std.testing.expectEqual(3, model.objects.len);
 
-    // Verify they have the right IDs
-    try std.testing.expectEqualStrings("_SS1", model.objects[0].id);
-    try std.testing.expectEqualStrings("_VL1", model.objects[1].id);
-    try std.testing.expectEqualStrings("_SS2", model.objects[2].id);
+    // After type-grouping, objects are ordered by type, not parse order
+    const substations = model.getObjectsByType("Substation");
+    try std.testing.expectEqual(2, substations.len);
+    try std.testing.expectEqualStrings("_SS1", substations[0].id);
+    try std.testing.expectEqualStrings("_SS2", substations[1].id);
+    const voltage_levels = model.getObjectsByType("VoltageLevel");
+    try std.testing.expectEqual(1, voltage_levels.len);
 }
 
 test "CimModel.getObjectById - finds object by ID" {
@@ -81,22 +84,19 @@ test "CimModel.getObjectsByType - returns all objects of given type" {
     defer model.deinit(gpa);
 
     // Get all Substations (should be 3)
-    const substations = try model.getObjectsByType(gpa, "Substation");
-    defer gpa.free(substations);
+    const substations = model.getObjectsByType("Substation");
     try std.testing.expectEqual(3, substations.len);
     try std.testing.expectEqualStrings("_SS1", substations[0].id);
     try std.testing.expectEqualStrings("_SS2", substations[1].id);
     try std.testing.expectEqualStrings("_SS3", substations[2].id);
 
     // Get all VoltageLevels (should be 1)
-    const voltage_levels = try model.getObjectsByType(gpa, "VoltageLevel");
-    defer gpa.free(voltage_levels);
+    const voltage_levels = model.getObjectsByType("VoltageLevel");
     try std.testing.expectEqual(1, voltage_levels.len);
     try std.testing.expectEqualStrings("_VL1", voltage_levels[0].id);
 
     // Get non-existent type (should be empty)
-    const missing = try model.getObjectsByType(gpa, "DoesNotExist");
-    defer gpa.free(missing);
+    const missing = model.getObjectsByType("DoesNotExist");
     try std.testing.expectEqual(0, missing.len);
 }
 

@@ -57,6 +57,9 @@ const conducting_equipment_types = [_][]const u8{
     "BusbarSection",
     "PetersenCoil",
     "GroundingImpedance",
+    // HVDC converters
+    "CsConverter",
+    "VsConverter",
 };
 
 pub const TopologyResolver = struct {
@@ -66,6 +69,7 @@ pub const TopologyResolver = struct {
     terminal_to_node: std.StringHashMap([]const u8),
     connected_node_ids: std.StringHashMap(void),
     equipment_terminals: std.StringHashMap(std.ArrayList(TerminalInfo)),
+    node_to_terminals: std.StringHashMap(std.ArrayList([]const u8)),
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -86,6 +90,12 @@ pub const TopologyResolver = struct {
             while (it.next()) |list| list.deinit(gpa);
             equipment_terminals.deinit();
         }
+        var node_to_terminals = std.StringHashMap(std.ArrayList([]const u8)).init(gpa);
+        errdefer {
+            var nit = node_to_terminals.valueIterator();
+            while (nit.next()) |list| list.deinit(gpa);
+            node_to_terminals.deinit();
+        }
         var resolver = TopologyResolver{
             .gpa = gpa,
             .equipment_model = equipment_model,
@@ -93,6 +103,7 @@ pub const TopologyResolver = struct {
             .terminal_to_node = terminal_to_node,
             .connected_node_ids = connected_node_ids,
             .equipment_terminals = equipment_terminals,
+            .node_to_terminals = node_to_terminals,
         };
 
         errdefer resolver.deinit();
@@ -100,19 +111,16 @@ pub const TopologyResolver = struct {
         var valid_equipment_ids = std.StringHashMap(void).init(gpa);
         defer valid_equipment_ids.deinit();
         for (conducting_equipment_types) |eq_type| {
-            const equipment = try equipment_model.getObjectsByType(gpa, eq_type);
-            defer gpa.free(equipment);
+            const equipment = equipment_model.getObjectsByType(eq_type);
             for (equipment) |eq| {
                 try valid_equipment_ids.put(eq.id, {});
             }
         }
 
-        const eq_terminals = try equipment_model.getObjectsByType(gpa, "Terminal");
-        defer gpa.free(eq_terminals);
+        const eq_terminals = equipment_model.getObjectsByType("Terminal");
 
         // Build valid ConnectivityNode ID set - O(c) where c = connectivity nodes
-        const connectivity_nodes = try equipment_model.getObjectsByType(gpa, "ConnectivityNode");
-        defer gpa.free(connectivity_nodes);
+        const connectivity_nodes = equipment_model.getObjectsByType("ConnectivityNode");
 
         var valid_cn_ids = std.StringHashMap(void).init(gpa);
         defer valid_cn_ids.deinit();
@@ -152,6 +160,13 @@ pub const TopologyResolver = struct {
                 }
                 try resolver.terminal_to_node.put(terminal.id, node_id.?);
                 try resolver.connected_node_ids.put(node_id.?, {});
+
+                // Also build reverse map: CN -> terminals.
+                const gop = try resolver.node_to_terminals.getOrPut(node_id.?);
+                if (!gop.found_existing) {
+                    gop.value_ptr.* = .empty;
+                }
+                try gop.value_ptr.append(gpa, terminal.id);
             }
 
             try result.value_ptr.append(gpa, TerminalInfo{
@@ -180,18 +195,6 @@ pub const TopologyResolver = struct {
         return null;
     }
 
-    pub fn deinit(self: *TopologyResolver) void {
-        var it = self.equipment_terminals.valueIterator();
-        while (it.next()) |list| {
-            list.deinit(self.gpa);
-        }
-
-        self.terminal_to_equipment.deinit();
-        self.terminal_to_node.deinit();
-        self.equipment_terminals.deinit();
-        self.connected_node_ids.deinit();
-    }
-
     /// Get all terminals for an equipment_id.
     pub fn getEquipmentTerminals(
         self: TopologyResolver,
@@ -210,6 +213,27 @@ pub const TopologyResolver = struct {
             .connected_nodes = self.connected_node_ids.count(),
         };
     }
+
+    pub fn getNodeTerminals(self: TopologyResolver, node_id: []const u8) ?[]const []const u8 {
+        const list = self.node_to_terminals.get(node_id) orelse return null;
+        return list.items;
+    }
+
+    pub fn deinit(self: *TopologyResolver) void {
+        var it = self.equipment_terminals.valueIterator();
+        while (it.next()) |list| {
+            list.deinit(self.gpa);
+        }
+        self.equipment_terminals.deinit();
+        self.terminal_to_equipment.deinit();
+        self.terminal_to_node.deinit();
+        self.connected_node_ids.deinit();
+        var nit = self.node_to_terminals.valueIterator();
+        while (nit.next()) |list| {
+            list.deinit(self.gpa);
+        }
+        self.node_to_terminals.deinit();
+    }
 };
 
 /// Helper function to strip leading '#' from rdf:resource references
@@ -219,4 +243,33 @@ pub fn stripHash(ref: []const u8) []const u8 {
     if (ref[0] != '#') return ref;
 
     return ref[1..];
+}
+
+/// Helper function to strip leading '_' from rdf:ID
+pub fn stripUnderscore(ref: []const u8) []const u8 {
+    assert(ref.len > 0);
+
+    if (ref[0] != '_') return ref;
+
+    return ref[1..];
+}
+
+/// Decode URL-encoded string (converts '+' to space)
+pub fn urlDecode(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
+    // Check if decoding is needed
+    var needs_decode = false;
+    for (input) |c| {
+        if (c == '+') {
+            needs_decode = true;
+            break;
+        }
+    }
+    if (!needs_decode) return input;
+
+    // Allocate and decode
+    const result = try allocator.alloc(u8, input.len);
+    for (input, 0..) |c, i| {
+        result[i] = if (c == '+') ' ' else c;
+    }
+    return result;
 }
