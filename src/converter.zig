@@ -453,22 +453,29 @@ pub const Converter = struct {
             const id = try substation.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(substation.id);
             const name = try substation.getProperty("IdentifiedObject.name");
 
-            // Resolve geo_tags and properties from Substation.Region -> SubGeographicalRegion
+            // Resolve geo_tags and properties from Substation.Region -> SubGeographicalRegion -> GeographicalRegion
             var geo_tags: std.ArrayListUnmanaged([]const u8) = .empty;
             var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
+            var country: ?[]const u8 = null;
             if (try substation.getReference("Substation.Region")) |sub_region_ref| {
                 if (self.model.getObjectById(topology.stripHash(sub_region_ref))) |sub_region| {
-                    if (try sub_region.getProperty("IdentifiedObject.name")) |region_name| {
-                        try geo_tags.append(self.gpa, region_name);
-                        try properties.append(self.gpa, .{ .name = "CGMES.regionName", .value = region_name });
+                    if (try sub_region.getProperty("IdentifiedObject.name")) |sub_region_name| {
+                        try geo_tags.append(self.gpa, sub_region_name);
                     }
                     // SubGeographicalRegion ID (URL decode to convert + to space)
                     const sub_region_id_raw = try sub_region.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(sub_region.id);
                     const sub_region_id = try topology.urlDecode(self.gpa, sub_region_id_raw);
                     try properties.append(self.gpa, .{ .name = "CGMES.subRegionId", .value = sub_region_id });
-                    // GeographicalRegion ID from SubGeographicalRegion.Region
+                    // GeographicalRegion from SubGeographicalRegion.Region
                     if (try sub_region.getReference("SubGeographicalRegion.Region")) |geo_region_ref| {
                         if (self.model.getObjectById(topology.stripHash(geo_region_ref))) |geo_region| {
+                            if (try geo_region.getProperty("IdentifiedObject.name")) |geo_region_name| {
+                                // Only set country when it's a valid 2-letter ISO code
+                                if (geo_region_name.len == 2 and std.ascii.isAlphabetic(geo_region_name[0]) and std.ascii.isAlphabetic(geo_region_name[1])) {
+                                    country = geo_region_name;
+                                }
+                                try properties.append(self.gpa, .{ .name = "CGMES.regionName", .value = geo_region_name });
+                            }
                             const geo_region_id_raw = try geo_region.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(geo_region.id);
                             const geo_region_id = try topology.urlDecode(self.gpa, geo_region_id_raw);
                             try properties.append(self.gpa, .{ .name = "CGMES.regionId", .value = geo_region_id });
@@ -480,7 +487,7 @@ pub const Converter = struct {
             network.substations.appendAssumeCapacity(.{
                 .id = id,
                 .name = name,
-                .country = null,
+                .country = country,
                 .geo_tags = geo_tags,
                 .properties = properties,
                 .voltage_levels = .empty,
@@ -526,14 +533,16 @@ pub const Converter = struct {
             else
                 null;
 
-            // Build properties for CGMES voltage limits (formatted with decimal point)
+            // Build properties for CGMES voltage limits (formatted with decimal point, NaN if absent)
             var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
-            if (low_voltage_limit_str) |val| {
-                try properties.append(self.gpa, .{ .name = "CGMES.lowVoltageLimit", .value = try iidm.formatFloatStr(self.gpa, val) });
-            }
-            if (high_voltage_limit_str) |val| {
-                try properties.append(self.gpa, .{ .name = "CGMES.highVoltageLimit", .value = try iidm.formatFloatStr(self.gpa, val) });
-            }
+            try properties.append(self.gpa, .{
+                .name = "CGMES.lowVoltageLimit",
+                .value = if (low_voltage_limit_str) |val| try iidm.formatFloatStr(self.gpa, val) else "NaN",
+            });
+            try properties.append(self.gpa, .{
+                .name = "CGMES.highVoltageLimit",
+                .value = if (high_voltage_limit_str) |val| try iidm.formatFloatStr(self.gpa, val) else "NaN",
+            });
 
             const substation_idx = self.substation_map.get(substation_id) orelse return error.MalformedXML;
             const substation = &network.substations.items[substation_idx];
@@ -601,13 +610,17 @@ pub const Converter = struct {
             }
         }
 
-        // Build properties (pFixed, originalClass, qFixed)
+        // Build properties (pFixed/qFixed only for EnergyConsumer, not EnergySource)
         var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
-        const p_fixed = try load.getProperty("EnergyConsumer.pFixed") orelse "0.0";
-        const q_fixed = try load.getProperty("EnergyConsumer.qFixed") orelse "0.0";
-        try properties.append(self.gpa, .{ .name = "CGMES.pFixed", .value = try iidm.formatFloatStr(self.gpa, p_fixed) });
-        try properties.append(self.gpa, .{ .name = "CGMES.originalClass", .value = original_class });
-        try properties.append(self.gpa, .{ .name = "CGMES.qFixed", .value = try iidm.formatFloatStr(self.gpa, q_fixed) });
+        if (std.mem.eql(u8, original_class, "EnergyConsumer")) {
+            const p_fixed = try load.getProperty("EnergyConsumer.pFixed") orelse "0.0";
+            const q_fixed = try load.getProperty("EnergyConsumer.qFixed") orelse "0.0";
+            try properties.append(self.gpa, .{ .name = "CGMES.pFixed", .value = try iidm.formatFloatStr(self.gpa, p_fixed) });
+            try properties.append(self.gpa, .{ .name = "CGMES.originalClass", .value = original_class });
+            try properties.append(self.gpa, .{ .name = "CGMES.qFixed", .value = try iidm.formatFloatStr(self.gpa, q_fixed) });
+        } else {
+            try properties.append(self.gpa, .{ .name = "CGMES.originalClass", .value = original_class });
+        }
 
         try voltage_level.loads.append(self.gpa, .{
             .id = id,
@@ -1003,14 +1016,16 @@ pub const Converter = struct {
                     sm_type;
                 try properties.append(self.gpa, .{ .name = "CGMES.synchronousMachineType", .value = sm_type_value });
             }
-            // RegulatingControl.mode - keep full URL
+            // RegulatingControl.mode - lowercase full URL to match pypowsybl
             if (try generator.getReference("RegulatingCondEq.RegulatingControl")) |rc_ref| {
                 if (self.model.getObjectById(topology.stripHash(rc_ref))) |rc| {
                     // Try as reference first, then property
                     const mode = try rc.getReference("RegulatingControl.mode") orelse
                         try rc.getProperty("RegulatingControl.mode");
                     if (mode) |m| {
-                        try properties.append(self.gpa, .{ .name = "CGMES.mode", .value = m });
+                        const lowered = try self.gpa.alloc(u8, m.len);
+                        for (lowered, m) |*dest, src| dest.* = std.ascii.toLower(src);
+                        try properties.append(self.gpa, .{ .name = "CGMES.mode", .value = lowered });
                     }
                     const rc_id = try rc.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(rc.id);
                     try properties.append(self.gpa, .{ .name = "CGMES.originalClass", .value = "SynchronousMachine" });
@@ -1338,17 +1353,19 @@ pub const Converter = struct {
                 const node1_index = try self.getNodeIndex(voltage_level1_id, node1_id);
                 const node2_index = try self.getNodeIndex(voltage_level2_id, node2_id);
 
-                // Build ratio tap changer if present on end1
-                const ratio_tap_changer = try self.buildRatioTapChanger(end1.id, id, 1, &ratio_tap_changer_map, &table_points_map);
-
-                // Build phase tap changer if present on end1
-                const phase_tap_changer = try self.buildPhaseTapChanger(end1.id, &phase_tap_changer_map, &phase_table_points_map);
-
-                // Build operational limits from terminal references
+                // Resolve terminal IDs for both ends
                 const terminal1_ref = try end1.getReference("TransformerEnd.Terminal") orelse return error.MalformedXML;
                 const terminal1_id = topology.stripHash(terminal1_ref);
                 const terminal2_ref = try end2.getReference("TransformerEnd.Terminal") orelse return error.MalformedXML;
                 const terminal2_id = topology.stripHash(terminal2_ref);
+
+                // Build ratio tap changer if present on end1 or end2
+                const ratio_tap_changer = try self.buildRatioTapChanger(end1.id, id, terminal1_id, &ratio_tap_changer_map, &table_points_map) orelse
+                    try self.buildRatioTapChanger(end2.id, id, terminal1_id, &ratio_tap_changer_map, &table_points_map);
+
+                // Build phase tap changer if present on end1 or end2
+                const phase_tap_changer = try self.buildPhaseTapChanger(end1.id, &phase_tap_changer_map, &phase_table_points_map) orelse
+                    try self.buildPhaseTapChanger(end2.id, &phase_tap_changer_map, &phase_table_points_map);
 
                 var op_lims1 = try self.buildOperationalLimitsGroups(terminal1_id);
                 errdefer op_lims1.deinit(self.gpa);
@@ -1416,7 +1433,7 @@ pub const Converter = struct {
         self: *Converter,
         end_id: []const u8,
         transformer_id: []const u8,
-        end_number: u32,
+        terminal1_id: []const u8,
         tap_changer_map: *const std.StringHashMapUnmanaged(cim_model.CimObject),
         points_map: *const std.StringHashMapUnmanaged(std.ArrayListUnmanaged(iidm.RatioTapChangerStep)),
     ) !?iidm.RatioTapChanger {
@@ -1437,16 +1454,32 @@ pub const Converter = struct {
             }
         }
 
-        // Terminal reference with side based on end number
-        const side: []const u8 = if (end_number == 1) "ONE" else "TWO";
+        // Only set regulation mode and terminal ref when a TapChangerControl exists
+        var regulation_mode: ?[]const u8 = null;
+        var terminal_ref: ?iidm.TerminalRef = null;
+
+        if (try rtc_obj.getReference("TapChanger.TapChangerControl")) |control_ref| {
+            regulation_mode = "VOLTAGE";
+            // Determine regulated side from the control's terminal reference
+            if (self.model.getObjectById(topology.stripHash(control_ref))) |control| {
+                if (try control.getReference("RegulatingControl.Terminal")) |reg_terminal_ref| {
+                    const reg_terminal_id = topology.stripHash(reg_terminal_ref);
+                    const side: []const u8 = if (std.mem.eql(u8, reg_terminal_id, terminal1_id)) "ONE" else "TWO";
+                    terminal_ref = .{ .id = transformer_id, .side = side };
+                }
+            }
+            if (terminal_ref == null) {
+                terminal_ref = .{ .id = transformer_id, .side = "TWO" };
+            }
+        }
 
         return .{
             .low_tap_position = low_step,
             .tap_position = normal_step,
             .load_tap_changing_capabilities = ltc_flag,
             .regulating = false,
-            .regulation_mode = "VOLTAGE",
-            .terminal_ref = .{ .id = transformer_id, .side = side },
+            .regulation_mode = regulation_mode,
+            .terminal_ref = terminal_ref,
             .steps = steps,
         };
     }

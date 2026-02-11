@@ -815,6 +815,19 @@ pub const RatioTapChanger = struct {
         try jws.write(self.tap_position);
         try jws.objectField("loadTapChangingCapabilities");
         try jws.write(self.load_tap_changing_capabilities);
+        if (self.regulation_mode) |mode| {
+            try jws.objectField("regulationMode");
+            try jws.write(mode);
+        }
+        if (self.terminal_ref) |ref| {
+            try jws.objectField("terminalRef");
+            try jws.beginObject();
+            try jws.objectField("id");
+            try jws.write(ref.id);
+            try jws.objectField("side");
+            try jws.write(ref.side);
+            try jws.endObject();
+        }
         try jws.objectField("steps");
         try jws.write(self.steps.items);
         try jws.endObject();
