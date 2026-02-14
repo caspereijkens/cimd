@@ -59,31 +59,22 @@ fn writeOptionalFloat(jws: anytype, value: ?f64) !void {
     }
 }
 
+/// Write an operational limits group array if non-empty
+fn writeOpLimsGroups(jws: anytype, field_name: []const u8, groups: std.ArrayListUnmanaged(OperationalLimitsGroup)) !void {
+    if (groups.items.len > 0) {
+        try jws.objectField(field_name);
+        try jws.beginArray();
+        for (groups.items) |olg| {
+            try olg.jsonStringify(jws);
+        }
+        try jws.endArray();
+    }
+}
+
 /// Write a float, using scientific notation for very large values
 fn writeFloatAuto(jws: anytype, value: f64) !void {
-    const abs_value = @abs(value);
-    // Use scientific notation for values >= 1e10 or very small non-zero values
-    if (abs_value >= 1e10) {
-        var buf: [32]u8 = undefined;
-        const formatted = std.fmt.bufPrint(&buf, "{e}", .{value}) catch {
-            try jws.write(value);
-            return;
-        };
-        // Convert lowercase 'e' to uppercase 'E' and remove '+' after E
-        var out_buf: [32]u8 = undefined;
-        var out_len: usize = 0;
-        for (formatted) |c| {
-            if (c == 'e') {
-                out_buf[out_len] = 'E';
-                out_len += 1;
-            } else if (c == '+') {
-                // Skip the '+' sign after E
-            } else {
-                out_buf[out_len] = c;
-                out_len += 1;
-            }
-        }
-        try jws.print("{s}", .{out_buf[0..out_len]});
+    if (@abs(value) >= 1e10) {
+        try writeFloatScientific(jws, value);
     } else {
         try writeFloat(jws, value);
     }
@@ -1009,22 +1000,8 @@ pub const TwoWindingsTransformer = struct {
             try jws.objectField("phaseTapChanger");
             try jws.write(tc);
         }
-        if (self.op_lims_groups1.items.len > 0) {
-            try jws.objectField("operationalLimitsGroups1");
-            try jws.beginArray();
-            for (self.op_lims_groups1.items) |olg| {
-                try olg.jsonStringify(jws);
-            }
-            try jws.endArray();
-        }
-        if (self.op_lims_groups2.items.len > 0) {
-            try jws.objectField("operationalLimitsGroups2");
-            try jws.beginArray();
-            for (self.op_lims_groups2.items) |olg| {
-                try olg.jsonStringify(jws);
-            }
-            try jws.endArray();
-        }
+        try writeOpLimsGroups(jws, "operationalLimitsGroups1", self.op_lims_groups1);
+        try writeOpLimsGroups(jws, "operationalLimitsGroups2", self.op_lims_groups2);
         try jws.endObject();
     }
 
@@ -1194,22 +1171,8 @@ pub const Line = struct {
             try jws.objectField("properties");
             try jws.write(self.properties.items);
         }
-        if (self.op_lims_groups1.items.len > 0) {
-            try jws.objectField("operationalLimitsGroups1");
-            try jws.beginArray();
-            for (self.op_lims_groups1.items) |olg| {
-                try olg.jsonStringify(jws);
-            }
-            try jws.endArray();
-        }
-        if (self.op_lims_groups2.items.len > 0) {
-            try jws.objectField("operationalLimitsGroups2");
-            try jws.beginArray();
-            for (self.op_lims_groups2.items) |olg| {
-                try olg.jsonStringify(jws);
-            }
-            try jws.endArray();
-        }
+        try writeOpLimsGroups(jws, "operationalLimitsGroups1", self.op_lims_groups1);
+        try writeOpLimsGroups(jws, "operationalLimitsGroups2", self.op_lims_groups2);
         try jws.endObject();
     }
 

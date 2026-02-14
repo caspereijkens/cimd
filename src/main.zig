@@ -147,7 +147,7 @@ fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[
     defer if (output_path != null) output_file.close();
 
     // Create File.Writer with buffer, then use its .interface
-    var write_buffer: [4096]u8 = undefined;
+    var write_buffer: [8192]u8 = undefined;
     var file_writer = std.fs.File.Writer.init(output_file, &write_buffer);
 
     stage_timer.reset();
