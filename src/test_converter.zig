@@ -615,6 +615,7 @@ test "Converter - converts Breaker to Switch" {
         \\  </cim:ConnectivityNode>
         \\  <cim:Breaker rdf:ID="BRK1">
         \\    <cim:IdentifiedObject.name>Bus Coupler</cim:IdentifiedObject.name>
+        \\    <cim:Equipment.EquipmentContainer rdf:resource="#VL1"/>
         \\    <cim:Switch.open>false</cim:Switch.open>
         \\  </cim:Breaker>
         \\  <cim:Terminal rdf:ID="T1">
@@ -1279,6 +1280,7 @@ test "Converter - handles ConnectivityNode contained in Bay" {
         \\  </cim:ConnectivityNode>
         \\  <cim:Breaker rdf:ID="BRK1">
         \\    <cim:IdentifiedObject.name>Bay Breaker</cim:IdentifiedObject.name>
+        \\    <cim:Equipment.EquipmentContainer rdf:resource="#Bay1"/>
         \\    <cim:Switch.open>false</cim:Switch.open>
         \\  </cim:Breaker>
         \\  <cim:Terminal rdf:ID="T1">
@@ -1448,4 +1450,131 @@ test "Converter - resolves VoltageLevel from CN chain in Line container" {
     // All 4 ACLineSegments should convert successfully.
     // The middle CN (CN_mid) requires 2-hop BFS to reach a VoltageLevel.
     try std.testing.expectEqual(@as(usize, 4), network.lines.items.len);
+}
+
+test "Converter - resolves switch VoltageLevel without EquipmentContainer via CN fallback" {
+    // Switch has no Equipment.EquipmentContainer, so VoltageLevel must be resolved
+    // via terminal → ConnectivityNode → VoltageLevel fallback path.
+    const gpa = std.testing.allocator;
+
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test">
+        \\    <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
+        \\  <cim:Substation rdf:ID="Sub1">
+        \\    <cim:IdentifiedObject.name>Station</cim:IdentifiedObject.name>
+        \\  </cim:Substation>
+        \\  <cim:VoltageLevel rdf:ID="VL1">
+        \\    <cim:IdentifiedObject.name>110kV</cim:IdentifiedObject.name>
+        \\    <cim:VoltageLevel.Substation rdf:resource="#Sub1"/>
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#BV1"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:BaseVoltage rdf:ID="BV1">
+        \\    <cim:BaseVoltage.nominalVoltage>110</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\  <cim:ConnectivityNode rdf:ID="CN1">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#VL1"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:ConnectivityNode rdf:ID="CN2">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#VL1"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:Disconnector rdf:ID="DIS1">
+        \\    <cim:IdentifiedObject.name>Disconnector Without Container</cim:IdentifiedObject.name>
+        \\    <cim:Switch.normalOpen>false</cim:Switch.normalOpen>
+        \\  </cim:Disconnector>
+        \\  <cim:Terminal rdf:ID="T1">
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#DIS1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="T2">
+        \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#DIS1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN2"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+
+    var model = try CimModel.init(gpa, eq_xml);
+    defer model.deinit(gpa);
+
+    var topo = try TopologyResolver.init(gpa, &model);
+    defer topo.deinit();
+
+    var conv = Converter.init(gpa, &model, &topo, false);
+    defer conv.deinit();
+    var network = try conv.convert();
+    defer network.deinit(gpa);
+
+    const voltage_level = &network.substations.items[0].voltage_levels.items[0];
+    try std.testing.expectEqual(@as(usize, 1), voltage_level.node_breaker_topology.switches.items.len);
+
+    const sw = voltage_level.node_breaker_topology.switches.items[0];
+    try std.testing.expectEqualStrings("DIS1", sw.id);
+    try std.testing.expectEqualStrings("Disconnector Without Container", sw.name.?);
+}
+
+test "Converter - switch with terminal voltage level mismatch returns error" {
+    // Switch has no Equipment.EquipmentContainer, and its two terminals point to
+    // ConnectivityNodes in different VoltageLevels. This should fail.
+    const gpa = std.testing.allocator;
+
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test">
+        \\    <md:Model.scenarioTime>2009-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
+        \\  <cim:Substation rdf:ID="Sub1">
+        \\    <cim:IdentifiedObject.name>Station</cim:IdentifiedObject.name>
+        \\  </cim:Substation>
+        \\  <cim:VoltageLevel rdf:ID="VL1">
+        \\    <cim:IdentifiedObject.name>110kV</cim:IdentifiedObject.name>
+        \\    <cim:VoltageLevel.Substation rdf:resource="#Sub1"/>
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#BV1"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:VoltageLevel rdf:ID="VL2">
+        \\    <cim:IdentifiedObject.name>220kV</cim:IdentifiedObject.name>
+        \\    <cim:VoltageLevel.Substation rdf:resource="#Sub1"/>
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#BV2"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:BaseVoltage rdf:ID="BV1">
+        \\    <cim:BaseVoltage.nominalVoltage>110</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\  <cim:BaseVoltage rdf:ID="BV2">
+        \\    <cim:BaseVoltage.nominalVoltage>220</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\  <cim:ConnectivityNode rdf:ID="CN1">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#VL1"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:ConnectivityNode rdf:ID="CN2">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#VL2"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:Breaker rdf:ID="BRK_BAD">
+        \\    <cim:IdentifiedObject.name>Cross-VL Breaker</cim:IdentifiedObject.name>
+        \\    <cim:Switch.normalOpen>false</cim:Switch.normalOpen>
+        \\  </cim:Breaker>
+        \\  <cim:Terminal rdf:ID="T1">
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#BRK_BAD"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="T2">
+        \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#BRK_BAD"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#CN2"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+
+    var model = try CimModel.init(gpa, eq_xml);
+    defer model.deinit(gpa);
+
+    var topo = try TopologyResolver.init(gpa, &model);
+    defer topo.deinit();
+
+    var conv = Converter.init(gpa, &model, &topo, false);
+    defer conv.deinit();
+    const result = conv.convert();
+    try std.testing.expectError(error.MalformedXML, result);
 }

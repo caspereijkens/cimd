@@ -454,6 +454,60 @@ pub const CimObject = struct {
         return getReferenceFromIndices(self.xml, self.boundaries, self.object_tag_idx, self.closing_tag_idx, property_name);
     }
 
+    /// Batch-fetch multiple text properties in a single scan through child tags.
+    /// Returns a fixed-size array of optional values corresponding to each name.
+    pub fn getProperties(self: CimObject, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
+        var result: [names.len]?[]const u8 = .{null} ** names.len;
+
+        if (self.closing_tag_idx == self.object_tag_idx) return result;
+        if (self.closing_tag_idx == self.object_tag_idx + 1) return result;
+
+        var found_count: usize = 0;
+
+        for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx], self.object_tag_idx + 1..) |tag, tag_idx| {
+            if (self.xml[tag.start + 1] == '/' or self.xml[tag.end - 1] == '/') continue;
+
+            const tag_type = extractTagType(self.xml, tag.start) catch continue;
+
+            inline for (names, 0..) |name, idx| {
+                if (result[idx] == null and std.mem.eql(u8, tag_type, name)) {
+                    result[idx] = self.xml[tag.end + 1 .. self.boundaries[tag_idx + 1].start];
+                    found_count += 1;
+                    if (found_count == names.len) return result;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /// Batch-fetch multiple rdf:resource references in a single scan through child tags.
+    /// Returns a fixed-size array of optional values corresponding to each name.
+    pub fn getReferences(self: CimObject, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
+        var result: [names.len]?[]const u8 = .{null} ** names.len;
+
+        if (self.closing_tag_idx == self.object_tag_idx) return result;
+        if (self.closing_tag_idx == self.object_tag_idx + 1) return result;
+
+        var found_count: usize = 0;
+
+        for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx]) |tag| {
+            if (self.xml[tag.start + 1] == '/') continue;
+
+            const tag_type = extractTagType(self.xml, tag.start) catch continue;
+
+            inline for (names, 0..) |name, idx| {
+                if (result[idx] == null and std.mem.eql(u8, tag_type, name)) {
+                    result[idx] = try extractRdfResource(self.xml, tag.start);
+                    found_count += 1;
+                    if (found_count == names.len) return result;
+                }
+            }
+        }
+
+        return result;
+    }
+
     /// Get all text properties (not references) as a HashMap
     pub fn getAllProperties(self: CimObject, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
         var result = std.StringHashMap([]const u8).init(gpa);

@@ -2160,3 +2160,170 @@ test "CimObject.getAllProperties - handles mixed properties and references" {
     try std.testing.expectEqualStrings("#_Line1", refs.get("Terminal.ConductingEquipment").?);
     try std.testing.expectEqualStrings("#_Node1", refs.get("Terminal.ConnectivityNode").?);
 }
+
+test "tag_index.CimObject - getProperties batch matches individual getProperty" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:ACLineSegment rdf:ID="_Line1">
+        \\  <cim:IdentifiedObject.mRID>line-mrid</cim:IdentifiedObject.mRID>
+        \\  <cim:IdentifiedObject.name>Line 1</cim:IdentifiedObject.name>
+        \\  <cim:ACLineSegment.r>1.5</cim:ACLineSegment.r>
+        \\  <cim:ACLineSegment.x>12.3</cim:ACLineSegment.x>
+        \\  <cim:ACLineSegment.bch>0.001</cim:ACLineSegment.bch>
+        \\  <cim:ACLineSegment.gch>0.0005</cim:ACLineSegment.gch>
+        \\</cim:ACLineSegment>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+    const obj = try CimObject.init(xml, boundaries.items, 0, closing);
+
+    // Batch fetch
+    const props = try obj.getProperties(.{
+        "IdentifiedObject.mRID",
+        "IdentifiedObject.name",
+        "ACLineSegment.r",
+        "ACLineSegment.x",
+        "ACLineSegment.bch",
+        "ACLineSegment.gch",
+    });
+
+    // Verify each matches individual getProperty
+    try std.testing.expectEqualStrings("line-mrid", props[0].?);
+    try std.testing.expectEqualStrings("Line 1", props[1].?);
+    try std.testing.expectEqualStrings("1.5", props[2].?);
+    try std.testing.expectEqualStrings("12.3", props[3].?);
+    try std.testing.expectEqualStrings("0.001", props[4].?);
+    try std.testing.expectEqualStrings("0.0005", props[5].?);
+
+    // Cross-check with individual calls
+    try std.testing.expectEqualStrings(props[0].?, (try obj.getProperty("IdentifiedObject.mRID")).?);
+    try std.testing.expectEqualStrings(props[2].?, (try obj.getProperty("ACLineSegment.r")).?);
+}
+
+test "tag_index.CimObject - getProperties returns null for missing names" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Substation rdf:ID="_SS1">
+        \\  <cim:IdentifiedObject.name>North Station</cim:IdentifiedObject.name>
+        \\</cim:Substation>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+    const obj = try CimObject.init(xml, boundaries.items, 0, closing);
+
+    const props = try obj.getProperties(.{
+        "IdentifiedObject.name",
+        "IdentifiedObject.mRID",
+        "NonExistent.property",
+    });
+
+    try std.testing.expectEqualStrings("North Station", props[0].?);
+    try std.testing.expect(props[1] == null);
+    try std.testing.expect(props[2] == null);
+}
+
+test "tag_index.CimObject - getProperties on self-closing tag returns all null" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Substation rdf:ID="_SS1"/>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const obj = try CimObject.init(xml, boundaries.items, 0, 0);
+
+    const props = try obj.getProperties(.{
+        "IdentifiedObject.name",
+        "IdentifiedObject.mRID",
+    });
+
+    try std.testing.expect(props[0] == null);
+    try std.testing.expect(props[1] == null);
+}
+
+test "tag_index.CimObject - getReferences batch matches individual getReference" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Terminal rdf:ID="_T1">
+        \\  <cim:IdentifiedObject.name>Terminal 1</cim:IdentifiedObject.name>
+        \\  <cim:Terminal.ConductingEquipment rdf:resource="#_Line1"/>
+        \\  <cim:Terminal.ConnectivityNode rdf:resource="#_Node1"/>
+        \\  <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\</cim:Terminal>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+    const obj = try CimObject.init(xml, boundaries.items, 0, closing);
+
+    // Batch fetch references
+    const refs = try obj.getReferences(.{
+        "Terminal.ConductingEquipment",
+        "Terminal.ConnectivityNode",
+    });
+
+    try std.testing.expectEqualStrings("#_Line1", refs[0].?);
+    try std.testing.expectEqualStrings("#_Node1", refs[1].?);
+
+    // Cross-check with individual calls
+    try std.testing.expectEqualStrings(refs[0].?, (try obj.getReference("Terminal.ConductingEquipment")).?);
+    try std.testing.expectEqualStrings(refs[1].?, (try obj.getReference("Terminal.ConnectivityNode")).?);
+}
+
+test "tag_index.CimObject - getReferences returns null for missing names" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Terminal rdf:ID="_T1">
+        \\  <cim:Terminal.ConductingEquipment rdf:resource="#_Line1"/>
+        \\</cim:Terminal>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
+    const obj = try CimObject.init(xml, boundaries.items, 0, closing);
+
+    const refs = try obj.getReferences(.{
+        "Terminal.ConductingEquipment",
+        "Terminal.ConnectivityNode",
+    });
+
+    try std.testing.expectEqualStrings("#_Line1", refs[0].?);
+    try std.testing.expect(refs[1] == null);
+}
+
+test "tag_index.CimObject - getReferences on self-closing tag returns all null" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Substation rdf:ID="_SS1"/>
+    ;
+
+    var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const obj = try CimObject.init(xml, boundaries.items, 0, 0);
+
+    const refs = try obj.getReferences(.{
+        "Terminal.ConductingEquipment",
+        "Terminal.ConnectivityNode",
+    });
+
+    try std.testing.expect(refs[0] == null);
+    try std.testing.expect(refs[1] == null);
+}
