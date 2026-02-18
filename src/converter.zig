@@ -119,11 +119,17 @@ pub const Converter = struct {
         const curve_datas = self.model.getObjectsByType("CurveData");
 
         for (curve_datas) |curve_data| {
-            const curve_ref = try curve_data.getReference("CurveData.Curve") orelse continue;
+            const cd_refs = try curve_data.getReferences(.{"CurveData.Curve"});
+            const curve_ref = cd_refs[0] orelse continue;
             const curve_id = topology.stripHash(curve_ref);
-            const x_value = try std.fmt.parseFloat(f64, try curve_data.getProperty("CurveData.xvalue") orelse continue);
-            const y1_value = try std.fmt.parseFloat(f64, try curve_data.getProperty("CurveData.y1value") orelse continue);
-            const y2_value = try std.fmt.parseFloat(f64, try curve_data.getProperty("CurveData.y2value") orelse continue);
+            const cd_props = try curve_data.getProperties(.{
+                "CurveData.xvalue",
+                "CurveData.y1value",
+                "CurveData.y2value",
+            });
+            const x_value = try std.fmt.parseFloat(f64, cd_props[0] orelse continue);
+            const y1_value = try std.fmt.parseFloat(f64, cd_props[1] orelse continue);
+            const y2_value = try std.fmt.parseFloat(f64, cd_props[2] orelse continue);
 
             const gop = try self.curve_points_map.getOrPut(self.gpa, curve_id);
             if (!gop.found_existing) gop.value_ptr.* = .empty;
@@ -175,8 +181,12 @@ pub const Converter = struct {
 
         try self.limit_set_to_value_map.ensureTotalCapacity(self.gpa, @intCast(current_limits.len));
         for (current_limits) |current_limit| {
+            const cl_refs = try current_limit.getReferences(.{
+                "OperationalLimit.OperationalLimitSet",
+                "OperationalLimit.OperationalLimitType",
+            });
             // Group by OperationalLimitSet
-            const set_ref = try current_limit.getReference("OperationalLimit.OperationalLimitSet") orelse continue;
+            const set_ref = cl_refs[0] orelse continue;
             const set_id = topology.stripHash(set_ref);
 
             const cl_gop = try self.current_limits_by_set.getOrPut(self.gpa, set_id);
@@ -184,7 +194,7 @@ pub const Converter = struct {
             try cl_gop.value_ptr.append(self.gpa, current_limit);
 
             // PATL limit value map (existing behavior)
-            const type_ref = try current_limit.getReference("OperationalLimit.OperationalLimitType") orelse continue;
+            const type_ref = cl_refs[1] orelse continue;
             const type_id = topology.stripHash(type_ref);
             if (!self.patl_type_ids.contains(type_id)) continue;
 
@@ -474,14 +484,19 @@ pub const Converter = struct {
         try self.substation_map.ensureTotalCapacity(self.gpa, @intCast(substations.len));
 
         for (substations, 0..) |substation, idx| {
-            const id = try substation.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(substation.id);
-            const name = try substation.getProperty("IdentifiedObject.name");
+            const sub_props = try substation.getProperties(.{
+                "IdentifiedObject.mRID",
+                "IdentifiedObject.name",
+            });
+            const sub_refs = try substation.getReferences(.{"Substation.Region"});
+            const id = sub_props[0] orelse topology.stripUnderscore(substation.id);
+            const name = sub_props[1];
 
             // Resolve geo_tags and properties from Substation.Region -> SubGeographicalRegion -> GeographicalRegion
             var geo_tags: std.ArrayListUnmanaged([]const u8) = .empty;
             var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
             var country: ?[]const u8 = null;
-            if (try substation.getReference("Substation.Region")) |sub_region_ref| {
+            if (sub_refs[0]) |sub_region_ref| {
                 if (self.model.getObjectById(topology.stripHash(sub_region_ref))) |sub_region| {
                     if (try sub_region.getProperty("IdentifiedObject.name")) |sub_region_name| {
                         try geo_tags.append(self.gpa, sub_region_name);
@@ -540,14 +555,24 @@ pub const Converter = struct {
         try self.voltage_level_map.ensureTotalCapacity(self.gpa, @intCast(voltage_levels.len));
 
         for (voltage_levels) |voltage_level| {
-            const id = try voltage_level.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(voltage_level.id);
-            const name = try voltage_level.getProperty("IdentifiedObject.name");
-            const substation_ref = try voltage_level.getReference("VoltageLevel.Substation") orelse return error.MalformedXML;
+            const vl_props = try voltage_level.getProperties(.{
+                "IdentifiedObject.mRID",
+                "IdentifiedObject.name",
+                "VoltageLevel.lowVoltageLimit",
+                "VoltageLevel.highVoltageLimit",
+            });
+            const vl_refs = try voltage_level.getReferences(.{
+                "VoltageLevel.Substation",
+                "VoltageLevel.BaseVoltage",
+            });
+            const id = vl_props[0] orelse topology.stripUnderscore(voltage_level.id);
+            const name = vl_props[1];
+            const substation_ref = vl_refs[0] orelse return error.MalformedXML;
             const substation_id = topology.stripHash(substation_ref);
-            const base_voltage_ref = try voltage_level.getReference("VoltageLevel.BaseVoltage") orelse return error.MalformedXML;
+            const base_voltage_ref = vl_refs[1] orelse return error.MalformedXML;
             const base_voltage_id = topology.stripHash(base_voltage_ref);
-            const low_voltage_limit_str = try voltage_level.getProperty("VoltageLevel.lowVoltageLimit");
-            const high_voltage_limit_str = try voltage_level.getProperty("VoltageLevel.highVoltageLimit");
+            const low_voltage_limit_str = vl_props[2];
+            const high_voltage_limit_str = vl_props[3];
             const low_voltage_limit: ?f64 = if (low_voltage_limit_str) |val|
                 try std.fmt.parseFloat(f64, val)
             else
@@ -653,8 +678,14 @@ pub const Converter = struct {
     fn addLoad(self: *Converter, network: *iidm.Network, load: cim_model.CimObject, original_class: []const u8) !void {
         const location = try self.resolveEquipmentLocation(network, load.id);
 
-        const id = try load.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(load.id);
-        const name = try load.getProperty("IdentifiedObject.name");
+        const load_props = try load.getProperties(.{
+            "IdentifiedObject.mRID",
+            "IdentifiedObject.name",
+            "EnergyConsumer.pFixed",
+            "EnergyConsumer.qFixed",
+        });
+        const id = load_props[0] orelse topology.stripUnderscore(load.id);
+        const name = load_props[1];
 
         const node_index = try self.getNodeIndex(location.voltage_level_id, location.connectivity_node_id);
 
@@ -663,8 +694,8 @@ pub const Converter = struct {
         // Build properties (pFixed/qFixed only for EnergyConsumer, not EnergySource)
         var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
         if (std.mem.eql(u8, original_class, "EnergyConsumer")) {
-            const p_fixed = try load.getProperty("EnergyConsumer.pFixed") orelse "0.0";
-            const q_fixed = try load.getProperty("EnergyConsumer.qFixed") orelse "0.0";
+            const p_fixed = load_props[2] orelse "0.0";
+            const q_fixed = load_props[3] orelse "0.0";
             try properties.append(self.gpa, .{ .name = "CGMES.pFixed", .value = try iidm.formatFloatStr(self.gpa, p_fixed) });
             try properties.append(self.gpa, .{ .name = "CGMES.originalClass", .value = original_class });
             try properties.append(self.gpa, .{ .name = "CGMES.qFixed", .value = try iidm.formatFloatStr(self.gpa, q_fixed) });
@@ -686,13 +717,21 @@ pub const Converter = struct {
         const linear_shunt_compensators = self.model.getObjectsByType("LinearShuntCompensator");
 
         for (linear_shunt_compensators) |linear_shunt_compensator| {
-            const id = try linear_shunt_compensator.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(linear_shunt_compensator.id);
-            const name = try linear_shunt_compensator.getProperty("IdentifiedObject.name");
+            const shunt_props = try linear_shunt_compensator.getProperties(.{
+                "IdentifiedObject.mRID",
+                "IdentifiedObject.name",
+                "LinearShuntCompensator.bPerSection",
+                "LinearShuntCompensator.gPerSection",
+                "ShuntCompensator.maximumSections",
+                "ShuntCompensator.normalSections",
+            });
+            const id = shunt_props[0] orelse topology.stripUnderscore(linear_shunt_compensator.id);
+            const name = shunt_props[1];
             const location = try self.resolveEquipmentLocation(network, linear_shunt_compensator.id);
             const shunt_linear_model: iidm.ShuntLinearModel = .{
-                .b_per_section = try std.fmt.parseFloat(f64, try linear_shunt_compensator.getProperty("LinearShuntCompensator.bPerSection") orelse return error.MalformedXML),
-                .g_per_section = try std.fmt.parseFloat(f64, try linear_shunt_compensator.getProperty("LinearShuntCompensator.gPerSection") orelse return error.MalformedXML),
-                .max_section_count = try std.fmt.parseInt(u32, try linear_shunt_compensator.getProperty("ShuntCompensator.maximumSections") orelse return error.MalformedXML, 10),
+                .b_per_section = try std.fmt.parseFloat(f64, shunt_props[2] orelse return error.MalformedXML),
+                .g_per_section = try std.fmt.parseFloat(f64, shunt_props[3] orelse return error.MalformedXML),
+                .max_section_count = try std.fmt.parseInt(u32, shunt_props[4] orelse return error.MalformedXML, 10),
             };
 
             const node_index = try self.getNodeIndex(location.voltage_level_id, location.connectivity_node_id);
@@ -700,7 +739,7 @@ pub const Converter = struct {
             const aliases = try self.buildTerminalAliases(linear_shunt_compensator.id);
 
             var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
-            const normal_sections = try linear_shunt_compensator.getProperty("ShuntCompensator.normalSections") orelse "0";
+            const normal_sections = shunt_props[5] orelse "0";
             try properties.append(self.gpa, .{ .name = "CGMES.normalSections", .value = normal_sections });
 
             try location.voltage_level.shunts.append(self.gpa, .{
@@ -720,8 +759,20 @@ pub const Converter = struct {
         const svcs = self.model.getObjectsByType("StaticVarCompensator");
 
         for (svcs) |svc| {
-            const id = try svc.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(svc.id);
-            const name = try svc.getProperty("IdentifiedObject.name");
+            const svc_props = try svc.getProperties(.{
+                "IdentifiedObject.mRID",
+                "IdentifiedObject.name",
+                "StaticVarCompensator.inductiveRating",
+                "StaticVarCompensator.capacitiveRating",
+                "RegulatingCondEq.controlEnabled",
+                "StaticVarCompensator.voltageSetPoint",
+            });
+            const svc_refs = try svc.getReferences(.{
+                "StaticVarCompensator.sVCControlMode",
+                "RegulatingCondEq.RegulatingControl",
+            });
+            const id = svc_props[0] orelse topology.stripUnderscore(svc.id);
+            const name = svc_props[1];
             const location = try self.resolveEquipmentLocation(network, svc.id);
 
             // Get nominal voltage for susceptance calculation
@@ -729,11 +780,11 @@ pub const Converter = struct {
 
             // Get susceptance limits: convert from Mvar to susceptance (S)
             // b = Q / V where Q is in Mvar and V is in kV
-            const inductive_rating = if (try svc.getProperty("StaticVarCompensator.inductiveRating")) |v|
+            const inductive_rating = if (svc_props[2]) |v|
                 try std.fmt.parseFloat(f64, v)
             else
                 0.0;
-            const capacitive_rating = if (try svc.getProperty("StaticVarCompensator.capacitiveRating")) |v|
+            const capacitive_rating = if (svc_props[3]) |v|
                 try std.fmt.parseFloat(f64, v)
             else
                 0.0;
@@ -741,8 +792,7 @@ pub const Converter = struct {
             const b_max = capacitive_rating / nominal_v;
 
             // Get regulation mode
-            const control_mode_ref = try svc.getReference("StaticVarCompensator.sVCControlMode");
-            const regulation_mode: iidm.SvcRegulationMode = if (control_mode_ref) |mode_ref| blk: {
+            const regulation_mode: iidm.SvcRegulationMode = if (svc_refs[0]) |mode_ref| blk: {
                 const mode_str = mode_ref;
                 if (std.mem.indexOf(u8, mode_str, "reactivePower") != null) {
                     break :blk .reactive_power;
@@ -754,7 +804,7 @@ pub const Converter = struct {
             } else .off;
 
             // Get regulating status
-            const regulating = if (try svc.getProperty("RegulatingCondEq.controlEnabled")) |v|
+            const regulating = if (svc_props[4]) |v|
                 std.mem.eql(u8, v, "true")
             else
                 false;
@@ -765,7 +815,7 @@ pub const Converter = struct {
 
             var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
             var voltage_setpoint: ?[]const u8 = null;
-            if (try svc.getReference("RegulatingCondEq.RegulatingControl")) |reg_control_ref| {
+            if (svc_refs[1]) |reg_control_ref| {
                 const reg_control_id = topology.stripHash(reg_control_ref);
                 if (self.model.getObjectById(reg_control_id)) |reg_control| {
                     const rc_mrid = try reg_control.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(reg_control.id);
@@ -776,7 +826,7 @@ pub const Converter = struct {
             }
             // Also try direct property on SVC if not found in RegulatingControl
             if (voltage_setpoint == null) {
-                voltage_setpoint = try svc.getProperty("StaticVarCompensator.voltageSetPoint");
+                voltage_setpoint = svc_props[5];
             }
             if (voltage_setpoint) |target_value| {
                 try properties.append(self.gpa, .{ .name = "CGMES.svcEquipmentVoltageSetPoint", .value = iidm.formatFloatStr(self.gpa, target_value) catch target_value });
@@ -805,15 +855,22 @@ pub const Converter = struct {
         for (vs_converters) |vs_converter| {
             const location = try self.resolveEquipmentLocation(network, vs_converter.id);
 
-            const id = try vs_converter.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(vs_converter.id);
-            const name = try vs_converter.getProperty("IdentifiedObject.name");
+            const vs_props = try vs_converter.getProperties(.{
+                "IdentifiedObject.mRID",
+                "IdentifiedObject.name",
+                "RegulatingCondEq.controlEnabled",
+                "ACDCConverter.idleLoss",
+            });
+            const vs_refs = try vs_converter.getReferences(.{"VsConverter.CapabilityCurve"});
+            const id = vs_props[0] orelse topology.stripUnderscore(vs_converter.id);
+            const name = vs_props[1];
 
-            const voltage_regulator_on = if (try vs_converter.getProperty("RegulatingCondEq.controlEnabled")) |v|
+            const voltage_regulator_on = if (vs_props[2]) |v|
                 std.mem.eql(u8, v, "true")
             else
                 false;
 
-            const loss_factor = if (try vs_converter.getProperty("ACDCConverter.idleLoss")) |v|
+            const loss_factor = if (vs_props[3]) |v|
                 try std.fmt.parseFloat(f64, v)
             else
                 0.0;
@@ -821,7 +878,7 @@ pub const Converter = struct {
             var curve_points: std.ArrayListUnmanaged(iidm.ReactiveCapabilityCurvePoint) = .empty;
             errdefer curve_points.deinit(self.gpa);
 
-            if (try vs_converter.getReference("VsConverter.CapabilityCurve")) |curve_ref| {
+            if (vs_refs[0]) |curve_ref| {
                 curve_points = try self.getCurvePoints(topology.stripHash(curve_ref));
             }
 
@@ -879,16 +936,22 @@ pub const Converter = struct {
         for (cs_converters) |cs_converter| {
             const location = try self.resolveEquipmentLocation(network, cs_converter.id);
 
-            const id = try cs_converter.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(cs_converter.id);
-            const name = try cs_converter.getProperty("IdentifiedObject.name");
+            const cs_props = try cs_converter.getProperties(.{
+                "IdentifiedObject.mRID",
+                "IdentifiedObject.name",
+                "ACDCConverter.idleLoss",
+                "CsConverter.ratedPowerFactor",
+            });
+            const id = cs_props[0] orelse topology.stripUnderscore(cs_converter.id);
+            const name = cs_props[1];
 
-            const loss_factor = if (try cs_converter.getProperty("ACDCConverter.idleLoss")) |v|
+            const loss_factor = if (cs_props[2]) |v|
                 try std.fmt.parseFloat(f64, v)
             else
                 0.0;
 
             // Power factor defaults to 0.8 for LCC converters (typical value)
-            const power_factor = if (try cs_converter.getProperty("CsConverter.ratedPowerFactor")) |v|
+            const power_factor = if (cs_props[3]) |v|
                 try std.fmt.parseFloat(f64, v)
             else
                 0.8;
@@ -945,29 +1008,50 @@ pub const Converter = struct {
         for (generators) |generator| {
             const location = try self.resolveEquipmentLocation(network, generator.id);
 
-            const generating_unit_ref = try generator.getReference("RotatingMachine.GeneratingUnit") orelse return error.MalformedXML;
+            const gen_props = try generator.getProperties(.{
+                "IdentifiedObject.mRID",
+                "IdentifiedObject.name",
+                "RotatingMachine.ratedS",
+                "RegulatingCondEq.controlEnabled",
+                "SynchronousMachine.minQ",
+                "SynchronousMachine.maxQ",
+            });
+            const gen_refs = try generator.getReferences(.{
+                "RotatingMachine.GeneratingUnit",
+                "SynchronousMachine.InitialReactiveCapabilityCurve",
+                "RegulatingCondEq.RegulatingControl",
+                "SynchronousMachine.type",
+            });
+
+            const generating_unit_ref = gen_refs[0] orelse return error.MalformedXML;
             const generating_unit = self.model.getObjectById(topology.stripHash(generating_unit_ref)) orelse return error.MalformedXML;
 
-            const id = try generator.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(generator.id);
-            const name = try generator.getProperty("IdentifiedObject.name");
+            const id = gen_props[0] orelse topology.stripUnderscore(generator.id);
+            const name = gen_props[1];
             const energy_source = mapEnergySource(generating_unit.type_name);
 
+            const gen_unit_props = try generating_unit.getProperties(.{
+                "GeneratingUnit.minOperatingP",
+                "GeneratingUnit.maxOperatingP",
+                "IdentifiedObject.mRID",
+            });
+
             // minOperatingP and maxOperatingP may be optional
-            const min_p = if (try generating_unit.getProperty("GeneratingUnit.minOperatingP")) |v|
+            const min_p = if (gen_unit_props[0]) |v|
                 try std.fmt.parseFloat(f64, v)
             else
                 null;
-            const max_p = if (try generating_unit.getProperty("GeneratingUnit.maxOperatingP")) |v|
+            const max_p = if (gen_unit_props[1]) |v|
                 try std.fmt.parseFloat(f64, v)
             else
                 null;
-            const rated_s = if (try generator.getProperty("RotatingMachine.ratedS")) |v|
+            const rated_s = if (gen_props[2]) |v|
                 try std.fmt.parseFloat(f64, v)
             else
                 null;
 
             // controlEnabled is in SSH profile, default false for EQ-only
-            const voltage_regulator_on = if (try generator.getProperty("RegulatingCondEq.controlEnabled")) |v|
+            const voltage_regulator_on = if (gen_props[3]) |v|
                 std.mem.eql(u8, v, "true")
             else
                 false;
@@ -976,17 +1060,17 @@ pub const Converter = struct {
             var curve_points: std.ArrayListUnmanaged(iidm.ReactiveCapabilityCurvePoint) = .empty;
             errdefer curve_points.deinit(self.gpa);
 
-            if (try generator.getReference("SynchronousMachine.InitialReactiveCapabilityCurve")) |curve_ref| {
+            if (gen_refs[1]) |curve_ref| {
                 curve_points = try self.getCurvePoints(topology.stripHash(curve_ref));
             }
 
             // Min/max reactive limits (used when no capability curve)
             const min_max_reactive_limits: ?iidm.MinMaxReactiveLimits = if (curve_points.items.len == 0) blk: {
-                const min_q = if (try generator.getProperty("SynchronousMachine.minQ")) |v|
+                const min_q = if (gen_props[4]) |v|
                     try std.fmt.parseFloat(f64, v)
                 else
                     -std.math.floatMax(f64);
-                const max_q = if (try generator.getProperty("SynchronousMachine.maxQ")) |v|
+                const max_q = if (gen_props[5]) |v|
                     try std.fmt.parseFloat(f64, v)
                 else
                     std.math.floatMax(f64);
@@ -1000,7 +1084,7 @@ pub const Converter = struct {
             var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
             // SynchronousMachine.type - try as reference first, then property
             // Extract enum value after last dot (e.g., "generator" from "...#SynchronousMachineKind.generator")
-            const sm_type_raw = try generator.getReference("SynchronousMachine.type") orelse
+            const sm_type_raw = gen_refs[3] orelse
                 try generator.getProperty("SynchronousMachine.type");
             if (sm_type_raw) |sm_type| {
                 const sm_type_value = if (std.mem.lastIndexOfScalar(u8, sm_type, '.')) |dot_idx|
@@ -1010,7 +1094,7 @@ pub const Converter = struct {
                 try properties.append(self.gpa, .{ .name = "CGMES.synchronousMachineType", .value = sm_type_value });
             }
             // RegulatingControl.mode - lowercase full URL to match pypowsybl
-            if (try generator.getReference("RegulatingCondEq.RegulatingControl")) |rc_ref| {
+            if (gen_refs[2]) |rc_ref| {
                 if (self.model.getObjectById(topology.stripHash(rc_ref))) |rc| {
                     // Try as reference first, then property
                     const mode = try rc.getReference("RegulatingControl.mode") orelse
@@ -1023,13 +1107,13 @@ pub const Converter = struct {
                     const rc_id = try rc.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(rc.id);
                     try properties.append(self.gpa, .{ .name = "CGMES.originalClass", .value = "SynchronousMachine" });
                     // GeneratingUnit ID
-                    const gen_unit_id = try generating_unit.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(generating_unit.id);
+                    const gen_unit_id = gen_unit_props[2] orelse topology.stripUnderscore(generating_unit.id);
                     try properties.append(self.gpa, .{ .name = "CGMES.GeneratingUnit", .value = gen_unit_id });
                     try properties.append(self.gpa, .{ .name = "CGMES.RegulatingControl", .value = rc_id });
                 }
             } else {
                 try properties.append(self.gpa, .{ .name = "CGMES.originalClass", .value = "SynchronousMachine" });
-                const gen_unit_id = try generating_unit.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(generating_unit.id);
+                const gen_unit_id = gen_unit_props[2] orelse topology.stripUnderscore(generating_unit.id);
                 try properties.append(self.gpa, .{ .name = "CGMES.GeneratingUnit", .value = gen_unit_id });
             }
 
@@ -1055,8 +1139,14 @@ pub const Converter = struct {
             const switches = self.model.getObjectsByType(mapping.cim_type);
 
             for (switches) |sw| {
-                const id = try sw.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(sw.id);
-                const name = try sw.getProperty("IdentifiedObject.name");
+                const sw_props = try sw.getProperties(.{
+                    "IdentifiedObject.mRID",
+                    "IdentifiedObject.name",
+                    "Switch.normalOpen",
+                    "Switch.open",
+                });
+                const id = sw_props[0] orelse topology.stripUnderscore(sw.id);
+                const name = sw_props[1];
                 const node1_id = self.topology_resolver.getEquipmentNode(sw.id, 1) orelse return error.MalformedXML;
                 const node2_id = self.topology_resolver.getEquipmentNode(sw.id, 2) orelse return error.MalformedXML;
 
@@ -1082,8 +1172,7 @@ pub const Converter = struct {
                 const voltage_level = self.getVoltageLevel(network, voltage_level_id) orelse return error.MalformedXML;
 
                 // Switch.normalOpen is in EQ profile Switch.open is typically in SSH profile,
-                const open_str = try sw.getProperty("Switch.normalOpen") orelse
-                    try sw.getProperty("Switch.open") orelse "false";
+                const open_str = sw_props[2] orelse sw_props[3] orelse "false";
 
                 const node1_index = try self.getNodeIndex(voltage_level_id, node1_id);
                 const node2_index = try self.getNodeIndex(voltage_level_id, node2_id);
@@ -1115,8 +1204,12 @@ pub const Converter = struct {
         for (busbar_sections) |busbar_section| {
             const location = try self.resolveEquipmentLocation(network, busbar_section.id);
 
-            const id = try busbar_section.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(busbar_section.id);
-            const name = try busbar_section.getProperty("IdentifiedObject.name");
+            const bb_props = try busbar_section.getProperties(.{
+                "IdentifiedObject.mRID",
+                "IdentifiedObject.name",
+            });
+            const id = bb_props[0] orelse topology.stripUnderscore(busbar_section.id);
+            const name = bb_props[1];
             const node_index = try self.getNodeIndex(location.voltage_level_id, location.connectivity_node_id);
 
             const aliases = try self.buildTerminalAliases(busbar_section.id);
@@ -1178,15 +1271,23 @@ pub const Converter = struct {
         }
 
         for (table_points) |table_point| {
-            const table_ref = try table_point.getReference("RatioTapChangerTablePoint.RatioTapChangerTable") orelse continue;
+            const tp_refs = try table_point.getReferences(.{"RatioTapChangerTablePoint.RatioTapChangerTable"});
+            const table_ref = tp_refs[0] orelse continue;
             const table_id = topology.stripHash(table_ref);
 
+            const tp_props = try table_point.getProperties(.{
+                "TapChangerTablePoint.r",
+                "TapChangerTablePoint.x",
+                "TapChangerTablePoint.g",
+                "TapChangerTablePoint.b",
+                "TapChangerTablePoint.ratio",
+            });
             // Properties inherited from TapChangerTablePoint base class
-            const r = if (try table_point.getProperty("TapChangerTablePoint.r")) |r_str| try std.fmt.parseFloat(f64, r_str) else 0.0;
-            const x = if (try table_point.getProperty("TapChangerTablePoint.x")) |x_str| try std.fmt.parseFloat(f64, x_str) else 0.0;
-            const g = if (try table_point.getProperty("TapChangerTablePoint.g")) |g_str| try std.fmt.parseFloat(f64, g_str) else 0.0;
-            const b = if (try table_point.getProperty("TapChangerTablePoint.b")) |b_str| try std.fmt.parseFloat(f64, b_str) else 0.0;
-            const cgmes_ratio = try std.fmt.parseFloat(f64, try table_point.getProperty("TapChangerTablePoint.ratio") orelse continue);
+            const r = if (tp_props[0]) |r_str| try std.fmt.parseFloat(f64, r_str) else 0.0;
+            const x = if (tp_props[1]) |x_str| try std.fmt.parseFloat(f64, x_str) else 0.0;
+            const g = if (tp_props[2]) |g_str| try std.fmt.parseFloat(f64, g_str) else 0.0;
+            const b = if (tp_props[3]) |b_str| try std.fmt.parseFloat(f64, b_str) else 0.0;
+            const cgmes_ratio = try std.fmt.parseFloat(f64, tp_props[4] orelse continue);
             // IIDM uses inverse of CGMES ratio convention
             const rho = if (cgmes_ratio != 0) 1.0 / cgmes_ratio else 1.0;
 
@@ -1209,18 +1310,27 @@ pub const Converter = struct {
         }
 
         for (phase_table_points) |table_point| {
-            const table_ref = try table_point.getReference("PhaseTapChangerTablePoint.PhaseTapChangerTable") orelse continue;
+            const ptp_refs = try table_point.getReferences(.{"PhaseTapChangerTablePoint.PhaseTapChangerTable"});
+            const table_ref = ptp_refs[0] orelse continue;
             const table_id = topology.stripHash(table_ref);
 
-            const r = if (try table_point.getProperty("TapChangerTablePoint.r")) |r_str| try std.fmt.parseFloat(f64, r_str) else 0.0;
-            const x = if (try table_point.getProperty("TapChangerTablePoint.x")) |x_str| try std.fmt.parseFloat(f64, x_str) else 0.0;
-            const g = if (try table_point.getProperty("TapChangerTablePoint.g")) |g_str| try std.fmt.parseFloat(f64, g_str) else 0.0;
-            const b = if (try table_point.getProperty("TapChangerTablePoint.b")) |b_str| try std.fmt.parseFloat(f64, b_str) else 0.0;
-            const cgmes_ratio = try std.fmt.parseFloat(f64, try table_point.getProperty("TapChangerTablePoint.ratio") orelse continue);
+            const ptp_props = try table_point.getProperties(.{
+                "TapChangerTablePoint.r",
+                "TapChangerTablePoint.x",
+                "TapChangerTablePoint.g",
+                "TapChangerTablePoint.b",
+                "TapChangerTablePoint.ratio",
+                "PhaseTapChangerTablePoint.angle",
+            });
+            const r = if (ptp_props[0]) |r_str| try std.fmt.parseFloat(f64, r_str) else 0.0;
+            const x = if (ptp_props[1]) |x_str| try std.fmt.parseFloat(f64, x_str) else 0.0;
+            const g = if (ptp_props[2]) |g_str| try std.fmt.parseFloat(f64, g_str) else 0.0;
+            const b = if (ptp_props[3]) |b_str| try std.fmt.parseFloat(f64, b_str) else 0.0;
+            const cgmes_ratio = try std.fmt.parseFloat(f64, ptp_props[4] orelse continue);
             // IIDM uses inverse of CGMES ratio convention
             const rho = if (cgmes_ratio != 0) 1.0 / cgmes_ratio else 1.0;
             // IIDM uses opposite sign convention for phase angle
-            const alpha = if (try table_point.getProperty("PhaseTapChangerTablePoint.angle")) |alpha_str| -(try std.fmt.parseFloat(f64, alpha_str)) else 0.0;
+            const alpha = if (ptp_props[5]) |alpha_str| -(try std.fmt.parseFloat(f64, alpha_str)) else 0.0;
 
             const gop = try phase_table_points_map.getOrPut(self.gpa, table_id);
             if (!gop.found_existing) gop.value_ptr.* = .empty;
@@ -1235,9 +1345,11 @@ pub const Converter = struct {
         }
 
         for (power_transformer_ends) |end| {
-            const transformer_ref = try end.getReference("PowerTransformerEnd.PowerTransformer") orelse return error.MalformedXML;
+            const end_refs = try end.getReferences(.{"PowerTransformerEnd.PowerTransformer"});
+            const transformer_ref = end_refs[0] orelse return error.MalformedXML;
             const transformer_id = topology.stripHash(transformer_ref);
-            const end_num = try std.fmt.parseInt(u32, try end.getProperty("TransformerEnd.endNumber") orelse return error.MalformedXML, 10);
+            const end_props = try end.getProperties(.{"TransformerEnd.endNumber"});
+            const end_num = try std.fmt.parseInt(u32, end_props[0] orelse return error.MalformedXML, 10);
 
             const gop = try ends_map.getOrPut(self.gpa, transformer_id);
             if (!gop.found_existing) gop.value_ptr.* = .{};
@@ -1249,8 +1361,33 @@ pub const Converter = struct {
             const end1 = ends.ends[0] orelse return error.MalformedXML;
             const end2 = ends.ends[1] orelse return error.MalformedXML;
 
-            const id = try transformer.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(transformer.id);
-            const name = try transformer.getProperty("IdentifiedObject.name");
+            const tx_props = try transformer.getProperties(.{
+                "IdentifiedObject.mRID",
+                "IdentifiedObject.name",
+            });
+            const id = tx_props[0] orelse topology.stripUnderscore(transformer.id);
+            const name = tx_props[1];
+
+            // Batch-fetch end1 and end2 properties and references
+            const end1_props = try end1.getProperties(.{
+                "PowerTransformerEnd.ratedU",
+                "PowerTransformerEnd.r",
+                "PowerTransformerEnd.x",
+                "PowerTransformerEnd.g",
+                "PowerTransformerEnd.b",
+                "PowerTransformerEnd.ratedS",
+                "IdentifiedObject.mRID",
+            });
+            const end1_refs = try end1.getReferences(.{"TransformerEnd.Terminal"});
+            const end2_props = try end2.getProperties(.{
+                "PowerTransformerEnd.ratedU",
+                "PowerTransformerEnd.r",
+                "PowerTransformerEnd.x",
+                "PowerTransformerEnd.g",
+                "PowerTransformerEnd.b",
+                "IdentifiedObject.mRID",
+            });
+            const end2_refs = try end2.getReferences(.{"TransformerEnd.Terminal"});
 
             // Get substation via first voltage level
             const node1_id = self.topology_resolver.getEquipmentNode(transformer.id, 1) orelse return error.MalformedXML;
@@ -1262,6 +1399,13 @@ pub const Converter = struct {
             const node2_id = self.topology_resolver.getEquipmentNode(transformer.id, 2) orelse return error.MalformedXML;
 
             if (ends.ends[2]) |end3| {
+                const end3_props = try end3.getProperties(.{
+                    "PowerTransformerEnd.ratedU",
+                    "PowerTransformerEnd.r",
+                    "PowerTransformerEnd.x",
+                    "PowerTransformerEnd.g",
+                    "PowerTransformerEnd.b",
+                });
                 const connectivity_node3_id = self.topology_resolver.getEquipmentNode(transformer.id, 3) orelse return error.MalformedXML;
 
                 try substation.three_winding_transformers.append(self.gpa, .{
@@ -1270,25 +1414,25 @@ pub const Converter = struct {
                     .node1 = node1_id,
                     .node2 = node2_id,
                     .node3 = connectivity_node3_id,
-                    .rated_u1 = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.ratedU") orelse return error.MalformedXML),
-                    .rated_u2 = try std.fmt.parseFloat(f64, try end2.getProperty("PowerTransformerEnd.ratedU") orelse return error.MalformedXML),
-                    .rated_u3 = try std.fmt.parseFloat(f64, try end3.getProperty("PowerTransformerEnd.ratedU") orelse return error.MalformedXML),
-                    .r1 = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.r") orelse return error.MalformedXML),
-                    .r2 = try std.fmt.parseFloat(f64, try end2.getProperty("PowerTransformerEnd.r") orelse return error.MalformedXML),
-                    .r3 = try std.fmt.parseFloat(f64, try end3.getProperty("PowerTransformerEnd.r") orelse return error.MalformedXML),
-                    .x1 = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.x") orelse return error.MalformedXML),
-                    .x2 = try std.fmt.parseFloat(f64, try end2.getProperty("PowerTransformerEnd.x") orelse return error.MalformedXML),
-                    .x3 = try std.fmt.parseFloat(f64, try end3.getProperty("PowerTransformerEnd.x") orelse return error.MalformedXML),
-                    .g1 = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.g") orelse return error.MalformedXML),
-                    .g2 = try std.fmt.parseFloat(f64, try end2.getProperty("PowerTransformerEnd.g") orelse return error.MalformedXML),
-                    .g3 = try std.fmt.parseFloat(f64, try end3.getProperty("PowerTransformerEnd.g") orelse return error.MalformedXML),
-                    .b1 = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.b") orelse return error.MalformedXML),
-                    .b2 = try std.fmt.parseFloat(f64, try end2.getProperty("PowerTransformerEnd.b") orelse return error.MalformedXML),
-                    .b3 = try std.fmt.parseFloat(f64, try end3.getProperty("PowerTransformerEnd.b") orelse return error.MalformedXML),
+                    .rated_u1 = try std.fmt.parseFloat(f64, end1_props[0] orelse return error.MalformedXML),
+                    .rated_u2 = try std.fmt.parseFloat(f64, end2_props[0] orelse return error.MalformedXML),
+                    .rated_u3 = try std.fmt.parseFloat(f64, end3_props[0] orelse return error.MalformedXML),
+                    .r1 = try std.fmt.parseFloat(f64, end1_props[1] orelse return error.MalformedXML),
+                    .r2 = try std.fmt.parseFloat(f64, end2_props[1] orelse return error.MalformedXML),
+                    .r3 = try std.fmt.parseFloat(f64, end3_props[1] orelse return error.MalformedXML),
+                    .x1 = try std.fmt.parseFloat(f64, end1_props[2] orelse return error.MalformedXML),
+                    .x2 = try std.fmt.parseFloat(f64, end2_props[2] orelse return error.MalformedXML),
+                    .x3 = try std.fmt.parseFloat(f64, end3_props[2] orelse return error.MalformedXML),
+                    .g1 = try std.fmt.parseFloat(f64, end1_props[3] orelse return error.MalformedXML),
+                    .g2 = try std.fmt.parseFloat(f64, end2_props[3] orelse return error.MalformedXML),
+                    .g3 = try std.fmt.parseFloat(f64, end3_props[3] orelse return error.MalformedXML),
+                    .b1 = try std.fmt.parseFloat(f64, end1_props[4] orelse return error.MalformedXML),
+                    .b2 = try std.fmt.parseFloat(f64, end2_props[4] orelse return error.MalformedXML),
+                    .b3 = try std.fmt.parseFloat(f64, end3_props[4] orelse return error.MalformedXML),
                 });
             } else {
-                const rated_u1 = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.ratedU") orelse return error.MalformedXML);
-                const rated_u2 = try std.fmt.parseFloat(f64, try end2.getProperty("PowerTransformerEnd.ratedU") orelse return error.MalformedXML);
+                const rated_u1 = try std.fmt.parseFloat(f64, end1_props[0] orelse return error.MalformedXML);
+                const rated_u2 = try std.fmt.parseFloat(f64, end2_props[0] orelse return error.MalformedXML);
 
                 if (rated_u1 == 0 or rated_u2 == 0) return error.InvalidRatedVoltage;
 
@@ -1300,7 +1444,7 @@ pub const Converter = struct {
                 const ratio_sq = ratio * ratio;
 
                 // ratedS from first end (if present)
-                const rated_s = if (try end1.getProperty("PowerTransformerEnd.ratedS")) |rated_s_str|
+                const rated_s = if (end1_props[5]) |rated_s_str|
                     try std.fmt.parseFloat(f64, rated_s_str)
                 else
                     null;
@@ -1317,9 +1461,9 @@ pub const Converter = struct {
                 const node2_index = try self.getNodeIndex(voltage_level2_id, node2_id);
 
                 // Resolve terminal IDs for both ends
-                const terminal1_ref = try end1.getReference("TransformerEnd.Terminal") orelse return error.MalformedXML;
+                const terminal1_ref = end1_refs[0] orelse return error.MalformedXML;
                 const terminal1_id = topology.stripHash(terminal1_ref);
-                const terminal2_ref = try end2.getReference("TransformerEnd.Terminal") orelse return error.MalformedXML;
+                const terminal2_ref = end2_refs[0] orelse return error.MalformedXML;
                 const terminal2_id = topology.stripHash(terminal2_ref);
 
                 // Build ratio tap changer if present on end1 or end2
@@ -1360,19 +1504,19 @@ pub const Converter = struct {
                     try aliases.append(self.gpa, .{ .type = "CGMES.RatioTapChanger1", .content = rtc_id });
                 }
                 // TransformerEnd2
-                const end2_id = try end2.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(end2.id);
-                try aliases.append(self.gpa, .{ .type = "CGMES.TransformerEnd2", .content = end2_id });
+                const end2_mrid = end2_props[5] orelse topology.stripUnderscore(end2.id);
+                try aliases.append(self.gpa, .{ .type = "CGMES.TransformerEnd2", .content = end2_mrid });
                 // TransformerEnd1
-                const end1_mrid = try end1.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(end1.id);
+                const end1_mrid = end1_props[6] orelse topology.stripUnderscore(end1.id);
                 try aliases.append(self.gpa, .{ .type = "CGMES.TransformerEnd1", .content = end1_mrid });
 
                 try substation.two_winding_transformers.append(self.gpa, .{
                     .id = id,
                     .name = name,
-                    .r = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.r") orelse return error.MalformedXML) * ratio_sq,
-                    .x = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.x") orelse return error.MalformedXML) * ratio_sq,
-                    .g = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.g") orelse return error.MalformedXML) / ratio_sq,
-                    .b = try std.fmt.parseFloat(f64, try end1.getProperty("PowerTransformerEnd.b") orelse return error.MalformedXML) / ratio_sq,
+                    .r = try std.fmt.parseFloat(f64, end1_props[1] orelse return error.MalformedXML) * ratio_sq,
+                    .x = try std.fmt.parseFloat(f64, end1_props[2] orelse return error.MalformedXML) * ratio_sq,
+                    .g = try std.fmt.parseFloat(f64, end1_props[3] orelse return error.MalformedXML) / ratio_sq,
+                    .b = try std.fmt.parseFloat(f64, end1_props[4] orelse return error.MalformedXML) / ratio_sq,
                     .rated_u1 = rated_u1,
                     .rated_u2 = rated_u2,
                     .rated_s = rated_s,
@@ -1402,15 +1546,24 @@ pub const Converter = struct {
     ) !?iidm.RatioTapChanger {
         const rtc_obj = tap_changer_map.get(end_id) orelse return null;
 
-        const low_step = try std.fmt.parseInt(i32, try rtc_obj.getProperty("TapChanger.lowStep") orelse return error.MalformedXML, 10);
-        const normal_step = try std.fmt.parseInt(i32, try rtc_obj.getProperty("TapChanger.normalStep") orelse return error.MalformedXML, 10);
-        const ltc_flag_str = try rtc_obj.getProperty("TapChanger.ltcFlag") orelse "false";
+        const rtc_props = try rtc_obj.getProperties(.{
+            "TapChanger.lowStep",
+            "TapChanger.normalStep",
+            "TapChanger.ltcFlag",
+        });
+        const rtc_refs = try rtc_obj.getReferences(.{
+            "RatioTapChanger.RatioTapChangerTable",
+            "TapChanger.TapChangerControl",
+        });
+        const low_step = try std.fmt.parseInt(i32, rtc_props[0] orelse return error.MalformedXML, 10);
+        const normal_step = try std.fmt.parseInt(i32, rtc_props[1] orelse return error.MalformedXML, 10);
+        const ltc_flag_str = rtc_props[2] orelse "false";
         const ltc_flag = std.mem.eql(u8, ltc_flag_str, "true");
 
         var steps: std.ArrayListUnmanaged(iidm.RatioTapChangerStep) = .empty;
         errdefer steps.deinit(self.gpa);
 
-        if (try rtc_obj.getReference("RatioTapChanger.RatioTapChangerTable")) |table_ref| {
+        if (rtc_refs[0]) |table_ref| {
             const table_id = topology.stripHash(table_ref);
             if (points_map.get(table_id)) |points| {
                 try steps.appendSlice(self.gpa, points.items);
@@ -1421,7 +1574,7 @@ pub const Converter = struct {
         var regulation_mode: ?[]const u8 = null;
         var terminal_ref: ?iidm.TerminalRef = null;
 
-        if (try rtc_obj.getReference("TapChanger.TapChangerControl")) |control_ref| {
+        if (rtc_refs[1]) |control_ref| {
             regulation_mode = "VOLTAGE";
             // Determine regulated side from the control's terminal reference
             if (self.model.getObjectById(topology.stripHash(control_ref))) |control| {
@@ -1455,15 +1608,21 @@ pub const Converter = struct {
     ) !?iidm.PhaseTapChanger {
         const ptc_obj = tap_changer_map.get(end_id) orelse return null;
 
-        const low_step = try std.fmt.parseInt(i32, try ptc_obj.getProperty("TapChanger.lowStep") orelse return error.MalformedXML, 10);
-        const normal_step = try std.fmt.parseInt(i32, try ptc_obj.getProperty("TapChanger.normalStep") orelse return error.MalformedXML, 10);
-        const ltc_flag_str = try ptc_obj.getProperty("TapChanger.ltcFlag") orelse "false";
+        const ptc_props = try ptc_obj.getProperties(.{
+            "TapChanger.lowStep",
+            "TapChanger.normalStep",
+            "TapChanger.ltcFlag",
+        });
+        const ptc_refs = try ptc_obj.getReferences(.{"PhaseTapChangerTabular.PhaseTapChangerTable"});
+        const low_step = try std.fmt.parseInt(i32, ptc_props[0] orelse return error.MalformedXML, 10);
+        const normal_step = try std.fmt.parseInt(i32, ptc_props[1] orelse return error.MalformedXML, 10);
+        const ltc_flag_str = ptc_props[2] orelse "false";
         const ltc_flag = std.mem.eql(u8, ltc_flag_str, "true");
 
         var steps: std.ArrayListUnmanaged(iidm.PhaseTapChangerStep) = .empty;
         errdefer steps.deinit(self.gpa);
 
-        if (try ptc_obj.getReference("PhaseTapChangerTabular.PhaseTapChangerTable")) |table_ref| {
+        if (ptc_refs[0]) |table_ref| {
             const table_id = topology.stripHash(table_ref);
             if (points_map.get(table_id)) |points| {
                 try steps.appendSlice(self.gpa, points.items);
@@ -1488,8 +1647,12 @@ pub const Converter = struct {
         const op_lim_sets = self.op_limit_sets_by_terminal.get(terminal_id) orelse return groups;
 
         for (op_lim_sets.items) |op_lim_set| {
-            const set_id = try op_lim_set.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(op_lim_set.id);
-            const set_name = try op_lim_set.getProperty("IdentifiedObject.name") orelse "DEFAULT";
+            const set_props = try op_lim_set.getProperties(.{
+                "IdentifiedObject.mRID",
+                "IdentifiedObject.name",
+            });
+            const set_id = set_props[0] orelse topology.stripUnderscore(op_lim_set.id);
+            const set_name = set_props[1] orelse "DEFAULT";
 
             // Find CurrentLimits for this set (PATL and TATL)
             var patl_value: ?f64 = null;
@@ -1503,11 +1666,17 @@ pub const Converter = struct {
             // Get CurrentLimits for this OperationalLimitSet
             if (self.current_limits_by_set.get(op_lim_set.id)) |current_limits_for_set| {
                 for (current_limits_for_set.items) |cl| {
-                    const type_ref = try cl.getReference("OperationalLimit.OperationalLimitType") orelse continue;
+                    const cl_props = try cl.getProperties(.{
+                        "CurrentLimit.normalValue",
+                        "IdentifiedObject.mRID",
+                        "IdentifiedObject.name",
+                    });
+                    const cl_refs = try cl.getReferences(.{"OperationalLimit.OperationalLimitType"});
+                    const type_ref = cl_refs[0] orelse continue;
                     const type_id = topology.stripHash(type_ref);
 
-                    const cl_value_str = try cl.getProperty("CurrentLimit.normalValue");
-                    const cl_id = try cl.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(cl.id);
+                    const cl_value_str = cl_props[0];
+                    const cl_id = cl_props[1] orelse topology.stripUnderscore(cl.id);
 
                     // Check if PATL type
                     if (self.patl_type_ids.contains(type_id)) {
@@ -1528,7 +1697,7 @@ pub const Converter = struct {
                         // Also add to temporary limits in CurrentLimits
                         if (cl_value_str) |val_str| {
                             // Get the name from the CurrentLimit object itself
-                            const limit_name = try cl.getProperty("IdentifiedObject.name") orelse "TATL";
+                            const limit_name = cl_props[2] orelse "TATL";
                             const duration_int = std.fmt.parseInt(u32, duration, 10) catch null;
                             // Omit acceptableDuration if it's 2147483647 (infinite)
                             const acceptable_dur: ?u32 = if (duration_int) |d| (if (d == 2147483647) null else d) else null;
@@ -1592,13 +1761,21 @@ pub const Converter = struct {
             const node1_idx = try self.getNodeIndex(voltage_level1_id, node1_id);
             const node2_idx = try self.getNodeIndex(voltage_level2_id, node2_id);
 
-            const id = try line.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(line.id);
-            const name = try line.getProperty("IdentifiedObject.name") orelse return error.MalformedXML;
-            const r = try std.fmt.parseFloat(f64, try line.getProperty("ACLineSegment.r") orelse return error.MalformedXML);
-            const x = try std.fmt.parseFloat(f64, try line.getProperty("ACLineSegment.x") orelse return error.MalformedXML);
-            const bch = try std.fmt.parseFloat(f64, try line.getProperty("ACLineSegment.bch") orelse return error.MalformedXML);
+            const line_props = try line.getProperties(.{
+                "IdentifiedObject.mRID",
+                "IdentifiedObject.name",
+                "ACLineSegment.r",
+                "ACLineSegment.x",
+                "ACLineSegment.bch",
+                "ACLineSegment.gch",
+            });
+            const id = line_props[0] orelse topology.stripUnderscore(line.id);
+            const name = line_props[1] orelse return error.MalformedXML;
+            const r = try std.fmt.parseFloat(f64, line_props[2] orelse return error.MalformedXML);
+            const x = try std.fmt.parseFloat(f64, line_props[3] orelse return error.MalformedXML);
+            const bch = try std.fmt.parseFloat(f64, line_props[4] orelse return error.MalformedXML);
             // gch is optional in CGMES, default to 0 if not present
-            const gch = try std.fmt.parseFloat(f64, try line.getProperty("ACLineSegment.gch") orelse "0");
+            const gch = try std.fmt.parseFloat(f64, line_props[5] orelse "0");
 
             // Get terminal IDs from topology resolver
             var t1_id: ?[]const u8 = null;
