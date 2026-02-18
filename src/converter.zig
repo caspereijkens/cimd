@@ -493,18 +493,18 @@ pub const Converter = struct {
             const name = sub_props[1];
 
             // Resolve geo_tags and properties from Substation.Region -> SubGeographicalRegion -> GeographicalRegion
-            var geo_tags: std.ArrayListUnmanaged([]const u8) = .empty;
-            var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
+            var geo_tags = try std.ArrayListUnmanaged([]const u8).initCapacity(self.gpa, 1);
+            var properties = try std.ArrayListUnmanaged(iidm.Property).initCapacity(self.gpa, 3);
             var country: ?[]const u8 = null;
             if (sub_refs[0]) |sub_region_ref| {
                 if (self.model.getObjectById(topology.stripHash(sub_region_ref))) |sub_region| {
                     if (try sub_region.getProperty("IdentifiedObject.name")) |sub_region_name| {
-                        try geo_tags.append(self.gpa, sub_region_name);
+                        geo_tags.appendAssumeCapacity(sub_region_name);
                     }
                     // SubGeographicalRegion ID (URL decode to convert + to space)
                     const sub_region_id_raw = try sub_region.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(sub_region.id);
                     const sub_region_id = try topology.urlDecode(self.gpa, sub_region_id_raw);
-                    try properties.append(self.gpa, .{ .name = "CGMES.subRegionId", .value = sub_region_id });
+                    properties.appendAssumeCapacity(.{ .name = "CGMES.subRegionId", .value = sub_region_id });
                     // GeographicalRegion from SubGeographicalRegion.Region
                     if (try sub_region.getReference("SubGeographicalRegion.Region")) |geo_region_ref| {
                         if (self.model.getObjectById(topology.stripHash(geo_region_ref))) |geo_region| {
@@ -513,11 +513,11 @@ pub const Converter = struct {
                                 if (geo_region_name.len == 2 and std.ascii.isAlphabetic(geo_region_name[0]) and std.ascii.isAlphabetic(geo_region_name[1])) {
                                     country = geo_region_name;
                                 }
-                                try properties.append(self.gpa, .{ .name = "CGMES.regionName", .value = geo_region_name });
+                                properties.appendAssumeCapacity(.{ .name = "CGMES.regionName", .value = geo_region_name });
                             }
                             const geo_region_id_raw = try geo_region.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(geo_region.id);
                             const geo_region_id = try topology.urlDecode(self.gpa, geo_region_id_raw);
-                            try properties.append(self.gpa, .{ .name = "CGMES.regionId", .value = geo_region_id });
+                            properties.appendAssumeCapacity(.{ .name = "CGMES.regionId", .value = geo_region_id });
                         }
                     }
                 }
@@ -583,12 +583,12 @@ pub const Converter = struct {
                 null;
 
             // Build properties for CGMES voltage limits (formatted with decimal point, NaN if absent)
-            var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
-            try properties.append(self.gpa, .{
+            var properties = try std.ArrayListUnmanaged(iidm.Property).initCapacity(self.gpa, 2);
+            properties.appendAssumeCapacity(.{
                 .name = "CGMES.lowVoltageLimit",
                 .value = if (low_voltage_limit_str) |val| try iidm.formatFloatStr(self.gpa, val) else "NaN",
             });
-            try properties.append(self.gpa, .{
+            properties.appendAssumeCapacity(.{
                 .name = "CGMES.highVoltageLimit",
                 .value = if (high_voltage_limit_str) |val| try iidm.formatFloatStr(self.gpa, val) else "NaN",
             });
@@ -644,7 +644,8 @@ pub const Converter = struct {
     }
 
     fn buildTerminalAliases(self: *Converter, equipment_id: []const u8) !std.ArrayListUnmanaged(iidm.Alias) {
-        var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
+        var aliases = try std.ArrayListUnmanaged(iidm.Alias).initCapacity(self.gpa, 2);
+        errdefer aliases.deinit(self.gpa);
         if (self.topology_resolver.getEquipmentTerminals(equipment_id)) |term_infos| {
             inline for (.{ 1, 2 }) |seq| {
                 const label = comptime std.fmt.comptimePrint("CGMES.Terminal{d}", .{seq});
@@ -652,7 +653,7 @@ pub const Converter = struct {
                     if (info.sequence == seq) {
                         if (self.model.getObjectById(info.id)) |terminal| {
                             const terminal_mrid = try terminal.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(terminal.id);
-                            try aliases.append(self.gpa, .{ .type = label, .content = terminal_mrid });
+                            aliases.appendAssumeCapacity(.{ .type = label, .content = terminal_mrid });
                         }
                     }
                 }
@@ -692,15 +693,15 @@ pub const Converter = struct {
         const aliases = try self.buildTerminalAliases(load.id);
 
         // Build properties (pFixed/qFixed only for EnergyConsumer, not EnergySource)
-        var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
+        var properties = try std.ArrayListUnmanaged(iidm.Property).initCapacity(self.gpa, 3);
         if (std.mem.eql(u8, original_class, "EnergyConsumer")) {
             const p_fixed = load_props[2] orelse "0.0";
             const q_fixed = load_props[3] orelse "0.0";
-            try properties.append(self.gpa, .{ .name = "CGMES.pFixed", .value = try iidm.formatFloatStr(self.gpa, p_fixed) });
-            try properties.append(self.gpa, .{ .name = "CGMES.originalClass", .value = original_class });
-            try properties.append(self.gpa, .{ .name = "CGMES.qFixed", .value = try iidm.formatFloatStr(self.gpa, q_fixed) });
+            properties.appendAssumeCapacity(.{ .name = "CGMES.pFixed", .value = try iidm.formatFloatStr(self.gpa, p_fixed) });
+            properties.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = original_class });
+            properties.appendAssumeCapacity(.{ .name = "CGMES.qFixed", .value = try iidm.formatFloatStr(self.gpa, q_fixed) });
         } else {
-            try properties.append(self.gpa, .{ .name = "CGMES.originalClass", .value = original_class });
+            properties.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = original_class });
         }
 
         try location.voltage_level.loads.append(self.gpa, .{
@@ -738,9 +739,9 @@ pub const Converter = struct {
 
             const aliases = try self.buildTerminalAliases(linear_shunt_compensator.id);
 
-            var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
+            var properties = try std.ArrayListUnmanaged(iidm.Property).initCapacity(self.gpa, 1);
             const normal_sections = shunt_props[5] orelse "0";
-            try properties.append(self.gpa, .{ .name = "CGMES.normalSections", .value = normal_sections });
+            properties.appendAssumeCapacity(.{ .name = "CGMES.normalSections", .value = normal_sections });
 
             try location.voltage_level.shunts.append(self.gpa, .{
                 .id = id,
@@ -813,13 +814,13 @@ pub const Converter = struct {
 
             const aliases = try self.buildTerminalAliases(svc.id);
 
-            var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
+            var properties = try std.ArrayListUnmanaged(iidm.Property).initCapacity(self.gpa, 2);
             var voltage_setpoint: ?[]const u8 = null;
             if (svc_refs[1]) |reg_control_ref| {
                 const reg_control_id = topology.stripHash(reg_control_ref);
                 if (self.model.getObjectById(reg_control_id)) |reg_control| {
                     const rc_mrid = try reg_control.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(reg_control.id);
-                    try properties.append(self.gpa, .{ .name = "CGMES.RegulatingControl", .value = rc_mrid });
+                    properties.appendAssumeCapacity(.{ .name = "CGMES.RegulatingControl", .value = rc_mrid });
                     // Get voltage set point from regulating control
                     voltage_setpoint = try reg_control.getProperty("RegulatingControl.targetValue");
                 }
@@ -829,7 +830,7 @@ pub const Converter = struct {
                 voltage_setpoint = svc_props[5];
             }
             if (voltage_setpoint) |target_value| {
-                try properties.append(self.gpa, .{ .name = "CGMES.svcEquipmentVoltageSetPoint", .value = iidm.formatFloatStr(self.gpa, target_value) catch target_value });
+                properties.appendAssumeCapacity(.{ .name = "CGMES.svcEquipmentVoltageSetPoint", .value = iidm.formatFloatStr(self.gpa, target_value) catch target_value });
             }
 
             try location.voltage_level.static_var_compensators.append(self.gpa, .{
@@ -885,6 +886,7 @@ pub const Converter = struct {
             const node_index = try self.getNodeIndex(location.voltage_level_id, location.connectivity_node_id);
 
             var aliases = try self.buildTerminalAliases(vs_converter.id);
+            try aliases.ensureTotalCapacity(self.gpa, 4);
 
             // DC terminals (DCTerminal2 first, then DCTerminal1)
             for (dc_terminals) |dc_terminal| {
@@ -892,7 +894,7 @@ pub const Converter = struct {
                 if (!std.mem.eql(u8, topology.stripHash(converter_ref), vs_converter.id)) continue;
                 const dc_terminal_mrid = try dc_terminal.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(dc_terminal.id);
                 if (std.mem.endsWith(u8, dc_terminal_mrid, "_2")) {
-                    try aliases.append(self.gpa, .{ .type = "CGMES.DCTerminal2", .content = dc_terminal_mrid });
+                    aliases.appendAssumeCapacity(.{ .type = "CGMES.DCTerminal2", .content = dc_terminal_mrid });
                 }
             }
             for (dc_terminals) |dc_terminal| {
@@ -900,12 +902,12 @@ pub const Converter = struct {
                 if (!std.mem.eql(u8, topology.stripHash(converter_ref), vs_converter.id)) continue;
                 const dc_terminal_mrid = try dc_terminal.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(dc_terminal.id);
                 if (!std.mem.endsWith(u8, dc_terminal_mrid, "_2")) {
-                    try aliases.append(self.gpa, .{ .type = "CGMES.DCTerminal1", .content = dc_terminal_mrid });
+                    aliases.appendAssumeCapacity(.{ .type = "CGMES.DCTerminal1", .content = dc_terminal_mrid });
                 }
             }
 
-            var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
-            try properties.append(self.gpa, .{ .name = "CGMES.terminalSign", .value = "1" });
+            var properties = try std.ArrayListUnmanaged(iidm.Property).initCapacity(self.gpa, 1);
+            properties.appendAssumeCapacity(.{ .name = "CGMES.terminalSign", .value = "1" });
 
             // When no capability curve, use unbounded min/max reactive limits
             const min_max_limits: ?iidm.MinMaxReactiveLimits = if (curve_points.items.len == 0)
@@ -959,14 +961,14 @@ pub const Converter = struct {
             const node_index = try self.getNodeIndex(location.voltage_level_id, location.connectivity_node_id);
 
             // Build aliases: DCTerminal2, DCTerminal1, then Terminal1 (AC)
-            var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
+            var aliases = try std.ArrayListUnmanaged(iidm.Alias).initCapacity(self.gpa, 4);
             // DC terminals first (DCTerminal2, then DCTerminal1)
             for (dc_terminals) |dc_terminal| {
                 const converter_ref = try dc_terminal.getReference("ACDCConverterDCTerminal.DCConductingEquipment") orelse continue;
                 if (!std.mem.eql(u8, topology.stripHash(converter_ref), cs_converter.id)) continue;
                 const dc_terminal_mrid = try dc_terminal.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(dc_terminal.id);
                 if (std.mem.endsWith(u8, dc_terminal_mrid, "_2")) {
-                    try aliases.append(self.gpa, .{ .type = "CGMES.DCTerminal2", .content = dc_terminal_mrid });
+                    aliases.appendAssumeCapacity(.{ .type = "CGMES.DCTerminal2", .content = dc_terminal_mrid });
                 }
             }
             for (dc_terminals) |dc_terminal| {
@@ -974,7 +976,7 @@ pub const Converter = struct {
                 if (!std.mem.eql(u8, topology.stripHash(converter_ref), cs_converter.id)) continue;
                 const dc_terminal_mrid = try dc_terminal.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(dc_terminal.id);
                 if (!std.mem.endsWith(u8, dc_terminal_mrid, "_2")) {
-                    try aliases.append(self.gpa, .{ .type = "CGMES.DCTerminal1", .content = dc_terminal_mrid });
+                    aliases.appendAssumeCapacity(.{ .type = "CGMES.DCTerminal1", .content = dc_terminal_mrid });
                 }
             }
             // AC terminal last
@@ -1081,7 +1083,7 @@ pub const Converter = struct {
 
             const aliases = try self.buildTerminalAliases(generator.id);
 
-            var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
+            var properties = try std.ArrayListUnmanaged(iidm.Property).initCapacity(self.gpa, 5);
             // SynchronousMachine.type - try as reference first, then property
             // Extract enum value after last dot (e.g., "generator" from "...#SynchronousMachineKind.generator")
             const sm_type_raw = gen_refs[3] orelse
@@ -1091,7 +1093,7 @@ pub const Converter = struct {
                     sm_type[dot_idx + 1 ..]
                 else
                     sm_type;
-                try properties.append(self.gpa, .{ .name = "CGMES.synchronousMachineType", .value = sm_type_value });
+                properties.appendAssumeCapacity(.{ .name = "CGMES.synchronousMachineType", .value = sm_type_value });
             }
             // RegulatingControl.mode - lowercase full URL to match pypowsybl
             if (gen_refs[2]) |rc_ref| {
@@ -1102,19 +1104,19 @@ pub const Converter = struct {
                     if (mode) |m| {
                         const lowered = try self.gpa.alloc(u8, m.len);
                         for (lowered, m) |*dest, src| dest.* = std.ascii.toLower(src);
-                        try properties.append(self.gpa, .{ .name = "CGMES.mode", .value = lowered });
+                        properties.appendAssumeCapacity(.{ .name = "CGMES.mode", .value = lowered });
                     }
                     const rc_id = try rc.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(rc.id);
-                    try properties.append(self.gpa, .{ .name = "CGMES.originalClass", .value = "SynchronousMachine" });
+                    properties.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = "SynchronousMachine" });
                     // GeneratingUnit ID
                     const gen_unit_id = gen_unit_props[2] orelse topology.stripUnderscore(generating_unit.id);
-                    try properties.append(self.gpa, .{ .name = "CGMES.GeneratingUnit", .value = gen_unit_id });
-                    try properties.append(self.gpa, .{ .name = "CGMES.RegulatingControl", .value = rc_id });
+                    properties.appendAssumeCapacity(.{ .name = "CGMES.GeneratingUnit", .value = gen_unit_id });
+                    properties.appendAssumeCapacity(.{ .name = "CGMES.RegulatingControl", .value = rc_id });
                 }
             } else {
-                try properties.append(self.gpa, .{ .name = "CGMES.originalClass", .value = "SynchronousMachine" });
+                properties.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = "SynchronousMachine" });
                 const gen_unit_id = gen_unit_props[2] orelse topology.stripUnderscore(generating_unit.id);
-                try properties.append(self.gpa, .{ .name = "CGMES.GeneratingUnit", .value = gen_unit_id });
+                properties.appendAssumeCapacity(.{ .name = "CGMES.GeneratingUnit", .value = gen_unit_id });
             }
 
             try location.voltage_level.generators.append(self.gpa, .{
@@ -1179,9 +1181,9 @@ pub const Converter = struct {
 
                 const aliases = try self.buildTerminalAliases(sw.id);
 
-                var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
-                try properties.append(self.gpa, .{ .name = "CGMES.originalClass", .value = mapping.cim_type });
-                try properties.append(self.gpa, .{ .name = "CGMES.normalOpen", .value = open_str });
+                var properties = try std.ArrayListUnmanaged(iidm.Property).initCapacity(self.gpa, 2);
+                properties.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = mapping.cim_type });
+                properties.appendAssumeCapacity(.{ .name = "CGMES.normalOpen", .value = open_str });
 
                 try voltage_level.node_breaker_topology.switches.append(self.gpa, .{
                     .id = id,
@@ -1482,33 +1484,33 @@ pub const Converter = struct {
                 const selected_op_lims1: ?[]const u8 = if (op_lims1.items.len > 0) op_lims1.items[0].id else null;
                 const selected_op_lims2: ?[]const u8 = if (op_lims2.items.len > 0) op_lims2.items[0].id else null;
 
-                var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
+                var aliases = try std.ArrayListUnmanaged(iidm.Alias).initCapacity(self.gpa, 6);
                 // PhaseTapChanger1
                 if (phase_tap_changer_map.get(end1.id)) |ptc| {
                     const ptc_id = try ptc.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(ptc.id);
-                    try aliases.append(self.gpa, .{ .type = "CGMES.PhaseTapChanger1", .content = ptc_id });
+                    aliases.appendAssumeCapacity(.{ .type = "CGMES.PhaseTapChanger1", .content = ptc_id });
                 }
                 // Terminal1
                 if (self.model.getObjectById(terminal1_id)) |t1| {
                     const t1_mrid = try t1.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(t1.id);
-                    try aliases.append(self.gpa, .{ .type = "CGMES.Terminal1", .content = t1_mrid });
+                    aliases.appendAssumeCapacity(.{ .type = "CGMES.Terminal1", .content = t1_mrid });
                 }
                 // Terminal2
                 if (self.model.getObjectById(terminal2_id)) |t2| {
                     const t2_mrid = try t2.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(t2.id);
-                    try aliases.append(self.gpa, .{ .type = "CGMES.Terminal2", .content = t2_mrid });
+                    aliases.appendAssumeCapacity(.{ .type = "CGMES.Terminal2", .content = t2_mrid });
                 }
                 // RatioTapChanger1
                 if (ratio_tap_changer_map.get(end1.id)) |rtc| {
                     const rtc_id = try rtc.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(rtc.id);
-                    try aliases.append(self.gpa, .{ .type = "CGMES.RatioTapChanger1", .content = rtc_id });
+                    aliases.appendAssumeCapacity(.{ .type = "CGMES.RatioTapChanger1", .content = rtc_id });
                 }
                 // TransformerEnd2
                 const end2_mrid = end2_props[5] orelse topology.stripUnderscore(end2.id);
-                try aliases.append(self.gpa, .{ .type = "CGMES.TransformerEnd2", .content = end2_mrid });
+                aliases.appendAssumeCapacity(.{ .type = "CGMES.TransformerEnd2", .content = end2_mrid });
                 // TransformerEnd1
                 const end1_mrid = end1_props[6] orelse topology.stripUnderscore(end1.id);
-                try aliases.append(self.gpa, .{ .type = "CGMES.TransformerEnd1", .content = end1_mrid });
+                aliases.appendAssumeCapacity(.{ .type = "CGMES.TransformerEnd1", .content = end1_mrid });
 
                 try substation.two_winding_transformers.append(self.gpa, .{
                     .id = id,
@@ -1790,8 +1792,8 @@ pub const Converter = struct {
             const aliases = try self.buildTerminalAliases(line.id);
 
             // Build properties
-            var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
-            try properties.append(self.gpa, .{ .name = "CGMES.originalClass", .value = "ACLineSegment" });
+            var properties = try std.ArrayListUnmanaged(iidm.Property).initCapacity(self.gpa, 1);
+            properties.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = "ACLineSegment" });
 
             // Build operational limits from terminal references
             var op_lims1: std.ArrayListUnmanaged(iidm.OperationalLimitsGroup) = .empty;
@@ -1856,7 +1858,7 @@ pub const Converter = struct {
             var converter_station_1: ?[]const u8 = null;
             var converter_station_2: ?[]const u8 = null;
             var nominal_v: f64 = 0.0;
-            var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
+            var aliases = try std.ArrayListUnmanaged(iidm.Alias).initCapacity(self.gpa, 2);
 
             // Find DCTerminals connected to this DC line
             for (dc_terminals) |dc_terminal| {
@@ -1908,19 +1910,19 @@ pub const Converter = struct {
                 }
 
                 if (seq == 2) {
-                    try aliases.append(self.gpa, .{ .type = "CGMES.DCTerminal2", .content = terminal_mrid });
+                    aliases.appendAssumeCapacity(.{ .type = "CGMES.DCTerminal2", .content = terminal_mrid });
                 } else {
-                    try aliases.append(self.gpa, .{ .type = "CGMES.DCTerminal1", .content = terminal_mrid });
+                    aliases.appendAssumeCapacity(.{ .type = "CGMES.DCTerminal1", .content = terminal_mrid });
                 }
             }
 
             // Reorder aliases: DCTerminal2 first
-            var reordered: std.ArrayListUnmanaged(iidm.Alias) = .empty;
+            var reordered = try std.ArrayListUnmanaged(iidm.Alias).initCapacity(self.gpa, aliases.items.len);
             for (aliases.items) |a| {
-                if (std.mem.eql(u8, a.type, "CGMES.DCTerminal2")) try reordered.append(self.gpa, a);
+                if (std.mem.eql(u8, a.type, "CGMES.DCTerminal2")) reordered.appendAssumeCapacity(a);
             }
             for (aliases.items) |a| {
-                if (std.mem.eql(u8, a.type, "CGMES.DCTerminal1")) try reordered.append(self.gpa, a);
+                if (std.mem.eql(u8, a.type, "CGMES.DCTerminal1")) reordered.appendAssumeCapacity(a);
             }
             aliases.deinit(self.gpa);
 
