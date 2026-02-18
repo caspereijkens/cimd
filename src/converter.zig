@@ -148,7 +148,7 @@ pub const Converter = struct {
             const set_id = try op_lim_set.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(op_lim_set.id);
             self.terminal_to_limit_set_map.putAssumeCapacity(terminal_id, set_id);
 
-            // Group OperationalLimitSets by terminal ID 
+            // Group OperationalLimitSets by terminal ID
             const gop = try self.op_limit_sets_by_terminal.getOrPut(self.gpa, terminal_id);
             if (!gop.found_existing) gop.value_ptr.* = .empty;
             try gop.value_ptr.append(self.gpa, op_lim_set);
@@ -170,12 +170,12 @@ pub const Converter = struct {
         }
 
         // OperationalLimitSet ID → permanent limit value (PATL only)
-        // Also group CurrentLimits by OperationalLimitSet ID 
+        // Also group CurrentLimits by OperationalLimitSet ID
         const current_limits = self.model.getObjectsByType("CurrentLimit");
 
         try self.limit_set_to_value_map.ensureTotalCapacity(self.gpa, @intCast(current_limits.len));
         for (current_limits) |current_limit| {
-            // Group by OperationalLimitSet 
+            // Group by OperationalLimitSet
             const set_ref = try current_limit.getReference("OperationalLimit.OperationalLimitSet") orelse continue;
             const set_id = topology.stripHash(set_ref);
 
@@ -335,6 +335,24 @@ pub const Converter = struct {
         const container = self.model.getObjectById(container_id) orelse return error.MalformedXML;
         print.stderr("Container of node '{s}' with id '{s}' (type: {s}) cannot be resolved to a VoltageLevel.", .{ node.id, container_id, container.type_name });
         return error.MalformedXML;
+    }
+
+    /// Try to resolve an Equipment's container directly to a VoltageLevel (VL or Bay→VL).
+    /// Returns null if Equipment.EquipmentContainer is missing or points to something else (e.g. Line).
+    fn resolveEquipmentContainerToVoltageLevel(self: *Converter, equipment: *const cim_model.CimObject) !?[]const u8 {
+        const container_ref = try equipment.getReference("Equipment.EquipmentContainer") orelse return null;
+        const container_id = topology.stripHash(container_ref);
+
+        if (self.voltage_level_map.contains(container_id)) {
+            return container_id;
+        }
+
+        const container = self.model.getObjectById(container_id) orelse return null;
+        if (try container.getReference("Bay.VoltageLevel")) |voltage_level_ref| {
+            return topology.stripHash(voltage_level_ref);
+        }
+
+        return null;
     }
 
     /// Try to resolve a single ConnectivityNode ID to its VoltageLevel directly (VL or Bay container).
@@ -581,8 +599,17 @@ pub const Converter = struct {
 
     fn resolveEquipmentLocation(self: *Converter, network: *iidm.Network, equipment_id: []const u8) !EquipmentLocation {
         const connectivity_node_id = self.topology_resolver.getEquipmentNode(equipment_id, 1) orelse return error.MalformedXML;
-        const connectivity_node = self.model.getObjectById(connectivity_node_id) orelse return error.MalformedXML;
-        const voltage_level_id = try self.getVoltageLevelFromNode(connectivity_node);
+
+        // Try direct Equipment.EquipmentContainer → VoltageLevel first
+        const equipment = self.model.getObjectById(equipment_id) orelse return error.MalformedXML;
+        const voltage_level_id = if (try self.resolveEquipmentContainerToVoltageLevel(equipment)) |vl_id|
+            vl_id
+        else blk: {
+            // Fall back to terminal → ConnectivityNode → VoltageLevel resolution
+            const connectivity_node = self.model.getObjectById(connectivity_node_id) orelse return error.MalformedXML;
+            break :blk try self.getVoltageLevelFromNode(connectivity_node);
+        };
+
         const voltage_level = self.getVoltageLevel(network, voltage_level_id) orelse return error.MalformedXML;
         return .{
             .connectivity_node_id = connectivity_node_id,
@@ -631,7 +658,6 @@ pub const Converter = struct {
 
         const node_index = try self.getNodeIndex(location.voltage_level_id, location.connectivity_node_id);
 
-        // Build aliases from terminal ID
         const aliases = try self.buildTerminalAliases(load.id);
 
         // Build properties (pFixed/qFixed only for EnergyConsumer, not EnergySource)
@@ -801,8 +827,8 @@ pub const Converter = struct {
 
             const node_index = try self.getNodeIndex(location.voltage_level_id, location.connectivity_node_id);
 
-            // Build aliases: AC terminal first
             var aliases = try self.buildTerminalAliases(vs_converter.id);
+
             // DC terminals (DCTerminal2 first, then DCTerminal1)
             for (dc_terminals) |dc_terminal| {
                 const converter_ref = try dc_terminal.getReference("ACDCConverterDCTerminal.DCConductingEquipment") orelse continue;
@@ -1030,26 +1056,29 @@ pub const Converter = struct {
 
             for (switches) |sw| {
                 const id = try sw.getProperty("IdentifiedObject.mRID") orelse topology.stripUnderscore(sw.id);
+                const name = try sw.getProperty("IdentifiedObject.name");
                 const node1_id = self.topology_resolver.getEquipmentNode(sw.id, 1) orelse return error.MalformedXML;
                 const node2_id = self.topology_resolver.getEquipmentNode(sw.id, 2) orelse return error.MalformedXML;
 
-                const connectivity_node1 = self.model.getObjectById(node1_id) orelse return error.MalformedXML;
-                const voltage_level1_id = try self.getVoltageLevelFromNode(connectivity_node1);
+                // Try direct Equipment.EquipmentContainer → VoltageLevel first
+                const voltage_level_id = if (try self.resolveEquipmentContainerToVoltageLevel(&sw)) |vl_id|
+                    vl_id
+                else blk: {
+                    // Fall back to terminal → ConnectivityNode → VoltageLevel resolution
+                    const connectivity_node1 = self.model.getObjectById(node1_id) orelse return error.MalformedXML;
+                    const voltage_level1_id = try self.getVoltageLevelFromNode(connectivity_node1);
 
-                const connectivity_node2 = self.model.getObjectById(node2_id) orelse return error.MalformedXML;
-                const voltage_level2_id = try self.getVoltageLevelFromNode(connectivity_node2);
+                    const connectivity_node2 = self.model.getObjectById(node2_id) orelse return error.MalformedXML;
+                    const voltage_level2_id = try self.getVoltageLevelFromNode(connectivity_node2);
 
-                const name = try sw.getProperty("IdentifiedObject.name");
-                if (!std.mem.eql(u8, voltage_level1_id, voltage_level2_id)) {
-                    const voltage_level1 = self.getVoltageLevel(network, voltage_level1_id) orelse return error.MalformedXML;
-                    const voltage_level2 = self.getVoltageLevel(network, voltage_level2_id) orelse return error.MalformedXML;
-                    // print.stderr("Error: conversion failed for {s} '{s}' because of a voltage level mismatch: '{s}' != '{s}'\n", .{ mapping.cim_type, name.?, voltage_level1.name.?, voltage_level2.name.? });
-                    try print.stdout("Error: conversion failed for {s} '{s}' because of a voltage level mismatch: '{s}' != '{s}'\n", .{ mapping.cim_type, name.?, voltage_level1.name.?, voltage_level2.name.? });
-                    continue;
-                    // return error.MalformedXML;
-                }
-
-                const voltage_level_id = voltage_level1_id;
+                    if (!std.mem.eql(u8, voltage_level1_id, voltage_level2_id)) {
+                        const voltage_level1 = self.getVoltageLevel(network, voltage_level1_id) orelse return error.MalformedXML;
+                        const voltage_level2 = self.getVoltageLevel(network, voltage_level2_id) orelse return error.MalformedXML;
+                        try print.stdout("Error: conversion failed for {s} '{s}' because of a voltage level mismatch: '{s}' != '{s}'\n", .{ mapping.cim_type, name.?, voltage_level1.name.?, voltage_level2.name.? });
+                        return error.MalformedXML;
+                    }
+                    break :blk voltage_level1_id;
+                };
                 const voltage_level = self.getVoltageLevel(network, voltage_level_id) orelse return error.MalformedXML;
 
                 // Switch.normalOpen is in EQ profile Switch.open is typically in SSH profile,
@@ -1059,7 +1088,6 @@ pub const Converter = struct {
                 const node1_index = try self.getNodeIndex(voltage_level_id, node1_id);
                 const node2_index = try self.getNodeIndex(voltage_level_id, node2_id);
 
-                // Build aliases from terminal IDs (Terminal2 first, then Terminal1)
                 const aliases = try self.buildTerminalAliases(sw.id);
 
                 var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
@@ -1582,7 +1610,6 @@ pub const Converter = struct {
                 }
             }
 
-            // Build aliases from terminal IDs
             const aliases = try self.buildTerminalAliases(line.id);
 
             // Build properties
