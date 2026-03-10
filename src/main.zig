@@ -5,10 +5,7 @@ const build_options = @import("build_options");
 const print = @import("print.zig");
 const assert = std.debug.assert;
 const zip = @import("zip.zig");
-const tag_index = @import("tag_index.zig");
 const cim_model = @import("cim_model.zig");
-const topology = @import("topology.zig");
-const converter = @import("converter.zig");
 
 pub fn main() !void {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -104,70 +101,11 @@ fn readPath(gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
 }
 
 fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[]const u8, output_path: ?[]const u8, verbose: bool) !void {
-    var total_timer = std.time.Timer.start() catch unreachable;
-
-    var stage_timer = std.time.Timer.start() catch unreachable;
-    var xml = try readPath(gpa, input_path);
-
-    if (eqbd_path) |path| {
-        const eqbd_xml = try readPath(gpa, path);
-        defer gpa.free(eqbd_xml);
-
-        const merged = try std.mem.concat(gpa, u8, &[_][]const u8{ xml, eqbd_xml });
-        gpa.free(xml);
-
-        xml = merged;
-    }
-    defer gpa.free(xml);
-    if (verbose) printTiming("Read files", stage_timer.read());
-
-    stage_timer.reset();
-    var model = try cim_model.CimModel.init(gpa, xml);
-    defer model.deinit(gpa);
-    if (verbose) printTiming("Build model", stage_timer.read());
-
-    stage_timer.reset();
-    var topo = try topology.TopologyResolver.init(gpa, &model);
-    defer topo.deinit();
-    if (verbose) printTiming("Build topology", stage_timer.read());
-
-    stage_timer.reset();
-    var conv = converter.Converter.init(gpa, &model, &topo, verbose);
-    var network = try conv.convert();
-    defer network.deinit(gpa);
-    if (verbose) printTiming("Convert", stage_timer.read());
-
-    // Create output file or use stdout
-    const cwd = std.fs.cwd();
-
-    const output_file = if (output_path) |path|
-        try cwd.createFile(path, .{})
-    else
-        std.fs.File.stdout();
-    defer if (output_path != null) output_file.close();
-
-    // Create File.Writer with buffer, then use its .interface
-    var write_buffer: [8192]u8 = undefined;
-    var file_writer = std.fs.File.Writer.init(output_file, &write_buffer);
-
-    stage_timer.reset();
-    try std.json.Stringify.value(network, .{}, &file_writer.interface);
-    try file_writer.interface.writeByte('\n');
-    try file_writer.interface.flush();
-    if (verbose) printTiming("JSON serialize", stage_timer.read());
-
-    if (verbose) printTiming("Total", total_timer.read());
-}
-
-fn printTiming(label: []const u8, nanoseconds: u64) void {
-    const milliseconds = @as(f64, @floatFromInt(nanoseconds)) / 1_000_000.0;
-    var buf: [256]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, "[verbose] {s}: {d:.1} ms\n", .{ label, milliseconds }) catch return;
-    _ = std.fs.File.stderr().write(msg) catch {};
-}
-
-fn command_not_implemented(comptime command_name: []const u8) !void {
-    try print.stdout("Command '{s}' - to be implemented\n", .{command_name});
+    _ = gpa;
+    _ = eqbd_path;
+    _ = output_path;
+    _ = verbose;
+    print.stderr("convert: not yet implemented (input: {s})", .{input_path});
 }
 
 /// Read file into memory (used for unzipped usecase)

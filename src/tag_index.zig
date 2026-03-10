@@ -9,6 +9,7 @@ else
     32;
 
 const Chunk = @Vector(VECTOR_LEN, u8);
+const Mask = std.meta.Int(.unsigned, VECTOR_LEN);
 
 /// Find all positions of a specific byte in the input using SIMD
 /// Returns an ArrayList of positions where the byte was found
@@ -43,7 +44,7 @@ pub fn findByteSIMD(
             const offset = i + j * VECTOR_LEN;
             const chunk: Chunk = haystack[offset..][0..VECTOR_LEN].*;
             const matches: @Vector(VECTOR_LEN, bool) = chunk == all_needles;
-            const mask: u32 = @bitCast(matches);
+            const mask: Mask = @bitCast(matches);
 
             var m = mask;
             while (m != 0) {
@@ -59,7 +60,7 @@ pub fn findByteSIMD(
     while (i + VECTOR_LEN <= haystack.len) : (i += VECTOR_LEN) {
         const chunk: Chunk = haystack[i..][0..VECTOR_LEN].*;
         const matches: @Vector(VECTOR_LEN, bool) = chunk == all_needles;
-        const mask: u32 = @bitCast(matches);
+        const mask: Mask = @bitCast(matches);
 
         var m = mask;
         while (m != 0) {
@@ -149,7 +150,7 @@ pub fn findPattern(
             const offset = i + j * VECTOR_LEN;
             const chunk: Chunk = haystack[offset..][0..VECTOR_LEN].*;
             const matches: @Vector(VECTOR_LEN, bool) = chunk == all_first_bytes;
-            const mask: u32 = @bitCast(matches);
+            const mask: Mask = @bitCast(matches);
 
             var m = mask;
             while (m != 0) {
@@ -169,7 +170,7 @@ pub fn findPattern(
     while (i + VECTOR_LEN <= haystack.len) : (i += VECTOR_LEN) {
         const chunk: Chunk = haystack[i..][0..VECTOR_LEN].*;
         const matches: @Vector(VECTOR_LEN, bool) = chunk == all_first_bytes;
-        const mask: u32 = @bitCast(matches);
+        const mask: Mask = @bitCast(matches);
 
         var m = mask;
         while (m != 0) {

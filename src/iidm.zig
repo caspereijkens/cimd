@@ -83,6 +83,18 @@ fn writeFloatAuto(jws: anytype, value: f64) !void {
 /// Format a float string to ensure it has a decimal point (e.g., "100" -> "100.0")
 /// Returns the original string if it already has a decimal, otherwise allocates a new one.
 pub fn formatFloatStr(allocator: std.mem.Allocator, str: []const u8) ![]const u8 {
+    // If string is in scientific notation (contains 'e'/'E'), parse and reformat as
+    // fixed-point decimal to match Java's Double.toString behaviour (e.g. "1250000.0").
+    const has_exp = std.mem.indexOfAny(u8, str, "eE") != null;
+    if (has_exp) {
+        const value = try std.fmt.parseFloat(f64, str);
+        const formatted = try std.fmt.allocPrint(allocator, "{d}", .{value});
+        if (std.mem.indexOfScalar(u8, formatted, '.') == null) {
+            defer allocator.free(formatted);
+            return std.fmt.allocPrint(allocator, "{s}.0", .{formatted});
+        }
+        return formatted;
+    }
     // Check if it already has a decimal point
     if (std.mem.indexOfScalar(u8, str, '.') != null) {
         return str;
@@ -122,11 +134,53 @@ pub const LoadType = enum {
     }
 };
 
+pub const ExponentialModel = struct {
+    np: f64,
+    nq: f64,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("np");
+        try writeFloat(jws, self.np);
+        try jws.objectField("nq");
+        try writeFloat(jws, self.nq);
+        try jws.endObject();
+    }
+};
+
+pub const ZipModel = struct {
+    c0p: f64,
+    c1p: f64,
+    c2p: f64,
+    c0q: f64,
+    c1q: f64,
+    c2q: f64,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("c0p");
+        try writeFloat(jws, self.c0p);
+        try jws.objectField("c1p");
+        try writeFloat(jws, self.c1p);
+        try jws.objectField("c2p");
+        try writeFloat(jws, self.c2p);
+        try jws.objectField("c0q");
+        try writeFloat(jws, self.c0q);
+        try jws.objectField("c1q");
+        try writeFloat(jws, self.c1q);
+        try jws.objectField("c2q");
+        try writeFloat(jws, self.c2q);
+        try jws.endObject();
+    }
+};
+
 pub const Load = struct {
     id: []const u8,
     name: ?[]const u8,
     load_type: LoadType,
     node: u32,
+    exponential_model: ?ExponentialModel = null,
+    zip_model: ?ZipModel = null,
     aliases: std.ArrayListUnmanaged(Alias),
     properties: std.ArrayListUnmanaged(Property),
 
@@ -147,6 +201,14 @@ pub const Load = struct {
         if (self.properties.items.len > 0) {
             try jws.objectField("properties");
             try jws.write(self.properties.items);
+        }
+        if (self.exponential_model) |em| {
+            try jws.objectField("exponentialModel");
+            try em.jsonStringify(jws);
+        }
+        if (self.zip_model) |zm| {
+            try jws.objectField("zipModel");
+            try zm.jsonStringify(jws);
         }
         try jws.endObject();
     }
@@ -179,6 +241,7 @@ pub const Shunt = struct {
     name: ?[]const u8,
     section_count: u32,
     voltage_regulator_on: bool,
+    regulating_terminal: ?[]const u8 = null,
     node: u32,
     shunt_linear_model: ShuntLinearModel,
     aliases: std.ArrayListUnmanaged(Alias),
@@ -203,6 +266,13 @@ pub const Shunt = struct {
         if (self.properties.items.len > 0) {
             try jws.objectField("properties");
             try jws.write(self.properties.items);
+        }
+        if (self.regulating_terminal) |rt| {
+            try jws.objectField("regulatingTerminal");
+            try jws.beginObject();
+            try jws.objectField("id");
+            try jws.write(rt);
+            try jws.endObject();
         }
         try jws.objectField("shuntLinearModel");
         try jws.write(self.shunt_linear_model);
@@ -440,7 +510,9 @@ pub const Generator = struct {
     min_p: ?f64,
     max_p: ?f64,
     rated_s: ?f64,
+    is_condenser: bool = false,
     voltage_regulator_on: bool,
+    regulating_terminal: ?[]const u8 = null,
     node: u32,
     reactive_capability_curve_points: std.ArrayListUnmanaged(ReactiveCapabilityCurvePoint),
     min_max_reactive_limits: ?MinMaxReactiveLimits = null,
@@ -463,8 +535,19 @@ pub const Generator = struct {
             try jws.objectField("ratedS");
             try writeFloat(jws, rs);
         }
+        if (self.is_condenser) {
+            try jws.objectField("isCondenser");
+            try jws.write(true);
+        }
         try jws.objectField("voltageRegulatorOn");
         try jws.write(self.voltage_regulator_on);
+        if (self.regulating_terminal) |rt| {
+            try jws.objectField("regulatingTerminal");
+            try jws.beginObject();
+            try jws.objectField("id");
+            try jws.write(rt);
+            try jws.endObject();
+        }
         try jws.objectField("node");
         try jws.write(self.node);
         if (self.aliases.items.len > 0) {
@@ -646,6 +729,7 @@ pub const VoltageLevel = struct {
     nominal_voltage: ?f64,
     low_voltage_limit: ?f64,
     high_voltage_limit: ?f64,
+    aliases: std.ArrayListUnmanaged(Alias),
     properties: std.ArrayListUnmanaged(Property),
     node_breaker_topology: NodeBreakerTopology,
     generators: std.ArrayListUnmanaged(Generator),
@@ -669,6 +753,10 @@ pub const VoltageLevel = struct {
         try writeOptionalFloat(jws, self.high_voltage_limit);
         try jws.objectField("topologyKind");
         try jws.write("NODE_BREAKER");
+        if (self.aliases.items.len > 0) {
+            try jws.objectField("aliases");
+            try jws.write(self.aliases.items);
+        }
         if (self.properties.items.len > 0) {
             try jws.objectField("properties");
             try jws.write(self.properties.items);
@@ -728,7 +816,61 @@ pub const VoltageLevel = struct {
         self.static_var_compensators.deinit(allocator);
         self.vs_converter_stations.deinit(allocator);
         self.lcc_converter_stations.deinit(allocator);
+        self.aliases.deinit(allocator);
         self.properties.deinit(allocator);
+    }
+};
+
+/// A fictitious VoltageLevel created for boundary ConnectivityNodes.
+/// In CGMES, boundary terminals connect to CNs whose container is a Line,
+/// not a VoltageLevel. pypowsybl creates a synthetic VL with id "<CN_id>_VL".
+pub const FictitiousVoltageLevel = struct {
+    id: []const u8,
+    name: ?[]const u8,
+    nominal_v: ?f64,
+    line_container_id: []const u8,
+    internal_connections: std.ArrayListUnmanaged(InternalConnection) = .empty,
+    generators: std.ArrayListUnmanaged(Generator) = .empty,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("id");
+        try jws.write(self.id);
+        try jws.objectField("name");
+        try jws.write(self.name);
+        try jws.objectField("fictitious");
+        try jws.write(true);
+        try jws.objectField("nominalV");
+        try writeOptionalFloat(jws, self.nominal_v);
+        try jws.objectField("topologyKind");
+        try jws.write("NODE_BREAKER");
+        try jws.objectField("properties");
+        try jws.beginArray();
+        try jws.beginObject();
+        try jws.objectField("name");
+        try jws.write("CGMES.LineContainerId");
+        try jws.objectField("value");
+        try jws.write(self.line_container_id);
+        try jws.endObject();
+        try jws.endArray();
+        try jws.objectField("nodeBreakerTopology");
+        try jws.beginObject();
+        if (self.internal_connections.items.len > 0) {
+            try jws.objectField("internalConnections");
+            try jws.write(self.internal_connections.items);
+        }
+        try jws.endObject();
+        if (self.generators.items.len > 0) {
+            try jws.objectField("generators");
+            try jws.write(self.generators.items);
+        }
+        try jws.endObject();
+    }
+
+    pub fn deinit(self: *FictitiousVoltageLevel, allocator: std.mem.Allocator) void {
+        self.internal_connections.deinit(allocator);
+        for (self.generators.items) |*gen| gen.deinit(allocator);
+        self.generators.deinit(allocator);
     }
 };
 
@@ -791,15 +933,17 @@ pub const RatioTapChanger = struct {
     low_tap_position: i32,
     tap_position: i32,
     load_tap_changing_capabilities: bool,
-    regulating: bool,
+    regulating: ?bool,
     regulation_mode: ?[]const u8,
     terminal_ref: ?TerminalRef,
     steps: std.ArrayListUnmanaged(RatioTapChangerStep),
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
         try jws.beginObject();
-        try jws.objectField("regulating");
-        try jws.write(self.regulating);
+        if (self.regulating) |reg| {
+            try jws.objectField("regulating");
+            try jws.write(reg);
+        }
         try jws.objectField("lowTapPosition");
         try jws.write(self.low_tap_position);
         try jws.objectField("tapPosition");
@@ -833,14 +977,16 @@ pub const PhaseTapChanger = struct {
     low_tap_position: i32,
     tap_position: i32,
     load_tap_changing_capabilities: bool,
-    regulating: bool,
+    regulating: ?bool,
     regulation_mode: ?[]const u8,
     steps: std.ArrayListUnmanaged(PhaseTapChangerStep),
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
         try jws.beginObject();
-        try jws.objectField("regulating");
-        try jws.write(self.regulating);
+        if (self.regulating) |reg| {
+            try jws.objectField("regulating");
+            try jws.write(reg);
+        }
         try jws.objectField("lowTapPosition");
         try jws.write(self.low_tap_position);
         try jws.objectField("tapPosition");
@@ -1027,24 +1173,150 @@ pub const TwoWindingsTransformer = struct {
 pub const ThreeWindingsTransformer = struct {
     id: []const u8,
     name: ?[]const u8,
-    node1: ?[]const u8,
-    node2: ?[]const u8,
-    node3: ?[]const u8,
-    rated_u1: f64,
-    rated_u2: f64,
-    rated_u3: f64,
+    rated_u0: f64,
+    voltage_level_id1: []const u8,
+    node1: u32,
+    voltage_level_id2: []const u8,
+    node2: u32,
+    voltage_level_id3: []const u8,
+    node3: u32,
     r1: f64,
-    r2: f64,
-    r3: f64,
     x1: f64,
-    x2: f64,
-    x3: f64,
     g1: f64,
-    g2: f64,
-    g3: f64,
     b1: f64,
+    rated_u1: f64,
+    rated_s1: ?f64,
+    r2: f64,
+    x2: f64,
+    g2: f64,
     b2: f64,
+    rated_u2: f64,
+    rated_s2: ?f64,
+    r3: f64,
+    x3: f64,
+    g3: f64,
     b3: f64,
+    rated_u3: f64,
+    rated_s3: ?f64,
+    selected_op_lims_group_id1: ?[]const u8,
+    selected_op_lims_group_id2: ?[]const u8,
+    selected_op_lims_group_id3: ?[]const u8,
+    aliases: std.ArrayListUnmanaged(Alias),
+    ratio_tap_changer1: ?RatioTapChanger,
+    ratio_tap_changer2: ?RatioTapChanger,
+    ratio_tap_changer3: ?RatioTapChanger,
+    op_lims_groups1: std.ArrayListUnmanaged(OperationalLimitsGroup),
+    op_lims_groups2: std.ArrayListUnmanaged(OperationalLimitsGroup),
+    op_lims_groups3: std.ArrayListUnmanaged(OperationalLimitsGroup),
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("id");
+        try jws.write(self.id);
+        try jws.objectField("name");
+        try jws.write(self.name);
+        try jws.objectField("ratedU0");
+        try writeFloat(jws, self.rated_u0);
+        try jws.objectField("voltageLevelId1");
+        try jws.write(self.voltage_level_id1);
+        try jws.objectField("node1");
+        try jws.write(self.node1);
+        try jws.objectField("voltageLevelId2");
+        try jws.write(self.voltage_level_id2);
+        try jws.objectField("node2");
+        try jws.write(self.node2);
+        try jws.objectField("voltageLevelId3");
+        try jws.write(self.voltage_level_id3);
+        try jws.objectField("node3");
+        try jws.write(self.node3);
+        try jws.objectField("r1");
+        try writeFloat(jws, self.r1);
+        try jws.objectField("x1");
+        try writeFloat(jws, self.x1);
+        try jws.objectField("g1");
+        try writeFloat(jws, self.g1);
+        try jws.objectField("b1");
+        try writeFloat(jws, self.b1);
+        try jws.objectField("ratedU1");
+        try writeFloat(jws, self.rated_u1);
+        if (self.rated_s1) |rs| {
+            try jws.objectField("ratedS1");
+            try writeFloat(jws, rs);
+        }
+        try jws.objectField("r2");
+        try writeFloat(jws, self.r2);
+        try jws.objectField("x2");
+        try writeFloat(jws, self.x2);
+        try jws.objectField("g2");
+        try writeFloat(jws, self.g2);
+        try jws.objectField("b2");
+        try writeFloat(jws, self.b2);
+        try jws.objectField("ratedU2");
+        try writeFloat(jws, self.rated_u2);
+        if (self.rated_s2) |rs| {
+            try jws.objectField("ratedS2");
+            try writeFloat(jws, rs);
+        }
+        try jws.objectField("r3");
+        try writeFloat(jws, self.r3);
+        try jws.objectField("x3");
+        try writeFloat(jws, self.x3);
+        try jws.objectField("g3");
+        try writeFloat(jws, self.g3);
+        try jws.objectField("b3");
+        try writeFloat(jws, self.b3);
+        try jws.objectField("ratedU3");
+        try writeFloat(jws, self.rated_u3);
+        if (self.rated_s3) |rs| {
+            try jws.objectField("ratedS3");
+            try writeFloat(jws, rs);
+        }
+        if (self.selected_op_lims_group_id1) |sid| {
+            try jws.objectField("selectedOperationalLimitsGroupId1");
+            try jws.write(sid);
+        }
+        if (self.selected_op_lims_group_id2) |sid| {
+            try jws.objectField("selectedOperationalLimitsGroupId2");
+            try jws.write(sid);
+        }
+        if (self.selected_op_lims_group_id3) |sid| {
+            try jws.objectField("selectedOperationalLimitsGroupId3");
+            try jws.write(sid);
+        }
+        if (self.aliases.items.len > 0) {
+            try jws.objectField("aliases");
+            try jws.write(self.aliases.items);
+        }
+        if (self.ratio_tap_changer1) |tc| {
+            try jws.objectField("ratioTapChanger1");
+            try jws.write(tc);
+        }
+        if (self.ratio_tap_changer2) |tc| {
+            try jws.objectField("ratioTapChanger2");
+            try jws.write(tc);
+        }
+        if (self.ratio_tap_changer3) |tc| {
+            try jws.objectField("ratioTapChanger3");
+            try jws.write(tc);
+        }
+        try writeOpLimsGroups(jws, "operationalLimitsGroups1", self.op_lims_groups1);
+        try writeOpLimsGroups(jws, "operationalLimitsGroups2", self.op_lims_groups2);
+        try writeOpLimsGroups(jws, "operationalLimitsGroups3", self.op_lims_groups3);
+        try jws.endObject();
+    }
+
+    pub fn deinit(self: *ThreeWindingsTransformer, allocator: std.mem.Allocator) void {
+        if (self.ratio_tap_changer1) |*rtc| rtc.deinit(allocator);
+        if (self.ratio_tap_changer2) |*rtc| rtc.deinit(allocator);
+        if (self.ratio_tap_changer3) |*rtc| rtc.deinit(allocator);
+        for (self.op_lims_groups1.items) |*olg| olg.deinit(allocator);
+        self.op_lims_groups1.deinit(allocator);
+        for (self.op_lims_groups2.items) |*olg| olg.deinit(allocator);
+        self.op_lims_groups2.deinit(allocator);
+        for (self.op_lims_groups3.items) |*olg| olg.deinit(allocator);
+        self.op_lims_groups3.deinit(allocator);
+        self.aliases.deinit(allocator);
+    }
 };
 
 // Substation contains voltage levels and transformers
@@ -1059,6 +1331,7 @@ pub const Substation = struct {
     name: ?[]const u8,
     country: ?[]const u8,
     geo_tags: std.ArrayListUnmanaged([]const u8),
+    aliases: std.ArrayListUnmanaged(Alias),
     properties: std.ArrayListUnmanaged(Property),
     voltage_levels: std.ArrayListUnmanaged(VoltageLevel),
     two_winding_transformers: std.ArrayListUnmanaged(TwoWindingsTransformer),
@@ -1076,6 +1349,10 @@ pub const Substation = struct {
         }
         try jws.objectField("geographicalTags");
         try jws.write(self.geo_tags.items);
+        if (self.aliases.items.len > 0) {
+            try jws.objectField("aliases");
+            try jws.write(self.aliases.items);
+        }
         if (self.properties.items.len > 0) {
             try jws.objectField("properties");
             try jws.write(self.properties.items);
@@ -1103,7 +1380,11 @@ pub const Substation = struct {
             twt.deinit(allocator);
         }
         self.two_winding_transformers.deinit(allocator);
+        for (self.three_winding_transformers.items) |*twt| {
+            twt.deinit(allocator);
+        }
         self.three_winding_transformers.deinit(allocator);
+        self.aliases.deinit(allocator);
         self.properties.deinit(allocator);
         self.geo_tags.deinit(allocator);
     }
@@ -1250,7 +1531,7 @@ pub const HvdcLine = struct {
 pub const TapChangerInfo = struct {
     id: []const u8,
     tap_changer_type: ?[]const u8 = null, // e.g., "PhaseTapChangerTabular"
-    step: u32,
+    step: i32,
     control_id: ?[]const u8 = null,
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
@@ -1400,6 +1681,37 @@ pub const CimCharacteristics = struct {
     }
 };
 
+pub const LoadDetail = struct {
+    fixed_active_power: f64,
+    fixed_reactive_power: f64,
+    variable_active_power: f64,
+    variable_reactive_power: f64,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("fixedActivePower");
+        try writeFloat(jws, self.fixed_active_power);
+        try jws.objectField("fixedReactivePower");
+        try writeFloat(jws, self.fixed_reactive_power);
+        try jws.objectField("variableActivePower");
+        try writeFloat(jws, self.variable_active_power);
+        try jws.objectField("variableReactivePower");
+        try writeFloat(jws, self.variable_reactive_power);
+        try jws.endObject();
+    }
+};
+
+pub const CoordinatedReactiveControl = struct {
+    q_percent: f64,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("qPercent");
+        try writeFloat(jws, self.q_percent);
+        try jws.endObject();
+    }
+};
+
 pub const Extension = struct {
     id: []const u8,
     cgmes_tap_changers: ?CgmesTapChangers = null,
@@ -1407,6 +1719,8 @@ pub const Extension = struct {
     cgmes_metadata_models: ?CgmesMetadataModels = null,
     base_voltage_mapping: ?BaseVoltageMapping = null,
     cim_characteristics: ?CimCharacteristics = null,
+    detail: ?LoadDetail = null,
+    coordinated_reactive_control: ?CoordinatedReactiveControl = null,
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
         try jws.beginObject();
@@ -1432,6 +1746,14 @@ pub const Extension = struct {
             try jws.objectField("cimCharacteristics");
             try c.jsonStringify(jws);
         }
+        if (self.detail) |d| {
+            try jws.objectField("detail");
+            try d.jsonStringify(jws);
+        }
+        if (self.coordinated_reactive_control) |crc| {
+            try jws.objectField("coordinatedReactiveControl");
+            try crc.jsonStringify(jws);
+        }
         try jws.endObject();
     }
 
@@ -1456,12 +1778,57 @@ pub const ExtensionVersion = struct {
     }
 };
 
+pub const AreaBoundary = struct {
+    id: []const u8,
+    side: []const u8, // "ONE" or "TWO"
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("ac");
+        try jws.write(true);
+        try jws.objectField("type");
+        try jws.write("terminalRef");
+        try jws.objectField("id");
+        try jws.write(self.id);
+        try jws.objectField("side");
+        try jws.write(self.side);
+        try jws.endObject();
+    }
+};
+
+pub const Area = struct {
+    id: []const u8,
+    name: []const u8,
+    area_type: []const u8,
+    boundaries: std.ArrayListUnmanaged(AreaBoundary) = .empty,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("id");
+        try jws.write(self.id);
+        try jws.objectField("name");
+        try jws.write(self.name);
+        try jws.objectField("areaType");
+        try jws.write(self.area_type);
+        try jws.objectField("areaBoundaries");
+        try jws.write(self.boundaries.items);
+        try jws.endObject();
+    }
+
+    pub fn deinit(self: *Area, allocator: std.mem.Allocator) void {
+        self.boundaries.deinit(allocator);
+    }
+};
+
 pub const Network = struct {
     id: []const u8, // taken from FullModel rdf:about
     case_date: ?[]const u8, // taken from FullModel -> Model.scenarioTime
+    forecast_distance: u32 = 0, // minutes between Model.created and Model.scenarioTime
     substations: std.ArrayListUnmanaged(Substation),
+    fictitious_voltage_levels: std.ArrayListUnmanaged(FictitiousVoltageLevel) = .empty,
     lines: std.ArrayListUnmanaged(Line),
     hvdc_lines: std.ArrayListUnmanaged(HvdcLine),
+    areas: std.ArrayListUnmanaged(Area) = .empty,
     extensions: std.ArrayListUnmanaged(Extension),
     extension_versions: std.ArrayListUnmanaged(ExtensionVersion) = .empty,
 
@@ -1478,18 +1845,31 @@ pub const Network = struct {
         try jws.objectField("caseDate");
         try writeDateWithMillis(jws, self.case_date);
         try jws.objectField("forecastDistance");
-        try jws.write(0);
+        try jws.write(self.forecast_distance);
         try jws.objectField("sourceFormat");
         try jws.write("CGMES");
         try jws.objectField("minimumValidationLevel");
         try jws.write("EQUIPMENT");
         try jws.objectField("substations");
-        try jws.write(self.substations.items);
+        try jws.beginArray();
+        for (self.substations.items) |sub| {
+            if (sub.voltage_levels.items.len == 0) continue;
+            try jws.write(sub);
+        }
+        try jws.endArray();
+        if (self.fictitious_voltage_levels.items.len > 0) {
+            try jws.objectField("voltageLevels");
+            try jws.write(self.fictitious_voltage_levels.items);
+        }
         try jws.objectField("lines");
         try jws.write(self.lines.items);
         if (self.hvdc_lines.items.len > 0) {
             try jws.objectField("hvdcLines");
             try jws.write(self.hvdc_lines.items);
+        }
+        if (self.areas.items.len > 0) {
+            try jws.objectField("areas");
+            try jws.write(self.areas.items);
         }
         if (self.extensions.items.len > 0) {
             try jws.objectField("extensions");
@@ -1503,6 +1883,10 @@ pub const Network = struct {
             sub.deinit(allocator);
         }
         self.substations.deinit(allocator);
+        for (self.fictitious_voltage_levels.items) |*fvl| {
+            fvl.deinit(allocator);
+        }
+        self.fictitious_voltage_levels.deinit(allocator);
         for (self.lines.items) |*line| {
             line.deinit(allocator);
         }
@@ -1511,6 +1895,10 @@ pub const Network = struct {
             hvdc.deinit(allocator);
         }
         self.hvdc_lines.deinit(allocator);
+        for (self.areas.items) |*area| {
+            area.deinit(allocator);
+        }
+        self.areas.deinit(allocator);
         for (self.extensions.items) |*ext| {
             ext.deinit(allocator);
         }
