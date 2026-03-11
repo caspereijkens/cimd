@@ -6,6 +6,7 @@ const print = @import("print.zig");
 const assert = std.debug.assert;
 const zip = @import("zip.zig");
 const cim_model = @import("cim_model.zig");
+const cim_index = @import("cim_index.zig");
 
 pub fn main() !void {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -84,7 +85,7 @@ fn command_index(gpa: std.mem.Allocator, paths: []const []const u8) !void {
     }
 }
 
-fn readPath(gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
+fn read_path(gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
     const cwd = std.fs.cwd();
 
     const file = try cwd.openFile(file_path, .{});
@@ -101,11 +102,20 @@ fn readPath(gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
 }
 
 fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[]const u8, output_path: ?[]const u8, verbose: bool) !void {
-    _ = gpa;
     _ = eqbd_path;
     _ = output_path;
     _ = verbose;
-    print.stderr("convert: not yet implemented (input: {s})", .{input_path});
+
+    const xml = try read_path(gpa, input_path);
+
+    var model = try cim_model.CimModel.init(gpa, xml);
+    defer model.deinit(gpa);
+
+    const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
+    var index = try cim_index.CimIndex.build(gpa, &model, boundary_ids);
+    defer index.deinit(gpa);
+
+    try print.stdout("CimIndex built. limit_types: {d}\n", .{index.limit_types.count()});
 }
 
 /// Read file into memory (used for unzipped usecase)

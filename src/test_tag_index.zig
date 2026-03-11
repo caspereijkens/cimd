@@ -69,23 +69,23 @@ test "tag_index.findByteSIMD - handles large input spanning multiple SIMD vector
     try std.testing.expectEqual(@as(u32, 127), positions.items[3]);
 }
 
-test "tag_index.findByteSIMD - exactly one vector (32 bytes)" {
+test "tag_index.findByteSIMD - exactly one vector (VECTOR_LEN bytes)" {
     const gpa = std.testing.allocator;
 
     // Exactly tag_index.VECTOR_LEN bytes - tests remaining vectors loop, not unrolled
     var buffer: [tag_index.VECTOR_LEN]u8 = undefined;
     @memset(&buffer, 'x');
     buffer[0] = '<';
-    buffer[16] = '<';
-    buffer[31] = '<'; // Last position
+    buffer[tag_index.VECTOR_LEN / 2] = '<';
+    buffer[tag_index.VECTOR_LEN - 1] = '<'; // Last position
 
     var positions = try tag_index.findByteSIMD(gpa, &buffer, '<');
     defer positions.deinit(gpa);
 
     try std.testing.expectEqual(@as(usize, 3), positions.items.len);
     try std.testing.expectEqual(@as(u32, 0), positions.items[0]);
-    try std.testing.expectEqual(@as(u32, 16), positions.items[1]);
-    try std.testing.expectEqual(@as(u32, 31), positions.items[2]);
+    try std.testing.expectEqual(@as(u32, tag_index.VECTOR_LEN / 2), positions.items[1]);
+    try std.testing.expectEqual(@as(u32, tag_index.VECTOR_LEN - 1), positions.items[2]);
 }
 
 test "tag_index.findByteSIMD - two full vectors (64 bytes)" {
