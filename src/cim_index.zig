@@ -4,6 +4,13 @@ const tag_index = @import("tag_index.zig");
 const utils = @import("utils.zig");
 const cim_model = @import("cim_model.zig");
 
+const assert = std.debug.assert;
+
+const strip_hash = utils.strip_hash;
+const strip_underscore = utils.strip_underscore;
+
+const switch_types = [_][]const u8{ "Breaker", "Disconnector", "LoadBreakSwitch" };
+
 pub const CimObject = tag_index.CimObject;
 const CimModel = cim_model.CimModel;
 
@@ -85,11 +92,12 @@ pub const CimIndex = struct {
         try build_terminals(gpa, model, &index);
         try build_connectivity(gpa, model, &index);
         try build_operational_limits(gpa, model, &index);
-        //      try buildCurvePoints(gpa, model, &index);       // Pass 5
-        //      try buildVlMerge(gpa, model, &index);           // Pass 6
-        //      try buildSubstationMerge(gpa, model, &index);   // Pass 7
-        //      try buildBfsPrecomputation(gpa, model, &index); // Pass 8
-        //      try buildVoltageLimits(gpa, model, &index);     // Pass 9
+
+        try build_curve_points(gpa, model, &index);
+        try build_voltage_level_merge(gpa, model, &index);
+        try build_substation_merge(gpa, model, &index);
+        try build_branch_first_search_pre_computation(gpa, model, &index);
+        try build_voltage_limits(gpa, model, &index);
         index.boundary_base_voltage_ids = boundary_base_voltage_ids;
         return index;
     }
@@ -175,6 +183,7 @@ fn create_empty_cim_index() CimIndex {
 }
 
 fn build_limit_types(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
+    assert(index.limit_types.count() == 0);
     const objects = model.getObjectsByType("OperationalLimitType");
     try index.limit_types.ensureTotalCapacity(gpa, @intCast(objects.len));
     for (objects) |obj| {
@@ -185,9 +194,12 @@ fn build_limit_types(gpa: std.mem.Allocator, model: *const cim_model.CimModel, i
             .acceptable_duration = duration,
         });
     }
+    assert(index.limit_types.count() == objects.len);
 }
 
 fn build_terminals(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
+    assert(index.terminal_equipment.count() == 0);
+
     const objects = model.getObjectsByType("Terminal");
 
     try index.terminal_equipment.ensureTotalCapacity(gpa, @intCast(objects.len));
@@ -197,7 +209,7 @@ fn build_terminals(gpa: std.mem.Allocator, model: *const cim_model.CimModel, ind
 
     for (objects) |obj| {
         const conn_node_ref = try obj.getReference("Terminal.ConnectivityNode");
-        const conn_node_id: ?[]const u8 = if (conn_node_ref) |ref| utils.strip_hash(ref) else null;
+        const conn_node_id: ?[]const u8 = if (conn_node_ref) |ref| strip_hash(ref) else null;
         if (conn_node_id) |id| {
             index.terminal_conn_node.putAssumeCapacity(obj.id, id);
         }
@@ -207,7 +219,8 @@ fn build_terminals(gpa: std.mem.Allocator, model: *const cim_model.CimModel, ind
         index.terminal_sequence.putAssumeCapacity(obj.id, sequence);
 
         const equipment_ref = try obj.getReference("Terminal.ConductingEquipment") orelse return error.MalFormedXML;
-        const equipment_id = utils.strip_hash(equipment_ref);
+        const equipment_id = strip_hash(equipment_ref);
+        assert(equipment_id.len > 0);
         index.terminal_equipment.putAssumeCapacity(obj.id, equipment_id);
         const gop = index.equipment_terminals.getOrPutAssumeCapacity(equipment_id);
         if (!gop.found_existing) {
@@ -219,9 +232,17 @@ fn build_terminals(gpa: std.mem.Allocator, model: *const cim_model.CimModel, ind
             .sequence = sequence,
         });
     }
+
+    assert(index.terminal_equipment.count() == objects.len);
+    assert(index.terminal_sequence.count() == objects.len);
+    assert(index.terminal_conn_node.count() <= objects.len);
 }
 
 fn build_connectivity(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
+    assert(index.terminal_equipment.count() > 0);
+    assert(index.conn_node_container.count() == 0);
+    assert(index.busbar_section_in_parse_order.items.len == 0);
+
     const busbar_sections = model.getObjectsByType("BusbarSection");
     try index.conn_node_to_busbar_section.ensureTotalCapacity(gpa, @intCast(busbar_sections.len));
 
@@ -233,7 +254,7 @@ fn build_connectivity(gpa: std.mem.Allocator, model: *const cim_model.CimModel, 
         }
         const conn_node_id = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
 
-        const busbar_section_mrid = try busbar_section.getProperty("IdentifiedObject.mRID") orelse utils.strip_underscore(busbar_section.id);
+        const busbar_section_mrid = try busbar_section.getProperty("IdentifiedObject.mRID") orelse strip_underscore(busbar_section.id);
         index.conn_node_to_busbar_section.putAssumeCapacity(conn_node_id, busbar_section_mrid);
     }
 
@@ -244,7 +265,7 @@ fn build_connectivity(gpa: std.mem.Allocator, model: *const cim_model.CimModel, 
 
     for (conn_nodes) |conn_node| {
         const container_ref = try conn_node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
-        index.conn_node_container.putAssumeCapacity(conn_node.id, utils.strip_hash(container_ref));
+        index.conn_node_container.putAssumeCapacity(conn_node.id, strip_hash(container_ref));
 
         const busbar_section_id = index.conn_node_to_busbar_section.get(conn_node.id) orelse continue;
         index.busbar_section_in_parse_order.appendAssumeCapacity(.{
@@ -252,15 +273,21 @@ fn build_connectivity(gpa: std.mem.Allocator, model: *const cim_model.CimModel, 
             .mrid = busbar_section_id,
         });
     }
+
+    assert(index.conn_node_container.count() == conn_nodes.len);
+    assert(index.busbar_section_in_parse_order.items.len <= busbar_sections.len);
 }
 
 fn build_operational_limits(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
+    assert(index.terminal_limit_sets.count() == 0);
+    assert(index.current_limits_by_set.count() == 0);
+
     const op_lim_sets = model.getObjectsByType("OperationalLimitSet");
     try index.terminal_limit_sets.ensureTotalCapacity(gpa, @intCast(op_lim_sets.len));
 
     for (op_lim_sets) |op_lim_set| {
         const terminal_ref = try op_lim_set.getReference("OperationalLimitSet.Terminal") orelse continue;
-        const terminal_id = utils.strip_hash(terminal_ref);
+        const terminal_id = strip_hash(terminal_ref);
         const gop = index.terminal_limit_sets.getOrPutAssumeCapacity(terminal_id);
         if (!gop.found_existing) {
             gop.value_ptr.* = .empty;
@@ -273,11 +300,418 @@ fn build_operational_limits(gpa: std.mem.Allocator, model: *const cim_model.CimM
 
     for (current_lims) |current_lim| {
         const op_lim_set_ref = try current_lim.getReference("OperationalLimit.OperationalLimitSet") orelse continue;
-        const op_lim_set_id = utils.strip_hash(op_lim_set_ref);
+        const op_lim_set_id = strip_hash(op_lim_set_ref);
         const gop = index.current_limits_by_set.getOrPutAssumeCapacity(op_lim_set_id);
         if (!gop.found_existing) {
             gop.value_ptr.* = .empty;
         }
         try gop.value_ptr.append(gpa, current_lim);
     }
+
+    assert(index.terminal_limit_sets.count() <= op_lim_sets.len);
+    assert(index.current_limits_by_set.count() <= current_lims.len);
+}
+
+fn build_curve_points(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
+    assert(index.curve_points.count() == 0);
+    const curve_datas = model.getObjectsByType("CurveData");
+    try index.curve_points.ensureTotalCapacity(gpa, @intCast(curve_datas.len));
+
+    for (curve_datas) |curve_data| {
+        const curve_ref = try curve_data.getReference("CurveData.Curve") orelse return error.MalformedXML;
+        const curve_id = strip_hash(curve_ref);
+
+        const x_val = try curve_data.getProperty("CurveData.xvalue") orelse "0.0";
+        const y1_val = try curve_data.getProperty("CurveData.y1value") orelse "0.0";
+        const y2_val = try curve_data.getProperty("CurveData.y2value") orelse "0.0";
+
+        const x = try std.fmt.parseFloat(f64, x_val);
+        const y1 = try std.fmt.parseFloat(f64, y1_val);
+        const y2 = try std.fmt.parseFloat(f64, y2_val);
+
+        const gop = index.curve_points.getOrPutAssumeCapacity(curve_id);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .empty;
+        }
+        try gop.value_ptr.append(gpa, .{
+            .p = x,
+            .min_q = y1,
+            .max_q = y2,
+        });
+    }
+    assert(curve_datas.len == 0 or index.curve_points.count() > 0);
+}
+
+pub fn find_voltage_level(parent: *const std.StringHashMapUnmanaged([]const u8), id: []const u8) []const u8 {
+    var current = id;
+    while (true) {
+        const p = parent.get(current) orelse return current;
+        current = p;
+    }
+}
+
+test "find_voltage_level: id not in map returns itself" {
+    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer parent.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("unknown", find_voltage_level(&parent, "unknown"));
+}
+
+test "find_voltage_level: one level deep" {
+    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer parent.deinit(std.testing.allocator);
+    try parent.put(std.testing.allocator, "stub", "rep");
+
+    try std.testing.expectEqualStrings("rep", find_voltage_level(&parent, "stub"));
+    try std.testing.expectEqualStrings("rep", find_voltage_level(&parent, "rep"));
+}
+
+test "find_voltage_level: two levels deep" {
+    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer parent.deinit(std.testing.allocator);
+    try parent.put(std.testing.allocator, "a", "b");
+    try parent.put(std.testing.allocator, "b", "c");
+
+    try std.testing.expectEqualStrings("c", find_voltage_level(&parent, "a"));
+    try std.testing.expectEqualStrings("c", find_voltage_level(&parent, "b"));
+    try std.testing.expectEqualStrings("c", find_voltage_level(&parent, "c"));
+}
+
+test "find_voltage_level: chain of four" {
+    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer parent.deinit(std.testing.allocator);
+    try parent.put(std.testing.allocator, "a", "b");
+    try parent.put(std.testing.allocator, "b", "c");
+    try parent.put(std.testing.allocator, "c", "d");
+
+    try std.testing.expectEqualStrings("d", find_voltage_level(&parent, "a"));
+    try std.testing.expectEqualStrings("d", find_voltage_level(&parent, "b"));
+    try std.testing.expectEqualStrings("d", find_voltage_level(&parent, "c"));
+    try std.testing.expectEqualStrings("d", find_voltage_level(&parent, "d"));
+}
+
+test "find_voltage_level: two independent components" {
+    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer parent.deinit(std.testing.allocator);
+    try parent.put(std.testing.allocator, "a", "b");
+    try parent.put(std.testing.allocator, "x", "y");
+
+    try std.testing.expectEqualStrings("b", find_voltage_level(&parent, "a"));
+    try std.testing.expectEqualStrings("y", find_voltage_level(&parent, "x"));
+}
+
+fn union_voltage_levels(
+    model: *const cim_model.CimModel,
+    parent: *std.StringHashMapUnmanaged([]const u8),
+    id_a: []const u8,
+    id_b: []const u8,
+) !void {
+    const root_a = find_voltage_level(parent, id_a);
+    const root_b = find_voltage_level(parent, id_b);
+    if (std.mem.eql(u8, root_a, root_b)) return;
+
+    const voltage_level_a = model.getObjectById(root_a) orelse return;
+    const voltage_level_b = model.getObjectById(root_b) orelse return;
+    const mrid_a = try voltage_level_a.getProperty("IdentifiedObject.mRID") orelse
+        strip_underscore(root_a);
+    const mrid_b = try voltage_level_b.getProperty("IdentifiedObject.mRID") orelse
+        strip_underscore(root_b);
+
+    // stub points to representative; representative has the smaller mRID
+    if (std.mem.lessThan(u8, mrid_a, mrid_b)) {
+        parent.putAssumeCapacity(root_b, root_a);
+    } else {
+        parent.putAssumeCapacity(root_a, root_b);
+    }
+}
+
+fn union_conn_nodes(
+    parent: *std.StringHashMapUnmanaged([]const u8),
+    cn0: []const u8,
+    cn1: []const u8,
+) void {
+    const root0 = find_voltage_level(parent, cn0);
+    const root1 = find_voltage_level(parent, cn1);
+    if (std.mem.eql(u8, root0, root1)) return;
+    parent.putAssumeCapacity(root0, root1);
+}
+
+test "union_conn_nodes: two nodes share root after union" {
+    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer parent.deinit(std.testing.allocator);
+    try parent.ensureTotalCapacity(std.testing.allocator, 1);
+
+    union_conn_nodes(&parent, "cn1", "cn2");
+
+    try std.testing.expectEqualStrings(
+        find_voltage_level(&parent, "cn1"),
+        find_voltage_level(&parent, "cn2"),
+    );
+}
+
+test "union_conn_nodes: idempotent when already same component" {
+    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer parent.deinit(std.testing.allocator);
+    try parent.ensureTotalCapacity(std.testing.allocator, 2);
+
+    union_conn_nodes(&parent, "cn1", "cn2");
+    const count = parent.count();
+    union_conn_nodes(&parent, "cn1", "cn2");
+
+    try std.testing.expectEqual(count, parent.count());
+}
+
+test "union_conn_nodes: transitive — three nodes share root" {
+    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer parent.deinit(std.testing.allocator);
+    try parent.ensureTotalCapacity(std.testing.allocator, 2);
+
+    union_conn_nodes(&parent, "a", "b");
+    union_conn_nodes(&parent, "b", "c");
+
+    const root_a = find_voltage_level(&parent, "a");
+    const root_b = find_voltage_level(&parent, "b");
+    const root_c = find_voltage_level(&parent, "c");
+    try std.testing.expectEqualStrings(root_a, root_b);
+    try std.testing.expectEqualStrings(root_b, root_c);
+}
+
+test "union_conn_nodes: independent clusters do not interfere" {
+    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer parent.deinit(std.testing.allocator);
+    try parent.ensureTotalCapacity(std.testing.allocator, 2);
+
+    union_conn_nodes(&parent, "a", "b");
+    union_conn_nodes(&parent, "x", "y");
+
+    const root_ab = find_voltage_level(&parent, "a");
+    const root_xy = find_voltage_level(&parent, "x");
+    try std.testing.expectEqualStrings(root_ab, find_voltage_level(&parent, "b"));
+    try std.testing.expectEqualStrings(root_xy, find_voltage_level(&parent, "y"));
+    try std.testing.expect(!std.mem.eql(u8, root_ab, root_xy));
+}
+
+fn get_switch_slices(model: *const CimModel) [switch_types.len][]const CimObject {
+    var slices: [switch_types.len][]const CimObject = undefined;
+    for (switch_types, 0..) |t, i| slices[i] = model.getObjectsByType(t);
+    return slices;
+}
+
+fn get_switch_count(slices: [switch_types.len][]const CimObject) usize {
+    var count: usize = 0;
+    for (slices) |s| count += s.len;
+    return count;
+}
+
+test "get_switch_count: all empty slices returns zero" {
+    const slices = [switch_types.len][]const CimObject{ &.{}, &.{}, &.{} };
+    try std.testing.expectEqual(@as(usize, 0), get_switch_count(slices));
+}
+
+test "get_switch_count: one non-empty slice" {
+    var objs: [3]CimObject = undefined;
+    const slices = [switch_types.len][]const CimObject{ &objs, &.{}, &.{} };
+    try std.testing.expectEqual(@as(usize, 3), get_switch_count(slices));
+}
+
+test "get_switch_count: all non-empty slices summed" {
+    var a: [2]CimObject = undefined;
+    var b: [5]CimObject = undefined;
+    var c: [1]CimObject = undefined;
+    const slices = [switch_types.len][]const CimObject{ &a, &b, &c };
+    try std.testing.expectEqual(@as(usize, 8), get_switch_count(slices));
+}
+
+test "get_switch_count: mixed empty and non-empty" {
+    var objs: [4]CimObject = undefined;
+    const slices = [switch_types.len][]const CimObject{ &.{}, &objs, &.{} };
+    try std.testing.expectEqual(@as(usize, 4), get_switch_count(slices));
+}
+
+fn process_switch_type(
+    model: *const cim_model.CimModel,
+    index: *const CimIndex,
+    switches: []const CimObject,
+    parent: *std.StringHashMapUnmanaged([]const u8),
+) !void {
+    for (switches) |sw| {
+        const terminals = index.equipment_terminals.get(sw.id) orelse continue;
+        if (terminals.items.len != 2) continue;
+
+        const conn_node0 = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
+        const conn_node1 = index.terminal_conn_node.get(terminals.items[1].id) orelse continue;
+
+        const container0 = index.conn_node_container.get(conn_node0) orelse continue;
+        const container1 = index.conn_node_container.get(conn_node1) orelse continue;
+        if (std.mem.eql(u8, container0, container1)) continue;
+
+        const obj0 = model.getObjectById(container0) orelse continue;
+        const obj1 = model.getObjectById(container1) orelse continue;
+        if (!std.mem.eql(u8, obj0.type_name, "VoltageLevel")) continue;
+        if (!std.mem.eql(u8, obj1.type_name, "VoltageLevel")) continue;
+
+        try union_voltage_levels(model, parent, container0, container1);
+    }
+}
+
+fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
+    assert(index.voltage_level_merge.count() == 0);
+
+    const voltage_levels = model.getObjectsByType("VoltageLevel");
+    const switch_slices = get_switch_slices(model);
+
+    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
+    try parent.ensureTotalCapacity(gpa, @intCast(get_switch_count(switch_slices)));
+    defer parent.deinit(gpa);
+
+    for (switch_slices) |slice| try process_switch_type(model, index, slice, &parent);
+
+    // flatten: stubs → representatives
+    try index.voltage_level_merge.ensureTotalCapacity(gpa, @intCast(voltage_levels.len));
+    for (voltage_levels) |voltage_level| {
+        const root = find_voltage_level(&parent, voltage_level.id);
+        if (!std.mem.eql(u8, root, voltage_level.id)) {
+            index.voltage_level_merge.putAssumeCapacity(voltage_level.id, root);
+        }
+    }
+
+    assert(index.voltage_level_merge.count() <= voltage_levels.len);
+    // idempotency: no representative is itself a stub
+    var it = index.voltage_level_merge.iterator();
+    while (it.next()) |entry| {
+        assert(index.voltage_level_merge.get(entry.value_ptr.*) == null);
+    }
+}
+
+fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
+    assert(index.substation_merge.count() == 0);
+
+    try index.substation_merge.ensureTotalCapacity(gpa, @intCast(index.voltage_level_merge.count()));
+
+    var it = index.voltage_level_merge.iterator();
+    while (it.next()) |entry| {
+        const stub_voltage_level_id = entry.key_ptr.*;
+        const stub_voltage_level = model.getObjectById(stub_voltage_level_id) orelse continue;
+        const stub_substation_ref = try stub_voltage_level.getReference("VoltageLevel.Substation") orelse continue;
+        const stub_substation_id = strip_hash(stub_substation_ref);
+
+        const repr_voltage_level_id = entry.value_ptr.*;
+        const repr_voltage_level = model.getObjectById(repr_voltage_level_id) orelse continue;
+        const repr_substation_ref = try repr_voltage_level.getReference("VoltageLevel.Substation") orelse continue;
+        const repr_substation_id = strip_hash(repr_substation_ref);
+
+        if (std.mem.eql(u8, stub_substation_id, repr_substation_id)) continue;
+
+        const gop = index.substation_merge.getOrPutAssumeCapacity(repr_substation_id);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        var already_present = false;
+        for (gop.value_ptr.items) |existing| {
+            if (std.mem.eql(u8, existing, stub_substation_id)) {
+                already_present = true;
+                break;
+            }
+        }
+
+        if (!already_present) try gop.value_ptr.append(gpa, stub_substation_id);
+    }
+
+    assert(index.substation_merge.count() <= index.voltage_level_merge.count());
+}
+
+/// Resolving a RegulatingControl terminal requires finding the nearest BusbarSection
+/// reachable from a given ConnectivityNode by traversing switches. Doing this at
+/// conversion time would require a BFS heap allocation per generator — O(n) per call.
+///
+/// This pass eliminates that cost entirely by pre-computing the answer for every
+/// switch-connected CN once, up front. The result is stored in
+/// `conn_node_reachable_busbar_section`: a flat map of CN raw ID → BBS mRID.
+///
+/// Algorithm:
+///   1. Union-find over CNs: for each switch, union its two terminal CNs into one cluster.
+///   2. For each cluster, the representative BBS is the first entry in
+///      `busbar_section_in_parse_order` whose CN belongs to that cluster (parse order
+///      matches PyPowSyBl's tie-breaking behaviour).
+///   3. Every CN in a cluster that has a BBS gets mapped to that BBS mRID.
+///
+/// At conversion time, resolveRegulatingTerminal becomes two O(1) map lookups:
+/// first `conn_node_to_busbar_section` (direct), then `conn_node_reachable_busbar_section`
+/// (via switches). No allocation, no traversal.
+fn build_branch_first_search_pre_computation(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
+    assert(index.conn_node_reachable_busbar_section.count() == 0);
+    assert(index.conn_node_container.count() > 0);
+
+    const conn_nodes = model.getObjectsByType("ConnectivityNode");
+    const switch_slices = get_switch_slices(model);
+
+    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
+    try parent.ensureTotalCapacity(gpa, @intCast(get_switch_count(switch_slices) * 2));
+    defer parent.deinit(gpa);
+
+    for (switch_slices) |slice| {
+        for (slice) |sw| {
+            const terminals = index.equipment_terminals.get(sw.id) orelse continue;
+            if (terminals.items.len != 2) continue;
+            const cn0 = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
+            const cn1 = index.terminal_conn_node.get(terminals.items[1].id) orelse continue;
+            union_conn_nodes(&parent, cn0, cn1);
+        }
+    }
+
+    var cluster_to_busbar_section: std.StringHashMapUnmanaged([]const u8) = .empty;
+    try cluster_to_busbar_section.ensureTotalCapacity(gpa, @intCast(index.busbar_section_in_parse_order.items.len));
+    defer cluster_to_busbar_section.deinit(gpa);
+
+    for (index.busbar_section_in_parse_order.items) |entry| {
+        const root = find_voltage_level(&parent, entry.conn_node_id);
+        if (!cluster_to_busbar_section.contains(root)) {
+            cluster_to_busbar_section.putAssumeCapacity(root, entry.mrid);
+        }
+    }
+
+    try index.conn_node_reachable_busbar_section.ensureTotalCapacity(gpa, @intCast(conn_nodes.len));
+
+    var it = parent.keyIterator();
+    while (it.next()) |cn_id| {
+        const root = find_voltage_level(&parent, cn_id.*);
+        const busbar_section_mrid = cluster_to_busbar_section.get(root) orelse continue;
+        index.conn_node_reachable_busbar_section.putAssumeCapacity(cn_id.*, busbar_section_mrid);
+    }
+
+    assert(index.conn_node_reachable_busbar_section.count() <= conn_nodes.len);
+}
+
+fn build_voltage_limits(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
+    assert(index.voltage_level_limits.count() == 0);
+
+    const voltage_limits = model.getObjectsByType("VoltageLimit");
+    try index.voltage_level_limits.ensureTotalCapacity(gpa, @intCast(voltage_limits.len));
+
+    for (voltage_limits) |voltage_limit| {
+        const limit_set_ref = try voltage_limit.getReference("OperationalLimit.OperationalLimitSet") orelse continue;
+        const limit_set = model.getObjectById(strip_hash(limit_set_ref)) orelse continue;
+        const terminal_ref = try limit_set.getReference("OperationalLimitSet.Terminal") orelse continue;
+
+        const conn_node_id = index.terminal_conn_node.get(strip_hash(terminal_ref)) orelse continue;
+        const container_id = index.conn_node_container.get(conn_node_id) orelse continue;
+        const container = model.getObjectById(container_id) orelse continue;
+
+        if (!std.mem.eql(u8, container.type_name, "VoltageLevel")) continue;
+
+        const limit_type_ref = try voltage_limit.getReference("OperationalLimit.OperationalLimitType") orelse continue;
+        const limit_type = model.getObjectById(strip_hash(limit_type_ref)) orelse continue;
+        const direction = try limit_type.getReference("OperationalLimitType.direction") orelse continue;
+
+        const value_str = try voltage_limit.getProperty("VoltageLimit.normalValue") orelse continue;
+        const value = try std.fmt.parseFloat(f64, value_str);
+
+        const gop = index.voltage_level_limits.getOrPutAssumeCapacity(container_id);
+        if (!gop.found_existing) gop.value_ptr.* = .{ .high_value = null, .low_value = null };
+
+        if (std.mem.endsWith(u8, direction, "high")) {
+            gop.value_ptr.high_value = value;
+        } else {
+            gop.value_ptr.low_value = value;
+        }
+    }
+    assert(index.voltage_level_limits.count() <= voltage_limits.len);
 }
