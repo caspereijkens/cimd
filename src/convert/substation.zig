@@ -75,7 +75,7 @@ fn append_substation(
     }
 }
 
-pub fn convertSubstations(
+pub fn convert_substations(
     gpa: std.mem.Allocator,
     model: *const CimModel,
     index: *const CimIndex,

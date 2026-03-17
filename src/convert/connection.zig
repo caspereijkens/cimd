@@ -13,7 +13,7 @@ const CimIndex = cim_index.CimIndex;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
-pub fn buildNodeMap(
+pub fn build_node_map(
     gpa: std.mem.Allocator,
     model: *const CimModel,
     index: *const CimIndex,

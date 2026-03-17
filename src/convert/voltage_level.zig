@@ -62,7 +62,7 @@ fn append_voltage_level(
     });
 }
 
-pub fn convertVoltageLevels(
+pub fn convert_voltage_levels(
     gpa: std.mem.Allocator,
     model: *const CimModel,
     index: *const CimIndex,

@@ -54,7 +54,7 @@ fn count_equipment_for_type(
 
 /// Count all equipment per VoltageLevel in one pass, then pre-allocate all
 /// equipment arrays. Call this before any convertX function.
-pub fn preAllocateEquipment(
+pub fn pre_allocate_equipment(
     gpa: std.mem.Allocator,
     model: *const CimModel,
     index: *const CimIndex,
@@ -92,7 +92,7 @@ pub fn preAllocateEquipment(
     assert(equipment_counts.count() <= voltage_level_map.count());
 }
 
-pub fn convertBusbarSections(
+pub fn convert_busbar_sections(
     model: *const CimModel,
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),

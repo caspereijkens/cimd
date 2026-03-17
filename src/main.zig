@@ -137,10 +137,10 @@ fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[
 
     var sub_id_map: std.StringHashMapUnmanaged(usize) = .empty;
     defer sub_id_map.deinit(gpa);
-    try substation_conv.convertSubstations(gpa, &model, &index, &network, &sub_id_map);
+    try substation_conv.convert_substations(gpa, &model, &index, &network, &sub_id_map);
     try print.stdout("Substations: {d}\n", .{network.substations.items.len});
 
-    try voltage_level_conv.convertVoltageLevels(gpa, &model, &index, &network, &sub_id_map);
+    try voltage_level_conv.convert_voltage_levels(gpa, &model, &index, &network, &sub_id_map);
     var total_vls: usize = 0;
     for (network.substations.items) |sub| total_vls += sub.voltage_levels.items.len;
     try print.stdout("VoltageLevels: {d}\n", .{total_vls});
@@ -148,12 +148,12 @@ fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[
     var voltage_level_map = try voltage_level_conv.build_voltage_level_map(gpa, &model, &index, &network, &sub_id_map);
     defer voltage_level_map.deinit(gpa);
 
-    var node_map = try connection_conv.buildNodeMap(gpa, &model, &index);
+    var node_map = try connection_conv.build_node_map(gpa, &model, &index);
     defer node_map.deinit(gpa);
     try print.stdout("Nodes: {d}\n", .{node_map.count()});
 
-    try equipment_conv.preAllocateEquipment(gpa, &model, &index, &voltage_level_map);
-    try equipment_conv.convertBusbarSections(&model, &index, &voltage_level_map, &node_map);
+    try equipment_conv.pre_allocate_equipment(gpa, &model, &index, &voltage_level_map);
+    try equipment_conv.convert_busbar_sections(&model, &index, &voltage_level_map, &node_map);
     var total_busbar_sections: usize = 0;
     for (network.substations.items) |sub| {
         for (sub.voltage_levels.items) |vl| {
