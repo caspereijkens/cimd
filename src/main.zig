@@ -7,6 +7,11 @@ const assert = std.debug.assert;
 const zip = @import("zip.zig");
 const cim_model = @import("cim_model.zig");
 const cim_index = @import("cim_index.zig");
+const iidm = @import("iidm.zig");
+const substation_conv = @import("convert/substation.zig");
+const voltage_level_conv = @import("convert/voltage_level.zig");
+const connection_conv = @import("convert/connection.zig");
+const equipment_conv = @import("convert/equipment.zig");
 
 pub fn main() !void {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -102,11 +107,16 @@ fn read_path(gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
 }
 
 fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[]const u8, output_path: ?[]const u8, verbose: bool) !void {
-    _ = eqbd_path;
     _ = output_path;
     _ = verbose;
 
-    const xml = try read_path(gpa, input_path);
+    var xml = try read_path(gpa, input_path);
+
+    if (eqbd_path) |path| {
+        const eqbd_xml = try read_path(gpa, path);
+        const merged = try std.mem.concat(gpa, u8, &[_][]const u8{ xml, eqbd_xml });
+        xml = merged;
+    }
 
     var model = try cim_model.CimModel.init(gpa, xml);
     defer model.deinit(gpa);
@@ -115,7 +125,42 @@ fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[
     var index = try cim_index.CimIndex.build(gpa, &model, boundary_ids);
     defer index.deinit(gpa);
 
-    try print.stdout("CimIndex built. limit_types: {d}\n", .{index.limit_types.count()});
+    var network = iidm.Network{
+        .id = "test",
+        .case_date = null,
+        .substations = .empty,
+        .lines = .empty,
+        .hvdc_lines = .empty,
+        .extensions = .empty,
+    };
+    defer network.deinit(gpa);
+
+    var sub_id_map: std.StringHashMapUnmanaged(usize) = .empty;
+    defer sub_id_map.deinit(gpa);
+    try substation_conv.convertSubstations(gpa, &model, &index, &network, &sub_id_map);
+    try print.stdout("Substations: {d}\n", .{network.substations.items.len});
+
+    try voltage_level_conv.convertVoltageLevels(gpa, &model, &index, &network, &sub_id_map);
+    var total_vls: usize = 0;
+    for (network.substations.items) |sub| total_vls += sub.voltage_levels.items.len;
+    try print.stdout("VoltageLevels: {d}\n", .{total_vls});
+
+    var voltage_level_map = try voltage_level_conv.build_voltage_level_map(gpa, &model, &index, &network, &sub_id_map);
+    defer voltage_level_map.deinit(gpa);
+
+    var node_map = try connection_conv.buildNodeMap(gpa, &model, &index);
+    defer node_map.deinit(gpa);
+    try print.stdout("Nodes: {d}\n", .{node_map.count()});
+
+    try equipment_conv.preAllocateEquipment(gpa, &model, &index, &voltage_level_map);
+    try equipment_conv.convertBusbarSections(&model, &index, &voltage_level_map, &node_map);
+    var total_busbar_sections: usize = 0;
+    for (network.substations.items) |sub| {
+        for (sub.voltage_levels.items) |vl| {
+            total_busbar_sections += vl.node_breaker_topology.busbar_sections.items.len;
+        }
+    }
+    try print.stdout("BusbarSections: {d}\n", .{total_busbar_sections});
 }
 
 /// Read file into memory (used for unzipped usecase)
