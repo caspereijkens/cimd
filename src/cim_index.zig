@@ -491,7 +491,7 @@ test "union_conn_nodes: independent clusters do not interfere" {
     try std.testing.expect(!std.mem.eql(u8, root_ab, root_xy));
 }
 
-fn get_switch_slices(model: *const CimModel) [switch_types.len][]const CimObject {
+pub fn get_switch_slices(model: *const CimModel) [switch_types.len][]const CimObject {
     var slices: [switch_types.len][]const CimObject = undefined;
     for (switch_types, 0..) |t, i| slices[i] = model.getObjectsByType(t);
     return slices;

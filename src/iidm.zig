@@ -590,7 +590,28 @@ pub const SwitchKind = enum {
             .load_break_switch => "LOAD_BREAK_SWITCH",
         });
     }
+
+    /// Convert a CIM type name to a SwitchKind.
+    /// Only valid for the three switch types: Breaker, Disconnector, LoadBreakSwitch.
+    pub fn from_cim_type(cim_type: []const u8) SwitchKind {
+        if (std.mem.eql(u8, cim_type, "Breaker")) return .breaker;
+        if (std.mem.eql(u8, cim_type, "Disconnector")) return .disconnector;
+        if (std.mem.eql(u8, cim_type, "LoadBreakSwitch")) return .load_break_switch;
+        unreachable;
+    }
 };
+
+test "SwitchKind.from_cim_type: Breaker" {
+    try std.testing.expectEqual(SwitchKind.breaker, SwitchKind.from_cim_type("Breaker"));
+}
+
+test "SwitchKind.from_cim_type: Disconnector" {
+    try std.testing.expectEqual(SwitchKind.disconnector, SwitchKind.from_cim_type("Disconnector"));
+}
+
+test "SwitchKind.from_cim_type: LoadBreakSwitch" {
+    try std.testing.expectEqual(SwitchKind.load_break_switch, SwitchKind.from_cim_type("LoadBreakSwitch"));
+}
 
 pub const Switch = struct {
     id: []const u8,

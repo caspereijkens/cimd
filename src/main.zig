@@ -154,13 +154,34 @@ fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[
 
     try equipment_conv.pre_allocate_equipment(gpa, &model, &index, &voltage_level_map);
     try equipment_conv.convert_busbar_sections(&model, &index, &voltage_level_map, &node_map);
+    try equipment_conv.convert_switches(&model, &index, &voltage_level_map, &node_map);
+    try equipment_conv.convert_loads(&model, &index, &voltage_level_map, &node_map);
+    try equipment_conv.convert_shunts(&model, &index, &voltage_level_map, &node_map);
+    try equipment_conv.convert_static_var_compensators(&model, &index, &voltage_level_map, &node_map);
+    try equipment_conv.convert_generators(gpa, &model, &index, &voltage_level_map, &node_map);
+
     var total_busbar_sections: usize = 0;
+    var total_switches: usize = 0;
+    var total_loads: usize = 0;
+    var total_shunts: usize = 0;
+    var total_svcs: usize = 0;
+    var total_generators: usize = 0;
     for (network.substations.items) |sub| {
         for (sub.voltage_levels.items) |vl| {
             total_busbar_sections += vl.node_breaker_topology.busbar_sections.items.len;
+            total_switches += vl.node_breaker_topology.switches.items.len;
+            total_loads += vl.loads.items.len;
+            total_shunts += vl.shunts.items.len;
+            total_svcs += vl.static_var_compensators.items.len;
+            total_generators += vl.generators.items.len;
         }
     }
     try print.stdout("BusbarSections: {d}\n", .{total_busbar_sections});
+    try print.stdout("Switches: {d}\n", .{total_switches});
+    try print.stdout("Loads: {d}\n", .{total_loads});
+    try print.stdout("Shunts: {d}\n", .{total_shunts});
+    try print.stdout("StaticVarCompensators: {d}\n", .{total_svcs});
+    try print.stdout("Generators: {d}\n", .{total_generators});
 }
 
 /// Read file into memory (used for unzipped usecase)
