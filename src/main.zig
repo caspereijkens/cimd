@@ -145,7 +145,9 @@ fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[
     for (network.substations.items) |sub| total_vls += sub.voltage_levels.items.len;
     try print.stdout("VoltageLevels: {d}\n", .{total_vls});
 
-    var voltage_level_map = try voltage_level_conv.build_voltage_level_map(gpa, &model, &index, &network, &sub_id_map);
+    var substation_map: std.StringHashMapUnmanaged(*iidm.Substation) = .empty;
+    defer substation_map.deinit(gpa);
+    var voltage_level_map = try voltage_level_conv.build_voltage_level_map(gpa, &model, &index, &network, &sub_id_map, &substation_map);
     defer voltage_level_map.deinit(gpa);
 
     var node_map = try connection_conv.build_node_map(gpa, &model, &index);

@@ -108,6 +108,7 @@ pub fn build_voltage_level_map(
     index: *const CimIndex,
     network: *iidm.Network,
     substation_id_map: *const std.StringHashMapUnmanaged(usize),
+    substation_map: *std.StringHashMapUnmanaged(*iidm.Substation),
 ) !std.StringHashMapUnmanaged(*iidm.VoltageLevel) {
     assert(network.substations.items.len > 0);
 
@@ -117,6 +118,8 @@ pub fn build_voltage_level_map(
     var voltage_level_map: std.StringHashMapUnmanaged(*iidm.VoltageLevel) = .empty;
     try voltage_level_map.ensureTotalCapacity(gpa, @intCast(representative_count));
 
+    try substation_map.ensureTotalCapacity(gpa, @intCast(representative_count));
+
     const voltage_level_counters = try gpa.alloc(usize, network.substations.items.len);
     defer gpa.free(voltage_level_counters);
     @memset(voltage_level_counters, 0);
@@ -125,6 +128,8 @@ pub fn build_voltage_level_map(
         if (index.voltage_level_merge.contains(voltage_level.id)) continue;
         const substation_ref = try voltage_level.getReference("VoltageLevel.Substation") orelse continue;
         const substation_idx = substation_id_map.get(strip_hash(substation_ref)) orelse continue;
+        substation_map.putAssumeCapacity(voltage_level.id, &network.substations.items[substation_idx]);
+
         const voltage_level_idx = voltage_level_counters[substation_idx];
         voltage_level_counters[substation_idx] += 1;
         voltage_level_map.putAssumeCapacity(voltage_level.id, &network.substations.items[substation_idx].voltage_levels.items[voltage_level_idx]);
