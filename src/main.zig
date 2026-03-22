@@ -12,6 +12,7 @@ const substation_conv = @import("convert/substation.zig");
 const voltage_level_conv = @import("convert/voltage_level.zig");
 const connection_conv = @import("convert/connection.zig");
 const equipment_conv = @import("convert/equipment.zig");
+const transformer_conv = @import("convert/transformer.zig");
 
 pub fn main() !void {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -161,6 +162,7 @@ fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[
     try equipment_conv.convert_shunts(&model, &index, &voltage_level_map, &node_map);
     try equipment_conv.convert_static_var_compensators(&model, &index, &voltage_level_map, &node_map);
     try equipment_conv.convert_generators(gpa, &model, &index, &voltage_level_map, &node_map);
+    try transformer_conv.convert_transformers(gpa, &model, &index, &substation_map, &voltage_level_map, &node_map);
 
     var total_busbar_sections: usize = 0;
     var total_switches: usize = 0;
@@ -184,6 +186,15 @@ fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[
     try print.stdout("Shunts: {d}\n", .{total_shunts});
     try print.stdout("StaticVarCompensators: {d}\n", .{total_svcs});
     try print.stdout("Generators: {d}\n", .{total_generators});
+
+    var total_2w: usize = 0;
+    var total_3w: usize = 0;
+    for (network.substations.items) |sub| {
+        total_2w += sub.two_winding_transformers.items.len;
+        total_3w += sub.three_winding_transformers.items.len;
+    }
+    try print.stdout("2-winding transformers: {d}\n", .{total_2w});
+    try print.stdout("3-winding transformers: {d}\n", .{total_3w});
 }
 
 /// Read file into memory (used for unzipped usecase)
