@@ -5,6 +5,8 @@ const cim_index = @import("../cim_index.zig");
 const tag_index = @import("../tag_index.zig");
 const utils = @import("../utils.zig");
 
+const placement_mod = @import("placement.zig");
+
 const assert = std.debug.assert;
 const get_switch_slices = cim_index.get_switch_slices;
 
@@ -13,6 +15,8 @@ const CimObject = tag_index.CimObject;
 const CimIndex = cim_index.CimIndex;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
+const Placement = placement_mod.Placement;
+const resolve_conn_node_placement = placement_mod.resolve_conn_node_placement;
 
 const VoltageLevelEquipmentCounts = struct {
     busbar_sections: usize = 0,
@@ -36,24 +40,17 @@ fn resolve_repr_voltage_level_id(
     return cim_index.find_voltage_level(&index.voltage_level_merge, container_id);
 }
 
-const EquipmentPlacement = struct {
-    voltage_level: *iidm.VoltageLevel,
-    conn_node_id: []const u8,
-};
-
-/// Resolve the target VoltageLevel pointer and first ConnectivityNode ID for a
-/// single-terminal equipment object. Returns null if any step in the chain fails.
+/// Resolve VoltageLevel and node for a single-terminal equipment object.
+/// Returns null if any step in the chain fails.
 fn resolve_equipment_placement(
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
+    node_map: *const std.StringHashMapUnmanaged(u32),
     equipment_id: []const u8,
-) ?EquipmentPlacement {
+) ?Placement {
     const terminals = index.equipment_terminals.get(equipment_id) orelse return null;
     const conn_node_id = terminals.items[0].conn_node_id orelse return null;
-    const container_id = index.conn_node_container.get(conn_node_id) orelse return null;
-    const repr_vl_id = cim_index.find_voltage_level(&index.voltage_level_merge, container_id);
-    const voltage_level = voltage_level_map.get(repr_vl_id) orelse return null;
-    return .{ .voltage_level = voltage_level, .conn_node_id = conn_node_id };
+    return resolve_conn_node_placement(conn_node_id, index, voltage_level_map, node_map);
 }
 
 /// Count all objects of a given CIM type and increment the named field in the
@@ -123,9 +120,9 @@ pub fn convert_busbar_sections(
     const busbar_sections = model.getObjectsByType("BusbarSection");
 
     for (busbar_sections) |busbar_section| {
-        const placement = resolve_equipment_placement(index, voltage_level_map, busbar_section.id) orelse continue;
+        const placement = resolve_equipment_placement(index, voltage_level_map, node_map, busbar_section.id) orelse continue;
         const voltage_level = placement.voltage_level;
-        const node = node_map.get(placement.conn_node_id) orelse continue;
+        const node = placement.node;
 
         const mrid = try busbar_section.getProperty("IdentifiedObject.mRID") orelse strip_underscore(busbar_section.id);
         const name = try busbar_section.getProperty("IdentifiedObject.name");
@@ -210,9 +207,9 @@ fn convert_load_type(
     loads: []const CimObject,
 ) !void {
     for (loads) |load| {
-        const placement = resolve_equipment_placement(index, voltage_level_map, load.id) orelse continue;
+        const placement = resolve_equipment_placement(index, voltage_level_map, node_map, load.id) orelse continue;
         const voltage_level = placement.voltage_level;
-        const node = node_map.get(placement.conn_node_id) orelse continue;
+        const node = placement.node;
 
         const mrid = try load.getProperty("IdentifiedObject.mRID") orelse strip_underscore(load.id);
         const name = try load.getProperty("IdentifiedObject.name");
@@ -237,9 +234,9 @@ pub fn convert_shunts(
     assert(shunts.len == 0 or voltage_level_map.count() > 0);
 
     for (shunts) |shunt| {
-        const placement = resolve_equipment_placement(index, voltage_level_map, shunt.id) orelse continue;
+        const placement = resolve_equipment_placement(index, voltage_level_map, node_map, shunt.id) orelse continue;
         const voltage_level = placement.voltage_level;
-        const node = node_map.get(placement.conn_node_id) orelse continue;
+        const node = placement.node;
 
         const mrid = try shunt.getProperty("IdentifiedObject.mRID") orelse strip_underscore(shunt.id);
         const name = try shunt.getProperty("IdentifiedObject.name");
@@ -287,9 +284,9 @@ pub fn convert_static_var_compensators(
     assert(static_var_compensators.len == 0 or voltage_level_map.count() > 0);
 
     for (static_var_compensators) |static_var_compensator| {
-        const placement = resolve_equipment_placement(index, voltage_level_map, static_var_compensator.id) orelse continue;
+        const placement = resolve_equipment_placement(index, voltage_level_map, node_map, static_var_compensator.id) orelse continue;
         const voltage_level = placement.voltage_level;
-        const node = node_map.get(placement.conn_node_id) orelse continue;
+        const node = placement.node;
 
         const mrid = try static_var_compensator.getProperty("IdentifiedObject.mRID") orelse strip_underscore(static_var_compensator.id);
         const name = try static_var_compensator.getProperty("IdentifiedObject.name");
@@ -346,9 +343,9 @@ pub fn convert_generators(
     assert(machines.len == 0 or voltage_level_map.count() > 0);
 
     for (machines) |machine| {
-        const placement = resolve_equipment_placement(index, voltage_level_map, machine.id) orelse continue;
+        const placement = resolve_equipment_placement(index, voltage_level_map, node_map, machine.id) orelse continue;
         const voltage_level = placement.voltage_level;
-        const node = node_map.get(placement.conn_node_id) orelse continue;
+        const node = placement.node;
 
         const mrid = try machine.getProperty("IdentifiedObject.mRID") orelse strip_underscore(machine.id);
         const name = try machine.getProperty("IdentifiedObject.name");

@@ -11,8 +11,12 @@ const testing = std.testing;
 const CimModel = cim_model.CimModel;
 const CimObject = tag_index.CimObject;
 const CimIndex = cim_index.CimIndex;
+const placement_mod = @import("placement.zig");
+
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
+const Placement = placement_mod.Placement;
+const resolve_conn_node_placement = placement_mod.resolve_conn_node_placement;
 
 fn build_ends_by_transformer(
     gpa: std.mem.Allocator,
@@ -319,13 +323,6 @@ test "lessThanFn: transitivity — end1 < end2 and end2 < end3 implies end1 < en
     try testing.expect(lessThanFn({}, t1.end, t3.end)); // therefore end1 < end3
 }
 
-const EndPlacement = struct {
-    repr_voltage_level_id: []const u8,
-    voltage_level: *iidm.VoltageLevel,
-    conn_node_id: []const u8,
-    node: u32,
-};
-
 const EndElectrical = struct { r: f64, x: f64, g: f64, b: f64, rated_u: f64, rated_s: ?f64 };
 
 fn read_end_electrical(end: CimObject) !?EndElectrical {
@@ -346,15 +343,11 @@ fn resolve_end_placement(
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const std.StringHashMapUnmanaged(u32),
-) !?EndPlacement {
+) !?Placement {
     const terminal_ref = try end.getReference("TransformerEnd.Terminal") orelse return null;
     const terminal_id = strip_hash(terminal_ref);
     const conn_node_id = index.terminal_conn_node.get(terminal_id) orelse return null;
-    const container_id = index.conn_node_container.get(conn_node_id) orelse return null;
-    const repr_vl_id = cim_index.find_voltage_level(&index.voltage_level_merge, container_id);
-    const voltage_level = voltage_level_map.get(repr_vl_id) orelse return null;
-    const node = node_map.get(conn_node_id) orelse return null;
-    return .{ .repr_voltage_level_id = repr_vl_id, .voltage_level = voltage_level, .conn_node_id = conn_node_id, .node = node };
+    return resolve_conn_node_placement(conn_node_id, index, voltage_level_map, node_map);
 }
 
 fn pre_allocate_transformers(

@@ -6,13 +6,7 @@ const print = @import("print.zig");
 const assert = std.debug.assert;
 const zip = @import("zip.zig");
 const cim_model = @import("cim_model.zig");
-const cim_index = @import("cim_index.zig");
-const iidm = @import("iidm.zig");
-const substation_conv = @import("convert/substation.zig");
-const voltage_level_conv = @import("convert/voltage_level.zig");
-const connection_conv = @import("convert/connection.zig");
-const equipment_conv = @import("convert/equipment.zig");
-const transformer_conv = @import("convert/transformer.zig");
+const converter = @import("converter.zig");
 
 pub fn main() !void {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -108,7 +102,6 @@ fn read_path(gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
 }
 
 fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[]const u8, output_path: ?[]const u8, verbose: bool) !void {
-    _ = output_path;
     _ = verbose;
 
     var xml = try read_path(gpa, input_path);
@@ -122,55 +115,22 @@ fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[
     var model = try cim_model.CimModel.init(gpa, xml);
     defer model.deinit(gpa);
 
-    const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
-    var index = try cim_index.CimIndex.build(gpa, &model, boundary_ids);
-    defer index.deinit(gpa);
-
-    var network = iidm.Network{
-        .id = "test",
-        .case_date = null,
-        .substations = .empty,
-        .lines = .empty,
-        .hvdc_lines = .empty,
-        .extensions = .empty,
-    };
+    var network = try converter.convert(gpa, &model);
     defer network.deinit(gpa);
 
-    var sub_id_map: std.StringHashMapUnmanaged(usize) = .empty;
-    defer sub_id_map.deinit(gpa);
-    try substation_conv.convert_substations(gpa, &model, &index, &network, &sub_id_map);
-    try print.stdout("Substations: {d}\n", .{network.substations.items.len});
-
-    try voltage_level_conv.convert_voltage_levels(gpa, &model, &index, &network, &sub_id_map);
     var total_vls: usize = 0;
-    for (network.substations.items) |sub| total_vls += sub.voltage_levels.items.len;
-    try print.stdout("VoltageLevels: {d}\n", .{total_vls});
-
-    var substation_map: std.StringHashMapUnmanaged(*iidm.Substation) = .empty;
-    defer substation_map.deinit(gpa);
-    var voltage_level_map = try voltage_level_conv.build_voltage_level_map(gpa, &model, &index, &network, &sub_id_map, &substation_map);
-    defer voltage_level_map.deinit(gpa);
-
-    var node_map = try connection_conv.build_node_map(gpa, &model, &index);
-    defer node_map.deinit(gpa);
-    try print.stdout("Nodes: {d}\n", .{node_map.count()});
-
-    try equipment_conv.pre_allocate_equipment(gpa, &model, &index, &voltage_level_map);
-    try equipment_conv.convert_busbar_sections(&model, &index, &voltage_level_map, &node_map);
-    try equipment_conv.convert_switches(&model, &index, &voltage_level_map, &node_map);
-    try equipment_conv.convert_loads(&model, &index, &voltage_level_map, &node_map);
-    try equipment_conv.convert_shunts(&model, &index, &voltage_level_map, &node_map);
-    try equipment_conv.convert_static_var_compensators(&model, &index, &voltage_level_map, &node_map);
-    try equipment_conv.convert_generators(gpa, &model, &index, &voltage_level_map, &node_map);
-    try transformer_conv.convert_transformers(gpa, &model, &index, &substation_map, &voltage_level_map, &node_map);
-
     var total_busbar_sections: usize = 0;
     var total_switches: usize = 0;
     var total_loads: usize = 0;
     var total_shunts: usize = 0;
     var total_svcs: usize = 0;
     var total_generators: usize = 0;
+    var total_2w: usize = 0;
+    var total_3w: usize = 0;
     for (network.substations.items) |sub| {
+        total_vls += sub.voltage_levels.items.len;
+        total_2w += sub.two_winding_transformers.items.len;
+        total_3w += sub.three_winding_transformers.items.len;
         for (sub.voltage_levels.items) |vl| {
             total_busbar_sections += vl.node_breaker_topology.busbar_sections.items.len;
             total_switches += vl.node_breaker_topology.switches.items.len;
@@ -180,21 +140,30 @@ fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[
             total_generators += vl.generators.items.len;
         }
     }
-    try print.stdout("BusbarSections: {d}\n", .{total_busbar_sections});
-    try print.stdout("Switches: {d}\n", .{total_switches});
-    try print.stdout("Loads: {d}\n", .{total_loads});
-    try print.stdout("Shunts: {d}\n", .{total_shunts});
-    try print.stdout("StaticVarCompensators: {d}\n", .{total_svcs});
-    try print.stdout("Generators: {d}\n", .{total_generators});
+    std.debug.print("Substations: {d}\n", .{network.substations.items.len});
+    std.debug.print("VoltageLevels: {d}\n", .{total_vls});
+    std.debug.print("BusbarSections: {d}\n", .{total_busbar_sections});
+    std.debug.print("Switches: {d}\n", .{total_switches});
+    std.debug.print("Loads: {d}\n", .{total_loads});
+    std.debug.print("Shunts: {d}\n", .{total_shunts});
+    std.debug.print("StaticVarCompensators: {d}\n", .{total_svcs});
+    std.debug.print("Generators: {d}\n", .{total_generators});
+    std.debug.print("2-winding transformers: {d}\n", .{total_2w});
+    std.debug.print("3-winding transformers: {d}\n", .{total_3w});
+    std.debug.print("Lines: {d}\n", .{network.lines.items.len});
 
-    var total_2w: usize = 0;
-    var total_3w: usize = 0;
-    for (network.substations.items) |sub| {
-        total_2w += sub.two_winding_transformers.items.len;
-        total_3w += sub.three_winding_transformers.items.len;
-    }
-    try print.stdout("2-winding transformers: {d}\n", .{total_2w});
-    try print.stdout("3-winding transformers: {d}\n", .{total_3w});
+    const cwd = std.fs.cwd();
+    const output_file = if (output_path) |path|
+        try cwd.createFile(path, .{})
+    else
+        std.fs.File.stdout();
+    defer if (output_path != null) output_file.close();
+
+    var write_buffer: [8192]u8 = undefined;
+    var file_writer = std.fs.File.Writer.init(output_file, &write_buffer);
+    try std.json.Stringify.value(network, .{}, &file_writer.interface);
+    try file_writer.interface.writeByte('\n');
+    try file_writer.interface.flush();
 }
 
 /// Read file into memory (used for unzipped usecase)

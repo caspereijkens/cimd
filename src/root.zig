@@ -5,4 +5,5 @@ comptime {
     _ = @import("test_utils.zig");
     _ = @import("cim_index.zig");
     _ = @import("convert/transformer.zig");
+    _ = @import("convert/placement.zig");
 }
