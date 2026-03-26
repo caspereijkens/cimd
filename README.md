@@ -1,6 +1,7 @@
 # cimd
 cimd is a high-performance tool for working with CGMES (Common Grid Model Exchange Standard) data.
 
+
 ## Pipeline
 
 cimd is a pipeline of the following stages:
@@ -63,3 +64,7 @@ CimModel
 ```
 
 And this should hold all the information to perform the cimd operations.
+
+
+## Conversion to JIIDM
+One of the main challenges in the JIIDM conversion is that some of the voltage levels are merged. This merge creates we have *stubs* and *representatives*: *stubs* are merged into *representatives*. So, each equipment that is referencing a CIM voltage level, has to be rerouted to its representative voltage level. In the majority of cases, the referenced voltage level *is* the representative, but in some minority of cases the referenced voltage level is a stub.  

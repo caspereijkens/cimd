@@ -6,11 +6,11 @@
 //! modified to extract ZIP archives directly into memory for in-memory processing.
 //!
 //! Key differences from std.zip:
-//! - Added `extractToMemory()` and `extractEntryToMemory()` functions that decompress
+//! - Added `extract_to_memory()` and `extract_entry_to_memory()` functions that decompress
 //!   to memory buffers instead of files
 //! - Removed ZIP64 support (files >4GB) to simplify code and match our u32 indexing limits
-//! - Added `isBadFilename()` helper (copied from std.zip internal)
-//! - Simplified `parseAndValidateLocalHeader()` by removing ZIP64 extra field parsing
+//! - Added `is_bad_filename()` helper (copied from std.zip internal)
+//! - Simplified `parse_and_validate_local_header()` by removing ZIP64 extra field parsing
 //!
 //! Functions marked "adapted from std.zip" contain logic derived from the standard library.
 //! Functions marked "custom implementation" are original to this project.
@@ -20,7 +20,7 @@
 const std = @import("std");
 
 // returns true if 'file' starts with PK34.
-pub fn isZipFile(file: std.fs.File) !bool {
+pub fn is_zip_file(file: std.fs.File) !bool {
     var magic: [4]u8 = undefined;
     const bytes_read = try file.pread(&magic, 0); // pread does not advance offset
 
@@ -43,7 +43,7 @@ pub const ExtractedFile = struct {
 
 /// Helper to check if filename contains path traversal or other unsafe patterns
 /// Copied from std.zip internal implementation
-fn isBadFilename(filename: []const u8) bool {
+fn is_bad_filename(filename: []const u8) bool {
     if (filename.len == 0 or filename[0] == '/')
         return true;
 
@@ -64,7 +64,7 @@ fn isBadFilename(filename: []const u8) bool {
 /// - Rejects files larger than 4GB (our SIMD scanner uses u32 positions)
 /// - Removed ZIP64 extra field parsing (significantly reduces complexity)
 /// - Removed timestamp and CRC validation (kept only critical fields)
-fn parseAndValidateLocalHeader(
+fn parse_and_validate_local_header(
     entry: std.zip.Iterator.Entry,
     stream: *std.fs.File.Reader,
 ) !u64 {
@@ -107,7 +107,7 @@ fn parseAndValidateLocalHeader(
 /// - The decompression logic (DEFLATE/STORE) is identical to std.zip
 ///
 /// Caller must call .deinit() on the result to free memory
-fn extractEntryToMemory(
+fn extract_entry_to_memory(
     entry: std.zip.Iterator.Entry,
     gpa: std.mem.Allocator,
     stream: *std.fs.File.Reader,
@@ -128,7 +128,7 @@ fn extractEntryToMemory(
     }
 
     // Parse and validate local header
-    const local_data_header_offset = try parseAndValidateLocalHeader(entry, stream);
+    const local_data_header_offset = try parse_and_validate_local_header(entry, stream);
 
     // Normalize backslashes to forward slashes if allowed
     if (options.allow_backslashes) {
@@ -139,7 +139,7 @@ fn extractEntryToMemory(
     }
 
     // Validate filename for security (no path traversal)
-    if (isBadFilename(filename))
+    if (is_bad_filename(filename))
         return error.ZipBadFilename;
 
     // Handle directory entries (end with '/')
@@ -197,19 +197,19 @@ fn extractEntryToMemory(
 ///
 /// Custom implementation for in-memory extraction.
 /// Uses std.zip.Iterator (from std lib) for ZIP parsing,
-/// but calls our custom extractEntryToMemory() instead of std.zip's file-based extraction.
+/// but calls our custom extract_entry_to_memory() instead of std.zip's file-based extraction.
 ///
 /// Caller must call .deinit() on each file and the ArrayList
 ///
 /// Example:
 /// ```
-/// var extracted = try extractToMemory(gpa, &file_reader, .{});
+/// var extracted = try extract_to_memory(gpa, &file_reader, .{});
 /// defer {
 ///     for (extracted.items) |f| f.deinit(gpa);
 ///     extracted.deinit(gpa);
 /// }
 /// ```
-pub fn extractToMemory(
+pub fn extract_to_memory(
     gpa: std.mem.Allocator,
     stream: *std.fs.File.Reader,
     options: std.zip.ExtractOptions,
@@ -225,7 +225,7 @@ pub fn extractToMemory(
     }
 
     while (try iter.next()) |entry| {
-        const extracted = try extractEntryToMemory(entry, gpa, stream, options);
+        const extracted = try extract_entry_to_memory(entry, gpa, stream, options);
         try result.append(gpa, extracted);
     }
 
@@ -239,7 +239,7 @@ pub fn extractToMemory(
 /// - Compares file sizes to determine if re-extraction needed
 /// - Returns list of extracted file paths
 ///
-/// For in-memory extraction, use extractToMemory() instead.
+/// For in-memory extraction, use extract_to_memory() instead.
 pub fn extract(gpa: std.mem.Allocator, dest: std.fs.Dir, fr: *std.fs.File.Reader, options: std.zip.ExtractOptions) !std.ArrayList([]const u8) {
     var extracted_files: std.ArrayList([]const u8) = .empty;
     errdefer {
@@ -298,7 +298,7 @@ pub fn extract(gpa: std.mem.Allocator, dest: std.fs.Dir, fr: *std.fs.File.Reader
     return extracted_files;
 }
 
-test "isZipFile" {
+test "is_zip_file" {
     // Happy flow
     var tmpdir = std.testing.tmpDir(.{});
     defer tmpdir.cleanup();
@@ -309,15 +309,15 @@ test "isZipFile" {
     var bytes = [_]u8{ 'P', 'K', 3, 4, 'Z', 'Z', 'Z' };
     _ = try file.pwrite(&bytes, 0);
 
-    try std.testing.expect(try isZipFile(file));
+    try std.testing.expect(try is_zip_file(file));
 
     // Unhappy flow 1: file too short
     try file.setEndPos(3); // this truncates the file.
-    try std.testing.expect(!(try isZipFile(file)));
+    try std.testing.expect(!(try is_zip_file(file)));
 
     // Unhappy flow 2: no local file header signature
     bytes = [_]u8{ 'Z', 'Z', 'Z', 'Z', 'Z', 'Z', 'Z' };
     _ = try file.pwrite(&bytes, 0);
 
-    try std.testing.expect(!(try isZipFile(file)));
+    try std.testing.expect(!(try is_zip_file(file)));
 }

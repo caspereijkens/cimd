@@ -9,10 +9,11 @@ else
     32;
 
 const Chunk = @Vector(VECTOR_LEN, u8);
+const Mask = std.meta.Int(.unsigned, VECTOR_LEN);
 
 /// Find all positions of a specific byte in the input using SIMD
 /// Returns an ArrayList of positions where the byte was found
-pub fn findByteSIMD(
+pub fn find_byte_simd(
     gpa: std.mem.Allocator,
     haystack: []const u8,
     needle: u8,
@@ -43,7 +44,7 @@ pub fn findByteSIMD(
             const offset = i + j * VECTOR_LEN;
             const chunk: Chunk = haystack[offset..][0..VECTOR_LEN].*;
             const matches: @Vector(VECTOR_LEN, bool) = chunk == all_needles;
-            const mask: u32 = @bitCast(matches);
+            const mask: Mask = @bitCast(matches);
 
             var m = mask;
             while (m != 0) {
@@ -59,7 +60,7 @@ pub fn findByteSIMD(
     while (i + VECTOR_LEN <= haystack.len) : (i += VECTOR_LEN) {
         const chunk: Chunk = haystack[i..][0..VECTOR_LEN].*;
         const matches: @Vector(VECTOR_LEN, bool) = chunk == all_needles;
-        const mask: u32 = @bitCast(matches);
+        const mask: Mask = @bitCast(matches);
 
         var m = mask;
         while (m != 0) {
@@ -91,7 +92,7 @@ pub const PatternMatch = struct {
 
 /// Verify needle at position and extract quoted value if match found
 /// Returns PatternMatch if pattern matches and closing quote is found, null otherwise
-pub fn verifyAndExtractPattern(
+pub fn verify_and_extract_pattern(
     haystack: []const u8,
     candidate_pos: usize,
     needle: []const u8,
@@ -120,7 +121,7 @@ pub fn verifyAndExtractPattern(
 /// Find all occurrences of a pattern followed by a quoted value
 /// Pattern example: "rdf:ID=\"" (8 bytes)
 /// Returns matches with position and extracted value location
-pub fn findPattern(
+pub fn find_pattern(
     gpa: std.mem.Allocator,
     haystack: []const u8,
     needle: []const u8,
@@ -149,14 +150,14 @@ pub fn findPattern(
             const offset = i + j * VECTOR_LEN;
             const chunk: Chunk = haystack[offset..][0..VECTOR_LEN].*;
             const matches: @Vector(VECTOR_LEN, bool) = chunk == all_first_bytes;
-            const mask: u32 = @bitCast(matches);
+            const mask: Mask = @bitCast(matches);
 
             var m = mask;
             while (m != 0) {
                 const bit_pos = @ctz(m);
                 const candidate_pos = offset + bit_pos;
 
-                if (verifyAndExtractPattern(haystack, candidate_pos, needle)) |match| {
+                if (verify_and_extract_pattern(haystack, candidate_pos, needle)) |match| {
                     result.appendAssumeCapacity(match);
                 }
 
@@ -169,14 +170,14 @@ pub fn findPattern(
     while (i + VECTOR_LEN <= haystack.len) : (i += VECTOR_LEN) {
         const chunk: Chunk = haystack[i..][0..VECTOR_LEN].*;
         const matches: @Vector(VECTOR_LEN, bool) = chunk == all_first_bytes;
-        const mask: u32 = @bitCast(matches);
+        const mask: Mask = @bitCast(matches);
 
         var m = mask;
         while (m != 0) {
             const bit_pos = @ctz(m);
             const candidate_pos = i + bit_pos;
 
-            if (verifyAndExtractPattern(haystack, candidate_pos, needle)) |match| {
+            if (verify_and_extract_pattern(haystack, candidate_pos, needle)) |match| {
                 result.appendAssumeCapacity(match);
             }
 
@@ -187,7 +188,7 @@ pub fn findPattern(
     // Scalar remainder
     while (i < haystack.len) : (i += 1) {
         if (haystack[i] == first_byte) {
-            if (verifyAndExtractPattern(haystack, i, needle)) |match| {
+            if (verify_and_extract_pattern(haystack, i, needle)) |match| {
                 result.appendAssumeCapacity(match);
             }
         }
@@ -207,7 +208,7 @@ pub const TagBoundary = struct {
 /// Find all XML tag boundaries by pairing '<' and '>' characters
 /// Uses SIMD to find delimiters, then pairs them sequentially
 /// Returns ArrayList of TagBoundary in document order
-pub fn findTagBoundaries(
+pub fn find_tag_boundaries(
     gpa: std.mem.Allocator,
     xml: []const u8,
 ) !std.ArrayList(TagBoundary) {
@@ -217,11 +218,11 @@ pub fn findTagBoundaries(
     if (xml.len == 0) return result;
 
     // Find all '<'
-    var lt_positions = try findByteSIMD(gpa, xml, '<');
+    var lt_positions = try find_byte_simd(gpa, xml, '<');
     defer lt_positions.deinit(gpa);
 
     // Find all '>'
-    var gt_positions = try findByteSIMD(gpa, xml, '>');
+    var gt_positions = try find_byte_simd(gpa, xml, '>');
     defer gt_positions.deinit(gpa);
 
     if (lt_positions.items.len == 0 and gt_positions.items.len == 0) return result;
@@ -245,7 +246,7 @@ pub fn findTagBoundaries(
 
 /// Extract tag type from XML tag, stripping namespace
 /// Example: "<cim:Substation rdf:ID="_SS1">" → "Substation"
-pub fn extractTagType(slice: []const u8, start_idx: u32) error{MalformedTag}![]const u8 {
+pub fn extract_tag_type(slice: []const u8, start_idx: u32) error{MalformedTag}![]const u8 {
     const colon_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, ':') orelse return error.MalformedTag;
     const end_idx = std.mem.indexOfAnyPos(u8, slice, colon_idx, " >") orelse return error.MalformedTag;
     return slice[colon_idx + 1 .. end_idx];
@@ -255,7 +256,7 @@ pub fn extractTagType(slice: []const u8, start_idx: u32) error{MalformedTag}![]c
 /// Example: "<cim:Substation rdf:ID="_SS1">" → "_SS1"
 /// Returns error.NoRdfId if tag doesn't have rdf:ID
 /// Returns error.MalformedTag if rdf:ID exists but is malformed
-pub fn extractRdfId(slice: []const u8, start_idx: u32) error{ NoRdfId, MalformedTag }![]const u8 {
+pub fn extract_rdf_id(slice: []const u8, start_idx: u32) error{ NoRdfId, MalformedTag }![]const u8 {
     const gt_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, '>') orelse return error.MalformedTag;
 
     const pattern = "rdf:ID=\"";
@@ -277,7 +278,7 @@ pub fn extractRdfId(slice: []const u8, start_idx: u32) error{ NoRdfId, Malformed
 /// Example: "<md:FullModel rdf:about="urn:uuid:...">" → "urn:uuid:..."
 /// Returns error.NoRdfAbout if tag doesn't have rdf:about
 /// Returns error.MalformedTag if rdf:about exists but is malformed
-pub fn extractRdfAbout(slice: []const u8, start_idx: u32) error{ NoRdfAbout, MalformedTag }![]const u8 {
+pub fn extract_rdf_about(slice: []const u8, start_idx: u32) error{ NoRdfAbout, MalformedTag }![]const u8 {
     const gt_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, '>') orelse return error.MalformedTag;
 
     const pattern = "rdf:about=\"";
@@ -298,7 +299,7 @@ pub fn extractRdfAbout(slice: []const u8, start_idx: u32) error{ NoRdfAbout, Mal
 /// Extract rdf:Resource value from an XML tag
 /// Returns error.NoRdfResource if tag doesn't have rdf:Resource
 /// Returns error.MalformedTag if rdf:Resource exists but is malformed
-pub fn extractRdfResource(slice: []const u8, start_idx: u32) error{MalformedTag}!?[]const u8 {
+pub fn extract_rdf_resource(slice: []const u8, start_idx: u32) error{MalformedTag}!?[]const u8 {
     const gt_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, '>') orelse return error.MalformedTag;
 
     const pattern = "rdf:resource=\"";
@@ -316,7 +317,7 @@ pub fn extractRdfResource(slice: []const u8, start_idx: u32) error{MalformedTag}
     return slice[value_start_idx..value_end_idx];
 }
 
-pub fn findClosingTag(
+pub fn find_closing_tag(
     xml: []const u8,
     boundaries: []const TagBoundary,
     opening_tag_idx: u32,
@@ -330,18 +331,18 @@ pub fn findClosingTag(
     if (xml[opening_tag.end - 1] == '/') return error.SelfClosingTag;
 
     var depth: u32 = 1;
-    const opening_tag_type = try extractTagType(xml, opening_tag.start);
+    const opening_tag_type = try extract_tag_type(xml, opening_tag.start);
     return blk: {
         for (boundaries[opening_tag_idx + 1 ..], opening_tag_idx + 1..) |tag, i| {
             if (xml[tag.start + 1] == '/') {
-                const tag_type = extractTagType(xml, tag.start + 1) catch continue;
+                const tag_type = extract_tag_type(xml, tag.start + 1) catch continue;
                 if (std.mem.eql(u8, opening_tag_type, tag_type)) {
                     depth -= 1;
                     if (depth == 0) break :blk @intCast(i);
                 }
             } else if (xml[tag.end - 1] != '/') {
                 // Opening tag (not self-closing)
-                const tag_type = extractTagType(xml, tag.start) catch continue;
+                const tag_type = extract_tag_type(xml, tag.start) catch continue;
                 if (std.mem.eql(u8, opening_tag_type, tag_type)) {
                     depth += 1;
                 }
@@ -351,7 +352,7 @@ pub fn findClosingTag(
     };
 }
 
-pub fn getPropertyFromIndices(
+pub fn get_property_from_indices(
     xml: []const u8,
     boundaries: []const TagBoundary,
     opening_tag_idx: u32,
@@ -372,7 +373,7 @@ pub fn getPropertyFromIndices(
             // Skip closing and self-closing tags
             continue;
         }
-        const tag_type = extractTagType(xml, tag.start) catch continue;
+        const tag_type = extract_tag_type(xml, tag.start) catch continue;
         if (std.mem.eql(u8, tag_type, property_name)) {
             return xml[tag.end + 1 .. boundaries[i + 1].start];
         }
@@ -380,7 +381,7 @@ pub fn getPropertyFromIndices(
     return null;
 }
 
-pub fn getReferenceFromIndices(
+pub fn get_reference_from_indices(
     xml: []const u8,
     boundaries: []const TagBoundary,
     opening_tag_idx: u32,
@@ -401,9 +402,9 @@ pub fn getReferenceFromIndices(
             // Skip closing tags
             continue;
         }
-        const tag_type = extractTagType(xml, tag.start) catch continue;
+        const tag_type = extract_tag_type(xml, tag.start) catch continue;
         if (std.mem.eql(u8, tag_type, property_name)) {
-            return extractRdfResource(xml, tag.start);
+            return extract_rdf_resource(xml, tag.start);
         }
     }
     return null;
@@ -428,8 +429,8 @@ pub const CimObject = struct {
         closing_tag_idx: u32,
     ) error{ NoRdfId, NoRdfAbout, MalformedTag }!CimObject {
         const start = boundaries[object_tag_idx].start;
-        const id = extractRdfId(xml, start) catch |err| switch (err) {
-            error.NoRdfId => try extractRdfAbout(xml, start),
+        const id = extract_rdf_id(xml, start) catch |err| switch (err) {
+            error.NoRdfId => try extract_rdf_about(xml, start),
             error.MalformedTag => return error.MalformedTag,
         };
         return .{
@@ -438,20 +439,20 @@ pub const CimObject = struct {
             .object_tag_idx = object_tag_idx,
             .closing_tag_idx = closing_tag_idx,
             .id = id,
-            .type_name = try extractTagType(xml, boundaries[object_tag_idx].start),
+            .type_name = try extract_tag_type(xml, boundaries[object_tag_idx].start),
         };
     }
 
     /// Get a text property value by name
     /// Returns null if property doesn't exist
     pub fn getProperty(self: CimObject, property_name: []const u8) error{MalformedTag}!?[]const u8 {
-        return getPropertyFromIndices(self.xml, self.boundaries, self.object_tag_idx, self.closing_tag_idx, property_name);
+        return get_property_from_indices(self.xml, self.boundaries, self.object_tag_idx, self.closing_tag_idx, property_name);
     }
 
     /// Get a reference (rdf:resource) value by name
     /// Returns null if property doesn't exist or has no rdf:resource
     pub fn getReference(self: CimObject, property_name: []const u8) error{MalformedTag}!?[]const u8 {
-        return getReferenceFromIndices(self.xml, self.boundaries, self.object_tag_idx, self.closing_tag_idx, property_name);
+        return get_reference_from_indices(self.xml, self.boundaries, self.object_tag_idx, self.closing_tag_idx, property_name);
     }
 
     /// Batch-fetch multiple text properties in a single scan through child tags.
@@ -467,7 +468,7 @@ pub const CimObject = struct {
         for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx], self.object_tag_idx + 1..) |tag, tag_idx| {
             if (self.xml[tag.start + 1] == '/' or self.xml[tag.end - 1] == '/') continue;
 
-            const tag_type = extractTagType(self.xml, tag.start) catch continue;
+            const tag_type = extract_tag_type(self.xml, tag.start) catch continue;
 
             inline for (names, 0..) |name, idx| {
                 if (result[idx] == null and std.mem.eql(u8, tag_type, name)) {
@@ -494,11 +495,11 @@ pub const CimObject = struct {
         for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx]) |tag| {
             if (self.xml[tag.start + 1] == '/') continue;
 
-            const tag_type = extractTagType(self.xml, tag.start) catch continue;
+            const tag_type = extract_tag_type(self.xml, tag.start) catch continue;
 
             inline for (names, 0..) |name, idx| {
                 if (result[idx] == null and std.mem.eql(u8, tag_type, name)) {
-                    result[idx] = try extractRdfResource(self.xml, tag.start);
+                    result[idx] = try extract_rdf_resource(self.xml, tag.start);
                     found_count += 1;
                     if (found_count == names.len) return result;
                 }
@@ -525,8 +526,8 @@ pub const CimObject = struct {
             if (self.xml[tag.end - 1] == '/') {
                 continue;
             }
-            const tag_type = try extractTagType(self.xml, tag.start);
-            const reference = try extractRdfResource(self.xml, tag.start);
+            const tag_type = try extract_tag_type(self.xml, tag.start);
+            const reference = try extract_rdf_resource(self.xml, tag.start);
             if (reference != null) {
                 continue;
             }
@@ -552,8 +553,8 @@ pub const CimObject = struct {
                 continue;
             }
 
-            const tag_type = extractTagType(self.xml, tag.start) catch continue;
-            const reference = extractRdfResource(self.xml, tag.start) catch continue;
+            const tag_type = extract_tag_type(self.xml, tag.start) catch continue;
+            const reference = extract_rdf_resource(self.xml, tag.start) catch continue;
 
             if (reference) |ref_value| {
                 try result.put(tag_type, ref_value);

@@ -5,9 +5,7 @@ const build_options = @import("build_options");
 const print = @import("print.zig");
 const assert = std.debug.assert;
 const zip = @import("zip.zig");
-const tag_index = @import("tag_index.zig");
 const cim_model = @import("cim_model.zig");
-const topology = @import("topology.zig");
 const converter = @import("converter.zig");
 
 pub fn main() !void {
@@ -52,10 +50,10 @@ fn command_index(gpa: std.mem.Allocator, paths: []const []const u8) !void {
         const file = try cwd.openFile(path, .{});
         defer file.close();
 
-        if (try zip.isZipFile(file)) {
+        if (try zip.is_zip_file(file)) {
             // ZIP file: extract to memory and process each contained file
             var file_reader = file.reader(&buffer);
-            var extracted_files = try zip.extractToMemory(gpa, &file_reader, .{});
+            var extracted_files = try zip.extract_to_memory(gpa, &file_reader, .{});
             defer {
                 for (extracted_files.items) |extracted_file| {
                     extracted_file.deinit(gpa);
@@ -69,109 +67,107 @@ fn command_index(gpa: std.mem.Allocator, paths: []const []const u8) !void {
                 var model = try cim_model.CimModel.init(gpa, extracted_file.data);
                 defer model.deinit(gpa);
 
-                try print.displayObjectInventory(gpa, model);
+                try print.display_object_inventory(gpa, model);
                 try print.stdout("\n", .{});
             }
         } else {
             // Regular XML file: read to memory and process
             try print.stdout("File: {s}\n", .{path});
 
-            const xml = try readFileToMemory(gpa, file);
+            const xml = try read_file_to_memory(gpa, file);
             defer gpa.free(xml);
 
             var model = try cim_model.CimModel.init(gpa, xml);
             defer model.deinit(gpa);
 
-            try print.displayObjectInventory(gpa, model);
+            try print.display_object_inventory(gpa, model);
         }
     }
 }
 
-fn readPath(gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
+fn read_path(gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
     const cwd = std.fs.cwd();
 
     const file = try cwd.openFile(file_path, .{});
     defer file.close();
 
-    if (try zip.isZipFile(file)) {
+    if (try zip.is_zip_file(file)) {
         var zip_buffer: [4096]u8 = undefined;
         var file_reader = file.reader(&zip_buffer);
-        const extracted_files = try zip.extractToMemory(gpa, &file_reader, .{});
+        const extracted_files = try zip.extract_to_memory(gpa, &file_reader, .{});
         return extracted_files.items[0].data;
     } else {
-        return try readFileToMemory(gpa, file);
+        return try read_file_to_memory(gpa, file);
     }
 }
 
 fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[]const u8, output_path: ?[]const u8, verbose: bool) !void {
-    var total_timer = std.time.Timer.start() catch unreachable;
+    _ = verbose;
 
-    var stage_timer = std.time.Timer.start() catch unreachable;
-    var xml = try readPath(gpa, input_path);
+    var xml = try read_path(gpa, input_path);
 
     if (eqbd_path) |path| {
-        const eqbd_xml = try readPath(gpa, path);
-        defer gpa.free(eqbd_xml);
-
+        const eqbd_xml = try read_path(gpa, path);
         const merged = try std.mem.concat(gpa, u8, &[_][]const u8{ xml, eqbd_xml });
-        gpa.free(xml);
-
         xml = merged;
     }
-    defer gpa.free(xml);
-    if (verbose) printTiming("Read files", stage_timer.read());
 
-    stage_timer.reset();
     var model = try cim_model.CimModel.init(gpa, xml);
     defer model.deinit(gpa);
-    if (verbose) printTiming("Build model", stage_timer.read());
 
-    stage_timer.reset();
-    var topo = try topology.TopologyResolver.init(gpa, &model);
-    defer topo.deinit();
-    if (verbose) printTiming("Build topology", stage_timer.read());
-
-    stage_timer.reset();
-    var conv = converter.Converter.init(gpa, &model, &topo, verbose);
-    var network = try conv.convert();
+    var network = try converter.convert(gpa, &model);
     defer network.deinit(gpa);
-    if (verbose) printTiming("Convert", stage_timer.read());
 
-    // Create output file or use stdout
+    var total_voltage_levels: usize = 0;
+    var total_busbar_sections: usize = 0;
+    var total_switches: usize = 0;
+    var total_loads: usize = 0;
+    var total_shunts: usize = 0;
+    var total_svcs: usize = 0;
+    var total_generators: usize = 0;
+    var total_2w: usize = 0;
+    var total_3w: usize = 0;
+    for (network.substations.items) |substation| {
+        total_voltage_levels += substation.voltage_levels.items.len;
+        total_2w += substation.two_winding_transformers.items.len;
+        total_3w += substation.three_winding_transformers.items.len;
+        for (substation.voltage_levels.items) |voltage_level| {
+            total_busbar_sections += voltage_level.node_breaker_topology.busbar_sections.items.len;
+            total_switches += voltage_level.node_breaker_topology.switches.items.len;
+            total_loads += voltage_level.loads.items.len;
+            total_shunts += voltage_level.shunts.items.len;
+            total_svcs += voltage_level.static_var_compensators.items.len;
+            total_generators += voltage_level.generators.items.len;
+        }
+    }
+    std.debug.print("Substations: {d}\n", .{network.substations.items.len});
+    std.debug.print("VoltageLevels: {d}\n", .{total_voltage_levels});
+    std.debug.print("BusbarSections: {d}\n", .{total_busbar_sections});
+    std.debug.print("Switches: {d}\n", .{total_switches});
+    std.debug.print("Loads: {d}\n", .{total_loads});
+    std.debug.print("Shunts: {d}\n", .{total_shunts});
+    std.debug.print("StaticVarCompensators: {d}\n", .{total_svcs});
+    std.debug.print("Generators: {d}\n", .{total_generators});
+    std.debug.print("2-winding transformers: {d}\n", .{total_2w});
+    std.debug.print("3-winding transformers: {d}\n", .{total_3w});
+    std.debug.print("Lines: {d}\n", .{network.lines.items.len});
+
     const cwd = std.fs.cwd();
-
     const output_file = if (output_path) |path|
         try cwd.createFile(path, .{})
     else
         std.fs.File.stdout();
     defer if (output_path != null) output_file.close();
 
-    // Create File.Writer with buffer, then use its .interface
     var write_buffer: [8192]u8 = undefined;
     var file_writer = std.fs.File.Writer.init(output_file, &write_buffer);
-
-    stage_timer.reset();
     try std.json.Stringify.value(network, .{}, &file_writer.interface);
     try file_writer.interface.writeByte('\n');
     try file_writer.interface.flush();
-    if (verbose) printTiming("JSON serialize", stage_timer.read());
-
-    if (verbose) printTiming("Total", total_timer.read());
-}
-
-fn printTiming(label: []const u8, nanoseconds: u64) void {
-    const milliseconds = @as(f64, @floatFromInt(nanoseconds)) / 1_000_000.0;
-    var buf: [256]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, "[verbose] {s}: {d:.1} ms\n", .{ label, milliseconds }) catch return;
-    _ = std.fs.File.stderr().write(msg) catch {};
-}
-
-fn command_not_implemented(comptime command_name: []const u8) !void {
-    try print.stdout("Command '{s}' - to be implemented\n", .{command_name});
 }
 
 /// Read file into memory (used for unzipped usecase)
-pub fn readFileToMemory(
+pub fn read_file_to_memory(
     gpa: std.mem.Allocator,
     file: std.fs.File,
 ) ![]u8 {
