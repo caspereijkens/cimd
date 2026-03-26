@@ -50,10 +50,10 @@ fn command_index(gpa: std.mem.Allocator, paths: []const []const u8) !void {
         const file = try cwd.openFile(path, .{});
         defer file.close();
 
-        if (try zip.isZipFile(file)) {
+        if (try zip.is_zip_file(file)) {
             // ZIP file: extract to memory and process each contained file
             var file_reader = file.reader(&buffer);
-            var extracted_files = try zip.extractToMemory(gpa, &file_reader, .{});
+            var extracted_files = try zip.extract_to_memory(gpa, &file_reader, .{});
             defer {
                 for (extracted_files.items) |extracted_file| {
                     extracted_file.deinit(gpa);
@@ -67,20 +67,20 @@ fn command_index(gpa: std.mem.Allocator, paths: []const []const u8) !void {
                 var model = try cim_model.CimModel.init(gpa, extracted_file.data);
                 defer model.deinit(gpa);
 
-                try print.displayObjectInventory(gpa, model);
+                try print.display_object_inventory(gpa, model);
                 try print.stdout("\n", .{});
             }
         } else {
             // Regular XML file: read to memory and process
             try print.stdout("File: {s}\n", .{path});
 
-            const xml = try readFileToMemory(gpa, file);
+            const xml = try read_file_to_memory(gpa, file);
             defer gpa.free(xml);
 
             var model = try cim_model.CimModel.init(gpa, xml);
             defer model.deinit(gpa);
 
-            try print.displayObjectInventory(gpa, model);
+            try print.display_object_inventory(gpa, model);
         }
     }
 }
@@ -91,13 +91,13 @@ fn read_path(gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
     const file = try cwd.openFile(file_path, .{});
     defer file.close();
 
-    if (try zip.isZipFile(file)) {
+    if (try zip.is_zip_file(file)) {
         var zip_buffer: [4096]u8 = undefined;
         var file_reader = file.reader(&zip_buffer);
-        const extracted_files = try zip.extractToMemory(gpa, &file_reader, .{});
+        const extracted_files = try zip.extract_to_memory(gpa, &file_reader, .{});
         return extracted_files.items[0].data;
     } else {
-        return try readFileToMemory(gpa, file);
+        return try read_file_to_memory(gpa, file);
     }
 }
 
@@ -167,7 +167,7 @@ fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[
 }
 
 /// Read file into memory (used for unzipped usecase)
-pub fn readFileToMemory(
+pub fn read_file_to_memory(
     gpa: std.mem.Allocator,
     file: std.fs.File,
 ) ![]u8 {

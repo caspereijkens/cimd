@@ -51,7 +51,7 @@ fn writeFloat(jws: anytype, value: f64) !void {
 }
 
 /// Write an optional float to JSON
-fn writeOptionalFloat(jws: anytype, value: ?f64) !void {
+fn write_optional_float(jws: anytype, value: ?f64) !void {
     if (value) |v| {
         try writeFloat(jws, v);
     } else {
@@ -60,7 +60,7 @@ fn writeOptionalFloat(jws: anytype, value: ?f64) !void {
 }
 
 /// Write an operational limits group array if non-empty
-fn writeOpLimsGroups(jws: anytype, field_name: []const u8, groups: std.ArrayListUnmanaged(OperationalLimitsGroup)) !void {
+fn write_op_lims_groups(jws: anytype, field_name: []const u8, groups: std.ArrayListUnmanaged(OperationalLimitsGroup)) !void {
     if (groups.items.len > 0) {
         try jws.objectField(field_name);
         try jws.beginArray();
@@ -72,9 +72,9 @@ fn writeOpLimsGroups(jws: anytype, field_name: []const u8, groups: std.ArrayList
 }
 
 /// Write a float, using scientific notation for very large values
-fn writeFloatAuto(jws: anytype, value: f64) !void {
+fn write_float_auto(jws: anytype, value: f64) !void {
     if (@abs(value) >= 1e10) {
-        try writeFloatScientific(jws, value);
+        try write_float_scientific(jws, value);
     } else {
         try writeFloat(jws, value);
     }
@@ -82,7 +82,7 @@ fn writeFloatAuto(jws: anytype, value: f64) !void {
 
 /// Format a float string to ensure it has a decimal point (e.g., "100" -> "100.0")
 /// Returns the original string if it already has a decimal, otherwise allocates a new one.
-pub fn formatFloatStr(allocator: std.mem.Allocator, str: []const u8) ![]const u8 {
+pub fn format_float_str(allocator: std.mem.Allocator, str: []const u8) ![]const u8 {
     // If string is in scientific notation (contains 'e'/'E'), parse and reformat as
     // fixed-point decimal to match Java's Double.toString behaviour (e.g. "1250000.0").
     const has_exp = std.mem.indexOfAny(u8, str, "eE") != null;
@@ -108,7 +108,7 @@ pub fn formatFloatStr(allocator: std.mem.Allocator, str: []const u8) ![]const u8
 }
 
 /// Write a date string with milliseconds (e.g., "2017-06-25T16:43:00.000Z")
-fn writeDateWithMillis(jws: anytype, date: ?[]const u8) !void {
+fn write_date_with_millis(jws: anytype, date: ?[]const u8) !void {
     if (date) |d| {
         // Check if already has milliseconds (contains a dot before Z)
         if (std.mem.lastIndexOfScalar(u8, d, '.')) |_| {
@@ -473,14 +473,14 @@ pub const MinMaxReactiveLimits = struct {
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
         try jws.beginObject();
         try jws.objectField("minQ");
-        try writeFloatScientific(jws, self.min_q);
+        try write_float_scientific(jws, self.min_q);
         try jws.objectField("maxQ");
-        try writeFloatScientific(jws, self.max_q);
+        try write_float_scientific(jws, self.max_q);
         try jws.endObject();
     }
 };
 
-fn writeFloatScientific(jws: anytype, value: f64) !void {
+fn write_float_scientific(jws: anytype, value: f64) !void {
     var buf: [32]u8 = undefined;
     const formatted = std.fmt.bufPrint(&buf, "{e}", .{value}) catch {
         try jws.write(value);
@@ -528,9 +528,9 @@ pub const Generator = struct {
         try jws.objectField("energySource");
         try jws.write(self.energy_source);
         try jws.objectField("minP");
-        try writeOptionalFloat(jws, self.min_p);
+        try write_optional_float(jws, self.min_p);
         try jws.objectField("maxP");
-        try writeOptionalFloat(jws, self.max_p);
+        try write_optional_float(jws, self.max_p);
         if (self.rated_s) |rs| {
             try jws.objectField("ratedS");
             try writeFloat(jws, rs);
@@ -747,7 +747,7 @@ pub const NodeBreakerTopology = struct {
 pub const VoltageLevel = struct {
     id: []const u8,
     name: ?[]const u8,
-    nominal_voltage: ?f64,
+    nominal_voltageoltage: ?f64,
     low_voltage_limit: ?f64,
     high_voltage_limit: ?f64,
     aliases: std.ArrayListUnmanaged(Alias),
@@ -767,11 +767,11 @@ pub const VoltageLevel = struct {
         try jws.objectField("name");
         try jws.write(self.name);
         try jws.objectField("nominalV");
-        try writeOptionalFloat(jws, self.nominal_voltage);
+        try write_optional_float(jws, self.nominal_voltageoltage);
         try jws.objectField("lowVoltageLimit");
-        try writeOptionalFloat(jws, self.low_voltage_limit);
+        try write_optional_float(jws, self.low_voltage_limit);
         try jws.objectField("highVoltageLimit");
-        try writeOptionalFloat(jws, self.high_voltage_limit);
+        try write_optional_float(jws, self.high_voltage_limit);
         try jws.objectField("topologyKind");
         try jws.write("NODE_BREAKER");
         if (self.aliases.items.len > 0) {
@@ -848,7 +848,7 @@ pub const VoltageLevel = struct {
 pub const FictitiousVoltageLevel = struct {
     id: []const u8,
     name: ?[]const u8,
-    nominal_v: ?f64,
+    nominal_voltage: ?f64,
     line_container_id: []const u8,
     internal_connections: std.ArrayListUnmanaged(InternalConnection) = .empty,
     generators: std.ArrayListUnmanaged(Generator) = .empty,
@@ -862,7 +862,7 @@ pub const FictitiousVoltageLevel = struct {
         try jws.objectField("fictitious");
         try jws.write(true);
         try jws.objectField("nominalV");
-        try writeOptionalFloat(jws, self.nominal_v);
+        try write_optional_float(jws, self.nominal_voltage);
         try jws.objectField("topologyKind");
         try jws.write("NODE_BREAKER");
         try jws.objectField("properties");
@@ -1043,7 +1043,7 @@ pub const TemporaryLimit = struct {
             try jws.write(dur);
         }
         try jws.objectField("value");
-        try writeFloatAuto(jws, self.value);
+        try write_float_auto(jws, self.value);
         try jws.endObject();
     }
 };
@@ -1168,8 +1168,8 @@ pub const TwoWindingsTransformer = struct {
             try jws.objectField("phaseTapChanger");
             try jws.write(tc);
         }
-        try writeOpLimsGroups(jws, "operationalLimitsGroups1", self.op_lims_groups1);
-        try writeOpLimsGroups(jws, "operationalLimitsGroups2", self.op_lims_groups2);
+        try write_op_lims_groups(jws, "operationalLimitsGroups1", self.op_lims_groups1);
+        try write_op_lims_groups(jws, "operationalLimitsGroups2", self.op_lims_groups2);
         try jws.endObject();
     }
 
@@ -1321,9 +1321,9 @@ pub const ThreeWindingsTransformer = struct {
             try jws.objectField("ratioTapChanger3");
             try jws.write(tc);
         }
-        try writeOpLimsGroups(jws, "operationalLimitsGroups1", self.op_lims_groups1);
-        try writeOpLimsGroups(jws, "operationalLimitsGroups2", self.op_lims_groups2);
-        try writeOpLimsGroups(jws, "operationalLimitsGroups3", self.op_lims_groups3);
+        try write_op_lims_groups(jws, "operationalLimitsGroups1", self.op_lims_groups1);
+        try write_op_lims_groups(jws, "operationalLimitsGroups2", self.op_lims_groups2);
+        try write_op_lims_groups(jws, "operationalLimitsGroups3", self.op_lims_groups3);
         try jws.endObject();
     }
 
@@ -1474,8 +1474,8 @@ pub const Line = struct {
             try jws.objectField("properties");
             try jws.write(self.properties.items);
         }
-        try writeOpLimsGroups(jws, "operationalLimitsGroups1", self.op_lims_groups1);
-        try writeOpLimsGroups(jws, "operationalLimitsGroups2", self.op_lims_groups2);
+        try write_op_lims_groups(jws, "operationalLimitsGroups1", self.op_lims_groups1);
+        try write_op_lims_groups(jws, "operationalLimitsGroups2", self.op_lims_groups2);
         try jws.endObject();
     }
 
@@ -1509,7 +1509,7 @@ pub const HvdcLine = struct {
     id: []const u8,
     name: ?[]const u8,
     r: f64,
-    nominal_v: f64,
+    nominal_voltage: f64,
     converters_mode: HvdcConvertersMode,
     active_power_setpoint: f64,
     max_p: f64,
@@ -1526,7 +1526,7 @@ pub const HvdcLine = struct {
         try jws.objectField("r");
         try writeFloat(jws, self.r);
         try jws.objectField("nominalV");
-        try writeFloat(jws, self.nominal_v);
+        try writeFloat(jws, self.nominal_voltage);
         try jws.objectField("convertersMode");
         try self.converters_mode.jsonStringify(jws);
         try jws.objectField("activePowerSetpoint");
@@ -1678,14 +1678,14 @@ pub const CgmesMetadataModels = struct {
 };
 
 pub const BaseVoltage = struct {
-    nominal_voltage: f64,
+    nominal_voltageoltage: f64,
     source: []const u8,
     id: []const u8,
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
         try jws.beginObject();
         try jws.objectField("nominalVoltage");
-        try writeFloat(jws, self.nominal_voltage);
+        try writeFloat(jws, self.nominal_voltageoltage);
         try jws.objectField("source");
         try jws.write(self.source);
         try jws.objectField("id");
@@ -1885,7 +1885,7 @@ pub const Network = struct {
         try jws.objectField("id");
         try jws.write(self.id);
         try jws.objectField("caseDate");
-        try writeDateWithMillis(jws, self.case_date);
+        try write_date_with_millis(jws, self.case_date);
         try jws.objectField("forecastDistance");
         try jws.write(self.forecast_distance);
         try jws.objectField("sourceFormat");

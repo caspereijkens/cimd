@@ -80,7 +80,6 @@ pub const CimIndex = struct {
     // BaseVoltage mRIDs from the EQBD boundary file
     boundary_base_voltage_ids: std.StringHashMapUnmanaged(void),
 
-
     pub fn build(
         gpa: std.mem.Allocator,
         model: *const CimModel,
@@ -185,7 +184,7 @@ fn create_empty_cim_index() CimIndex {
 
 fn build_limit_types(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
     assert(index.limit_types.count() == 0);
-    const objects = model.getObjectsByType("OperationalLimitType");
+    const objects = model.get_objects_by_type("OperationalLimitType");
     try index.limit_types.ensureTotalCapacity(gpa, @intCast(objects.len));
     for (objects) |obj| {
         const is_inf = try obj.getProperty("OperationalLimitType.isInfiniteDuration") orelse "false";
@@ -201,7 +200,7 @@ fn build_limit_types(gpa: std.mem.Allocator, model: *const cim_model.CimModel, i
 fn build_terminals(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
     assert(index.terminal_equipment.count() == 0);
 
-    const objects = model.getObjectsByType("Terminal");
+    const objects = model.get_objects_by_type("Terminal");
 
     try index.terminal_equipment.ensureTotalCapacity(gpa, @intCast(objects.len));
     try index.terminal_conn_node.ensureTotalCapacity(gpa, @intCast(objects.len));
@@ -256,7 +255,7 @@ fn build_connectivity(gpa: std.mem.Allocator, model: *const cim_model.CimModel, 
     assert(index.conn_node_container.count() == 0);
     assert(index.busbar_section_in_parse_order.items.len == 0);
 
-    const busbar_sections = model.getObjectsByType("BusbarSection");
+    const busbar_sections = model.get_objects_by_type("BusbarSection");
     try index.conn_node_to_busbar_section.ensureTotalCapacity(gpa, @intCast(busbar_sections.len));
 
     for (busbar_sections) |busbar_section| {
@@ -271,7 +270,7 @@ fn build_connectivity(gpa: std.mem.Allocator, model: *const cim_model.CimModel, 
         index.conn_node_to_busbar_section.putAssumeCapacity(conn_node_id, busbar_section_mrid);
     }
 
-    const conn_nodes = model.getObjectsByType("ConnectivityNode");
+    const conn_nodes = model.get_objects_by_type("ConnectivityNode");
 
     try index.conn_node_container.ensureTotalCapacity(gpa, @intCast(conn_nodes.len));
     try index.busbar_section_in_parse_order.ensureTotalCapacity(gpa, busbar_sections.len);
@@ -304,7 +303,7 @@ fn build_operational_limits(gpa: std.mem.Allocator, model: *const cim_model.CimM
     assert(index.terminal_limit_sets.count() == 0);
     assert(index.current_limits_by_set.count() == 0);
 
-    const op_lim_sets = model.getObjectsByType("OperationalLimitSet");
+    const op_lim_sets = model.get_objects_by_type("OperationalLimitSet");
     try index.terminal_limit_sets.ensureTotalCapacity(gpa, @intCast(op_lim_sets.len));
 
     for (op_lim_sets) |op_lim_set| {
@@ -317,7 +316,7 @@ fn build_operational_limits(gpa: std.mem.Allocator, model: *const cim_model.CimM
         try gop.value_ptr.append(gpa, op_lim_set);
     }
 
-    const current_lims = model.getObjectsByType("CurrentLimit");
+    const current_lims = model.get_objects_by_type("CurrentLimit");
     try index.current_limits_by_set.ensureTotalCapacity(gpa, @intCast(current_lims.len));
 
     for (current_lims) |current_lim| {
@@ -336,7 +335,7 @@ fn build_operational_limits(gpa: std.mem.Allocator, model: *const cim_model.CimM
 
 fn build_curve_points(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
     assert(index.curve_points.count() == 0);
-    const curve_datas = model.getObjectsByType("CurveData");
+    const curve_datas = model.get_objects_by_type("CurveData");
     try index.curve_points.ensureTotalCapacity(gpa, @intCast(curve_datas.len));
 
     for (curve_datas) |curve_data| {
@@ -449,13 +448,13 @@ fn union_voltage_levels(
 
 fn union_conn_nodes(
     parent: *std.StringHashMapUnmanaged([]const u8),
-    conn_node0: []const u8,
-    conn_node1: []const u8,
+    id_a: []const u8,
+    id_b: []const u8,
 ) void {
-    const root0 = find_voltage_level(parent, conn_node0);
-    const root1 = find_voltage_level(parent, conn_node1);
-    if (std.mem.eql(u8, root0, root1)) return;
-    parent.putAssumeCapacity(root0, root1);
+    const root_a = find_voltage_level(parent, id_a);
+    const root_b = find_voltage_level(parent, id_b);
+    if (std.mem.eql(u8, root_a, root_b)) return;
+    parent.putAssumeCapacity(root_a, root_b);
 }
 
 test "union_conn_nodes: two nodes share root after union" {
@@ -515,7 +514,7 @@ test "union_conn_nodes: independent clusters do not interfere" {
 
 pub fn get_switch_slices(model: *const CimModel) [switch_types.len][]const CimObject {
     var slices: [switch_types.len][]const CimObject = undefined;
-    for (switch_types, 0..) |t, i| slices[i] = model.getObjectsByType(t);
+    for (switch_types, 0..) |t, i| slices[i] = model.get_objects_by_type(t);
     return slices;
 }
 
@@ -579,7 +578,7 @@ fn process_switch_type(
 fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
     assert(index.voltage_level_merge.count() == 0);
 
-    const voltage_levels = model.getObjectsByType("VoltageLevel");
+    const voltage_levels = model.get_objects_by_type("VoltageLevel");
     const switch_slices = get_switch_slices(model);
 
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
@@ -619,11 +618,11 @@ fn find(parent: *const std.StringHashMapUnmanaged([]const u8), x: []const u8) []
 fn union_substations(
     gpa: std.mem.Allocator,
     parent: *std.StringHashMapUnmanaged([]const u8),
-    substation_a_id: []const u8,
-    substation_b_id: []const u8,
+    id_a: []const u8,
+    id_b: []const u8,
 ) !void {
-    const root_a = find(parent, substation_a_id);
-    const root_b = find(parent, substation_b_id);
+    const root_a = find(parent, id_a);
+    const root_b = find(parent, id_b);
     if (std.mem.eql(u8, root_a, root_b)) return;
     // Keep the substation with the smaller mRID as the root (representative).
     if (std.mem.lessThan(u8, strip_underscore(root_a), strip_underscore(root_b))) {
@@ -650,7 +649,7 @@ fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.CimMod
     assert(index.substation_merge.count() == 0);
     assert(index.conn_node_container.count() > 0);
 
-    const substations = model.getObjectsByType("Substation");
+    const substations = model.get_objects_by_type("Substation");
 
     // Initialize Union-Find: each substation is its own root.
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
@@ -673,7 +672,7 @@ fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.CimMod
     }
 
     // 2. Union substations connected by cross-substation PowerTransformers.
-    for (model.getObjectsByType("PowerTransformer")) |transformer| {
+    for (model.get_objects_by_type("PowerTransformer")) |transformer| {
         const terminals = index.equipment_terminals.get(transformer.id) orelse continue;
         if (terminals.items.len < 2) continue;
         var first_substation_id: ?[]const u8 = null;
@@ -713,29 +712,17 @@ fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.CimMod
     assert(index.substation_merge.count() <= substations.len);
 }
 
-/// Resolving a RegulatingControl terminal requires finding the nearest BusbarSection
-/// reachable from a given ConnectivityNode by traversing switches. Doing this at
-/// conversion time would require a BFS heap allocation per generator — O(n) per call.
-///
-/// This pass eliminates that cost entirely by pre-computing the answer for every
-/// switch-connected CN once, up front. The result is stored in
-/// `conn_node_reachable_busbar_section`: a flat map of CN raw ID → BBS mRID.
-///
 /// Algorithm:
 ///   1. Union-find over CNs: for each switch, union its two terminal CNs into one cluster.
-///   2. For each cluster, the representative BBS is the first entry in
+///   2. For each cluster, the representative BusbarSection is the first entry in
 ///      `busbar_section_in_parse_order` whose CN belongs to that cluster (parse order
 ///      matches PyPowSyBl's tie-breaking behaviour).
-///   3. Every CN in a cluster that has a BBS gets mapped to that BBS mRID.
-///
-/// At conversion time, resolveRegulatingTerminal becomes two O(1) map lookups:
-/// first `conn_node_to_busbar_section` (direct), then `conn_node_reachable_busbar_section`
-/// (via switches). No allocation, no traversal.
+///   3. Every CN in a cluster that has a BusbarSection gets mapped to that BusbarSection mRID.
 fn build_branch_first_search_pre_computation(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
     assert(index.conn_node_reachable_busbar_section.count() == 0);
     assert(index.conn_node_container.count() > 0);
 
-    const conn_nodes = model.getObjectsByType("ConnectivityNode");
+    const conn_nodes = model.get_objects_by_type("ConnectivityNode");
     const switch_slices = get_switch_slices(model);
 
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
@@ -778,7 +765,7 @@ fn build_branch_first_search_pre_computation(gpa: std.mem.Allocator, model: *con
 fn build_voltage_limits(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
     assert(index.voltage_level_limits.count() == 0);
 
-    const voltage_limits = model.getObjectsByType("VoltageLimit");
+    const voltage_limits = model.get_objects_by_type("VoltageLimit");
     try index.voltage_level_limits.ensureTotalCapacity(gpa, @intCast(voltage_limits.len));
 
     for (voltage_limits) |voltage_limit| {

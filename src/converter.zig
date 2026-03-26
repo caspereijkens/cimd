@@ -86,7 +86,7 @@ fn parse_iso8601_seconds(s: []const u8) ?i64 {
 ///   boundary.side = sequenceNumber of the TieFlow.Terminal (1→"ONE", 2→"TWO")
 ///   boundary.ac   = true (always, as all equipment is AC in EQ profiles)
 fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, network: *iidm.Network) !void {
-    const control_areas = model.getObjectsByType("ControlArea");
+    const control_areas = model.get_objects_by_type("ControlArea");
     assert(network.areas.items.len == 0);
     if (control_areas.len == 0) return;
 
@@ -104,7 +104,7 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, network: *iidm.
         };
 
         // Collect all TieFlow objects that reference this ControlArea.
-        const tieflows = model.getObjectsByType("TieFlow");
+        const tieflows = model.get_objects_by_type("TieFlow");
         var boundaries: std.ArrayListUnmanaged(iidm.AreaBoundary) = .empty;
         errdefer boundaries.deinit(gpa);
 
@@ -142,14 +142,14 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, network: *iidm.
 /// Convert a CimModel into an IIDM Network.
 /// Caller owns the returned network and must call network.deinit(gpa).
 pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
-    assert(model.getObjectsByType("Substation").len > 0);
+    assert(model.get_objects_by_type("Substation").len > 0);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
     var index = try cim_index.CimIndex.build(gpa, model, boundary_ids);
     defer index.deinit(gpa);
 
     // ---- FullModel metadata: id, caseDate, forecastDistance ----
-    const full_models = model.getObjectsByType("FullModel");
+    const full_models = model.get_objects_by_type("FullModel");
     const eq_full_model: ?*const cim_model.CimObject = if (full_models.len > 0) &full_models[0] else null;
     const network_id = if (eq_full_model) |fm| fm.id else "unknown";
     const scenario_time: ?[]const u8 = if (eq_full_model) |fm|
@@ -229,7 +229,7 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
             .{ .type_name = "PhaseTapChangerTabular", .is_phase = true },
         };
         for (tc_types) |tc_type| {
-            for (model.getObjectsByType(tc_type.type_name)) |tc| {
+            for (model.get_objects_by_type(tc_type.type_name)) |tc| {
                 const step_str = try tc.getProperty("TapChanger.normalStep") orelse continue;
                 const step = std.fmt.parseInt(i32, std.mem.trim(u8, step_str, " \t\r\n"), 10) catch continue;
                 const tc_mrid = try tc.getProperty("IdentifiedObject.mRID") orelse strip_underscore(tc.id);
@@ -300,7 +300,7 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
 
     // coordinatedReactiveControl: generators with SynchronousMachine.qPercent.
     {
-        const machines = model.getObjectsByType("SynchronousMachine");
+        const machines = model.get_objects_by_type("SynchronousMachine");
         var crc_count: usize = 0;
         for (machines) |m| {
             if (try m.getProperty("SynchronousMachine.qPercent") != null) crc_count += 1;
@@ -358,14 +358,14 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
                 for (fm.boundaries[fm.object_tag_idx + 1 .. fm.closing_tag_idx], fm.object_tag_idx + 1..) |tag, ti| {
                     if (fm.xml[tag.start + 1] == '/') continue; // skip closing tags
                     const is_self_closing = fm.xml[tag.end - 1] == '/';
-                    const tag_type = tag_index.extractTagType(fm.xml, tag.start) catch continue;
+                    const tag_type = tag_index.extract_tag_type(fm.xml, tag.start) catch continue;
                     if (std.mem.eql(u8, tag_type, "Model.profile") and !is_self_closing) {
                         const content = fm.xml[tag.end + 1 .. fm.boundaries[ti + 1].start];
                         try profiles.append(gpa, .{ .content = content });
                         const s = profile_to_subset(content);
                         if (!std.mem.eql(u8, s, "UNKNOWN")) subset = s;
                     } else if (std.mem.eql(u8, tag_type, "Model.DependentOn")) {
-                        const ref = tag_index.extractRdfResource(fm.xml, tag.start) catch continue;
+                        const ref = tag_index.extract_rdf_resource(fm.xml, tag.start) catch continue;
                         if (ref) |r| try dependent_on.append(gpa, .{ .content = r });
                     }
                 }
@@ -389,7 +389,7 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
         else
             std.math.maxInt(u32);
 
-        const base_voltages = model.getObjectsByType("BaseVoltage");
+        const base_voltages = model.get_objects_by_type("BaseVoltage");
         var bv_list: std.ArrayListUnmanaged(iidm.BaseVoltage) = .empty;
         errdefer bv_list.deinit(gpa);
         try bv_list.ensureTotalCapacity(gpa, base_voltages.len);
@@ -399,12 +399,12 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
             const nom_v = std.fmt.parseFloat(f64, std.mem.trim(u8, nom_v_str, " \t\r\n")) catch continue;
             const xml_pos = bv.boundaries[bv.object_tag_idx].start;
             const source: []const u8 = if (xml_pos < eq_boundary) "IGM" else "BOUNDARY";
-            bv_list.appendAssumeCapacity(.{ .nominal_voltage = nom_v, .source = source, .id = bv_mrid });
+            bv_list.appendAssumeCapacity(.{ .nominal_voltageoltage = nom_v, .source = source, .id = bv_mrid });
         }
         // Sort BaseVoltages by nominalVoltage ascending (matches PyPowSyBl output order).
         std.mem.sort(iidm.BaseVoltage, bv_list.items, {}, struct {
             fn lessThan(_: void, a: iidm.BaseVoltage, b: iidm.BaseVoltage) bool {
-                return a.nominal_voltage < b.nominal_voltage;
+                return a.nominal_voltageoltage < b.nominal_voltageoltage;
             }
         }.lessThan);
 

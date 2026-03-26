@@ -26,7 +26,7 @@ fn build_ends_by_transformer(
 ) !std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObject)) {
     var ends_by_transformer: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObject)) = .empty;
 
-    const ends = model.getObjectsByType("PowerTransformerEnd");
+    const ends = model.get_objects_by_type("PowerTransformerEnd");
 
     try ends_by_transformer.ensureTotalCapacity(gpa, @intCast(ends.len));
 
@@ -41,7 +41,7 @@ fn build_ends_by_transformer(
 
     var it = ends_by_transformer.valueIterator();
     while (it.next()) |transformer_ends| {
-        std.sort.block(CimObject, transformer_ends.items, {}, lessThanFn);
+        std.sort.block(CimObject, transformer_ends.items, {}, less_than_fn);
     }
 
     assert(ends.len == 0 or ends_by_transformer.count() > 0);
@@ -77,8 +77,8 @@ fn build_ratio_table_points(
     gpa: std.mem.Allocator,
     model: *const CimModel,
 ) !std.StringHashMapUnmanaged(std.ArrayListUnmanaged(iidm.RatioTapChangerStep)) {
-    const tables = model.getObjectsByType("RatioTapChangerTable");
-    const points = model.getObjectsByType("RatioTapChangerTablePoint");
+    const tables = model.get_objects_by_type("RatioTapChangerTable");
+    const points = model.get_objects_by_type("RatioTapChangerTablePoint");
     var points_by_table: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(iidm.RatioTapChangerStep)) = .empty;
     try points_by_table.ensureTotalCapacity(gpa, @intCast(tables.len));
     for (points) |point| {
@@ -126,7 +126,7 @@ fn build_ratio_tap_changer_map(
         points_by_table.deinit(gpa);
     }
 
-    const tap_changers = model.getObjectsByType("RatioTapChanger");
+    const tap_changers = model.get_objects_by_type("RatioTapChanger");
     var ratio_tap_changer_map: std.StringHashMapUnmanaged(iidm.RatioTapChanger) = .empty;
     try ratio_tap_changer_map.ensureTotalCapacity(gpa, @intCast(tap_changers.len));
 
@@ -168,10 +168,10 @@ fn build_phase_tap_changer_map(
         points_by_table.deinit(gpa);
     }
 
-    const tables = model.getObjectsByType("PhaseTapChangerTable");
+    const tables = model.get_objects_by_type("PhaseTapChangerTable");
     try points_by_table.ensureTotalCapacity(gpa, @intCast(tables.len));
 
-    const points = model.getObjectsByType("PhaseTapChangerTablePoint");
+    const points = model.get_objects_by_type("PhaseTapChangerTablePoint");
 
     for (points) |point| {
         const table_ref = try point.getReference("PhaseTapChangerTablePoint.PhaseTapChangerTable") orelse continue;
@@ -193,7 +193,7 @@ fn build_phase_tap_changer_map(
         });
     }
 
-    const tap_changers = model.getObjectsByType("PhaseTapChangerTabular");
+    const tap_changers = model.get_objects_by_type("PhaseTapChangerTabular");
 
     var phase_tap_changer_map: std.StringHashMapUnmanaged(iidm.PhaseTapChanger) = .empty;
     try phase_tap_changer_map.ensureTotalCapacity(gpa, @intCast(tap_changers.len));
@@ -224,7 +224,7 @@ fn build_phase_tap_changer_map(
     return phase_tap_changer_map;
 }
 
-fn lessThanFn(_: void, end0: CimObject, end1: CimObject) bool {
+fn less_than_fn(_: void, end0: CimObject, end1: CimObject) bool {
     const end_number0_str = end0.getProperty("TransformerEnd.endNumber") catch "0" orelse "0";
     const end_number0 = std.fmt.parseInt(u32, end_number0_str, 10) catch 0;
 
@@ -238,10 +238,10 @@ const TestEnd = struct { model: cim_model.CimModel, end: CimObject };
 
 fn make_end(xml: []const u8) !TestEnd {
     const model = try cim_model.CimModel.init(testing.allocator, xml);
-    return .{ .model = model, .end = model.getObjectsByType("PowerTransformerEnd")[0] };
+    return .{ .model = model, .end = model.get_objects_by_type("PowerTransformerEnd")[0] };
 }
 
-test "lessThanFn: end 1 < end 2" {
+test "less_than_fn: end 1 < end 2" {
     var t1 = try make_end(
         \\<rdf:RDF><cim:PowerTransformerEnd rdf:ID="_e1">
         \\  <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
@@ -254,21 +254,21 @@ test "lessThanFn: end 1 < end 2" {
         \\</cim:PowerTransformerEnd></rdf:RDF>
     );
     defer t2.model.deinit(testing.allocator);
-    try testing.expect(lessThanFn({}, t1.end, t2.end));
-    try testing.expect(!lessThanFn({}, t2.end, t1.end));
+    try testing.expect(less_than_fn({}, t1.end, t2.end));
+    try testing.expect(!less_than_fn({}, t2.end, t1.end));
 }
 
-test "lessThanFn: equal end numbers are not less than" {
+test "less_than_fn: equal end numbers are not less than" {
     var t = try make_end(
         \\<rdf:RDF><cim:PowerTransformerEnd rdf:ID="_e1">
         \\  <cim:TransformerEnd.endNumber>2</cim:TransformerEnd.endNumber>
         \\</cim:PowerTransformerEnd></rdf:RDF>
     );
     defer t.model.deinit(testing.allocator);
-    try testing.expect(!lessThanFn({}, t.end, t.end));
+    try testing.expect(!less_than_fn({}, t.end, t.end));
 }
 
-test "lessThanFn: missing endNumber falls back to 0, sorts before any numbered end" {
+test "less_than_fn: missing endNumber falls back to 0, sorts before any numbered end" {
     var tm = try make_end(
         \\<rdf:RDF><cim:PowerTransformerEnd rdf:ID="_em">
         \\</cim:PowerTransformerEnd></rdf:RDF>
@@ -280,11 +280,11 @@ test "lessThanFn: missing endNumber falls back to 0, sorts before any numbered e
         \\</cim:PowerTransformerEnd></rdf:RDF>
     );
     defer t1.model.deinit(testing.allocator);
-    try testing.expect(lessThanFn({}, tm.end, t1.end));
-    try testing.expect(!lessThanFn({}, t1.end, tm.end));
+    try testing.expect(less_than_fn({}, tm.end, t1.end));
+    try testing.expect(!less_than_fn({}, t1.end, tm.end));
 }
 
-test "lessThanFn: end 1 < end 3" {
+test "less_than_fn: end 1 < end 3" {
     var t1 = try make_end(
         \\<rdf:RDF><cim:PowerTransformerEnd rdf:ID="_e1">
         \\  <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
@@ -297,11 +297,11 @@ test "lessThanFn: end 1 < end 3" {
         \\</cim:PowerTransformerEnd></rdf:RDF>
     );
     defer t3.model.deinit(testing.allocator);
-    try testing.expect(lessThanFn({}, t1.end, t3.end));
-    try testing.expect(!lessThanFn({}, t3.end, t1.end));
+    try testing.expect(less_than_fn({}, t1.end, t3.end));
+    try testing.expect(!less_than_fn({}, t3.end, t1.end));
 }
 
-test "lessThanFn: transitivity — end1 < end2 and end2 < end3 implies end1 < end3" {
+test "less_than_fn: transitivity — end1 < end2 and end2 < end3 implies end1 < end3" {
     var t1 = try make_end(
         \\<rdf:RDF><cim:PowerTransformerEnd rdf:ID="_e1">
         \\  <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
@@ -320,9 +320,9 @@ test "lessThanFn: transitivity — end1 < end2 and end2 < end3 implies end1 < en
         \\</cim:PowerTransformerEnd></rdf:RDF>
     );
     defer t3.model.deinit(testing.allocator);
-    try testing.expect(lessThanFn({}, t1.end, t2.end)); // end1 < end2
-    try testing.expect(lessThanFn({}, t2.end, t3.end)); // end2 < end3
-    try testing.expect(lessThanFn({}, t1.end, t3.end)); // therefore end1 < end3
+    try testing.expect(less_than_fn({}, t1.end, t2.end)); // end1 < end2
+    try testing.expect(less_than_fn({}, t2.end, t3.end)); // end2 < end3
+    try testing.expect(less_than_fn({}, t1.end, t3.end)); // therefore end1 < end3
 }
 
 const EndElectrical = struct { r: f64, x: f64, g: f64, b: f64, rated_u: f64, rated_s: ?f64 };
@@ -541,7 +541,7 @@ pub fn convert_transformers(
 
     try pre_allocate_transformers(gpa, &ends_by_transformer, substation_map, voltage_level_map, index, node_map);
 
-    const transformers = model.getObjectsByType("PowerTransformer");
+    const transformers = model.get_objects_by_type("PowerTransformer");
     for (transformers) |transformer| {
         const ends = ends_by_transformer.get(transformer.id) orelse continue;
         const end1 = ends.items[0];

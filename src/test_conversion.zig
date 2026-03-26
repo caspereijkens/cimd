@@ -14,7 +14,7 @@ const CimModel = @import("cim_model.zig").CimModel;
 ///   VL1/VL2          — voltage levels; LINE1 bridges them
 ///   BV220            — base voltage (220 kV)
 ///   CN_*             — one ConnectivityNode per equipment terminal
-///   BBS1             — busbar section so VL1 has a node-breaker topology
+///   BusbarSection1             — busbar section so VL1 has a node-breaker topology
 ///   LOAD1            — load → gets a `detail` extension
 ///   SHUNT1           — shunt compensator (exercises section/bPerSection parsing)
 ///   SVC1             — static var compensator with regulationMode=voltage
@@ -80,8 +80,8 @@ const EQ_XML =
     \\  </cim:ACLineSegment>
     \\
     \\  <!-- ConnectivityNodes: one per equipment terminal group in VL1 -->
-    \\  <cim:ConnectivityNode rdf:ID="_CN_BBS">
-    \\    <cim:IdentifiedObject.mRID>CN_BBS</cim:IdentifiedObject.mRID>
+    \\  <cim:ConnectivityNode rdf:ID="_CN_BusbarSection">
+    \\    <cim:IdentifiedObject.mRID>CN_BusbarSection</cim:IdentifiedObject.mRID>
     \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#_VL1"/>
     \\  </cim:ConnectivityNode>
     \\  <cim:ConnectivityNode rdf:ID="_CN_LOAD">
@@ -124,12 +124,12 @@ const EQ_XML =
     \\  </cim:ConnectivityNode>
     \\
     \\  <!-- BusbarSection in VL1 -->
-    \\  <cim:BusbarSection rdf:ID="_BBS1">
-    \\    <cim:IdentifiedObject.mRID>BBS1</cim:IdentifiedObject.mRID>
+    \\  <cim:BusbarSection rdf:ID="_BusbarSection1">
+    \\    <cim:IdentifiedObject.mRID>BusbarSection1</cim:IdentifiedObject.mRID>
     \\  </cim:BusbarSection>
-    \\  <cim:Terminal rdf:ID="_T_BBS1">
-    \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BBS1"/>
-    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN_BBS"/>
+    \\  <cim:Terminal rdf:ID="_T_BusbarSection1">
+    \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BusbarSection1"/>
+    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN_BusbarSection"/>
     \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
     \\  </cim:Terminal>
     \\
@@ -272,7 +272,7 @@ const EQ_XML =
     \\  </cim:ACLineSegment>
     \\  <cim:Terminal rdf:ID="_T_BNDRY_1">
     \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE_BNDRY"/>
-    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN_BBS"/>
+    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN_BusbarSection"/>
     \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
     \\  </cim:Terminal>
     \\  <cim:Terminal rdf:ID="_T_BNDRY_2">
@@ -295,7 +295,7 @@ const EQ_XML =
 ;
 
 /// Find a generator by mRID across all VLs in all substations.
-fn findGenerator(network: anytype, mrid: []const u8) ?@TypeOf(network.substations.items[0].voltage_levels.items[0].generators.items[0]) {
+fn find_generator(network: anytype, mrid: []const u8) ?@TypeOf(network.substations.items[0].voltage_levels.items[0].generators.items[0]) {
     for (network.substations.items) |substation| {
         for (substation.voltage_levels.items) |voltage_level| {
             for (voltage_level.generators.items) |gen| {
@@ -307,7 +307,7 @@ fn findGenerator(network: anytype, mrid: []const u8) ?@TypeOf(network.substation
 }
 
 /// Find an extension by equipment ID.
-fn findExtension(network: anytype, id: []const u8) ?@TypeOf(network.extensions.items[0]) {
+fn find_extension(network: anytype, id: []const u8) ?@TypeOf(network.extensions.items[0]) {
     for (network.extensions.items) |ext| {
         if (std.mem.eql(u8, ext.id, id)) return ext;
     }
@@ -315,7 +315,7 @@ fn findExtension(network: anytype, id: []const u8) ?@TypeOf(network.extensions.i
 }
 
 /// Find a line by mRID.
-fn findLine(network: anytype, mrid: []const u8) ?@TypeOf(network.lines.items[0]) {
+fn find_line(network: anytype, mrid: []const u8) ?@TypeOf(network.lines.items[0]) {
     for (network.lines.items) |line| {
         if (std.mem.eql(u8, line.id, mrid)) return line;
     }
@@ -344,7 +344,7 @@ test "line: gch and bch split equally across both sides" {
     var network = try converter.convert(gpa, &model);
     defer network.deinit(gpa);
 
-    const line = findLine(network, "LINE1") orelse return error.TestFailed;
+    const line = find_line(network, "LINE1") orelse return error.TestFailed;
     try std.testing.expectEqual(@as(f64, 1.0), line.r);
     try std.testing.expectEqual(@as(f64, 2.0), line.x);
     // gch=4.0 → g1=g2=2.0; bch=6.0 → b1=b2=3.0
@@ -371,7 +371,7 @@ test "boundary line: creates a fictitious VL and LINE_BNDRY lands in it" {
     try std.testing.expectEqualStrings("CN_BNDRY_VL", fvoltage_level.id);
 
     // LINE_BNDRY must appear in the output.
-    const line = findLine(network, "LINE_BNDRY") orelse return error.TestFailed;
+    const line = find_line(network, "LINE_BNDRY") orelse return error.TestFailed;
 
     // One side is in VL1; the other is in the fictitious VL.
     const has_fict_voltage_level_side = std.mem.eql(u8, line.voltage_level1_id, "CN_BNDRY_VL") or
@@ -388,10 +388,10 @@ test "generator: energy_source derived from GeneratingUnit CIM type" {
     var network = try converter.convert(gpa, &model);
     defer network.deinit(gpa);
 
-    const gen_th = findGenerator(network, "GEN_TH") orelse return error.TestFailed;
+    const gen_th = find_generator(network, "GEN_TH") orelse return error.TestFailed;
     try std.testing.expectEqual(.thermal, gen_th.energy_source);
 
-    const gen_hy = findGenerator(network, "GEN_HY") orelse return error.TestFailed;
+    const gen_hy = find_generator(network, "GEN_HY") orelse return error.TestFailed;
     try std.testing.expectEqual(.hydro, gen_hy.energy_source);
 }
 
@@ -402,7 +402,7 @@ test "generator: min_p and max_p read from GeneratingUnit" {
     var network = try converter.convert(gpa, &model);
     defer network.deinit(gpa);
 
-    const gen = findGenerator(network, "GEN_TH") orelse return error.TestFailed;
+    const gen = find_generator(network, "GEN_TH") orelse return error.TestFailed;
     try std.testing.expectEqual(@as(?f64, 50.0), gen.min_p);
     try std.testing.expectEqual(@as(?f64, 500.0), gen.max_p);
 }
@@ -416,11 +416,11 @@ test "generator: is_condenser true when SynchronousMachine.type contains condens
     var network = try converter.convert(gpa, &model);
     defer network.deinit(gpa);
 
-    const condenser = findGenerator(network, "GEN_CO") orelse return error.TestFailed;
+    const condenser = find_generator(network, "GEN_CO") orelse return error.TestFailed;
     try std.testing.expect(condenser.is_condenser);
 
     // Non-condensers must not be flagged.
-    const gen_th = findGenerator(network, "GEN_TH") orelse return error.TestFailed;
+    const gen_th = find_generator(network, "GEN_TH") orelse return error.TestFailed;
     try std.testing.expect(!gen_th.is_condenser);
 }
 
@@ -433,7 +433,7 @@ test "generator: reactive capability curve takes precedence over minQ/maxQ" {
     var network = try converter.convert(gpa, &model);
     defer network.deinit(gpa);
 
-    const gen_cu = findGenerator(network, "GEN_CU") orelse return error.TestFailed;
+    const gen_cu = find_generator(network, "GEN_CU") orelse return error.TestFailed;
     // Has a curve → curve_points populated, min_max_reactive_limits must be null.
     try std.testing.expectEqual(@as(usize, 1), gen_cu.reactive_capability_curve_points.items.len);
     try std.testing.expect(gen_cu.min_max_reactive_limits == null);
@@ -450,7 +450,7 @@ test "generator: minQ/maxQ used as fallback when no curve" {
     var network = try converter.convert(gpa, &model);
     defer network.deinit(gpa);
 
-    const gen_th = findGenerator(network, "GEN_TH") orelse return error.TestFailed;
+    const gen_th = find_generator(network, "GEN_TH") orelse return error.TestFailed;
     // No curve → min_max_reactive_limits populated from minQ/maxQ.
     try std.testing.expectEqual(@as(usize, 0), gen_th.reactive_capability_curve_points.items.len);
     const limits = gen_th.min_max_reactive_limits orelse return error.TestFailed;
@@ -490,7 +490,7 @@ test "detail extension: every load gets fixedActivePower etc. all zero" {
     var network = try converter.convert(gpa, &model);
     defer network.deinit(gpa);
 
-    const ext = findExtension(network, "LOAD1") orelse return error.TestFailed;
+    const ext = find_extension(network, "LOAD1") orelse return error.TestFailed;
     const detail = ext.detail orelse return error.TestFailed;
     try std.testing.expectEqual(@as(f64, 0.0), detail.fixed_active_power);
     try std.testing.expectEqual(@as(f64, 0.0), detail.fixed_reactive_power);
@@ -517,12 +517,12 @@ test "coordinatedReactiveControl: generator with qPercent gets extension" {
     var network = try converter.convert(gpa, &model);
     defer network.deinit(gpa);
 
-    const ext = findExtension(network, "GEN_CO") orelse return error.TestFailed;
+    const ext = find_extension(network, "GEN_CO") orelse return error.TestFailed;
     const crc = ext.coordinated_reactive_control orelse return error.TestFailed;
     try std.testing.expectEqual(@as(f64, 50.0), crc.q_percent);
 
     // GEN_TH has no qPercent → no coordinatedReactiveControl extension for it.
-    if (findExtension(network, "GEN_TH")) |th_ext| {
+    if (find_extension(network, "GEN_TH")) |th_ext| {
         try std.testing.expect(th_ext.coordinated_reactive_control == null);
     }
 }
@@ -581,7 +581,7 @@ test "line: both terminal aliases present with correct types and content" {
     var network = try converter.convert(gpa, &model);
     defer network.deinit(gpa);
 
-    const line = findLine(network, "LINE1") orelse return error.TestFailed;
+    const line = find_line(network, "LINE1") orelse return error.TestFailed;
     try std.testing.expectEqual(@as(usize, 2), line.aliases.items.len);
 
     var found_t1 = false;
@@ -607,7 +607,7 @@ test "line: CGMES.originalClass property is ACLineSegment" {
     var network = try converter.convert(gpa, &model);
     defer network.deinit(gpa);
 
-    const line = findLine(network, "LINE1") orelse return error.TestFailed;
+    const line = find_line(network, "LINE1") orelse return error.TestFailed;
     try std.testing.expectEqual(@as(usize, 1), line.properties.items.len);
     try std.testing.expectEqualStrings("CGMES.originalClass", line.properties.items[0].name);
     try std.testing.expectEqualStrings("ACLineSegment", line.properties.items[0].value);

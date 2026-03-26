@@ -66,7 +66,7 @@ fn count_equipment_for_type(
     comptime field_name: []const u8,
     equipment_counts: *std.StringHashMapUnmanaged(VoltageLevelEquipmentCounts),
 ) void {
-    for (model.getObjectsByType(cim_type)) |obj| {
+    for (model.get_objects_by_type(cim_type)) |obj| {
         const repr_voltage_level_id = resolve_repr_voltage_level_id(index, obj.id) orelse continue;
         const gop = equipment_counts.getOrPutAssumeCapacity(repr_voltage_level_id);
         if (!gop.found_existing) gop.value_ptr.* = .{};
@@ -120,7 +120,7 @@ pub fn convert_busbar_sections(
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const NodeMap,
 ) !void {
-    const busbar_sections = model.getObjectsByType("BusbarSection");
+    const busbar_sections = model.get_objects_by_type("BusbarSection");
 
     for (busbar_sections) |busbar_section| {
         const placement = resolve_equipment_placement(index, voltage_level_map, node_map, busbar_section.id) orelse continue;
@@ -193,9 +193,9 @@ pub fn convert_loads(
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const NodeMap,
 ) !void {
-    const energy_consumers = model.getObjectsByType("EnergyConsumer");
-    const conform_loads = model.getObjectsByType("ConformLoad");
-    const non_conform_loads = model.getObjectsByType("NonConformLoad");
+    const energy_consumers = model.get_objects_by_type("EnergyConsumer");
+    const conform_loads = model.get_objects_by_type("ConformLoad");
+    const non_conform_loads = model.get_objects_by_type("NonConformLoad");
 
     try convert_load_type(gpa, model, index, voltage_level_map, node_map, energy_consumers);
     try convert_load_type(gpa, model, index, voltage_level_map, node_map, conform_loads);
@@ -221,9 +221,9 @@ fn convert_load_type(
         // alias: CGMES.Terminal1 = terminal mRID
         var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
         errdefer aliases.deinit(gpa);
-        if (index.equipment_terminals.get(load.id)) |terms| {
-            if (terms.items.len > 0) {
-                const t_mrid = strip_underscore(terms.items[0].id);
+        if (index.equipment_terminals.get(load.id)) |terminals| {
+            if (terminals.items.len > 0) {
+                const t_mrid = strip_underscore(terminals.items[0].id);
                 try aliases.ensureTotalCapacity(gpa, 1);
                 aliases.appendAssumeCapacity(.{ .type = "CGMES.Terminal1", .content = t_mrid });
             }
@@ -284,7 +284,7 @@ pub fn convert_shunts(
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const NodeMap,
 ) !void {
-    const shunts = model.getObjectsByType("LinearShuntCompensator");
+    const shunts = model.get_objects_by_type("LinearShuntCompensator");
     assert(shunts.len == 0 or voltage_level_map.count() > 0);
 
     for (shunts) |shunt| {
@@ -334,7 +334,7 @@ pub fn convert_static_var_compensators(
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const NodeMap,
 ) !void {
-    const static_var_compensators = model.getObjectsByType("StaticVarCompensator");
+    const static_var_compensators = model.get_objects_by_type("StaticVarCompensator");
     assert(static_var_compensators.len == 0 or voltage_level_map.count() > 0);
 
     for (static_var_compensators) |static_var_compensator| {
@@ -393,7 +393,7 @@ pub fn convert_generators(
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const NodeMap,
 ) !void {
-    const machines = model.getObjectsByType("SynchronousMachine");
+    const machines = model.get_objects_by_type("SynchronousMachine");
     assert(machines.len == 0 or voltage_level_map.count() > 0);
 
     // Build ThermalGeneratingUnit ID → fuel type fragment map from FossilFuel objects.
@@ -401,7 +401,7 @@ pub fn convert_generators(
     var fuel_type_map: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer fuel_type_map.deinit(gpa);
     {
-        const fossil_fuels = model.getObjectsByType("FossilFuel");
+        const fossil_fuels = model.get_objects_by_type("FossilFuel");
         try fuel_type_map.ensureTotalCapacity(gpa, @intCast(fossil_fuels.len));
         for (fossil_fuels) |ff| {
             const unit_ref = try ff.getReference("FossilFuel.ThermalGeneratingUnit") orelse continue;
@@ -534,9 +534,9 @@ pub fn convert_generators(
         // alias: CGMES.Terminal1 = terminal mRID
         var gen_aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
         errdefer gen_aliases.deinit(gpa);
-        if (index.equipment_terminals.get(machine.id)) |terms| {
-            if (terms.items.len > 0) {
-                const t_mrid = strip_underscore(terms.items[0].id);
+        if (index.equipment_terminals.get(machine.id)) |terminals| {
+            if (terminals.items.len > 0) {
+                const t_mrid = strip_underscore(terminals.items[0].id);
                 try gen_aliases.ensureTotalCapacity(gpa, 1);
                 gen_aliases.appendAssumeCapacity(.{ .type = "CGMES.Terminal1", .content = t_mrid });
             }

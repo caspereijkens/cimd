@@ -15,11 +15,11 @@ const strip_underscore = utils.strip_underscore;
 
 // Resolve the nominal voltage for a VoltageLevel.
 // VoltageLevel.BaseVoltage -> BaseVoltage.nominalVoltage -> parseFloat.
-fn resolve_nominal_voltage(model: *const CimModel, voltage_level: CimObject) !?f64 {
+fn resolve_nominal_voltageoltage(model: *const CimModel, voltage_level: CimObject) !?f64 {
     const base_voltage_ref = try voltage_level.getReference("VoltageLevel.BaseVoltage") orelse return null;
     const base_voltage = model.getObjectById(strip_hash(base_voltage_ref)) orelse return null;
-    const nominal_voltage_str = try base_voltage.getProperty("BaseVoltage.nominalVoltage") orelse return null;
-    return try std.fmt.parseFloat(f64, nominal_voltage_str);
+    const nominal_voltageoltage_str = try base_voltage.getProperty("BaseVoltage.nominalVoltage") orelse return null;
+    return try std.fmt.parseFloat(f64, nominal_voltageoltage_str);
 }
 
 // Append one IIDM VoltageLevel to the Network. Assumes capacity has been pre-allocated.
@@ -39,7 +39,7 @@ fn append_voltage_level(
     const mrid = try voltage_level.getProperty("IdentifiedObject.mRID") orelse strip_underscore(voltage_level.id);
     assert(mrid.len > 0);
     const name = try voltage_level.getProperty("IdentifiedObject.name");
-    const nominal_voltage = try resolve_nominal_voltage(model, voltage_level);
+    const nominal_voltageoltage = try resolve_nominal_voltageoltage(model, voltage_level);
     const limits = index.voltage_level_limits.get(voltage_level.id);
 
     // Build MergedVoltageLevel aliases for any stub VLs absorbed into this one.
@@ -58,7 +58,7 @@ fn append_voltage_level(
     network.substations.items[substation_idx].voltage_levels.appendAssumeCapacity(.{
         .id = mrid,
         .name = name,
-        .nominal_voltage = nominal_voltage,
+        .nominal_voltageoltage = nominal_voltageoltage,
         .low_voltage_limit = if (limits) |lim| lim.low_value else null,
         .high_voltage_limit = if (limits) |lim| lim.high_value else null,
         .aliases = aliases,
@@ -82,7 +82,7 @@ pub fn convert_voltage_levels(
 ) !void {
     assert(network.substations.items.len > 0);
 
-    const voltage_levels = model.getObjectsByType("VoltageLevel");
+    const voltage_levels = model.get_objects_by_type("VoltageLevel");
 
     // First, count non-stub VLs per substation for pre-allocation.
     const voltage_level_counts = try gpa.alloc(usize, network.substations.items.len);
@@ -143,7 +143,7 @@ pub fn build_voltage_level_map(
 ) !std.StringHashMapUnmanaged(*iidm.VoltageLevel) {
     assert(network.substations.items.len > 0);
 
-    const voltage_levels = model.getObjectsByType("VoltageLevel");
+    const voltage_levels = model.get_objects_by_type("VoltageLevel");
     const representative_count = voltage_levels.len - index.voltage_level_merge.count();
 
     var voltage_level_map: std.StringHashMapUnmanaged(*iidm.VoltageLevel) = .empty;

@@ -21,8 +21,8 @@ fn is_switch_type(type_name: []const u8) bool {
 
 /// Maps terminal raw ID → IIDM node number within its VoltageLevel.
 /// All equipment (busbar sections, switches, generators, loads, etc.) looks up its
-/// terminal here to find its node number. BBS and switch terminals map
-/// to the CN node. All other non-BBS, non-switch terminals get a dedicated
+/// terminal here to find its node number. BusbarSection and switch terminals map
+/// to the CN node. All other non-BusbarSection, non-switch terminals get a dedicated
 /// node with an internal connection back to the CN node.
 pub const NodeMap = std.StringHashMapUnmanaged(u32);
 
@@ -47,18 +47,18 @@ const phase2_equipment_types = [_][]const u8{
 ///
 /// Phase 1 — assign CN base nodes in ConnectivityNode XML parse order.
 ///   Every CN in a valid VoltageLevel receives a sequential base node (0, 1, 2, …).
-///   BBS and switch terminals are mapped to their CN base node (no IC).
+///   BusbarSection and switch terminals are mapped to their CN base node (no IC).
 ///
 /// Phase 2 — assign terminal nodes by equipment processing order.
-///   Non-BBS, non-switch terminals are assigned in equipment-type processing order
+///   Non-BusbarSection, non-switch terminals are assigned in equipment-type processing order
 ///   (ACLineSegment → PowerTransformer → SynchronousMachine → EnergyConsumer → …).
 ///   Within each type, equipment is in XML parse order; within each equipment,
 ///   terminals are in ascending sequence order.
 ///
 ///   Dedicated node rules:
-///     • CN has BBS → always dedicated node + IC(conn_node, terminal_node).
-///     • CN has 3+ non-BBS non-switch terminals → same: all get dedicated node + IC.
-///     • First non-BBS non-switch terminal on an ordinary CN → CN base node (no IC).
+///     • CN has BusbarSection → always dedicated node + IC(conn_node, terminal_node).
+///     • CN has 3+ non-BusbarSection non-switch terminals → same: all get dedicated node + IC.
+///     • First non-BusbarSection non-switch terminal on an ordinary CN → CN base node (no IC).
 ///     • All subsequent terminals on that CN → dedicated node + IC.
 pub fn build_node_map(
     gpa: std.mem.Allocator,
@@ -68,16 +68,14 @@ pub fn build_node_map(
 ) !NodeMap {
     assert(index.conn_node_container.count() > 0);
 
-    const conn_nodes = model.getObjectsByType("ConnectivityNode");
+    const conn_nodes = model.get_objects_by_type("ConnectivityNode");
 
-    // -------------------------------------------------------------------------
-    // Pre-scan: count non-BBS non-switch terminals per CN for IC pre-allocation.
-    // -------------------------------------------------------------------------
+    // Pre-scan: count non-BusbarSection non-switch terminals per CN for IC pre-allocation.
     var conn_node_other_count: std.StringHashMapUnmanaged(u32) = .empty;
     defer conn_node_other_count.deinit(gpa);
     try conn_node_other_count.ensureTotalCapacity(gpa, @intCast(index.conn_node_container.count()));
 
-    for (model.getObjectsByType("Terminal")) |terminal| {
+    for (model.get_objects_by_type("Terminal")) |terminal| {
         const conn_node_id = index.terminal_conn_node.get(terminal.id) orelse continue;
         const equipment_id = index.terminal_equipment.get(terminal.id) orelse continue;
         const equipment = model.getObjectById(equipment_id) orelse continue;
@@ -88,18 +86,7 @@ pub fn build_node_map(
         gop.value_ptr.* += 1;
     }
 
-    // -------------------------------------------------------------------------
     // Combined pass: build CN→repr_voltage_level cache, count ICs, assign base nodes.
-    //
-    // The IC counting and base node assignment passes previously iterated
-    // conn_nodes separately with identical filter conditions. Merging them
-    // halves the conn_node iterations and eliminates repeated getObjectById +
-    // find_voltage_level calls. The cache is reused in Phase 2 to avoid those
-    // calls entirely in the hot terminal loop.
-    //
-    // Note: non-VL containers (boundary CNs with ACLineSegment containers) are
-    // rejected by the voltage_level_map lookup — no explicit type check needed.
-    // -------------------------------------------------------------------------
     var conn_node_repr_voltage_level: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer conn_node_repr_voltage_level.deinit(gpa);
     try conn_node_repr_voltage_level.ensureTotalCapacity(gpa, @intCast(index.conn_node_container.count()));
@@ -148,43 +135,35 @@ pub fn build_node_map(
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Phase 1: assign BBS and switch terminals to their CN base node.
-    // Iterates equipment slices directly rather than all terminals, reducing
-    // work from O(all_terminals) to O(busbar_section_count + switch_count).
-    // -------------------------------------------------------------------------
+    // Phase 1: assign BusbarSection and switch terminals to their CN base node.
     var node_map: NodeMap = .empty;
     try node_map.ensureTotalCapacity(gpa, @intCast(index.terminal_conn_node.count()));
 
-    for (model.getObjectsByType("BusbarSection")) |busbar_section| {
-        const terms = index.equipment_terminals.get(busbar_section.id) orelse continue;
-        for (terms.items) |t| {
+    for (model.get_objects_by_type("BusbarSection")) |busbar_section| {
+        const terminals = index.equipment_terminals.get(busbar_section.id) orelse continue;
+        for (terminals.items) |t| {
             const base_node = conn_node_base_nodes.get(t.conn_node_id orelse continue) orelse continue;
             node_map.putAssumeCapacity(t.id, base_node);
         }
     }
     for (switch_type_names) |sw_type| {
-        for (model.getObjectsByType(sw_type)) |sw| {
-            const terms = index.equipment_terminals.get(sw.id) orelse continue;
-            for (terms.items) |t| {
+        for (model.get_objects_by_type(sw_type)) |sw| {
+            const terminals = index.equipment_terminals.get(sw.id) orelse continue;
+            for (terminals.items) |t| {
                 const base_node = conn_node_base_nodes.get(t.conn_node_id orelse continue) orelse continue;
                 node_map.putAssumeCapacity(t.id, base_node);
             }
         }
     }
 
-    // -------------------------------------------------------------------------
     // Phase 2: assign dedicated terminal nodes in equipment processing order.
     // Matches PyPowSyBl's per-equipment-type iteration.
     // Within each equipment: terminals in ascending seq order.
     // ACLineSegment is last so shared CNs give CN base to other equipment first.
     //
-    // Pre-seeding rule: CNs with 3+ non-BBS non-switch terminals are pre-seeded
+    // Pre-seeding rule: CNs with 3+ non-BusbarSection non-switch terminals are pre-seeded
     // as "already seen", so ALL their Phase 2 terminals get dedicated nodes and
     // the CN base node remains unoccupied. Matches PyPowSyBl behaviour.
-    //
-    // Uses conn_node_repr_voltage_level cache — no getObjectById or find_voltage_level calls.
-    // -------------------------------------------------------------------------
     var conn_node_first_seen: std.StringHashMapUnmanaged(void) = .empty;
     defer conn_node_first_seen.deinit(gpa);
     try conn_node_first_seen.ensureTotalCapacity(gpa, @intCast(index.conn_node_container.count()));
@@ -199,9 +178,9 @@ pub fn build_node_map(
     }
 
     for (phase2_equipment_types) |equipment_type| {
-        for (model.getObjectsByType(equipment_type)) |equip| {
-            const terms = index.equipment_terminals.get(equip.id) orelse continue;
-            for (terms.items) |t| {
+        for (model.get_objects_by_type(equipment_type)) |equip| {
+            const terminals = index.equipment_terminals.get(equip.id) orelse continue;
+            for (terminals.items) |t| {
                 const conn_node_id = t.conn_node_id orelse continue;
                 const conn_node = conn_node_base_nodes.get(conn_node_id) orelse continue;
                 const repr_voltage_level_id = conn_node_repr_voltage_level.get(conn_node_id) orelse continue;

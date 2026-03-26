@@ -77,7 +77,7 @@ pub fn build_op_lims(
         errdefer props.deinit(gpa);
         try props.ensureTotalCapacity(gpa, 4);
         if (patl_value_str) |pv| {
-            const formatted_pv = try iidm.formatFloatStr(gpa, std.mem.trim(u8, pv, " \t\r\n"));
+            const formatted_pv = try iidm.format_float_str(gpa, std.mem.trim(u8, pv, " \t\r\n"));
             props.appendAssumeCapacity(.{ .name = "CGMES.normalValue_CurrentLimit_patl", .value = formatted_pv });
         }
         props.appendAssumeCapacity(.{ .name = "CGMES.OperationalLimitSetName", .value = set_name });

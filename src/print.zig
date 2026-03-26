@@ -16,7 +16,7 @@ pub fn stdout(comptime fmt_str: []const u8, args: anytype) !void {
     _ = try std.fs.File.stdout().write(msg);
 }
 
-pub fn displayObjectInventory(gpa: std.mem.Allocator, model: cim_model.CimModel) !void {
+pub fn display_object_inventory(gpa: std.mem.Allocator, model: cim_model.CimModel) !void {
     var counts = try model.getTypeCounts(gpa);
     defer counts.deinit();
 
@@ -111,7 +111,7 @@ pub fn displayObject(gpa: std.mem.Allocator, obj: *const tag_index.CimObject) !v
     try stdout("\n", .{});
 }
 
-pub fn displayObjectList(gpa: std.mem.Allocator, objects: []const tag_index.CimObject) !void {
+pub fn display_object_list(gpa: std.mem.Allocator, objects: []const tag_index.CimObject) !void {
     for (objects, 1..) |obj, i| {
         try stdout("[{d}] {s}\n", .{ i, obj.id });
         try displayObject(gpa, &obj);

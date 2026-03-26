@@ -14,7 +14,7 @@ pub const CimModel = struct {
     const TypeRange = struct { start: u32, len: u32 };
 
     pub fn init(gpa: std.mem.Allocator, xml: []const u8) !CimModel {
-        var boundaries = try tag_index.findTagBoundaries(gpa, xml);
+        var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
         errdefer boundaries.deinit(gpa);
 
         var objects: std.ArrayList(tag_index.CimObject) = .empty;
@@ -32,12 +32,12 @@ pub const CimModel = struct {
 
         for (boundaries.items, 0..) |tag, i| {
             // Try rdf:ID first, then fall back to rdf:about (for FullModel etc.)
-            const id = tag_index.extractRdfId(xml, tag.start) catch |err| switch (err) {
-                error.NoRdfId => tag_index.extractRdfAbout(xml, tag.start) catch continue,
+            const id = tag_index.extract_rdf_id(xml, tag.start) catch |err| switch (err) {
+                error.NoRdfId => tag_index.extract_rdf_about(xml, tag.start) catch continue,
                 error.MalformedTag => continue,
             };
             if (id.len > 0) {
-                const closing_tag: u32 = tag_index.findClosingTag(xml, boundaries.items, @intCast(i)) catch |err| blk: {
+                const closing_tag: u32 = tag_index.find_closing_tag(xml, boundaries.items, @intCast(i)) catch |err| blk: {
                     // Handle self-closing tags by using the same index for open and close
                     if (err == error.SelfClosingTag) {
                         break :blk @intCast(i);
@@ -65,7 +65,7 @@ pub const CimModel = struct {
         // Convert boundaries to get final slice address
         const final_boundaries = try boundaries.toOwnedSlice(gpa);
 
-        // Rearrange objects by type for zero-copy getObjectsByType
+        // Rearrange objects by type for zero-copy get_objects_by_type
         const sorted_objects = try gpa.alloc(CimObject, objects.items.len);
         errdefer gpa.free(sorted_objects);
 
@@ -128,7 +128,7 @@ pub const CimModel = struct {
         return &self.objects[idx];
     }
 
-    pub fn getObjectsByType(self: CimModel, type_name: []const u8) []const CimObject {
+    pub fn get_objects_by_type(self: CimModel, type_name: []const u8) []const CimObject {
         const range = self.type_index.get(type_name) orelse return &[_]CimObject{};
         return self.objects[range.start .. range.start + range.len];
     }

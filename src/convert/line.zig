@@ -63,8 +63,8 @@ pub fn convert_lines(
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const NodeMap,
 ) !void {
-    const lines = model.getObjectsByType("ACLineSegment");
-    const series_compensators = model.getObjectsByType("SeriesCompensator");
+    const lines = model.get_objects_by_type("ACLineSegment");
+    const series_compensators = model.get_objects_by_type("SeriesCompensator");
     assert(lines.len == 0 or index.equipment_terminals.count() > 0);
 
     // ---- Fictitious VLs for boundary ConnectivityNodes ----
@@ -85,13 +85,6 @@ pub fn convert_lines(
     var boundary_conn_node_first_terminal: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer boundary_conn_node_first_terminal.deinit(gpa);
 
-    // Single pass: create one FictitiousVoltageLevel per unique boundary CN.
-    // Previously two passes (count then create); merged by using dynamic
-    // allocation for the intermediate boundary maps. The FVL list and maps
-    // grow lazily — boundary CNs are at most ~345, so at most ~9 reallocations.
-    // The first segment (ACLineSegment or SeriesCompensator, in XML order) that
-    // encounters a boundary CN creates the FVL and records itself as the
-    // "first terminal" (→ node 0). The FVL always has IC {node1=0, node2=1}.
     for ([_][]const cim_model.CimObject{ lines, series_compensators }) |seg_slice| {
         for (seg_slice) |line| {
             const terminals = index.equipment_terminals.get(line.id) orelse continue;
@@ -120,12 +113,12 @@ pub fn convert_lines(
                 };
 
                 // nominalV from the ACLineSegment's BaseVoltage (not the Line container's)
-                var nominal_v: ?f64 = null;
+                var nominal_voltage: ?f64 = null;
                 if (try line.getReference("ConductingEquipment.BaseVoltage")) |bv_ref| {
                     const bv_id = strip_hash(bv_ref);
                     if (model.getObjectById(bv_id)) |bv_obj| {
                         if (try bv_obj.getProperty("BaseVoltage.nominalVoltage")) |nv_str| {
-                            nominal_v = std.fmt.parseFloat(f64, std.mem.trim(u8, nv_str, " \t\r\n")) catch null;
+                            nominal_voltage = std.fmt.parseFloat(f64, std.mem.trim(u8, nv_str, " \t\r\n")) catch null;
                         }
                     }
                 }
@@ -141,7 +134,7 @@ pub fn convert_lines(
                 try network.fictitious_voltage_levels.append(gpa, .{
                     .id = fict_voltage_level_id,
                     .name = conn_node_name,
-                    .nominal_v = nominal_v,
+                    .nominal_voltage = nominal_voltage,
                     .line_container_id = container_mrid,
                     .internal_connections = internal_connections,
                 });

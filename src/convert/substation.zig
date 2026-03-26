@@ -97,7 +97,7 @@ pub fn convert_substations(
 ) !void {
     assert(network.substations.items.len == 0);
 
-    const substations = model.getObjectsByType("Substation");
+    const substations = model.get_objects_by_type("Substation");
 
     // Collect all stub IDs for O(1) skip checks.
     var stub_count: usize = 0;
