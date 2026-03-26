@@ -56,12 +56,25 @@ fn append_substation(
         geo_tags.appendAssumeCapacity(tag);
     }
 
+    // Build MergedSubstation aliases for any stub substations merged into this one.
+    var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
+    if (index.substation_merge.get(substation.id)) |stubs| {
+        assert(stubs.items.len > 0);
+        try aliases.ensureTotalCapacity(gpa, stubs.items.len);
+        for (stubs.items, 1..) |stub_id, n| {
+            const stub = model.getObjectById(stub_id) orelse continue;
+            const stub_mrid = try stub.getProperty("IdentifiedObject.mRID") orelse strip_underscore(stub_id);
+            const alias_type = try std.fmt.allocPrint(gpa, "MergedSubstation{d}", .{n});
+            aliases.appendAssumeCapacity(.{ .type = alias_type, .content = stub_mrid });
+        }
+    }
+
     network.substations.appendAssumeCapacity(.{
         .id = mrid,
         .name = name,
         .country = country,
         .geo_tags = geo_tags,
-        .aliases = .empty,
+        .aliases = aliases,
         .properties = .empty,
         .voltage_levels = .empty,
         .two_winding_transformers = .empty,

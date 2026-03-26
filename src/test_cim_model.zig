@@ -51,9 +51,9 @@ test "CimModel.getObjectById - finds object by ID" {
     defer model.deinit(gpa);
 
     // Should find VL1
-    const vl = model.getObjectById("_VL1") orelse return error.TestFailed;
-    try std.testing.expectEqualStrings("_VL1", vl.id);
-    try std.testing.expectEqualStrings("VoltageLevel", vl.type_name);
+    const voltage_level = model.getObjectById("_VL1") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("_VL1", voltage_level.id);
+    try std.testing.expectEqualStrings("VoltageLevel", voltage_level.type_name);
 
     // Should return null for non-existent ID
     const missing = model.getObjectById("_NOTFOUND");

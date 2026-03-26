@@ -1437,9 +1437,9 @@ test "tag_index.getReferenceFromIndices - multiple properties find specific refe
     const closing = try tag_index.findClosingTag(xml, boundaries.items, 0);
 
     // Get first reference
-    const cn = try tag_index.getReferenceFromIndices(xml, boundaries.items, 0, closing, "Terminal.ConnectivityNode");
-    try std.testing.expect(cn != null);
-    try std.testing.expectEqualStrings("#_CN1", cn.?);
+    const conn_node = try tag_index.getReferenceFromIndices(xml, boundaries.items, 0, closing, "Terminal.ConnectivityNode");
+    try std.testing.expect(conn_node != null);
+    try std.testing.expectEqualStrings("#_CN1", conn_node.?);
 
     // Get second reference
     const ce = try tag_index.getReferenceFromIndices(xml, boundaries.items, 0, closing, "Terminal.ConductingEquipment");
@@ -1750,9 +1750,9 @@ test "tag_index.CimObject - getReference returns rdf:resource value" {
     try std.testing.expectEqualStrings("Terminal", obj.type_name);
 
     // Get references
-    const cn = try obj.getReference("Terminal.ConnectivityNode");
-    try std.testing.expect(cn != null);
-    try std.testing.expectEqualStrings("#_CN1", cn.?);
+    const conn_node = try obj.getReference("Terminal.ConnectivityNode");
+    try std.testing.expect(conn_node != null);
+    try std.testing.expectEqualStrings("#_CN1", conn_node.?);
 
     const ce = try obj.getReference("Terminal.ConductingEquipment");
     try std.testing.expect(ce != null);
@@ -2078,9 +2078,9 @@ test "CimObject.getAllReferences - returns all rdf:resource references" {
     try std.testing.expect(region != null);
     try std.testing.expectEqualStrings("#_Region1", region.?);
 
-    const vl = refs.get("Substation.VoltageLevel");
-    try std.testing.expect(vl != null);
-    try std.testing.expectEqualStrings("#_VL1", vl.?);
+    const voltage_level = refs.get("Substation.VoltageLevel");
+    try std.testing.expect(voltage_level != null);
+    try std.testing.expectEqualStrings("#_VL1", voltage_level.?);
 
     // Should NOT include text properties
     try std.testing.expect(refs.get("IdentifiedObject.name") == null);

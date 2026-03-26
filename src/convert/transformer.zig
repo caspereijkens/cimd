@@ -12,11 +12,13 @@ const CimModel = cim_model.CimModel;
 const CimObject = tag_index.CimObject;
 const CimIndex = cim_index.CimIndex;
 const placement_mod = @import("placement.zig");
+const connection_mod = @import("connection.zig");
 
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 const Placement = placement_mod.Placement;
-const resolve_conn_node_placement = placement_mod.resolve_conn_node_placement;
+const resolve_terminal_placement = placement_mod.resolve_terminal_placement;
+const NodeMap = connection_mod.NodeMap;
 
 fn build_ends_by_transformer(
     gpa: std.mem.Allocator,
@@ -42,7 +44,7 @@ fn build_ends_by_transformer(
         std.sort.block(CimObject, transformer_ends.items, {}, lessThanFn);
     }
 
-    assert(ends_by_transformer.count() > 0);
+    assert(ends.len == 0 or ends_by_transformer.count() > 0);
 
     return ends_by_transformer;
 }
@@ -342,12 +344,12 @@ fn resolve_end_placement(
     end: CimObject,
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const std.StringHashMapUnmanaged(u32),
+    node_map: *const NodeMap,
 ) !?Placement {
     const terminal_ref = try end.getReference("TransformerEnd.Terminal") orelse return null;
     const terminal_id = strip_hash(terminal_ref);
     const conn_node_id = index.terminal_conn_node.get(terminal_id) orelse return null;
-    return resolve_conn_node_placement(conn_node_id, index, voltage_level_map, node_map);
+    return resolve_terminal_placement(terminal_id, conn_node_id, index, voltage_level_map, node_map);
 }
 
 fn pre_allocate_transformers(
@@ -356,7 +358,7 @@ fn pre_allocate_transformers(
     substation_map: *const std.StringHashMapUnmanaged(*iidm.Substation),
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     index: *const CimIndex,
-    node_map: *const std.StringHashMapUnmanaged(u32),
+    node_map: *const NodeMap,
 ) !void {
     assert(voltage_level_map.count() > 0);
 
@@ -393,7 +395,7 @@ fn append_two_windings_transformer(
     ends: []const CimObject,
     substation: *iidm.Substation,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const std.StringHashMapUnmanaged(u32),
+    node_map: *const NodeMap,
     index: *const CimIndex,
     ratio_tap_changer_map: *std.StringHashMapUnmanaged(iidm.RatioTapChanger),
     phase_tap_changer_map: *std.StringHashMapUnmanaged(iidm.PhaseTapChanger),
@@ -446,7 +448,7 @@ fn append_three_windings_transformer(
     ends: []const CimObject,
     substation: *iidm.Substation,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const std.StringHashMapUnmanaged(u32),
+    node_map: *const NodeMap,
     index: *const CimIndex,
     ratio_tap_changer_map: *std.StringHashMapUnmanaged(iidm.RatioTapChanger),
 ) !void {
@@ -514,7 +516,7 @@ pub fn convert_transformers(
     index: *const CimIndex,
     substation_map: *const std.StringHashMapUnmanaged(*iidm.Substation),
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const std.StringHashMapUnmanaged(u32),
+    node_map: *const NodeMap,
 ) !void {
     var ends_by_transformer = try build_ends_by_transformer(gpa, model);
     defer {

@@ -80,6 +80,7 @@ pub const CimIndex = struct {
     // BaseVoltage mRIDs from the EQBD boundary file
     boundary_base_voltage_ids: std.StringHashMapUnmanaged(void),
 
+
     pub fn build(
         gpa: std.mem.Allocator,
         model: *const CimModel,
@@ -233,6 +234,18 @@ fn build_terminals(gpa: std.mem.Allocator, model: *const cim_model.CimModel, ind
         });
     }
 
+    // Sort each equipment's terminal list by sequenceNumber so that items[0] = seq 1,
+    // items[1] = seq 2, etc. Terminals arrive in XML parse order which can be reversed.
+    // Single-terminal equipment (loads, generators, shunts) is skipped — no-op sort.
+    var sort_it = index.equipment_terminals.valueIterator();
+    while (sort_it.next()) |list| {
+        if (list.items.len > 1) std.mem.sort(TerminalInfo, list.items, {}, struct {
+            fn lt(_: void, a: TerminalInfo, b: TerminalInfo) bool {
+                return a.sequence < b.sequence;
+            }
+        }.lt);
+    }
+
     assert(index.terminal_equipment.count() == objects.len);
     assert(index.terminal_sequence.count() == objects.len);
     assert(index.terminal_conn_node.count() <= objects.len);
@@ -265,7 +278,16 @@ fn build_connectivity(gpa: std.mem.Allocator, model: *const cim_model.CimModel, 
 
     for (conn_nodes) |conn_node| {
         const container_ref = try conn_node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
-        index.conn_node_container.putAssumeCapacity(conn_node.id, strip_hash(container_ref));
+        var container_id = strip_hash(container_ref);
+        // Bay is not a valid equipment-placement container — resolve to the parent VoltageLevel.
+        if (model.getObjectById(container_id)) |container_obj| {
+            if (std.mem.eql(u8, container_obj.type_name, "Bay")) {
+                if (try container_obj.getReference("Bay.VoltageLevel")) |voltage_level_ref| {
+                    container_id = strip_hash(voltage_level_ref);
+                }
+            }
+        }
+        index.conn_node_container.putAssumeCapacity(conn_node.id, container_id);
 
         const busbar_section_id = index.conn_node_to_busbar_section.get(conn_node.id) orelse continue;
         index.busbar_section_in_parse_order.appendAssumeCapacity(.{
@@ -427,11 +449,11 @@ fn union_voltage_levels(
 
 fn union_conn_nodes(
     parent: *std.StringHashMapUnmanaged([]const u8),
-    cn0: []const u8,
-    cn1: []const u8,
+    conn_node0: []const u8,
+    conn_node1: []const u8,
 ) void {
-    const root0 = find_voltage_level(parent, cn0);
-    const root1 = find_voltage_level(parent, cn1);
+    const root0 = find_voltage_level(parent, conn_node0);
+    const root1 = find_voltage_level(parent, conn_node1);
     if (std.mem.eql(u8, root0, root1)) return;
     parent.putAssumeCapacity(root0, root1);
 }
@@ -441,11 +463,11 @@ test "union_conn_nodes: two nodes share root after union" {
     defer parent.deinit(std.testing.allocator);
     try parent.ensureTotalCapacity(std.testing.allocator, 1);
 
-    union_conn_nodes(&parent, "cn1", "cn2");
+    union_conn_nodes(&parent, "conn_node1", "conn_node2");
 
     try std.testing.expectEqualStrings(
-        find_voltage_level(&parent, "cn1"),
-        find_voltage_level(&parent, "cn2"),
+        find_voltage_level(&parent, "conn_node1"),
+        find_voltage_level(&parent, "conn_node2"),
     );
 }
 
@@ -454,9 +476,9 @@ test "union_conn_nodes: idempotent when already same component" {
     defer parent.deinit(std.testing.allocator);
     try parent.ensureTotalCapacity(std.testing.allocator, 2);
 
-    union_conn_nodes(&parent, "cn1", "cn2");
+    union_conn_nodes(&parent, "conn_node1", "conn_node2");
     const count = parent.count();
-    union_conn_nodes(&parent, "cn1", "cn2");
+    union_conn_nodes(&parent, "conn_node1", "conn_node2");
 
     try std.testing.expectEqual(count, parent.count());
 }
@@ -583,39 +605,112 @@ fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const cim_model.Cim
     }
 }
 
+/// Union-Find path compression (iterative).
+fn find(parent: *const std.StringHashMapUnmanaged([]const u8), x: []const u8) []const u8 {
+    var cur = x;
+    while (true) {
+        const p = parent.get(cur) orelse return cur;
+        if (std.mem.eql(u8, p, cur)) return cur;
+        cur = p;
+    }
+}
+
+/// Union two substation raw IDs. The one with the smaller stripped mRID becomes the root.
+fn union_substations(
+    gpa: std.mem.Allocator,
+    parent: *std.StringHashMapUnmanaged([]const u8),
+    substation_a_id: []const u8,
+    substation_b_id: []const u8,
+) !void {
+    const root_a = find(parent, substation_a_id);
+    const root_b = find(parent, substation_b_id);
+    if (std.mem.eql(u8, root_a, root_b)) return;
+    // Keep the substation with the smaller mRID as the root (representative).
+    if (std.mem.lessThan(u8, strip_underscore(root_a), strip_underscore(root_b))) {
+        try parent.put(gpa, root_b, root_a);
+    } else {
+        try parent.put(gpa, root_a, root_b);
+    }
+}
+
+/// Helper: given a ConnectivityNode ID, return its VoltageLevel object (or null).
+fn conn_node_to_voltage_level(model: *const cim_model.CimModel, index: *const CimIndex, conn_node_id: []const u8) ?*const cim_model.CimObject {
+    const container_id = index.conn_node_container.get(conn_node_id) orelse return null;
+    const obj = model.getObjectById(container_id) orelse return null;
+    if (!std.mem.eql(u8, obj.type_name, "VoltageLevel")) return null;
+    return obj;
+}
+
+/// Build substation_merge using Union-Find over substations.
+/// Substations are merged when connected by:
+///   1. Cross-substation switches (detected via voltage_level_merge_map).
+///   2. Cross-substation PowerTransformers (ends in different substations).
+/// The representative substation has the lexicographically smallest mRID.
 fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
     assert(index.substation_merge.count() == 0);
+    assert(index.conn_node_container.count() > 0);
 
-    try index.substation_merge.ensureTotalCapacity(gpa, @intCast(index.voltage_level_merge.count()));
+    const substations = model.getObjectsByType("Substation");
 
-    var it = index.voltage_level_merge.iterator();
-    while (it.next()) |entry| {
-        const stub_voltage_level_id = entry.key_ptr.*;
-        const stub_voltage_level = model.getObjectById(stub_voltage_level_id) orelse continue;
+    // Initialize Union-Find: each substation is its own root.
+    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer parent.deinit(gpa);
+    try parent.ensureTotalCapacity(gpa, @intCast(substations.len));
+    for (substations) |substation| parent.putAssumeCapacity(substation.id, substation.id);
+
+    // 1. Union substations connected by cross-substation switches (via voltage_level_merge_map).
+    var voltage_level_it = index.voltage_level_merge.iterator();
+    while (voltage_level_it.next()) |entry| {
+        const stub_voltage_level = model.getObjectById(entry.key_ptr.*) orelse continue;
+        const repr_voltage_level = model.getObjectById(entry.value_ptr.*) orelse continue;
         const stub_substation_ref = try stub_voltage_level.getReference("VoltageLevel.Substation") orelse continue;
-        const stub_substation_id = strip_hash(stub_substation_ref);
-
-        const repr_voltage_level_id = entry.value_ptr.*;
-        const repr_voltage_level = model.getObjectById(repr_voltage_level_id) orelse continue;
         const repr_substation_ref = try repr_voltage_level.getReference("VoltageLevel.Substation") orelse continue;
+        const stub_substation_id = strip_hash(stub_substation_ref);
         const repr_substation_id = strip_hash(repr_substation_ref);
+        if (!std.mem.eql(u8, stub_substation_id, repr_substation_id)) {
+            try union_substations(gpa, &parent, stub_substation_id, repr_substation_id);
+        }
+    }
 
-        if (std.mem.eql(u8, stub_substation_id, repr_substation_id)) continue;
+    // 2. Union substations connected by cross-substation PowerTransformers.
+    for (model.getObjectsByType("PowerTransformer")) |transformer| {
+        const terminals = index.equipment_terminals.get(transformer.id) orelse continue;
+        if (terminals.items.len < 2) continue;
+        var first_substation_id: ?[]const u8 = null;
+        for (terminals.items) |terminal| {
+            const conn_node_id = terminal.conn_node_id orelse continue;
+            const voltage_level_obj = conn_node_to_voltage_level(model, index, conn_node_id) orelse continue;
+            const substation_ref = try voltage_level_obj.getReference("VoltageLevel.Substation") orelse continue;
+            const substation_id = strip_hash(substation_ref);
+            if (first_substation_id) |first| {
+                if (!std.mem.eql(u8, first, substation_id)) {
+                    try union_substations(gpa, &parent, first, substation_id);
+                }
+            } else {
+                first_substation_id = substation_id;
+            }
+        }
+    }
 
-        const gop = index.substation_merge.getOrPutAssumeCapacity(repr_substation_id);
+    // Flatten Union-Find: for each non-root substation, add it to its canonical's list.
+    try index.substation_merge.ensureTotalCapacity(gpa, @intCast(substations.len));
+    for (substations) |substation| {
+        const canonical = find(&parent, substation.id);
+        if (std.mem.eql(u8, canonical, substation.id)) continue; // sub is already a root
+        const gop = index.substation_merge.getOrPutAssumeCapacity(canonical);
         if (!gop.found_existing) gop.value_ptr.* = .empty;
+        // Avoid duplicates (can arise from multiple VL-level connections between same two subs).
         var already_present = false;
         for (gop.value_ptr.items) |existing| {
-            if (std.mem.eql(u8, existing, stub_substation_id)) {
+            if (std.mem.eql(u8, existing, substation.id)) {
                 already_present = true;
                 break;
             }
         }
-
-        if (!already_present) try gop.value_ptr.append(gpa, stub_substation_id);
+        if (!already_present) try gop.value_ptr.append(gpa, substation.id);
     }
 
-    assert(index.substation_merge.count() <= index.voltage_level_merge.count());
+    assert(index.substation_merge.count() <= substations.len);
 }
 
 /// Resolving a RegulatingControl terminal requires finding the nearest BusbarSection
@@ -651,9 +746,9 @@ fn build_branch_first_search_pre_computation(gpa: std.mem.Allocator, model: *con
         for (slice) |sw| {
             const terminals = index.equipment_terminals.get(sw.id) orelse continue;
             if (terminals.items.len != 2) continue;
-            const cn0 = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
-            const cn1 = index.terminal_conn_node.get(terminals.items[1].id) orelse continue;
-            union_conn_nodes(&parent, cn0, cn1);
+            const conn_node0 = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
+            const conn_node1 = index.terminal_conn_node.get(terminals.items[1].id) orelse continue;
+            union_conn_nodes(&parent, conn_node0, conn_node1);
         }
     }
 
@@ -671,10 +766,10 @@ fn build_branch_first_search_pre_computation(gpa: std.mem.Allocator, model: *con
     try index.conn_node_reachable_busbar_section.ensureTotalCapacity(gpa, @intCast(conn_nodes.len));
 
     var it = parent.keyIterator();
-    while (it.next()) |cn_id| {
-        const root = find_voltage_level(&parent, cn_id.*);
+    while (it.next()) |conn_node_id| {
+        const root = find_voltage_level(&parent, conn_node_id.*);
         const busbar_section_mrid = cluster_to_busbar_section.get(root) orelse continue;
-        index.conn_node_reachable_busbar_section.putAssumeCapacity(cn_id.*, busbar_section_mrid);
+        index.conn_node_reachable_busbar_section.putAssumeCapacity(conn_node_id.*, busbar_section_mrid);
     }
 
     assert(index.conn_node_reachable_busbar_section.count() <= conn_nodes.len);

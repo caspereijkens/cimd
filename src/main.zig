@@ -118,7 +118,7 @@ fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[
     var network = try converter.convert(gpa, &model);
     defer network.deinit(gpa);
 
-    var total_vls: usize = 0;
+    var total_voltage_levels: usize = 0;
     var total_busbar_sections: usize = 0;
     var total_switches: usize = 0;
     var total_loads: usize = 0;
@@ -127,21 +127,21 @@ fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[
     var total_generators: usize = 0;
     var total_2w: usize = 0;
     var total_3w: usize = 0;
-    for (network.substations.items) |sub| {
-        total_vls += sub.voltage_levels.items.len;
-        total_2w += sub.two_winding_transformers.items.len;
-        total_3w += sub.three_winding_transformers.items.len;
-        for (sub.voltage_levels.items) |vl| {
-            total_busbar_sections += vl.node_breaker_topology.busbar_sections.items.len;
-            total_switches += vl.node_breaker_topology.switches.items.len;
-            total_loads += vl.loads.items.len;
-            total_shunts += vl.shunts.items.len;
-            total_svcs += vl.static_var_compensators.items.len;
-            total_generators += vl.generators.items.len;
+    for (network.substations.items) |substation| {
+        total_voltage_levels += substation.voltage_levels.items.len;
+        total_2w += substation.two_winding_transformers.items.len;
+        total_3w += substation.three_winding_transformers.items.len;
+        for (substation.voltage_levels.items) |voltage_level| {
+            total_busbar_sections += voltage_level.node_breaker_topology.busbar_sections.items.len;
+            total_switches += voltage_level.node_breaker_topology.switches.items.len;
+            total_loads += voltage_level.loads.items.len;
+            total_shunts += voltage_level.shunts.items.len;
+            total_svcs += voltage_level.static_var_compensators.items.len;
+            total_generators += voltage_level.generators.items.len;
         }
     }
     std.debug.print("Substations: {d}\n", .{network.substations.items.len});
-    std.debug.print("VoltageLevels: {d}\n", .{total_vls});
+    std.debug.print("VoltageLevels: {d}\n", .{total_voltage_levels});
     std.debug.print("BusbarSections: {d}\n", .{total_busbar_sections});
     std.debug.print("Switches: {d}\n", .{total_switches});
     std.debug.print("Loads: {d}\n", .{total_loads});

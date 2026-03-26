@@ -6,6 +6,7 @@ const tag_index = @import("../tag_index.zig");
 const utils = @import("../utils.zig");
 
 const placement_mod = @import("placement.zig");
+const connection_mod = @import("connection.zig");
 
 const assert = std.debug.assert;
 const get_switch_slices = cim_index.get_switch_slices;
@@ -16,7 +17,8 @@ const CimIndex = cim_index.CimIndex;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 const Placement = placement_mod.Placement;
-const resolve_conn_node_placement = placement_mod.resolve_conn_node_placement;
+const resolve_terminal_placement = placement_mod.resolve_terminal_placement;
+const NodeMap = connection_mod.NodeMap;
 
 const VoltageLevelEquipmentCounts = struct {
     busbar_sections: usize = 0,
@@ -45,12 +47,13 @@ fn resolve_repr_voltage_level_id(
 fn resolve_equipment_placement(
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const std.StringHashMapUnmanaged(u32),
+    node_map: *const NodeMap,
     equipment_id: []const u8,
 ) ?Placement {
     const terminals = index.equipment_terminals.get(equipment_id) orelse return null;
-    const conn_node_id = terminals.items[0].conn_node_id orelse return null;
-    return resolve_conn_node_placement(conn_node_id, index, voltage_level_map, node_map);
+    const term = terminals.items[0];
+    const conn_node_id = term.conn_node_id orelse return null;
+    return resolve_terminal_placement(term.id, conn_node_id, index, voltage_level_map, node_map);
 }
 
 /// Count all objects of a given CIM type and increment the named field in the
@@ -115,7 +118,7 @@ pub fn convert_busbar_sections(
     model: *const CimModel,
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const std.StringHashMapUnmanaged(u32),
+    node_map: *const NodeMap,
 ) !void {
     const busbar_sections = model.getObjectsByType("BusbarSection");
 
@@ -139,7 +142,7 @@ pub fn convert_switches(
     model: *const CimModel,
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const std.StringHashMapUnmanaged(u32),
+    node_map: *const NodeMap,
 ) !void {
     const switch_slices = get_switch_slices(model);
 
@@ -149,12 +152,10 @@ pub fn convert_switches(
 
             if (terminals.items.len < 2) continue;
 
+            const node0 = node_map.get(terminals.items[0].id) orelse continue;
+            const node1 = node_map.get(terminals.items[1].id) orelse continue;
+
             const conn_node0_id = terminals.items[0].conn_node_id orelse continue;
-            const conn_node1_id = terminals.items[1].conn_node_id orelse continue;
-
-            const node0 = node_map.get(conn_node0_id) orelse continue;
-            const node1 = node_map.get(conn_node1_id) orelse continue;
-
             const container0_id = index.conn_node_container.get(conn_node0_id) orelse continue;
 
             const repr_voltage_level_id = cim_index.find_voltage_level(&index.voltage_level_merge, container0_id);
@@ -186,24 +187,27 @@ pub fn convert_switches(
 }
 
 pub fn convert_loads(
+    gpa: std.mem.Allocator,
     model: *const CimModel,
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const std.StringHashMapUnmanaged(u32),
+    node_map: *const NodeMap,
 ) !void {
     const energy_consumers = model.getObjectsByType("EnergyConsumer");
     const conform_loads = model.getObjectsByType("ConformLoad");
     const non_conform_loads = model.getObjectsByType("NonConformLoad");
 
-    try convert_load_type(index, voltage_level_map, node_map, energy_consumers);
-    try convert_load_type(index, voltage_level_map, node_map, conform_loads);
-    try convert_load_type(index, voltage_level_map, node_map, non_conform_loads);
+    try convert_load_type(gpa, model, index, voltage_level_map, node_map, energy_consumers);
+    try convert_load_type(gpa, model, index, voltage_level_map, node_map, conform_loads);
+    try convert_load_type(gpa, model, index, voltage_level_map, node_map, non_conform_loads);
 }
 
 fn convert_load_type(
+    gpa: std.mem.Allocator,
+    model: *const CimModel,
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const std.StringHashMapUnmanaged(u32),
+    node_map: *const NodeMap,
     loads: []const CimObject,
 ) !void {
     for (loads) |load| {
@@ -213,14 +217,64 @@ fn convert_load_type(
 
         const mrid = try load.getProperty("IdentifiedObject.mRID") orelse strip_underscore(load.id);
         const name = try load.getProperty("IdentifiedObject.name");
+
+        // alias: CGMES.Terminal1 = terminal mRID
+        var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
+        errdefer aliases.deinit(gpa);
+        if (index.equipment_terminals.get(load.id)) |terms| {
+            if (terms.items.len > 0) {
+                const t_mrid = strip_underscore(terms.items[0].id);
+                try aliases.ensureTotalCapacity(gpa, 1);
+                aliases.appendAssumeCapacity(.{ .type = "CGMES.Terminal1", .content = t_mrid });
+            }
+        }
+
+        // properties: CGMES.pFixed, CGMES.originalClass, CGMES.qFixed
+        var props: std.ArrayListUnmanaged(iidm.Property) = .empty;
+        errdefer props.deinit(gpa);
+        try props.ensureTotalCapacity(gpa, 3);
+        props.appendAssumeCapacity(.{ .name = "CGMES.pFixed", .value = "0.0" });
+        props.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = load.type_name });
+        props.appendAssumeCapacity(.{ .name = "CGMES.qFixed", .value = "0.0" });
+
+        // Load response characteristic → exponentialModel or zipModel.
+        var exp_model: ?iidm.ExponentialModel = null;
+        var zip_model: ?iidm.ZipModel = null;
+        if (try load.getReference("EnergyConsumer.LoadResponse")) |lr_ref| {
+            if (model.getObjectById(strip_hash(lr_ref))) |lrc| {
+                const exp_str = try lrc.getProperty("LoadResponseCharacteristic.exponentModel") orelse "false";
+                if (std.mem.eql(u8, exp_str, "true")) {
+                    const np_str = try lrc.getProperty("LoadResponseCharacteristic.pVoltageExponent") orelse "0";
+                    const nq_str = try lrc.getProperty("LoadResponseCharacteristic.qVoltageExponent") orelse "0";
+                    exp_model = .{
+                        .np = std.fmt.parseFloat(f64, np_str) catch 0.0,
+                        .nq = std.fmt.parseFloat(f64, nq_str) catch 0.0,
+                    };
+                } else {
+                    const c0p = std.fmt.parseFloat(f64, try lrc.getProperty("LoadResponseCharacteristic.pConstantPower") orelse "0") catch 0.0;
+                    const c1p = std.fmt.parseFloat(f64, try lrc.getProperty("LoadResponseCharacteristic.pConstantCurrent") orelse "0") catch 0.0;
+                    const c2p = std.fmt.parseFloat(f64, try lrc.getProperty("LoadResponseCharacteristic.pConstantImpedance") orelse "0") catch 0.0;
+                    const c0q = std.fmt.parseFloat(f64, try lrc.getProperty("LoadResponseCharacteristic.qConstantPower") orelse "0") catch 0.0;
+                    const c1q = std.fmt.parseFloat(f64, try lrc.getProperty("LoadResponseCharacteristic.qConstantCurrent") orelse "0") catch 0.0;
+                    const c2q = std.fmt.parseFloat(f64, try lrc.getProperty("LoadResponseCharacteristic.qConstantImpedance") orelse "0") catch 0.0;
+                    zip_model = .{ .c0p = c0p, .c1p = c1p, .c2p = c2p, .c0q = c0q, .c1q = c1q, .c2q = c2q };
+                }
+            }
+        }
+
+        assert(mrid.len > 0);
         voltage_level.loads.appendAssumeCapacity(.{
             .id = mrid,
             .name = name,
             .load_type = .other,
             .node = node,
-            .aliases = .empty,
-            .properties = .empty,
+            .exponential_model = exp_model,
+            .zip_model = zip_model,
+            .aliases = aliases,
+            .properties = props,
         });
+        aliases = .empty; // ownership transferred
+        props = .empty; // ownership transferred
     }
 }
 
@@ -228,7 +282,7 @@ pub fn convert_shunts(
     model: *const CimModel,
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const std.StringHashMapUnmanaged(u32),
+    node_map: *const NodeMap,
 ) !void {
     const shunts = model.getObjectsByType("LinearShuntCompensator");
     assert(shunts.len == 0 or voltage_level_map.count() > 0);
@@ -278,7 +332,7 @@ pub fn convert_static_var_compensators(
     model: *const CimModel,
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const std.StringHashMapUnmanaged(u32),
+    node_map: *const NodeMap,
 ) !void {
     const static_var_compensators = model.getObjectsByType("StaticVarCompensator");
     assert(static_var_compensators.len == 0 or voltage_level_map.count() > 0);
@@ -337,10 +391,30 @@ pub fn convert_generators(
     model: *const CimModel,
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const std.StringHashMapUnmanaged(u32),
+    node_map: *const NodeMap,
 ) !void {
     const machines = model.getObjectsByType("SynchronousMachine");
     assert(machines.len == 0 or voltage_level_map.count() > 0);
+
+    // Build ThermalGeneratingUnit ID → fuel type fragment map from FossilFuel objects.
+    // FossilFuel.ThermalGeneratingUnit → unit raw ID; FossilFuel.fossilFuelType → enum URL.
+    var fuel_type_map: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer fuel_type_map.deinit(gpa);
+    {
+        const fossil_fuels = model.getObjectsByType("FossilFuel");
+        try fuel_type_map.ensureTotalCapacity(gpa, @intCast(fossil_fuels.len));
+        for (fossil_fuels) |ff| {
+            const unit_ref = try ff.getReference("FossilFuel.ThermalGeneratingUnit") orelse continue;
+            const unit_id = strip_hash(unit_ref);
+            const ft_ref = try ff.getReference("FossilFuel.fossilFuelType") orelse continue;
+            // Extract enum fragment part after last '#', then after last '.'.
+            const h = std.mem.lastIndexOfScalar(u8, ft_ref, '#') orelse continue;
+            const frag = ft_ref[h + 1 ..];
+            const dot = std.mem.lastIndexOfScalar(u8, frag, '.') orelse continue;
+            const ft_frag = frag[dot + 1 ..];
+            fuel_type_map.putAssumeCapacity(unit_id, ft_frag);
+        }
+    }
 
     for (machines) |machine| {
         const placement = resolve_equipment_placement(index, voltage_level_map, node_map, machine.id) orelse continue;
@@ -358,20 +432,49 @@ pub fn convert_generators(
         const control_enabled_str = try machine.getProperty("RegulatingCondEq.controlEnabled") orelse "false";
         const voltage_regulator_on = std.mem.eql(u8, control_enabled_str, "true");
 
-        const type_str = try machine.getProperty("SynchronousMachine.type") orelse "";
-        const is_condenser = std.mem.indexOf(u8, type_str, "condenser") != null;
+        // SynchronousMachineKind enum: "condenser" or "generatorOrCondenser" (capital C).
+        // Search for the common lowercase suffix "ondenser" to match both.
+        const type_ref = try machine.getReference("SynchronousMachine.type") orelse "";
+        const is_condenser = std.mem.indexOf(u8, type_ref, "ondenser") != null;
+        // Extract "kind value" from a CIM enum URL: part after the last '.' in the fragment.
+        // e.g. "http://...#SynchronousMachineKind.generatorOrCondenser" → "generatorOrCondenser"
+        const type_fragment: ?[]const u8 = blk: {
+            const h = std.mem.lastIndexOfScalar(u8, type_ref, '#') orelse break :blk null;
+            const frag = type_ref[h + 1 ..];
+            const dot = std.mem.lastIndexOfScalar(u8, frag, '.') orelse break :blk frag;
+            break :blk frag[dot + 1 ..];
+        };
 
-        // Resolve GeneratingUnit for min_p, max_p, and energy source.
+        // Resolve GeneratingUnit for min_p, max_p, energy source, GeneratingUnit mRID, and wind type.
         var min_p: ?f64 = null;
         var max_p: ?f64 = null;
         var energy_source: iidm.EnergySource = .other;
+        var unit_mrid: ?[]const u8 = null;
+        var wind_unit_type: ?[]const u8 = null;
+        var fuel_type: ?[]const u8 = null;
         if (try machine.getReference("RotatingMachine.GeneratingUnit")) |unit_ref| {
-            if (model.getObjectById(strip_hash(unit_ref))) |unit| {
+            const unit_id = strip_hash(unit_ref);
+            if (model.getObjectById(unit_id)) |unit| {
                 energy_source = energy_source_from_cim_type(unit.type_name);
                 if (try unit.getProperty("GeneratingUnit.minOperatingP")) |v|
                     min_p = try std.fmt.parseFloat(f64, v);
                 if (try unit.getProperty("GeneratingUnit.maxOperatingP")) |v|
                     max_p = try std.fmt.parseFloat(f64, v);
+                unit_mrid = try unit.getProperty("IdentifiedObject.mRID") orelse strip_underscore(unit_id);
+                // WindGeneratingUnit: extract windGenUnitType kind value.
+                if (std.mem.eql(u8, unit.type_name, "WindGeneratingUnit")) {
+                    if (try unit.getReference("WindGeneratingUnit.windGenUnitType")) |wt_ref| {
+                        const wt_frag = blk: {
+                            const h = std.mem.lastIndexOfScalar(u8, wt_ref, '#') orelse break :blk wt_ref;
+                            const frag = wt_ref[h + 1 ..];
+                            const dot = std.mem.lastIndexOfScalar(u8, frag, '.') orelse break :blk frag;
+                            break :blk frag[dot + 1 ..];
+                        };
+                        wind_unit_type = wt_frag;
+                    }
+                }
+                // ThermalGeneratingUnit: look up fuel type from FossilFuel inverse map.
+                fuel_type = fuel_type_map.get(unit_id);
             }
         }
 
@@ -399,6 +502,60 @@ pub fn convert_generators(
             }
         }
 
+        // Resolve regulatingTerminal, CGMES.RegulatingControl mRID, and CGMES.mode.
+        var regulating_terminal: ?[]const u8 = null;
+        var rc_mrid: ?[]const u8 = null;
+        var rc_mode_lower: ?[]u8 = null;
+        if (try machine.getReference("RegulatingCondEq.RegulatingControl")) |rc_ref| {
+            const rc_id = strip_hash(rc_ref);
+            if (model.getObjectById(rc_id)) |rc| {
+                rc_mrid = try rc.getProperty("IdentifiedObject.mRID") orelse strip_underscore(rc_id);
+                // CGMES.mode: full URL of RegulatingControl.mode, lowercased.
+                if (try rc.getReference("RegulatingControl.mode")) |mode_ref| {
+                    rc_mode_lower = try gpa.alloc(u8, mode_ref.len);
+                    _ = std.ascii.lowerString(rc_mode_lower.?, mode_ref);
+                }
+                if (try rc.getReference("RegulatingControl.Terminal")) |rt_ref| {
+                    const rt_id = strip_hash(rt_ref);
+                    const rt_eq = index.terminal_equipment.get(rt_id) orelse "";
+                    // If RC terminal is on this machine → local regulation (null).
+                    if (!std.mem.eql(u8, rt_eq, machine.id)) {
+                        const rt_conn_node = index.terminal_conn_node.get(rt_id);
+                        if (rt_conn_node) |conn_node_id| {
+                            regulating_terminal = index.conn_node_reachable_busbar_section.get(conn_node_id);
+                        }
+                    }
+                }
+            }
+        }
+        // rc_mode_lower lifetime: owned by gpa, outlives the machine loop iteration.
+        // Freed by the network teardown (gpa deinit at program exit).
+
+        // alias: CGMES.Terminal1 = terminal mRID
+        var gen_aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
+        errdefer gen_aliases.deinit(gpa);
+        if (index.equipment_terminals.get(machine.id)) |terms| {
+            if (terms.items.len > 0) {
+                const t_mrid = strip_underscore(terms.items[0].id);
+                try gen_aliases.ensureTotalCapacity(gpa, 1);
+                gen_aliases.appendAssumeCapacity(.{ .type = "CGMES.Terminal1", .content = t_mrid });
+            }
+        }
+
+        // properties in pypow order:
+        //   fuelType, synchronousMachineType, mode, originalClass, GeneratingUnit,
+        //   RegulatingControl, windGenUnitType
+        var gen_props: std.ArrayListUnmanaged(iidm.Property) = .empty;
+        errdefer gen_props.deinit(gpa);
+        try gen_props.ensureTotalCapacity(gpa, 7);
+        if (fuel_type) |ft| gen_props.appendAssumeCapacity(.{ .name = "CGMES.fuelType", .value = ft });
+        if (type_fragment) |tf| gen_props.appendAssumeCapacity(.{ .name = "CGMES.synchronousMachineType", .value = tf });
+        if (rc_mode_lower) |ml| gen_props.appendAssumeCapacity(.{ .name = "CGMES.mode", .value = ml });
+        gen_props.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = "SynchronousMachine" });
+        if (unit_mrid) |um| gen_props.appendAssumeCapacity(.{ .name = "CGMES.GeneratingUnit", .value = um });
+        if (rc_mrid) |rm| gen_props.appendAssumeCapacity(.{ .name = "CGMES.RegulatingControl", .value = rm });
+        if (wind_unit_type) |wt| gen_props.appendAssumeCapacity(.{ .name = "CGMES.windGenUnitType", .value = wt });
+
         assert(mrid.len > 0);
         voltage_level.generators.appendAssumeCapacity(.{
             .id = mrid,
@@ -412,8 +569,22 @@ pub fn convert_generators(
             .node = node,
             .reactive_capability_curve_points = curve_points,
             .min_max_reactive_limits = min_max_reactive_limits,
-            .aliases = .empty,
-            .properties = .empty,
+            .regulating_terminal = regulating_terminal,
+            .aliases = gen_aliases,
+            .properties = gen_props,
         });
+        gen_aliases = .empty; // ownership transferred
+        gen_props = .empty; // ownership transferred
     }
+}
+
+test "energy_source_from_cim_type: all known types map correctly" {
+    const iidm_mod = @import("../iidm.zig");
+    try std.testing.expectEqual(iidm_mod.EnergySource.hydro, energy_source_from_cim_type("HydroGeneratingUnit"));
+    try std.testing.expectEqual(iidm_mod.EnergySource.thermal, energy_source_from_cim_type("ThermalGeneratingUnit"));
+    try std.testing.expectEqual(iidm_mod.EnergySource.wind, energy_source_from_cim_type("WindGeneratingUnit"));
+    try std.testing.expectEqual(iidm_mod.EnergySource.solar, energy_source_from_cim_type("SolarGeneratingUnit"));
+    try std.testing.expectEqual(iidm_mod.EnergySource.nuclear, energy_source_from_cim_type("NuclearGeneratingUnit"));
+    try std.testing.expectEqual(iidm_mod.EnergySource.other, energy_source_from_cim_type("UnknownGeneratingUnit"));
+    try std.testing.expectEqual(iidm_mod.EnergySource.other, energy_source_from_cim_type(""));
 }

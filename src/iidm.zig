@@ -730,8 +730,8 @@ pub const NodeBreakerTopology = struct {
     }
 
     pub fn deinit(self: *NodeBreakerTopology, allocator: std.mem.Allocator) void {
-        for (self.busbar_sections.items) |*bbs| {
-            bbs.deinit(allocator);
+        for (self.busbar_sections.items) |*busbar_section| {
+            busbar_section.deinit(allocator);
         }
         self.busbar_sections.deinit(allocator);
         for (self.switches.items) |*sw| {
@@ -889,6 +889,7 @@ pub const FictitiousVoltageLevel = struct {
     }
 
     pub fn deinit(self: *FictitiousVoltageLevel, allocator: std.mem.Allocator) void {
+        allocator.free(self.id); // id is always heap-allocated via allocPrint in line.zig
         self.internal_connections.deinit(allocator);
         for (self.generators.items) |*gen| gen.deinit(allocator);
         self.generators.deinit(allocator);
@@ -1610,13 +1611,27 @@ pub const ModelProfile = struct {
     }
 };
 
+/// A "dependentOn" model reference inside cgmesMetadataModels.
+pub const DependentOnModel = struct {
+    content: []const u8,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("content");
+        try jws.write(self.content);
+        try jws.endObject();
+    }
+};
+
 pub const MetadataModel = struct {
     subset: []const u8,
     modeling_authority_set: []const u8,
     id: []const u8,
     version: u32,
-    description: []const u8,
+    /// Heap-allocated (XML entities decoded). Freed by deinit.
+    description: []u8,
     profiles: std.ArrayListUnmanaged(ModelProfile),
+    dependent_on_models: std.ArrayListUnmanaged(DependentOnModel) = .empty,
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
         try jws.beginObject();
@@ -1632,11 +1647,17 @@ pub const MetadataModel = struct {
         try jws.write(self.description);
         try jws.objectField("profiles");
         try jws.write(self.profiles.items);
+        if (self.dependent_on_models.items.len > 0) {
+            try jws.objectField("dependentOnModels");
+            try jws.write(self.dependent_on_models.items);
+        }
         try jws.endObject();
     }
 
     pub fn deinit(self: *MetadataModel, allocator: std.mem.Allocator) void {
+        allocator.free(self.description);
         self.profiles.deinit(allocator);
+        self.dependent_on_models.deinit(allocator);
     }
 };
 
@@ -1873,9 +1894,9 @@ pub const Network = struct {
         try jws.write("EQUIPMENT");
         try jws.objectField("substations");
         try jws.beginArray();
-        for (self.substations.items) |sub| {
-            if (sub.voltage_levels.items.len == 0) continue;
-            try jws.write(sub);
+        for (self.substations.items) |substation| {
+            if (substation.voltage_levels.items.len == 0) continue;
+            try jws.write(substation);
         }
         try jws.endArray();
         if (self.fictitious_voltage_levels.items.len > 0) {
@@ -1900,12 +1921,12 @@ pub const Network = struct {
     }
 
     pub fn deinit(self: *Network, allocator: std.mem.Allocator) void {
-        for (self.substations.items) |*sub| {
-            sub.deinit(allocator);
+        for (self.substations.items) |*substation| {
+            substation.deinit(allocator);
         }
         self.substations.deinit(allocator);
-        for (self.fictitious_voltage_levels.items) |*fvl| {
-            fvl.deinit(allocator);
+        for (self.fictitious_voltage_levels.items) |*fvoltage_level| {
+            fvoltage_level.deinit(allocator);
         }
         self.fictitious_voltage_levels.deinit(allocator);
         for (self.lines.items) |*line| {
