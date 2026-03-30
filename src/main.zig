@@ -7,6 +7,8 @@ const assert = std.debug.assert;
 const zip = @import("zip.zig");
 const cim_model = @import("cim_model.zig");
 const converter = @import("converter.zig");
+const extract_rdf_id_resource = @import("tag_index.zig").extract_rdf_resource;
+const strip_hash = @import("utils.zig").strip_hash;
 
 pub fn main() !void {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -21,8 +23,9 @@ pub fn main() !void {
 
     switch (command) {
         .index => |_| try command_index(gpa, command.index.paths),
-        .convert => |c| try command_convert(gpa, c.input_path, c.eqbd_path, c.output_path, c.verbose),
+        .convert => |c| try command_convert(gpa, c.eq_path, c.eqbd_path, c.output_path, c.verbose),
         .version => |_| try command_version(command.version.verbose),
+        .browse => |c| try command_browse(gpa, c.eq_path, c.eqbd_path, c.entry_id),
     }
 }
 
@@ -101,10 +104,10 @@ fn read_path(gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
     }
 }
 
-fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[]const u8, output_path: ?[]const u8, verbose: bool) !void {
+fn command_convert(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, output_path: ?[]const u8, verbose: bool) !void {
     _ = verbose;
 
-    var xml = try read_path(gpa, input_path);
+    var xml = try read_path(gpa, eq_path);
 
     if (eqbd_path) |path| {
         const eqbd_xml = try read_path(gpa, path);
@@ -166,6 +169,78 @@ fn command_convert(gpa: std.mem.Allocator, input_path: []const u8, eqbd_path: ?[
     try file_writer.interface.flush();
 }
 
+fn command_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, entry_id: []const u8) !void {
+    var xml = try read_path(gpa, eq_path);
+
+    if (eqbd_path) |path| {
+        const eqbd_xml = try read_path(gpa, path);
+        const merged = try std.mem.concat(gpa, u8, &[_][]const u8{ xml, eqbd_xml });
+        xml = merged;
+    }
+
+    var model = try cim_model.CimModel.init(gpa, xml);
+    defer model.deinit(gpa);
+
+    var trace_ids: std.ArrayList([]const u8) = .empty;
+    defer trace_ids.deinit(gpa);
+    var trace_types: std.ArrayList([]const u8) = .empty;
+    defer trace_types.deinit(gpa);
+
+    // TODO: make this fuzzy so we don't have to fill in the exact id
+    var id = entry_id;
+
+    while (true) blk: {
+        const object = model.getObjectById(id) orelse {
+            print.stderr("The rdf ID {s} was not found in the model.", .{id});
+            return error.RdfIdNotFound;
+        };
+        const opening_tag = object.boundaries[object.object_tag_idx];
+        const closing_tag = object.boundaries[object.closing_tag_idx];
+        const buffer = xml[opening_tag.start..closing_tag.end+1];
+        
+        // TODO: make this quit directly on q, so wait for q/b without pressing return.
+        var it = std.mem.splitSequence(u8, buffer, "\n");
+        var counter: u32 = 1;
+        var ref_list: std.ArrayList([]const u8) = .empty;
+        defer ref_list.deinit(gpa);
+        while (it.next()) |line| {
+            const rdf_id = try extract_rdf_id_resource(line, 0);
+            if (rdf_id) |val| {
+                try print.stdout("\n|  {d}  |  {s}", .{counter, line});
+                try ref_list.append(gpa, strip_hash(val));
+                counter += 1;
+            } else {
+                try print.stdout("\n|     |  {s}", .{line});
+            }
+        }
+        try print.stdout("\n\n", .{});
+        for (1..counter) |choice| {
+            try print.stdout(" [{d}] ", .{choice});
+        }
+        try print.stdout(" [b]ack ", .{});
+        try print.stdout(" [q]uit ", .{});
+        try print.stdout("\n\n", .{});
+
+        var io_buf: [64]u8 = undefined;
+        var stdin = std.fs.File.stdin().reader(&io_buf);
+
+        const input = try stdin.interface.takeDelimiterExclusive('\n');
+        const choice = switch (input[0]) {
+            'b' => {
+                id = strip_hash(trace_ids.pop() orelse break);
+
+                break :blk;
+                // TODO: me must append the current choice to a stack so we can also navigate back by popping the stack.
+            },
+            'q' => break,
+            else => try std.fmt.parseInt(u32, input, 10) - 1,
+        };
+
+        try trace_ids.append(gpa, id);
+        try trace_types.append(gpa, object.type_name);
+        id = ref_list.items[choice];
+    }
+}
 /// Read file into memory (used for unzipped usecase)
 pub fn read_file_to_memory(
     gpa: std.mem.Allocator,

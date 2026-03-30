@@ -42,6 +42,23 @@ const help_convert =
     \\
 ;
 
+const help_browse =
+    \\Usage: cimd browse <input> --id <rdf id> [--eqbd <file>]
+    \\
+    \\Look up an equipment object by its id and browse its references.
+    \\
+    \\Arguments:
+    \\  <input>           EQ profile file to convert (XML or ZIP)
+    \\
+    \\Options:
+    \\  --eqbd <file>     EQBD profile file if needed (XML or ZIP)
+    \\  --id <rdf id>     RDF ID of object to entry browsing
+    \\
+    \\Examples:
+    \\  cimd browse data/eq.zip --id _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
+    \\
+;
+
 const help_version =
     \\Usage: cimd version [--verbose]
     \\
@@ -76,10 +93,16 @@ pub const Command = union(enum) {
     };
 
     pub const Convert = struct {
-        input_path: []const u8,
+        eq_path: []const u8,
         eqbd_path: ?[]const u8,
         output_path: ?[]const u8,
         verbose: bool,
+    };
+
+    pub const Browse = struct {
+        eq_path: []const u8,
+        eqbd_path: ?[]const u8,
+        entry_id: []const u8,
     };
 
     pub const Version = struct {
@@ -88,6 +111,7 @@ pub const Command = union(enum) {
 
     index: Index,
     convert: Convert,
+    browse: Browse,
     version: Version,
 };
 
@@ -97,7 +121,7 @@ pub fn parse_args(args_iterator: *std.process.ArgIterator) Command {
     assert(args_iterator.skip()); // Skip executable name
 
     const command_name = args_iterator.next() orelse print.stderr(
-        "subcommand required, expected 'index', 'convert' or 'version'\nTry '--help' for more information.",
+        "subcommand required, expected 'index', 'convert', 'browse' or 'version'\nTry '--help' for more information.",
         .{},
     );
 
@@ -110,6 +134,8 @@ pub fn parse_args(args_iterator: *std.process.ArgIterator) Command {
         return parse_index_command(args_iterator);
     } else if (std.mem.eql(u8, command_name, "convert")) {
         return parse_convert_command(args_iterator);
+    } else if (std.mem.eql(u8, command_name, "browse")) {
+        return parse_browse_command(args_iterator);
     } else if (std.mem.eql(u8, command_name, "version")) {
         return parse_version_command(args_iterator);
     } else {
@@ -145,7 +171,7 @@ fn parse_index_command(args_iterator: *std.process.ArgIterator) Command {
 }
 
 fn parse_convert_command(args_iterator: *std.process.ArgIterator) Command {
-    var input_path: ?[]const u8 = null;
+    var eq_path: ?[]const u8 = null;
     var eqbd_path: ?[]const u8 = null;
     var output_path: ?[]const u8 = null;
     var verbose = false;
@@ -167,20 +193,61 @@ fn parse_convert_command(args_iterator: *std.process.ArgIterator) Command {
         } else if (arg.len > 0 and arg[0] == '-') {
             print.stderr("convert: unknown option '{s}'", .{arg});
         } else {
-            if (input_path != null) {
+            if (eq_path != null) {
                 print.stderr("convert: unexpected argument '{s}'", .{arg});
             }
             validate_path(arg, "convert <input>");
             validate_cgmes_file_extension(arg, "convert <input>");
-            input_path = arg;
+            eq_path = arg;
         }
     }
 
-    if (input_path == null) {
+    if (eq_path == null) {
         print.stderr("convert: missing required argument <input>", .{});
     }
 
-    return .{ .convert = .{ .input_path = input_path.?, .eqbd_path = eqbd_path, .output_path = output_path, .verbose = verbose } };
+    return .{ .convert = .{ .eq_path = eq_path.?, .eqbd_path = eqbd_path, .output_path = output_path, .verbose = verbose } };
+}
+
+
+fn parse_browse_command(args_iterator: *std.process.ArgIterator) Command {
+    var eq_path: ?[]const u8 = null;
+    var eqbd_path: ?[]const u8 = null;
+    var entry_id: ?[]const u8 = null;
+
+    while (args_iterator.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            _ = std.fs.File.stdout().write(help_browse) catch std.process.exit(1);
+            std.process.exit(0);
+        }
+
+        if (std.mem.eql(u8, arg, "--id")) {
+            entry_id = args_iterator.next() orelse
+                print.stderr("browse: --id requires an object id", .{});
+        } else if (std.mem.eql(u8, arg, "--eqbd")) {
+            eqbd_path = args_iterator.next() orelse
+                print.stderr("browse: --eqbd requires a file path", .{});
+        } else if (arg.len > 0 and arg[0] == '-') {
+            print.stderr("browse: unknown option '{s}'", .{arg});
+        } else {
+            if (eq_path != null) {
+                print.stderr("convert: unexpected argument '{s}'", .{arg});
+            }
+            validate_path(arg, "browse <input>");
+            validate_cgmes_file_extension(arg, "browse <input>");
+            eq_path = arg;
+        }
+    }
+
+    if (eq_path == null) {
+        print.stderr("browse: missing required argument <input>", .{});
+    }
+    
+    if (entry_id == null) {
+        print.stderr("browse: missing required argument --id", .{});
+    }
+
+    return .{ .browse = .{ .eq_path = eq_path.?, .eqbd_path = eqbd_path, .entry_id = entry_id.? } };
 }
 
 fn parse_version_command(args_iterator: *std.process.ArgIterator) Command {
