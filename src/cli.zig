@@ -7,6 +7,9 @@ const std = @import("std");
 const assert = std.debug.assert;
 const fmt = std.fmt;
 const print = @import("print.zig");
+pub const ansi_green = "\x1b[92m";
+pub const ansi_default = "\x1b[0m";
+pub const ansi_yellow = "\x1b[33m";
 
 const help_index =
     \\Usage: cimd index <file> [<file>...]

@@ -10,9 +10,6 @@ const converter = @import("converter.zig");
 const extract_rdf_resource = @import("tag_index.zig").extract_rdf_resource;
 const extract_rdf_id = @import("tag_index.zig").extract_rdf_id;
 const strip_hash = @import("utils.zig").strip_hash;
-const ansi_green = "\x1b[92m";
-const ansi_default = "\x1b[0m";
-const ansi_yellow = "\x1b[33m";
 
 pub fn main() !void {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -307,9 +304,9 @@ fn append_colored_id_line(gpa: std.mem.Allocator, line: []const u8, buf: *std.Ar
         return;
     };
     try buf.appendSlice(gpa, line[0 .. colon + 1]);
-    try buf.appendSlice(gpa, ansi_yellow);
+    try buf.appendSlice(gpa, cli.ansi_yellow);
     try buf.appendSlice(gpa, line[colon + 1 .. rdf_marker]);
-    try buf.appendSlice(gpa, ansi_default);
+    try buf.appendSlice(gpa, cli.ansi_default);
     try buf.appendSlice(gpa, line[rdf_marker..]);
 }
 
@@ -327,9 +324,9 @@ fn append_colored_ref_line(gpa: std.mem.Allocator, line: []const u8, buf: *std.A
         return;
     };
     try buf.appendSlice(gpa, line[0 .. dot + 1]);
-    try buf.appendSlice(gpa, ansi_green);
+    try buf.appendSlice(gpa, cli.ansi_green);
     try buf.appendSlice(gpa, line[dot + 1 .. rdf_marker]);
-    try buf.appendSlice(gpa, ansi_default);
+    try buf.appendSlice(gpa, cli.ansi_default);
     try buf.appendSlice(gpa, line[rdf_marker..]);
 }
 
