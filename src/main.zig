@@ -173,15 +173,12 @@ fn command_convert(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]co
     try file_writer.interface.flush();
 }
 
-// TODO: make sure to gracefully handle strange input and print out a help message in that case so user can try again.
-//
 fn command_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, entry_id: []const u8) !void {
     var xml = try read_path(gpa, eq_path);
 
     if (eqbd_path) |path| {
         const eqbd_xml = try read_path(gpa, path);
-        const merged = try std.mem.concat(gpa, u8, &[_][]const u8{ xml, eqbd_xml });
-        xml = merged;
+        xml = try std.mem.concat(gpa, u8, &.{ xml, eqbd_xml });
     }
 
     var model = try cim_model.CimModel.init(gpa, xml);
@@ -192,10 +189,17 @@ fn command_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]con
     var trace_types: std.ArrayList([]const u8) = .empty;
     defer trace_types.deinit(gpa);
 
-    // TODO: make this fuzzy so we don't have to fill in the exact id
+    // Reused across iterations — avoids per-line allocation for colored output.
+    var ref_list: std.ArrayList([]const u8) = .empty;
+    defer ref_list.deinit(gpa);
+    var line_buf: std.ArrayList(u8) = .empty;
+    defer line_buf.deinit(gpa);
+
     var id = entry_id;
 
     while (true) blk: {
+        assert(trace_ids.items.len == trace_types.items.len);
+
         const object = model.getObjectById(id) orelse {
             print.stderr("The rdf ID {s} was not found in the model.", .{id});
             return error.RdfIdNotFound;
@@ -204,78 +208,114 @@ fn command_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]con
         const closing_tag = object.boundaries[object.closing_tag_idx];
         const buffer = xml[opening_tag.start .. closing_tag.end + 1];
 
-        // TODO: make this quit directly on q, so wait for q/b without pressing return.
-        var it = std.mem.splitSequence(u8, buffer, "\n");
-        var counter: u32 = 1;
-        var ref_list: std.ArrayList([]const u8) = .empty;
-        defer ref_list.deinit(gpa);
-        while (it.next()) |line| {
-            const rdf_id = extract_rdf_id(line, 0) catch null;
-            if (rdf_id) |_| {
-                const pos_colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
-                const pos_rest = std.mem.indexOf(u8, line, " rdf:ID=\"") orelse continue;
+        ref_list.clearRetainingCapacity();
 
-                const line_fmt = try std.mem.concat(gpa, u8, &.{ line[0 .. pos_colon + 1], ansi_yellow, line[pos_colon + 1 .. pos_rest], ansi_default, line[pos_rest..] });
-                try print.stdout("\n|     |  {s}", .{line_fmt});
+        var it = std.mem.splitScalar(u8, buffer, '\n');
+        var counter: u32 = 1;
+        while (it.next()) |line| {
+            if (extract_rdf_id(line, 0) catch null != null) {
+                try write_colored_id_line(gpa, line, &line_buf);
+                try print.stdout("\n|     |  {s}", .{line_buf.items});
                 continue;
             }
             const rdf_resource = try extract_rdf_resource(line, 0);
             if (rdf_resource) |val| {
-                const pos = std.mem.indexOfScalar(u8, line, '.');
-                const ref_pos = std.mem.indexOf(u8, line, "rdf:") orelse continue;
-                if (pos) |dot_pos| {
-                    const line_fmt = try std.mem.concat(gpa, u8, &.{ line[0 .. dot_pos + 1], ansi_green, line[dot_pos + 1 .. ref_pos], ansi_default, line[ref_pos..] });
-                    try print.stdout("\n|  {d}  |  {s}", .{ counter, line_fmt });
-                } else {
-                    try print.stdout("\n|  {d}  |  {s}", .{ counter, line });
-                }
+                try write_colored_ref_line(gpa, line, &line_buf);
+                try print.stdout("\n|  {d}  |  {s}", .{ counter, line_buf.items });
                 try ref_list.append(gpa, strip_hash(val));
                 counter += 1;
             } else {
                 try print.stdout("\n|     |  {s}", .{line});
             }
         }
-        try print.stdout("\n\n", .{});
-
-        for (trace_types.items) |past_type| {
-            try print.stdout("{s} -> ", .{past_type});
-        }
 
         try print.stdout("\n\n", .{});
-        for (1..counter) |choice| {
-            try print.stdout(" [{d}] ", .{choice});
-        }
-        try print.stdout(" [b]ack ", .{});
-        try print.stdout(" [q]uit ", .{});
-        try print.stdout("\n\n", .{});
+        for (trace_types.items) |past_type| try print.stdout("{s} -> ", .{past_type});
+        try print.stdout("{s}\n\n", .{object.type_name});
+
+        for (1..counter) |n| try print.stdout(" [{d}]", .{n});
+        if (trace_ids.items.len > 0) try print.stdout("  [b]ack", .{});
+        try print.stdout("  [q]uit\n\n", .{});
 
         var io_buf: [64]u8 = undefined;
         var stdin = std.fs.File.stdin().reader(&io_buf);
-
         const input = try stdin.interface.takeDelimiterExclusive('\n');
+
         if (input.len == 0) continue;
-        const choice = switch (input[0]) {
+        switch (input[0]) {
             'b' => {
-                id = strip_hash(trace_ids.pop() orelse break);
+                id = trace_ids.pop() orelse break;
                 _ = trace_types.pop();
                 break :blk;
             },
             'q' => break,
             else => {
-                const typed_stuff = std.fmt.parseInt(u32, input, 10) catch continue;
-                return typed_stuff - 1;
+                const n = std.fmt.parseInt(u32, input, 10) catch {
+                    if (trace_ids.items.len > 0) {
+                        try print.stdout("Invalid input — pick 1-{d}, [b]ack or [q]uit\n", .{counter - 1});
+                    } else {
+                        try print.stdout("Invalid input — pick 1-{d} or [q]uit\n", .{counter - 1});
+                    }
+                    continue;
+                };
+                if (n == 0 or n > ref_list.items.len) {
+                    if (trace_ids.items.len > 0) {
+                        try print.stdout("Pick 1-{d}, [b]ack or [q]uit\n", .{counter - 1});
+                    } else {
+                        try print.stdout("Pick 1-{d} or [q]uit\n", .{counter - 1});
+                    }
+                    continue;
+                }
+                try trace_ids.append(gpa, id);
+                try trace_types.append(gpa, object.type_name);
+                id = ref_list.items[n - 1];
             },
-        };
-
-        try trace_ids.append(gpa, id);
-        try trace_types.append(gpa, object.type_name);
-        if (choice >= ref_list.items.len) {
-            try print.stdout("User input out of bounds, pick 1-{d}", .{ref_list.items.len});
-            continue;
         }
-        id = ref_list.items[choice];
     }
 }
+
+/// Write `line` to `buf` with the CIM type suffix (after `:`) colored yellow.
+/// Used for the object's own opening tag, which carries rdf:ID.
+/// Falls back to the plain line if the expected pattern is absent.
+fn write_colored_id_line(gpa: std.mem.Allocator, line: []const u8, buf: *std.ArrayList(u8)) !void {
+    assert(line.len > 0);
+    buf.clearRetainingCapacity();
+    const colon = std.mem.indexOfScalar(u8, line, ':') orelse {
+        try buf.appendSlice(gpa, line);
+        return;
+    };
+    const rdf_marker = std.mem.indexOf(u8, line, " rdf:ID=\"") orelse {
+        try buf.appendSlice(gpa, line);
+        return;
+    };
+    try buf.appendSlice(gpa, line[0 .. colon + 1]);
+    try buf.appendSlice(gpa, ansi_yellow);
+    try buf.appendSlice(gpa, line[colon + 1 .. rdf_marker]);
+    try buf.appendSlice(gpa, ansi_default);
+    try buf.appendSlice(gpa, line[rdf_marker..]);
+}
+
+/// Write `line` to `buf` with the attribute name (after `.`) colored green.
+/// Used for reference lines that carry rdf:resource.
+/// Falls back to the plain line if the expected pattern is absent.
+fn write_colored_ref_line(gpa: std.mem.Allocator, line: []const u8, buf: *std.ArrayList(u8)) !void {
+    assert(line.len > 0);
+    buf.clearRetainingCapacity();
+    const dot = std.mem.indexOfScalar(u8, line, '.') orelse {
+        try buf.appendSlice(gpa, line);
+        return;
+    };
+    const rdf_marker = std.mem.indexOf(u8, line, " rdf:") orelse {
+        try buf.appendSlice(gpa, line);
+        return;
+    };
+    try buf.appendSlice(gpa, line[0 .. dot + 1]);
+    try buf.appendSlice(gpa, ansi_green);
+    try buf.appendSlice(gpa, line[dot + 1 .. rdf_marker]);
+    try buf.appendSlice(gpa, ansi_default);
+    try buf.appendSlice(gpa, line[rdf_marker..]);
+}
+
 /// Read file into memory (used for unzipped usecase)
 pub fn read_file_to_memory(
     gpa: std.mem.Allocator,
