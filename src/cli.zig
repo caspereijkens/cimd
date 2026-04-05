@@ -209,7 +209,6 @@ fn parse_convert_command(args_iterator: *std.process.ArgIterator) Command {
     return .{ .convert = .{ .eq_path = eq_path.?, .eqbd_path = eqbd_path, .output_path = output_path, .verbose = verbose } };
 }
 
-
 fn parse_browse_command(args_iterator: *std.process.ArgIterator) Command {
     var eq_path: ?[]const u8 = null;
     var eqbd_path: ?[]const u8 = null;
@@ -231,7 +230,7 @@ fn parse_browse_command(args_iterator: *std.process.ArgIterator) Command {
             print.stderr("browse: unknown option '{s}'", .{arg});
         } else {
             if (eq_path != null) {
-                print.stderr("convert: unexpected argument '{s}'", .{arg});
+                print.stderr("browse: unexpected argument '{s}'", .{arg});
             }
             validate_path(arg, "browse <input>");
             validate_cgmes_file_extension(arg, "browse <input>");
@@ -242,7 +241,7 @@ fn parse_browse_command(args_iterator: *std.process.ArgIterator) Command {
     if (eq_path == null) {
         print.stderr("browse: missing required argument <input>", .{});
     }
-    
+
     if (entry_id == null) {
         print.stderr("browse: missing required argument --id", .{});
     }

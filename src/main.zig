@@ -8,10 +8,11 @@ const zip = @import("zip.zig");
 const cim_model = @import("cim_model.zig");
 const converter = @import("converter.zig");
 const extract_rdf_resource = @import("tag_index.zig").extract_rdf_resource;
+const extract_rdf_id = @import("tag_index.zig").extract_rdf_id;
 const strip_hash = @import("utils.zig").strip_hash;
 const ansi_green = "\x1b[92m";
 const ansi_default = "\x1b[0m";
-const ansi_yellow  = "\x1b[33m";
+const ansi_yellow = "\x1b[33m";
 
 pub fn main() !void {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -173,7 +174,7 @@ fn command_convert(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]co
 }
 
 // TODO: make sure to gracefully handle strange input and print out a help message in that case so user can try again.
-// 
+//
 fn command_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, entry_id: []const u8) !void {
     var xml = try read_path(gpa, eq_path);
 
@@ -201,20 +202,20 @@ fn command_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]con
         };
         const opening_tag = object.boundaries[object.object_tag_idx];
         const closing_tag = object.boundaries[object.closing_tag_idx];
-        const buffer = xml[opening_tag.start..closing_tag.end+1];
-        
+        const buffer = xml[opening_tag.start .. closing_tag.end + 1];
+
         // TODO: make this quit directly on q, so wait for q/b without pressing return.
         var it = std.mem.splitSequence(u8, buffer, "\n");
         var counter: u32 = 1;
         var ref_list: std.ArrayList([]const u8) = .empty;
         defer ref_list.deinit(gpa);
         while (it.next()) |line| {
-            const rdf_id = try extract_rdf_id(line, 0);
+            const rdf_id = extract_rdf_id(line, 0) catch null;
             if (rdf_id) |_| {
                 const pos_colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
                 const pos_rest = std.mem.indexOf(u8, line, " rdf:ID=\"") orelse continue;
 
-                const line_fmt = try std.mem.concat(gpa, u8, &.{ line[0..pos_colon+1], ansi_yellow, line[pos_colon+1..pos_rest], ansi_default, line[pos_rest..] });
+                const line_fmt = try std.mem.concat(gpa, u8, &.{ line[0 .. pos_colon + 1], ansi_yellow, line[pos_colon + 1 .. pos_rest], ansi_default, line[pos_rest..] });
                 try print.stdout("\n|     |  {s}", .{line_fmt});
                 continue;
             }
@@ -223,10 +224,10 @@ fn command_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]con
                 const pos = std.mem.indexOfScalar(u8, line, '.');
                 const ref_pos = std.mem.indexOf(u8, line, "rdf:") orelse continue;
                 if (pos) |dot_pos| {
-                    const line_fmt = try std.mem.concat(gpa, u8, &.{ line[0..dot_pos+1], ansi_green, line[dot_pos+1..ref_pos], ansi_default, line[ref_pos..] });
-                    try print.stdout("\n|  {d}  |  {s}", .{counter, line_fmt});
+                    const line_fmt = try std.mem.concat(gpa, u8, &.{ line[0 .. dot_pos + 1], ansi_green, line[dot_pos + 1 .. ref_pos], ansi_default, line[ref_pos..] });
+                    try print.stdout("\n|  {d}  |  {s}", .{ counter, line_fmt });
                 } else {
-                    try print.stdout("\n|  {d}  |  {s}", .{counter, line});
+                    try print.stdout("\n|  {d}  |  {s}", .{ counter, line });
                 }
                 try ref_list.append(gpa, strip_hash(val));
                 counter += 1;
@@ -252,6 +253,7 @@ fn command_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]con
         var stdin = std.fs.File.stdin().reader(&io_buf);
 
         const input = try stdin.interface.takeDelimiterExclusive('\n');
+        if (input.len == 0) continue;
         const choice = switch (input[0]) {
             'b' => {
                 id = strip_hash(trace_ids.pop() orelse break);
@@ -259,11 +261,18 @@ fn command_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]con
                 break :blk;
             },
             'q' => break,
-            else => try std.fmt.parseInt(u32, input, 10) - 1,
+            else => {
+                const typed_stuff = std.fmt.parseInt(u32, input, 10) catch continue;
+                return typed_stuff - 1;
+            },
         };
 
         try trace_ids.append(gpa, id);
         try trace_types.append(gpa, object.type_name);
+        if (choice >= ref_list.items.len) {
+            try print.stdout("User input out of bounds, pick 1-{d}", .{ref_list.items.len});
+            continue;
+        }
         id = ref_list.items[choice];
     }
 }
@@ -280,26 +289,4 @@ pub fn read_file_to_memory(
     }
 
     return try file.readToEndAlloc(gpa, file_size);
-}
-
-
-/// Extract rdf:ID value from an XML tag
-/// Returns error.NoRdfID if tag doesn't have rdf:ID
-/// Returns error.MalformedTag if rdf:ID exists but is malformed
-fn extract_rdf_id(slice: []const u8, start_idx: u32) error{MalformedTag}!?[]const u8 {
-    const gt_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, '>') orelse return error.MalformedTag;
-
-    const pattern = "rdf:ID=\"";
-
-    const tag_content = slice[start_idx..gt_idx];
-    const pattern_offset = std.mem.indexOf(u8, tag_content, pattern) orelse return null;
-    const pattern_start_idx = start_idx + pattern_offset;
-
-    const value_start_idx = pattern_start_idx + pattern.len;
-    const value_end_idx = std.mem.indexOfScalarPos(u8, slice, value_start_idx, '"') orelse return error.MalformedTag;
-
-    // Check if closing quote is within this tag
-    if (value_end_idx >= gt_idx) return error.MalformedTag;
-
-    return slice[value_start_idx..value_end_idx];
 }
