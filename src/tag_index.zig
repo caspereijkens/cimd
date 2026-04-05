@@ -39,7 +39,8 @@ pub fn find_byte_simd(
     const unroll_size = VECTOR_LEN * unroll_factor;
 
     while (i + unroll_size <= haystack.len) : (i += unroll_size) {
-        // Process 4 SIMD vectors in parallel
+        // Worst case: every byte in the block matches — reserve before entering.
+        try result.ensureUnusedCapacity(gpa, unroll_size);
         inline for (0..unroll_factor) |j| {
             const offset = i + j * VECTOR_LEN;
             const chunk: Chunk = haystack[offset..][0..VECTOR_LEN].*;
@@ -49,7 +50,6 @@ pub fn find_byte_simd(
             var m = mask;
             while (m != 0) {
                 const bit_pos = @ctz(m);
-                // appendAssumeCapacity (no bounds check)
                 result.appendAssumeCapacity(@intCast(offset + bit_pos));
                 m &= m - 1;
             }
@@ -58,6 +58,7 @@ pub fn find_byte_simd(
 
     // Handle remaining full vectors
     while (i + VECTOR_LEN <= haystack.len) : (i += VECTOR_LEN) {
+        try result.ensureUnusedCapacity(gpa, VECTOR_LEN);
         const chunk: Chunk = haystack[i..][0..VECTOR_LEN].*;
         const matches: @Vector(VECTOR_LEN, bool) = chunk == all_needles;
         const mask: Mask = @bitCast(matches);
@@ -73,6 +74,7 @@ pub fn find_byte_simd(
     // Handle remainder - scalar fallback
     while (i < haystack.len) : (i += 1) {
         if (haystack[i] == needle) {
+            try result.ensureUnusedCapacity(gpa, 1);
             result.appendAssumeCapacity(@intCast(i));
         }
     }
@@ -146,6 +148,8 @@ pub fn find_pattern(
 
     // Process 4 vectors per iteration
     while (i + unroll_size <= haystack.len) : (i += unroll_size) {
+        // Worst case: every byte in the block is the pattern's first byte.
+        try result.ensureUnusedCapacity(gpa, unroll_size);
         inline for (0..unroll_factor) |j| {
             const offset = i + j * VECTOR_LEN;
             const chunk: Chunk = haystack[offset..][0..VECTOR_LEN].*;
@@ -168,6 +172,7 @@ pub fn find_pattern(
 
     // Remaining full vectors
     while (i + VECTOR_LEN <= haystack.len) : (i += VECTOR_LEN) {
+        try result.ensureUnusedCapacity(gpa, VECTOR_LEN);
         const chunk: Chunk = haystack[i..][0..VECTOR_LEN].*;
         const matches: @Vector(VECTOR_LEN, bool) = chunk == all_first_bytes;
         const mask: Mask = @bitCast(matches);
@@ -189,6 +194,7 @@ pub fn find_pattern(
     while (i < haystack.len) : (i += 1) {
         if (haystack[i] == first_byte) {
             if (verify_and_extract_pattern(haystack, i, needle)) |match| {
+                try result.ensureUnusedCapacity(gpa, 1);
                 result.appendAssumeCapacity(match);
             }
         }
@@ -427,12 +433,9 @@ pub const CimObject = struct {
         boundaries: []const TagBoundary,
         object_tag_idx: u32,
         closing_tag_idx: u32,
-    ) error{ NoRdfId, NoRdfAbout, MalformedTag }!CimObject {
-        const start = boundaries[object_tag_idx].start;
-        const id = extract_rdf_id(xml, start) catch |err| switch (err) {
-            error.NoRdfId => try extract_rdf_about(xml, start),
-            error.MalformedTag => return error.MalformedTag,
-        };
+        id: []const u8,
+    ) error{MalformedTag}!CimObject {
+        assert(id.len > 0);
         return .{
             .xml = xml,
             .boundaries = boundaries,
@@ -519,18 +522,10 @@ pub const CimObject = struct {
 
         // Iterate through all tags between opening and closing
         for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx], self.object_tag_idx + 1..) |tag, i| {
-            // Skip closing and self-closing tags
-            if (self.xml[tag.start + 1] == '/') {
-                continue;
-            }
-            if (self.xml[tag.end - 1] == '/') {
-                continue;
-            }
+            // Skip closing tags and self-closing tags.
+            // In CIM XML, references are always self-closing; properties never are.
+            if (self.xml[tag.start + 1] == '/' or self.xml[tag.end - 1] == '/') continue;
             const tag_type = try extract_tag_type(self.xml, tag.start);
-            const reference = try extract_rdf_resource(self.xml, tag.start);
-            if (reference != null) {
-                continue;
-            }
             const content = self.xml[tag.end + 1 .. self.boundaries[i + 1].start];
             try result.put(tag_type, content);
         }

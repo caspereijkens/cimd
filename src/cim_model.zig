@@ -44,14 +44,15 @@ pub const CimModel = struct {
                     }
                     return err;
                 };
+                // Pass pre-computed id — avoids re-scanning the tag in CimObject.init.
                 const object = try tag_index.CimObject.init(
                     xml,
                     boundaries.items,
                     @intCast(i),
                     closing_tag,
+                    id,
                 );
                 try objects.append(gpa, object);
-                try id_to_index.put(id, @intCast(objects.items.len - 1));
                 const type_name = object.type_name;
                 const object_idx: u32 = @intCast(objects.items.len - 1);
                 const result = try temp_type_index.getOrPut(type_name);
