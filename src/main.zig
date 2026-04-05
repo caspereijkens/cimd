@@ -9,6 +9,8 @@ const cim_model = @import("cim_model.zig");
 const converter = @import("converter.zig");
 const extract_rdf_id_resource = @import("tag_index.zig").extract_rdf_resource;
 const strip_hash = @import("utils.zig").strip_hash;
+const ansi_green = "\x1b[92m";
+const ansi_default = "\x1b[0m";
 
 pub fn main() !void {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -206,7 +208,14 @@ fn command_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]con
         while (it.next()) |line| {
             const rdf_id = try extract_rdf_id_resource(line, 0);
             if (rdf_id) |val| {
-                try print.stdout("\n|  {d}  |  {s}", .{counter, line});
+                const pos = std.mem.indexOfScalar(u8, line, '.');
+                const ref_pos = std.mem.indexOf(u8, line, "rdf:") orelse continue;
+                if (pos) |dot_pos| {
+                    const line_fmt = try std.mem.concat(gpa, u8, &.{ line[0..dot_pos+1], ansi_green, line[dot_pos+1..ref_pos], ansi_default, line[ref_pos..] });
+                    try print.stdout("\n|  {d}  |  {s}", .{counter, line_fmt});
+                } else {
+                    try print.stdout("\n|  {d}  |  {s}", .{counter, line});
+                }
                 try ref_list.append(gpa, strip_hash(val));
                 counter += 1;
             } else {
