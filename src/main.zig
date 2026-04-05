@@ -189,11 +189,11 @@ fn command_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]con
     var trace_types: std.ArrayList([]const u8) = .empty;
     defer trace_types.deinit(gpa);
 
-    // Reused across iterations — avoids per-line allocation for colored output.
+    // Both reused across iterations — backing memory is retained, no per-iteration allocation.
+    var screen_buf: std.ArrayList(u8) = .empty;
+    defer screen_buf.deinit(gpa);
     var ref_list: std.ArrayList([]const u8) = .empty;
     defer ref_list.deinit(gpa);
-    var line_buf: std.ArrayList(u8) = .empty;
-    defer line_buf.deinit(gpa);
 
     var id = entry_id;
 
@@ -208,34 +208,41 @@ fn command_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]con
         const closing_tag = object.boundaries[object.closing_tag_idx];
         const buffer = xml[opening_tag.start .. closing_tag.end + 1];
 
+        screen_buf.clearRetainingCapacity();
         ref_list.clearRetainingCapacity();
+        const w = screen_buf.writer(gpa);
 
         var it = std.mem.splitScalar(u8, buffer, '\n');
         var counter: u32 = 1;
         while (it.next()) |line| {
             if (extract_rdf_id(line, 0) catch null != null) {
-                try write_colored_id_line(gpa, line, &line_buf);
-                try print.stdout("\n|     |  {s}", .{line_buf.items});
+                try w.writeAll("\n|     |  ");
+                try append_colored_id_line(gpa, line, &screen_buf);
                 continue;
             }
             const rdf_resource = try extract_rdf_resource(line, 0);
             if (rdf_resource) |val| {
-                try write_colored_ref_line(gpa, line, &line_buf);
-                try print.stdout("\n|  {d}  |  {s}", .{ counter, line_buf.items });
+                try w.print("\n|  {d}  |  ", .{counter});
+                try append_colored_ref_line(gpa, line, &screen_buf);
                 try ref_list.append(gpa, strip_hash(val));
                 counter += 1;
             } else {
-                try print.stdout("\n|     |  {s}", .{line});
+                try w.print("\n|     |  {s}", .{line});
             }
         }
 
-        try print.stdout("\n\n", .{});
-        for (trace_types.items) |past_type| try print.stdout("{s} -> ", .{past_type});
-        try print.stdout("{s}\n\n", .{object.type_name});
+        try w.writeAll("\n\n");
+        for (trace_types.items) |past_type| try w.print("{s} -> ", .{past_type});
+        try w.print("{s}\n\n", .{object.type_name});
 
-        for (1..counter) |n| try print.stdout(" [{d}]", .{n});
-        if (trace_ids.items.len > 0) try print.stdout("  [b]ack", .{});
-        try print.stdout("  [q]uit\n\n", .{});
+        const has_refs = counter > 1;
+        const has_back = trace_ids.items.len > 0;
+
+        for (1..counter) |n| try w.print(" [{d}]", .{n});
+        if (has_back) try w.writeAll("  [b]ack");
+        try w.writeAll("  [q]uit\n\n");
+
+        _ = try std.fs.File.stdout().write(screen_buf.items);
 
         var io_buf: [64]u8 = undefined;
         var stdin = std.fs.File.stdin().reader(&io_buf);
@@ -244,14 +251,26 @@ fn command_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]con
         if (input.len == 0) continue;
         switch (input[0]) {
             'b' => {
-                id = trace_ids.pop() orelse break;
+                if (!has_back) {
+                    _ = try std.fs.File.stdout().write("Already at root — [q]uit to exit.\n\n");
+                    continue;
+                }
+                id = trace_ids.pop() orelse unreachable;
                 _ = trace_types.pop();
                 break :blk;
             },
             'q' => break,
             else => {
+                if (!has_refs) {
+                    if (has_back) {
+                        _ = try std.fs.File.stdout().write("No references — [b]ack or [q]uit\n\n");
+                    } else {
+                        _ = try std.fs.File.stdout().write("No references — [q]uit to exit\n\n");
+                    }
+                    continue;
+                }
                 const n = std.fmt.parseInt(u32, input, 10) catch {
-                    if (trace_ids.items.len > 0) {
+                    if (has_back) {
                         try print.stdout("Invalid input — pick 1-{d}, [b]ack or [q]uit\n", .{counter - 1});
                     } else {
                         try print.stdout("Invalid input — pick 1-{d} or [q]uit\n", .{counter - 1});
@@ -259,7 +278,7 @@ fn command_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]con
                     continue;
                 };
                 if (n == 0 or n > ref_list.items.len) {
-                    if (trace_ids.items.len > 0) {
+                    if (has_back) {
                         try print.stdout("Pick 1-{d}, [b]ack or [q]uit\n", .{counter - 1});
                     } else {
                         try print.stdout("Pick 1-{d} or [q]uit\n", .{counter - 1});
@@ -274,12 +293,11 @@ fn command_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]con
     }
 }
 
-/// Write `line` to `buf` with the CIM type suffix (after `:`) colored yellow.
+/// Append `line` to `buf` with the CIM type suffix (after `:`) colored yellow.
 /// Used for the object's own opening tag, which carries rdf:ID.
 /// Falls back to the plain line if the expected pattern is absent.
-fn write_colored_id_line(gpa: std.mem.Allocator, line: []const u8, buf: *std.ArrayList(u8)) !void {
+fn append_colored_id_line(gpa: std.mem.Allocator, line: []const u8, buf: *std.ArrayList(u8)) !void {
     assert(line.len > 0);
-    buf.clearRetainingCapacity();
     const colon = std.mem.indexOfScalar(u8, line, ':') orelse {
         try buf.appendSlice(gpa, line);
         return;
@@ -295,12 +313,11 @@ fn write_colored_id_line(gpa: std.mem.Allocator, line: []const u8, buf: *std.Arr
     try buf.appendSlice(gpa, line[rdf_marker..]);
 }
 
-/// Write `line` to `buf` with the attribute name (after `.`) colored green.
+/// Append `line` to `buf` with the attribute name (after `.`) colored green.
 /// Used for reference lines that carry rdf:resource.
 /// Falls back to the plain line if the expected pattern is absent.
-fn write_colored_ref_line(gpa: std.mem.Allocator, line: []const u8, buf: *std.ArrayList(u8)) !void {
+fn append_colored_ref_line(gpa: std.mem.Allocator, line: []const u8, buf: *std.ArrayList(u8)) !void {
     assert(line.len > 0);
-    buf.clearRetainingCapacity();
     const dot = std.mem.indexOfScalar(u8, line, '.') orelse {
         try buf.appendSlice(gpa, line);
         return;
