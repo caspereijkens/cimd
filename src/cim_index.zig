@@ -12,6 +12,7 @@ const strip_underscore = utils.strip_underscore;
 const switch_types = [_][]const u8{ "Breaker", "Disconnector", "LoadBreakSwitch" };
 
 pub const CimObject = tag_index.CimObject;
+pub const CimObjectView = tag_index.CimObjectView;
 const CimModel = cim_model.CimModel;
 
 pub const TerminalInfo = struct {
@@ -187,8 +188,9 @@ fn build_limit_types(gpa: std.mem.Allocator, model: *const cim_model.CimModel, i
     const objects = model.get_objects_by_type("OperationalLimitType");
     try index.limit_types.ensureTotalCapacity(gpa, @intCast(objects.len));
     for (objects) |obj| {
-        const is_inf = try obj.getProperty("OperationalLimitType.isInfiniteDuration") orelse "false";
-        const duration = try obj.getProperty("OperationalLimitType.acceptableDuration");
+        const view = model.view(obj);
+        const is_inf = try view.getProperty("OperationalLimitType.isInfiniteDuration") orelse "false";
+        const duration = try view.getProperty("OperationalLimitType.acceptableDuration");
         index.limit_types.putAssumeCapacity(obj.id, .{
             .is_infinite = std.mem.eql(u8, is_inf, "true"),
             .acceptable_duration = duration,
@@ -208,17 +210,18 @@ fn build_terminals(gpa: std.mem.Allocator, model: *const cim_model.CimModel, ind
     try index.equipment_terminals.ensureTotalCapacity(gpa, @intCast(objects.len));
 
     for (objects) |obj| {
-        const conn_node_ref = try obj.getReference("Terminal.ConnectivityNode");
+        const view = model.view(obj);
+        const conn_node_ref = try view.getReference("Terminal.ConnectivityNode");
         const conn_node_id: ?[]const u8 = if (conn_node_ref) |ref| strip_hash(ref) else null;
         if (conn_node_id) |id| {
             index.terminal_conn_node.putAssumeCapacity(obj.id, id);
         }
 
-        const sequence_str = try obj.getProperty("ACDCTerminal.sequenceNumber") orelse "1";
+        const sequence_str = try view.getProperty("ACDCTerminal.sequenceNumber") orelse "1";
         const sequence = try std.fmt.parseInt(u32, sequence_str, 10);
         index.terminal_sequence.putAssumeCapacity(obj.id, sequence);
 
-        const equipment_ref = try obj.getReference("Terminal.ConductingEquipment") orelse return error.MalFormedXML;
+        const equipment_ref = try view.getReference("Terminal.ConductingEquipment") orelse return error.MalFormedXML;
         const equipment_id = strip_hash(equipment_ref);
         assert(equipment_id.len > 0);
         index.terminal_equipment.putAssumeCapacity(obj.id, equipment_id);
@@ -266,7 +269,7 @@ fn build_connectivity(gpa: std.mem.Allocator, model: *const cim_model.CimModel, 
         }
         const conn_node_id = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
 
-        const busbar_section_mrid = try busbar_section.getProperty("IdentifiedObject.mRID") orelse strip_underscore(busbar_section.id);
+        const busbar_section_mrid = try model.view(busbar_section).getProperty("IdentifiedObject.mRID") orelse strip_underscore(busbar_section.id);
         index.conn_node_to_busbar_section.putAssumeCapacity(conn_node_id, busbar_section_mrid);
     }
 
@@ -276,7 +279,7 @@ fn build_connectivity(gpa: std.mem.Allocator, model: *const cim_model.CimModel, 
     try index.busbar_section_in_parse_order.ensureTotalCapacity(gpa, busbar_sections.len);
 
     for (conn_nodes) |conn_node| {
-        const container_ref = try conn_node.getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+        const container_ref = try model.view(conn_node).getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
         var container_id = strip_hash(container_ref);
         // Bay is not a valid equipment-placement container — resolve to the parent VoltageLevel.
         if (model.getObjectById(container_id)) |container_obj| {
@@ -307,7 +310,7 @@ fn build_operational_limits(gpa: std.mem.Allocator, model: *const cim_model.CimM
     try index.terminal_limit_sets.ensureTotalCapacity(gpa, @intCast(op_lim_sets.len));
 
     for (op_lim_sets) |op_lim_set| {
-        const terminal_ref = try op_lim_set.getReference("OperationalLimitSet.Terminal") orelse continue;
+        const terminal_ref = try model.view(op_lim_set).getReference("OperationalLimitSet.Terminal") orelse continue;
         const terminal_id = strip_hash(terminal_ref);
         const gop = index.terminal_limit_sets.getOrPutAssumeCapacity(terminal_id);
         if (!gop.found_existing) {
@@ -320,7 +323,7 @@ fn build_operational_limits(gpa: std.mem.Allocator, model: *const cim_model.CimM
     try index.current_limits_by_set.ensureTotalCapacity(gpa, @intCast(current_lims.len));
 
     for (current_lims) |current_lim| {
-        const op_lim_set_ref = try current_lim.getReference("OperationalLimit.OperationalLimitSet") orelse continue;
+        const op_lim_set_ref = try model.view(current_lim).getReference("OperationalLimit.OperationalLimitSet") orelse continue;
         const op_lim_set_id = strip_hash(op_lim_set_ref);
         const gop = index.current_limits_by_set.getOrPutAssumeCapacity(op_lim_set_id);
         if (!gop.found_existing) {
@@ -339,12 +342,13 @@ fn build_curve_points(gpa: std.mem.Allocator, model: *const cim_model.CimModel, 
     try index.curve_points.ensureTotalCapacity(gpa, @intCast(curve_datas.len));
 
     for (curve_datas) |curve_data| {
-        const curve_ref = try curve_data.getReference("CurveData.Curve") orelse return error.MalformedXML;
+        const view = model.view(curve_data);
+        const curve_ref = try view.getReference("CurveData.Curve") orelse return error.MalformedXML;
         const curve_id = strip_hash(curve_ref);
 
-        const x_val = try curve_data.getProperty("CurveData.xvalue") orelse "0.0";
-        const y1_val = try curve_data.getProperty("CurveData.y1value") orelse "0.0";
-        const y2_val = try curve_data.getProperty("CurveData.y2value") orelse "0.0";
+        const x_val = try view.getProperty("CurveData.xvalue") orelse "0.0";
+        const y1_val = try view.getProperty("CurveData.y1value") orelse "0.0";
+        const y2_val = try view.getProperty("CurveData.y2value") orelse "0.0";
 
         const x = try std.fmt.parseFloat(f64, x_val);
         const y1 = try std.fmt.parseFloat(f64, y1_val);
@@ -633,7 +637,7 @@ fn union_substations(
 }
 
 /// Helper: given a ConnectivityNode ID, return its VoltageLevel object (or null).
-fn conn_node_to_voltage_level(model: *const cim_model.CimModel, index: *const CimIndex, conn_node_id: []const u8) ?*const cim_model.CimObject {
+fn conn_node_to_voltage_level(model: *const cim_model.CimModel, index: *const CimIndex, conn_node_id: []const u8) ?CimObjectView {
     const container_id = index.conn_node_container.get(conn_node_id) orelse return null;
     const obj = model.getObjectById(container_id) orelse return null;
     if (!std.mem.eql(u8, obj.type_name, "VoltageLevel")) return null;
@@ -769,7 +773,8 @@ fn build_voltage_limits(gpa: std.mem.Allocator, model: *const cim_model.CimModel
     try index.voltage_level_limits.ensureTotalCapacity(gpa, @intCast(voltage_limits.len));
 
     for (voltage_limits) |voltage_limit| {
-        const limit_set_ref = try voltage_limit.getReference("OperationalLimit.OperationalLimitSet") orelse continue;
+        const voltage_limit_view = model.view(voltage_limit);
+        const limit_set_ref = try voltage_limit_view.getReference("OperationalLimit.OperationalLimitSet") orelse continue;
         const limit_set = model.getObjectById(strip_hash(limit_set_ref)) orelse continue;
         const terminal_ref = try limit_set.getReference("OperationalLimitSet.Terminal") orelse continue;
 
@@ -779,11 +784,11 @@ fn build_voltage_limits(gpa: std.mem.Allocator, model: *const cim_model.CimModel
 
         if (!std.mem.eql(u8, container.type_name, "VoltageLevel")) continue;
 
-        const limit_type_ref = try voltage_limit.getReference("OperationalLimit.OperationalLimitType") orelse continue;
+        const limit_type_ref = try voltage_limit_view.getReference("OperationalLimit.OperationalLimitType") orelse continue;
         const limit_type = model.getObjectById(strip_hash(limit_type_ref)) orelse continue;
         const direction = try limit_type.getReference("OperationalLimitType.direction") orelse continue;
 
-        const value_str = try voltage_limit.getProperty("VoltageLimit.normalValue") orelse continue;
+        const value_str = try voltage_limit_view.getProperty("VoltageLimit.normalValue") orelse continue;
         const value = try std.fmt.parseFloat(f64, value_str);
 
         const gop = index.voltage_level_limits.getOrPutAssumeCapacity(container_id);

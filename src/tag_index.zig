@@ -460,16 +460,15 @@ pub fn build_closing_index(
 }
 
 /// Represents a CIM object with lazy property access
+/// Compact CIM object — indices and identity only, no embedded XML context.
+/// Cheap to copy and store. Use CimObjectView (via CimModel.view) to access properties.
 pub const CimObject = struct {
-    xml: []const u8,
-    boundaries: []const TagBoundary,
-
     object_tag_idx: u32,
     closing_tag_idx: u32,
-
     id: []const u8,
     type_name: []const u8,
 
+    /// xml and boundaries are needed only to extract type_name; they are not stored.
     pub fn init(
         xml: []const u8,
         boundaries: []const TagBoundary,
@@ -479,30 +478,36 @@ pub const CimObject = struct {
     ) error{MalformedTag}!CimObject {
         assert(id.len > 0);
         return .{
-            .xml = xml,
-            .boundaries = boundaries,
             .object_tag_idx = object_tag_idx,
             .closing_tag_idx = closing_tag_idx,
             .id = id,
             .type_name = try extract_tag_type(xml, boundaries[object_tag_idx].start),
         };
     }
+};
 
-    /// Get a text property value by name
-    /// Returns null if property doesn't exist
-    pub fn getProperty(self: CimObject, property_name: []const u8) error{MalformedTag}!?[]const u8 {
+/// Ephemeral view binding a CimObject to its XML context.
+/// Create via CimModel.view(obj). Stack-allocated; do not store in arrays.
+pub const CimObjectView = struct {
+    xml: []const u8,
+    boundaries: []const TagBoundary,
+    object_tag_idx: u32,
+    closing_tag_idx: u32,
+    id: []const u8,
+    type_name: []const u8,
+
+    /// Get a text property value by name.
+    pub fn getProperty(self: CimObjectView, property_name: []const u8) error{MalformedTag}!?[]const u8 {
         return get_property_from_indices(self.xml, self.boundaries, self.object_tag_idx, self.closing_tag_idx, property_name);
     }
 
-    /// Get a reference (rdf:resource) value by name
-    /// Returns null if property doesn't exist or has no rdf:resource
-    pub fn getReference(self: CimObject, property_name: []const u8) error{MalformedTag}!?[]const u8 {
+    /// Get a reference (rdf:resource) value by name.
+    pub fn getReference(self: CimObjectView, property_name: []const u8) error{MalformedTag}!?[]const u8 {
         return get_reference_from_indices(self.xml, self.boundaries, self.object_tag_idx, self.closing_tag_idx, property_name);
     }
 
     /// Batch-fetch multiple text properties in a single scan through child tags.
-    /// Returns a fixed-size array of optional values corresponding to each name.
-    pub fn getProperties(self: CimObject, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
+    pub fn getProperties(self: CimObjectView, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
         var result: [names.len]?[]const u8 = .{null} ** names.len;
 
         if (self.closing_tag_idx == self.object_tag_idx) return result;
@@ -528,8 +533,7 @@ pub const CimObject = struct {
     }
 
     /// Batch-fetch multiple rdf:resource references in a single scan through child tags.
-    /// Returns a fixed-size array of optional values corresponding to each name.
-    pub fn getReferences(self: CimObject, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
+    pub fn getReferences(self: CimObjectView, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
         var result: [names.len]?[]const u8 = .{null} ** names.len;
 
         if (self.closing_tag_idx == self.object_tag_idx) return result;
@@ -554,17 +558,14 @@ pub const CimObject = struct {
         return result;
     }
 
-    /// Get all text properties (not references) as a HashMap
-    pub fn getAllProperties(self: CimObject, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
+    /// Get all text properties (not references) as a HashMap.
+    pub fn getAllProperties(self: CimObjectView, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
         var result = std.StringHashMap([]const u8).init(gpa);
         errdefer result.deinit();
 
-        // Handle self-closing tags
         if (self.closing_tag_idx == self.object_tag_idx) return result;
 
-        // Iterate through all tags between opening and closing
         for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx], self.object_tag_idx + 1..) |tag, i| {
-            // Skip closing tags and self-closing tags.
             // In CIM XML, references are always self-closing; properties never are.
             if (self.xml[tag.start + 1] == '/' or self.xml[tag.end - 1] == '/') continue;
             const tag_type = try extract_tag_type(self.xml, tag.start);
@@ -575,20 +576,15 @@ pub const CimObject = struct {
         return result;
     }
 
-    /// Get all rdf:resource references as a HashMap
-    pub fn getAllReferences(self: CimObject, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
+    /// Get all rdf:resource references as a HashMap.
+    pub fn getAllReferences(self: CimObjectView, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
         var result = std.StringHashMap([]const u8).init(gpa);
         errdefer result.deinit();
 
-        // Handle self-closing tags
         if (self.closing_tag_idx == self.object_tag_idx) return result;
 
-        // Iterate through all tags between opening and closing
         for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx]) |tag| {
-            // Skip closing tags (self-closing do have references though)
-            if (self.xml[tag.start + 1] == '/') {
-                continue;
-            }
+            if (self.xml[tag.start + 1] == '/') continue;
 
             const tag_type = extract_tag_type(self.xml, tag.start) catch continue;
             const reference = extract_rdf_resource(self.xml, tag.start) catch continue;

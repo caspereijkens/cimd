@@ -87,6 +87,7 @@ pub fn convert_lines(
 
     for ([_][]const cim_model.CimObject{ lines, series_compensators }) |seg_slice| {
         for (seg_slice) |line| {
+            const line_view = model.view(line);
             const terminals = index.equipment_terminals.get(line.id) orelse continue;
             for (terminals.items) |t| {
                 const conn_node_id = t.conn_node_id orelse continue;
@@ -114,7 +115,7 @@ pub fn convert_lines(
 
                 // nominalV from the ACLineSegment's BaseVoltage (not the Line container's)
                 var nominal_voltage: ?f64 = null;
-                if (try line.getReference("ConductingEquipment.BaseVoltage")) |bv_ref| {
+                if (try line_view.getReference("ConductingEquipment.BaseVoltage")) |bv_ref| {
                     const bv_id = strip_hash(bv_ref);
                     if (model.getObjectById(bv_id)) |bv_obj| {
                         if (try bv_obj.getProperty("BaseVoltage.nominalVoltage")) |nv_str| {
@@ -149,13 +150,14 @@ pub fn convert_lines(
     assert(network.lines.capacity >= lines.len + series_compensators.len);
 
     for (lines) |line| {
-        const mrid = try line.getProperty("IdentifiedObject.mRID") orelse strip_underscore(line.id);
-        const name = try line.getProperty("IdentifiedObject.name");
+        const line_view = model.view(line);
+        const mrid = try line_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(line.id);
+        const name = try line_view.getProperty("IdentifiedObject.name");
 
-        const r = try std.fmt.parseFloat(f64, try line.getProperty("ACLineSegment.r") orelse "0.0");
-        const x = try std.fmt.parseFloat(f64, try line.getProperty("ACLineSegment.x") orelse "0.0");
-        const gch = try std.fmt.parseFloat(f64, try line.getProperty("ACLineSegment.gch") orelse "0.0");
-        const bch = try std.fmt.parseFloat(f64, try line.getProperty("ACLineSegment.bch") orelse "0.0");
+        const r = try std.fmt.parseFloat(f64, try line_view.getProperty("ACLineSegment.r") orelse "0.0");
+        const x = try std.fmt.parseFloat(f64, try line_view.getProperty("ACLineSegment.x") orelse "0.0");
+        const gch = try std.fmt.parseFloat(f64, try line_view.getProperty("ACLineSegment.gch") orelse "0.0");
+        const bch = try std.fmt.parseFloat(f64, try line_view.getProperty("ACLineSegment.bch") orelse "0.0");
 
         const terminals = index.equipment_terminals.get(line.id) orelse continue;
         if (terminals.items.len != 2) continue;
@@ -193,12 +195,12 @@ pub fn convert_lines(
         props.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = "ACLineSegment" });
 
         // operational limits groups for each terminal
-        var olg1 = try placement_mod.build_op_lims(gpa, index, terminals.items[0].id);
+        var olg1 = try placement_mod.build_op_lims(gpa, model, index, terminals.items[0].id);
         errdefer {
             for (olg1.items) |*g| g.deinit(gpa);
             olg1.deinit(gpa);
         }
-        var olg2 = try placement_mod.build_op_lims(gpa, index, terminals.items[1].id);
+        var olg2 = try placement_mod.build_op_lims(gpa, model, index, terminals.items[1].id);
         errdefer {
             for (olg2.items) |*g| g.deinit(gpa);
             olg2.deinit(gpa);
@@ -236,11 +238,12 @@ pub fn convert_lines(
     // ---- Convert SeriesCompensators (pypow treats them as IIDM Lines) ----
     // SeriesCompensator has r/x but no shunt admittance (gch/bch = 0.0).
     for (series_compensators) |sc| {
-        const mrid = try sc.getProperty("IdentifiedObject.mRID") orelse strip_underscore(sc.id);
-        const name = try sc.getProperty("IdentifiedObject.name");
+        const series_compensator_view = model.view(sc);
+        const mrid = try series_compensator_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(sc.id);
+        const name = try series_compensator_view.getProperty("IdentifiedObject.name");
 
-        const r = try std.fmt.parseFloat(f64, try sc.getProperty("SeriesCompensator.r") orelse "0.0");
-        const x = try std.fmt.parseFloat(f64, try sc.getProperty("SeriesCompensator.x") orelse "0.0");
+        const r = try std.fmt.parseFloat(f64, try series_compensator_view.getProperty("SeriesCompensator.r") orelse "0.0");
+        const x = try std.fmt.parseFloat(f64, try series_compensator_view.getProperty("SeriesCompensator.x") orelse "0.0");
 
         const terminals = index.equipment_terminals.get(sc.id) orelse continue;
         if (terminals.items.len != 2) continue;
@@ -278,12 +281,12 @@ pub fn convert_lines(
         props.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = "SeriesCompensator" });
 
         // operational limits groups for each terminal
-        var olg1 = try placement_mod.build_op_lims(gpa, index, terminals.items[0].id);
+        var olg1 = try placement_mod.build_op_lims(gpa, model, index, terminals.items[0].id);
         errdefer {
             for (olg1.items) |*g| g.deinit(gpa);
             olg1.deinit(gpa);
         }
-        var olg2 = try placement_mod.build_op_lims(gpa, index, terminals.items[1].id);
+        var olg2 = try placement_mod.build_op_lims(gpa, model, index, terminals.items[1].id);
         errdefer {
             for (olg2.items) |*g| g.deinit(gpa);
             olg2.deinit(gpa);

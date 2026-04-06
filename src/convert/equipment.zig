@@ -127,8 +127,9 @@ pub fn convert_busbar_sections(
         const voltage_level = placement.voltage_level;
         const node = placement.node;
 
-        const mrid = try busbar_section.getProperty("IdentifiedObject.mRID") orelse strip_underscore(busbar_section.id);
-        const name = try busbar_section.getProperty("IdentifiedObject.name");
+        const busbar_section_view = model.view(busbar_section);
+        const mrid = try busbar_section_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(busbar_section.id);
+        const name = try busbar_section_view.getProperty("IdentifiedObject.name");
         voltage_level.node_breaker_topology.busbar_sections.appendAssumeCapacity(.{
             .id = mrid,
             .name = name,
@@ -161,12 +162,13 @@ pub fn convert_switches(
             const repr_voltage_level_id = cim_index.find_voltage_level(&index.voltage_level_merge, container0_id);
             const voltage_level = voltage_level_map.get(repr_voltage_level_id) orelse continue;
 
-            const mrid = try sw.getProperty("IdentifiedObject.mRID") orelse strip_underscore(sw.id);
-            const name = try sw.getProperty("IdentifiedObject.name");
+            const switch_view = model.view(sw);
+            const mrid = try switch_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(sw.id);
+            const name = try switch_view.getProperty("IdentifiedObject.name");
 
-            const open_str = try sw.getProperty("Switch.open") orelse "false";
+            const open_str = try switch_view.getProperty("Switch.open") orelse "false";
             const open = std.mem.eql(u8, open_str, "true");
-            const retained_str = try sw.getProperty("Switch.retained") orelse "false";
+            const retained_str = try switch_view.getProperty("Switch.retained") orelse "false";
             const retained = std.mem.eql(u8, retained_str, "true");
 
             const kind = iidm.SwitchKind.from_cim_type(sw.type_name);
@@ -211,12 +213,13 @@ fn convert_load_type(
     loads: []const CimObject,
 ) !void {
     for (loads) |load| {
+        const load_view = model.view(load);
         const placement = resolve_equipment_placement(index, voltage_level_map, node_map, load.id) orelse continue;
         const voltage_level = placement.voltage_level;
         const node = placement.node;
 
-        const mrid = try load.getProperty("IdentifiedObject.mRID") orelse strip_underscore(load.id);
-        const name = try load.getProperty("IdentifiedObject.name");
+        const mrid = try load_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(load.id);
+        const name = try load_view.getProperty("IdentifiedObject.name");
 
         // alias: CGMES.Terminal1 = terminal mRID
         var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
@@ -240,7 +243,7 @@ fn convert_load_type(
         // Load response characteristic → exponentialModel or zipModel.
         var exp_model: ?iidm.ExponentialModel = null;
         var zip_model: ?iidm.ZipModel = null;
-        if (try load.getReference("EnergyConsumer.LoadResponse")) |lr_ref| {
+        if (try load_view.getReference("EnergyConsumer.LoadResponse")) |lr_ref| {
             if (model.getObjectById(strip_hash(lr_ref))) |lrc| {
                 const exp_str = try lrc.getProperty("LoadResponseCharacteristic.exponentModel") orelse "false";
                 if (std.mem.eql(u8, exp_str, "true")) {
@@ -288,26 +291,27 @@ pub fn convert_shunts(
     assert(shunts.len == 0 or voltage_level_map.count() > 0);
 
     for (shunts) |shunt| {
+        const shunt_view = model.view(shunt);
         const placement = resolve_equipment_placement(index, voltage_level_map, node_map, shunt.id) orelse continue;
         const voltage_level = placement.voltage_level;
         const node = placement.node;
 
-        const mrid = try shunt.getProperty("IdentifiedObject.mRID") orelse strip_underscore(shunt.id);
-        const name = try shunt.getProperty("IdentifiedObject.name");
+        const mrid = try shunt_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(shunt.id);
+        const name = try shunt_view.getProperty("IdentifiedObject.name");
 
-        const sections_str = try shunt.getProperty("ShuntCompensator.sections") orelse "0";
+        const sections_str = try shunt_view.getProperty("ShuntCompensator.sections") orelse "0";
         const section_count: u32 = @intCast(try std.fmt.parseInt(i64, sections_str, 10));
 
-        const max_sections_str = try shunt.getProperty("ShuntCompensator.maximumSections") orelse "0";
+        const max_sections_str = try shunt_view.getProperty("ShuntCompensator.maximumSections") orelse "0";
         const max_section_count: u32 = @intCast(try std.fmt.parseInt(i64, max_sections_str, 10));
 
-        const b_per_section_str = try shunt.getProperty("LinearShuntCompensator.bPerSection") orelse "0.0";
+        const b_per_section_str = try shunt_view.getProperty("LinearShuntCompensator.bPerSection") orelse "0.0";
         const b_per_section = try std.fmt.parseFloat(f64, b_per_section_str);
 
-        const g_per_section_str = try shunt.getProperty("LinearShuntCompensator.gPerSection") orelse "0.0";
+        const g_per_section_str = try shunt_view.getProperty("LinearShuntCompensator.gPerSection") orelse "0.0";
         const g_per_section = try std.fmt.parseFloat(f64, g_per_section_str);
 
-        const control_enabled_str = try shunt.getProperty("RegulatingCondEq.controlEnabled") orelse "false";
+        const control_enabled_str = try shunt_view.getProperty("RegulatingCondEq.controlEnabled") orelse "false";
         const voltage_regulator_on = std.mem.eql(u8, control_enabled_str, "true");
 
         assert(mrid.len > 0);
@@ -338,23 +342,24 @@ pub fn convert_static_var_compensators(
     assert(static_var_compensators.len == 0 or voltage_level_map.count() > 0);
 
     for (static_var_compensators) |static_var_compensator| {
+        const static_var_compensator_view = model.view(static_var_compensator);
         const placement = resolve_equipment_placement(index, voltage_level_map, node_map, static_var_compensator.id) orelse continue;
         const voltage_level = placement.voltage_level;
         const node = placement.node;
 
-        const mrid = try static_var_compensator.getProperty("IdentifiedObject.mRID") orelse strip_underscore(static_var_compensator.id);
-        const name = try static_var_compensator.getProperty("IdentifiedObject.name");
+        const mrid = try static_var_compensator_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(static_var_compensator.id);
+        const name = try static_var_compensator_view.getProperty("IdentifiedObject.name");
 
-        const b_min_str = try static_var_compensator.getProperty("StaticVarCompensator.bMin") orelse "0.0";
+        const b_min_str = try static_var_compensator_view.getProperty("StaticVarCompensator.bMin") orelse "0.0";
         const b_min = try std.fmt.parseFloat(f64, b_min_str);
 
-        const b_max_str = try static_var_compensator.getProperty("StaticVarCompensator.bMax") orelse "0.0";
+        const b_max_str = try static_var_compensator_view.getProperty("StaticVarCompensator.bMax") orelse "0.0";
         const b_max = try std.fmt.parseFloat(f64, b_max_str);
 
-        const control_enabled_str = try static_var_compensator.getProperty("RegulatingCondEq.controlEnabled") orelse "false";
+        const control_enabled_str = try static_var_compensator_view.getProperty("RegulatingCondEq.controlEnabled") orelse "false";
         const regulating = std.mem.eql(u8, control_enabled_str, "true");
 
-        const regulation_mode_ref = try static_var_compensator.getReference("StaticVarCompensator.regulationMode");
+        const regulation_mode_ref = try static_var_compensator_view.getReference("StaticVarCompensator.regulationMode");
         const regulation_mode: iidm.SvcRegulationMode = blk: {
             const ref = regulation_mode_ref orelse break :blk .off;
             if (std.mem.endsWith(u8, ref, "voltage")) break :blk .voltage;
@@ -404,9 +409,10 @@ pub fn convert_generators(
         const fossil_fuels = model.get_objects_by_type("FossilFuel");
         try fuel_type_map.ensureTotalCapacity(gpa, @intCast(fossil_fuels.len));
         for (fossil_fuels) |ff| {
-            const unit_ref = try ff.getReference("FossilFuel.ThermalGeneratingUnit") orelse continue;
+            const fossil_fuel_view = model.view(ff);
+            const unit_ref = try fossil_fuel_view.getReference("FossilFuel.ThermalGeneratingUnit") orelse continue;
             const unit_id = strip_hash(unit_ref);
-            const ft_ref = try ff.getReference("FossilFuel.fossilFuelType") orelse continue;
+            const ft_ref = try fossil_fuel_view.getReference("FossilFuel.fossilFuelType") orelse continue;
             // Extract enum fragment part after last '#', then after last '.'.
             const h = std.mem.lastIndexOfScalar(u8, ft_ref, '#') orelse continue;
             const frag = ft_ref[h + 1 ..];
@@ -417,24 +423,25 @@ pub fn convert_generators(
     }
 
     for (machines) |machine| {
+        const machine_view = model.view(machine);
         const placement = resolve_equipment_placement(index, voltage_level_map, node_map, machine.id) orelse continue;
         const voltage_level = placement.voltage_level;
         const node = placement.node;
 
-        const mrid = try machine.getProperty("IdentifiedObject.mRID") orelse strip_underscore(machine.id);
-        const name = try machine.getProperty("IdentifiedObject.name");
+        const mrid = try machine_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(machine.id);
+        const name = try machine_view.getProperty("IdentifiedObject.name");
 
         const rated_s: ?f64 = blk: {
-            const s = try machine.getProperty("RotatingMachine.ratedS") orelse break :blk null;
+            const s = try machine_view.getProperty("RotatingMachine.ratedS") orelse break :blk null;
             break :blk try std.fmt.parseFloat(f64, s);
         };
 
-        const control_enabled_str = try machine.getProperty("RegulatingCondEq.controlEnabled") orelse "false";
+        const control_enabled_str = try machine_view.getProperty("RegulatingCondEq.controlEnabled") orelse "false";
         const voltage_regulator_on = std.mem.eql(u8, control_enabled_str, "true");
 
         // SynchronousMachineKind enum: "condenser" or "generatorOrCondenser" (capital C).
         // Search for the common lowercase suffix "ondenser" to match both.
-        const type_ref = try machine.getReference("SynchronousMachine.type") orelse "";
+        const type_ref = try machine_view.getReference("SynchronousMachine.type") orelse "";
         const is_condenser = std.mem.indexOf(u8, type_ref, "ondenser") != null;
         // Extract "kind value" from a CIM enum URL: part after the last '.' in the fragment.
         // e.g. "http://...#SynchronousMachineKind.generatorOrCondenser" → "generatorOrCondenser"
@@ -452,7 +459,7 @@ pub fn convert_generators(
         var unit_mrid: ?[]const u8 = null;
         var wind_unit_type: ?[]const u8 = null;
         var fuel_type: ?[]const u8 = null;
-        if (try machine.getReference("RotatingMachine.GeneratingUnit")) |unit_ref| {
+        if (try machine_view.getReference("RotatingMachine.GeneratingUnit")) |unit_ref| {
             const unit_id = strip_hash(unit_ref);
             if (model.getObjectById(unit_id)) |unit| {
                 energy_source = energy_source_from_cim_type(unit.type_name);
@@ -482,18 +489,18 @@ pub fn convert_generators(
         var curve_points: std.ArrayListUnmanaged(iidm.ReactiveCapabilityCurvePoint) = .empty;
         var min_max_reactive_limits: ?iidm.MinMaxReactiveLimits = null;
 
-        if (try machine.getReference("SynchronousMachine.InitialReactiveCapabilityCurve")) |curve_ref| {
+        if (try machine_view.getReference("SynchronousMachine.InitialReactiveCapabilityCurve")) |curve_ref| {
             if (index.curve_points.get(strip_hash(curve_ref))) |points| {
                 try curve_points.appendSlice(gpa, points.items);
             }
         }
 
         if (curve_points.items.len == 0) {
-            const min_q: ?f64 = if (try machine.getProperty("SynchronousMachine.minQ")) |v|
+            const min_q: ?f64 = if (try machine_view.getProperty("SynchronousMachine.minQ")) |v|
                 try std.fmt.parseFloat(f64, v)
             else
                 null;
-            const max_q: ?f64 = if (try machine.getProperty("SynchronousMachine.maxQ")) |v|
+            const max_q: ?f64 = if (try machine_view.getProperty("SynchronousMachine.maxQ")) |v|
                 try std.fmt.parseFloat(f64, v)
             else
                 null;
@@ -506,7 +513,7 @@ pub fn convert_generators(
         var regulating_terminal: ?[]const u8 = null;
         var rc_mrid: ?[]const u8 = null;
         var rc_mode_lower: ?[]u8 = null;
-        if (try machine.getReference("RegulatingCondEq.RegulatingControl")) |rc_ref| {
+        if (try machine_view.getReference("RegulatingCondEq.RegulatingControl")) |rc_ref| {
             const rc_id = strip_hash(rc_ref);
             if (model.getObjectById(rc_id)) |rc| {
                 rc_mrid = try rc.getProperty("IdentifiedObject.mRID") orelse strip_underscore(rc_id);

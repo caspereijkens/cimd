@@ -2,21 +2,30 @@ const std = @import("std");
 const assert = std.debug.assert;
 const tag_index = @import("tag_index.zig");
 const CimObject = tag_index.CimObject;
+const CimObjectView = tag_index.CimObjectView;
 
-/// Test helper: extract id from the tag at tag_idx, then call CimObject.init.
+/// Test helper: extract id from the tag at tag_idx, then build a CimObjectView.
 /// Mirrors the two-step pattern that CimModel.init uses in production.
 fn make_cim_object(
     xml: []const u8,
     boundaries: []const tag_index.TagBoundary,
     tag_idx: u32,
     closing_idx: u32,
-) !CimObject {
+) !CimObjectView {
     const start = boundaries[tag_idx].start;
     const id = tag_index.extract_rdf_id(xml, start) catch |err| switch (err) {
         error.NoRdfId => try tag_index.extract_rdf_about(xml, start),
         error.MalformedTag => return error.MalformedTag,
     };
-    return CimObject.init(xml, boundaries, tag_idx, closing_idx, id);
+    const obj = try CimObject.init(xml, boundaries, tag_idx, closing_idx, id);
+    return .{
+        .xml = xml,
+        .boundaries = boundaries,
+        .object_tag_idx = obj.object_tag_idx,
+        .closing_tag_idx = obj.closing_tag_idx,
+        .id = obj.id,
+        .type_name = obj.type_name,
+    };
 }
 
 test "tag_index.find_byte_simd - finds all angle brackets" {

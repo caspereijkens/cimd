@@ -9,13 +9,14 @@ const assert = std.debug.assert;
 
 const CimModel = cim_model.CimModel;
 const CimObject = tag_index.CimObject;
+const CimObjectView = tag_index.CimObjectView;
 const CimIndex = cim_index.CimIndex;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
 // Resolve the region name for a Substation.
 // Substation.Region -> SubGeographicalRegion.IdentifiedObject.name.
-fn resolve_geo_tag(model: *const CimModel, substation: CimObject) error{MalformedTag}!?[]const u8 {
+fn resolve_geo_tag(model: *const CimModel, substation: CimObjectView) error{MalformedTag}!?[]const u8 {
     const region_ref = try substation.getReference("Substation.Region") orelse return null;
     const region = model.getObjectById(strip_hash(region_ref)) orelse return null;
     return try region.getProperty("IdentifiedObject.name");
@@ -23,7 +24,7 @@ fn resolve_geo_tag(model: *const CimModel, substation: CimObject) error{Malforme
 
 // Resolve the country code for a Substation.
 // Substation.Region -> SubGeographicalRegion.Region -> GeographicalRegion.IdentifiedObject.name.
-fn resolve_country(model: *const CimModel, substation: CimObject) error{MalformedTag}!?[]const u8 {
+fn resolve_country(model: *const CimModel, substation: CimObjectView) error{MalformedTag}!?[]const u8 {
     const region_ref = try substation.getReference("Substation.Region") orelse return null;
     const region = model.getObjectById(strip_hash(region_ref)) orelse return null;
 
@@ -38,7 +39,7 @@ fn append_substation(
     gpa: std.mem.Allocator,
     model: *const CimModel,
     index: *const CimIndex,
-    substation: CimObject,
+    substation: CimObjectView,
     network: *iidm.Network,
     sub_id_map: *std.StringHashMapUnmanaged(usize),
 ) !void {
@@ -123,7 +124,7 @@ pub fn convert_substations(
     try substation_id_map.ensureTotalCapacity(gpa, @intCast(substations.len));
     for (substations) |substation| {
         if (stub_ids.contains(substation.id)) continue;
-        try append_substation(gpa, model, index, substation, network, substation_id_map);
+        try append_substation(gpa, model, index, model.view(substation), network, substation_id_map);
     }
 
     assert(network.substations.items.len == substations.len - stub_count);

@@ -80,7 +80,6 @@ pub const CimModel = struct {
         for (objects.items) |obj| {
             const cursor = write_cursors.getPtr(obj.type_name).?;
             sorted_objects[cursor.*] = obj;
-            sorted_objects[cursor.*].boundaries = final_boundaries;
             cursor.* += 1;
         }
 
@@ -110,9 +109,21 @@ pub const CimModel = struct {
         gpa.free(self.boundaries);
     }
 
-    pub fn getObjectById(self: CimModel, id: []const u8) ?*const CimObject {
+    /// Bind a stored CimObject to this model's XML context for property access.
+    pub fn view(self: CimModel, obj: CimObject) tag_index.CimObjectView {
+        return .{
+            .xml = self.xml,
+            .boundaries = self.boundaries,
+            .object_tag_idx = obj.object_tag_idx,
+            .closing_tag_idx = obj.closing_tag_idx,
+            .id = obj.id,
+            .type_name = obj.type_name,
+        };
+    }
+
+    pub fn getObjectById(self: CimModel, id: []const u8) ?tag_index.CimObjectView {
         const idx = self.id_to_index.get(id) orelse return null;
-        return &self.objects[idx];
+        return self.view(self.objects[idx]);
     }
 
     pub fn get_objects_by_type(self: CimModel, type_name: []const u8) []const CimObject {

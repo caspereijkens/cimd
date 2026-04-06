@@ -47,7 +47,7 @@ pub fn display_object_inventory(gpa: std.mem.Allocator, model: cim_model.CimMode
     try stdout("Total: {d} objects\n\n", .{total});
 }
 
-pub fn displayObject(gpa: std.mem.Allocator, obj: *const tag_index.CimObject) !void {
+pub fn displayObject(gpa: std.mem.Allocator, obj: tag_index.CimObjectView) !void {
     try stdout("Type: {s}\n", .{obj.type_name});
     try stdout("ID: {s}\n", .{obj.id});
 
@@ -111,9 +111,9 @@ pub fn displayObject(gpa: std.mem.Allocator, obj: *const tag_index.CimObject) !v
     try stdout("\n", .{});
 }
 
-pub fn display_object_list(gpa: std.mem.Allocator, objects: []const tag_index.CimObject) !void {
+pub fn display_object_list(gpa: std.mem.Allocator, model: *const cim_model.CimModel, objects: []const tag_index.CimObject) !void {
     for (objects, 1..) |obj, i| {
         try stdout("[{d}] {s}\n", .{ i, obj.id });
-        try displayObject(gpa, &obj);
+        try displayObject(gpa, model.view(obj));
     }
 }

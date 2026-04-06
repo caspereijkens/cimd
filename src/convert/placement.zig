@@ -44,6 +44,7 @@ pub fn resolve_terminal_placement(
 ///   CGMES.OperationalLimitSetRdfID, CGMES.OperationalLimit_CurrentLimit_patl.
 pub fn build_op_lims(
     gpa: std.mem.Allocator,
+    model: *const cim_model.CimModel,
     index: *const CimIndex,
     terminal_id: []const u8,
 ) !std.ArrayListUnmanaged(iidm.OperationalLimitsGroup) {
@@ -54,22 +55,24 @@ pub fn build_op_lims(
     try groups.ensureTotalCapacity(gpa, limit_sets.items.len);
 
     for (limit_sets.items) |set| {
-        const set_mrid = try set.getProperty("IdentifiedObject.mRID") orelse strip_underscore(set.id);
-        const set_name = try set.getProperty("IdentifiedObject.name") orelse set_mrid;
+        const set_view = model.view(set);
+        const set_mrid = try set_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(set.id);
+        const set_name = try set_view.getProperty("IdentifiedObject.name") orelse set_mrid;
 
         var patl_value_str: ?[]const u8 = null;
         var patl_cl_mrid: ?[]const u8 = null;
 
         if (index.current_limits_by_set.get(set.id)) |cls| {
             for (cls.items) |cl| {
-                const type_ref = try cl.getReference("OperationalLimit.OperationalLimitType") orelse continue;
+                const current_limit_view = model.view(cl);
+                const type_ref = try current_limit_view.getReference("OperationalLimit.OperationalLimitType") orelse continue;
                 const type_id = strip_hash(type_ref);
                 const type_info = index.limit_types.get(type_id) orelse continue;
                 if (!type_info.is_infinite) continue; // skip TATLs for now (none in dataset)
 
-                patl_value_str = try cl.getProperty("CurrentLimit.value") orelse
-                    try cl.getProperty("CurrentLimit.normalValue");
-                patl_cl_mrid = try cl.getProperty("IdentifiedObject.mRID") orelse strip_underscore(cl.id);
+                patl_value_str = try current_limit_view.getProperty("CurrentLimit.value") orelse
+                    try current_limit_view.getProperty("CurrentLimit.normalValue");
+                patl_cl_mrid = try current_limit_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(cl.id);
             }
         }
 

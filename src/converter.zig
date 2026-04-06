@@ -93,12 +93,13 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, network: *iidm.
     try network.areas.ensureTotalCapacity(gpa, control_areas.len);
 
     for (control_areas) |ca| {
-        const ca_mrid = try ca.getProperty("IdentifiedObject.mRID") orelse strip_underscore(ca.id);
-        const ca_name = try ca.getProperty("IdentifiedObject.name") orelse ca_mrid;
+        const control_area_view = model.view(ca);
+        const ca_mrid = try control_area_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(ca.id);
+        const ca_name = try control_area_view.getProperty("IdentifiedObject.name") orelse ca_mrid;
 
         // ControlArea.type is a rdf:resource; extract the fragment after '#'.
         const area_type: []const u8 = blk: {
-            const raw = try ca.getReference("ControlArea.type") orelse break :blk "ControlAreaTypeKind.Interchange";
+            const raw = try control_area_view.getReference("ControlArea.type") orelse break :blk "ControlAreaTypeKind.Interchange";
             const hash = std.mem.lastIndexOfScalar(u8, raw, '#') orelse break :blk raw;
             break :blk raw[hash + 1 ..];
         };
@@ -109,11 +110,12 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, network: *iidm.
         errdefer boundaries.deinit(gpa);
 
         for (tieflows) |tf| {
-            const ca_ref = try tf.getReference("TieFlow.ControlArea") orelse continue;
+            const tie_flow_view = model.view(tf);
+            const ca_ref = try tie_flow_view.getReference("TieFlow.ControlArea") orelse continue;
             const ca_id = strip_hash(ca_ref);
             if (!std.mem.eql(u8, ca_id, ca.id) and !std.mem.eql(u8, ca_id, ca_mrid)) continue;
 
-            const term_ref = try tf.getReference("TieFlow.Terminal") orelse continue;
+            const term_ref = try tie_flow_view.getReference("TieFlow.Terminal") orelse continue;
             const term_id = strip_hash(term_ref);
             const term_obj = model.getObjectById(term_id) orelse continue;
 
@@ -150,7 +152,7 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
 
     // ---- FullModel metadata: id, caseDate, forecastDistance ----
     const full_models = model.get_objects_by_type("FullModel");
-    const eq_full_model: ?*const cim_model.CimObject = if (full_models.len > 0) &full_models[0] else null;
+    const eq_full_model: ?tag_index.CimObjectView = if (full_models.len > 0) model.view(full_models[0]) else null;
     const network_id = if (eq_full_model) |fm| fm.id else "unknown";
     const scenario_time: ?[]const u8 = if (eq_full_model) |fm|
         try fm.getProperty("Model.scenarioTime")
@@ -230,12 +232,13 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
         };
         for (tc_types) |tc_type| {
             for (model.get_objects_by_type(tc_type.type_name)) |tc| {
-                const step_str = try tc.getProperty("TapChanger.normalStep") orelse continue;
+                const tap_changer_view = model.view(tc);
+                const step_str = try tap_changer_view.getProperty("TapChanger.normalStep") orelse continue;
                 const step = std.fmt.parseInt(i32, std.mem.trim(u8, step_str, " \t\r\n"), 10) catch continue;
-                const tc_mrid = try tc.getProperty("IdentifiedObject.mRID") orelse strip_underscore(tc.id);
+                const tc_mrid = try tap_changer_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(tc.id);
 
                 // TransformerEnd → PowerTransformer
-                const end_ref = try tc.getReference(if (tc_type.is_phase) "PhaseTapChanger.TransformerEnd" else "RatioTapChanger.TransformerEnd") orelse continue;
+                const end_ref = try tap_changer_view.getReference(if (tc_type.is_phase) "PhaseTapChanger.TransformerEnd" else "RatioTapChanger.TransformerEnd") orelse continue;
                 const end_id = strip_hash(end_ref);
                 const end_obj = model.getObjectById(end_id) orelse continue;
                 const xfmr_ref = try end_obj.getReference("PowerTransformerEnd.PowerTransformer") orelse continue;
@@ -303,14 +306,15 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
         const machines = model.get_objects_by_type("SynchronousMachine");
         var crc_count: usize = 0;
         for (machines) |m| {
-            if (try m.getProperty("SynchronousMachine.qPercent") != null) crc_count += 1;
+            if (try model.view(m).getProperty("SynchronousMachine.qPercent") != null) crc_count += 1;
         }
         if (crc_count > 0) {
             try network.extensions.ensureTotalCapacity(gpa, network.extensions.items.len + crc_count);
             for (machines) |m| {
-                const qpct_str = try m.getProperty("SynchronousMachine.qPercent") orelse continue;
+                const machine_view = model.view(m);
+                const qpct_str = try machine_view.getProperty("SynchronousMachine.qPercent") orelse continue;
                 const qpct = std.fmt.parseFloat(f64, std.mem.trim(u8, qpct_str, " \t\r\n")) catch continue;
-                const mrid = try m.getProperty("IdentifiedObject.mRID") orelse strip_underscore(m.id);
+                const mrid = try machine_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(m.id);
                 network.extensions.appendAssumeCapacity(.{
                     .id = mrid,
                     .coordinated_reactive_control = .{ .q_percent = qpct },
@@ -344,7 +348,8 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
         for (0..fm_count) |round| {
             const start_i: usize = if (round == 0) 1 else 0;
             const end_i: usize = if (round == 0) fm_count else 1;
-            for (full_models[start_i..end_i]) |fm| {
+            for (full_models[start_i..end_i]) |fm_obj| {
+                const fm = model.view(fm_obj);
                 const fm_id = fm.id;
                 const mas = try fm.getProperty("Model.modelingAuthoritySet") orelse "";
                 const raw_desc = try fm.getProperty("Model.description") orelse "";
@@ -384,20 +389,21 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
 
         // --- baseVoltageMapping ---
         // EQ FullModel is always first in XML order; EQBD FullModel (if present) comes after.
-        const eq_boundary: u32 = if (full_models.len >= 2)
-            full_models[1].boundaries[full_models[1].object_tag_idx].start
-        else
-            std.math.maxInt(u32);
+        const eq_boundary: u32 = if (full_models.len >= 2) blk: {
+            const full_model_view = model.view(full_models[1]);
+            break :blk full_model_view.boundaries[full_model_view.object_tag_idx].start;
+        } else std.math.maxInt(u32);
 
         const base_voltages = model.get_objects_by_type("BaseVoltage");
         var bv_list: std.ArrayListUnmanaged(iidm.BaseVoltage) = .empty;
         errdefer bv_list.deinit(gpa);
         try bv_list.ensureTotalCapacity(gpa, base_voltages.len);
-        for (base_voltages) |bv| {
-            const bv_mrid = try bv.getProperty("IdentifiedObject.mRID") orelse strip_underscore(bv.id);
-            const nom_v_str = try bv.getProperty("BaseVoltage.nominalVoltage") orelse continue;
+        for (base_voltages) |base_voltage| {
+            const base_voltage_view = model.view(base_voltage);
+            const bv_mrid = try base_voltage_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(base_voltage.id);
+            const nom_v_str = try base_voltage_view.getProperty("BaseVoltage.nominalVoltage") orelse continue;
             const nom_v = std.fmt.parseFloat(f64, std.mem.trim(u8, nom_v_str, " \t\r\n")) catch continue;
-            const xml_pos = bv.boundaries[bv.object_tag_idx].start;
+            const xml_pos = base_voltage_view.boundaries[base_voltage_view.object_tag_idx].start;
             const source: []const u8 = if (xml_pos < eq_boundary) "IGM" else "BOUNDARY";
             bv_list.appendAssumeCapacity(.{ .nominal_voltageoltage = nom_v, .source = source, .id = bv_mrid });
         }
