@@ -328,7 +328,6 @@ pub fn find_closing_tag(
     boundaries: []const TagBoundary,
     opening_tag_idx: u32,
 ) error{ NoClosingTag, SelfClosingTag, MalformedTag }!u32 {
-    // I have chosen assert over error here because I think this is always a programmer error and never can be caused by bad user input.
     assert(opening_tag_idx < boundaries.len);
 
     const opening_tag = boundaries[opening_tag_idx];
@@ -418,8 +417,49 @@ pub fn get_reference_from_indices(
     return null;
 }
 
+/// Pre-compute closing tag indices for all boundaries.
+/// closing_for[i] == i means self-closing. Otherwise closing_for[i] is the
+/// index of the matching closing boundary.
+/// Caller owns the returned slice.
+pub fn build_closing_index(
+    gpa: std.mem.Allocator,
+    xml: []const u8,
+    boundaries: []const TagBoundary,
+) ![]u32 {
+    const closing_for = try gpa.alloc(u32, boundaries.len);
+    errdefer gpa.free(closing_for);
+
+    // Default: each tag closes itself (correct for self-closing; overwritten for pairs).
+    for (closing_for, 0..) |*v, i| v.* = @intCast(i);
+
+    // Stack entries: opening tag type + its boundary index.
+    const StackEntry = struct { type_name: []const u8, idx: u32 };
+    var stack: std.ArrayListUnmanaged(StackEntry) = .empty;
+    defer stack.deinit(gpa);
+
+    for (boundaries, 0..) |tag, i| {
+        if (xml[tag.end - 1] == '/') {
+            // Self-closing — already defaulted, nothing to push.
+        } else if (xml[tag.start + 1] == '/') {
+            // Closing tag — pop matching opener from stack top.
+            const type_name = extract_tag_type(xml, tag.start + 1) catch continue;
+            if (stack.items.len > 0 and std.mem.eql(u8, stack.items[stack.items.len - 1].type_name, type_name)) {
+                const opener = stack.pop();
+                if (opener) |opener_val| {
+                    closing_for[opener_val.idx] = @intCast(i);
+                }
+            }
+        } else {
+            // Opening tag — push.
+            const type_name = extract_tag_type(xml, tag.start) catch continue;
+            try stack.append(gpa, .{ .type_name = type_name, .idx = @intCast(i) });
+        }
+    }
+
+    return closing_for;
+}
+
 /// Represents a CIM object with lazy property access
-/// Zero-copy, index-based design for minimal memory footprint
 pub const CimObject = struct {
     xml: []const u8,
     boundaries: []const TagBoundary,
