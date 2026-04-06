@@ -408,8 +408,8 @@ pub fn convert_generators(
     {
         const fossil_fuels = model.get_objects_by_type("FossilFuel");
         try fuel_type_map.ensureTotalCapacity(gpa, @intCast(fossil_fuels.len));
-        for (fossil_fuels) |ff| {
-            const fossil_fuel_view = model.view(ff);
+        for (fossil_fuels) |fossil_fuel| {
+            const fossil_fuel_view = model.view(fossil_fuel);
             const unit_ref = try fossil_fuel_view.getReference("FossilFuel.ThermalGeneratingUnit") orelse continue;
             const unit_id = strip_hash(unit_ref);
             const ft_ref = try fossil_fuel_view.getReference("FossilFuel.fossilFuelType") orelse continue;
