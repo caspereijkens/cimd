@@ -193,7 +193,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/main.zig"),
                 .target = release_target,
-                .optimize = .ReleaseFast,
+                .optimize = .ReleaseSafe,
                 .imports = &.{
                     .{ .name = "cimd", .module = mod },
                     .{ .name = "build_options", .module = build_options.createModule() },
