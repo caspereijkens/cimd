@@ -549,15 +549,15 @@ pub fn convert_transformers(
 
     const transformers = model.get_objects_by_type("PowerTransformer");
     for (transformers) |transformer| {
-        const tv = model.view(transformer);
+        const transformer_view = model.view(transformer);
         const ends = ends_by_transformer.get(transformer.id) orelse continue;
         const end1 = ends.items[0];
         const placement = try resolve_end_placement(end1, index, voltage_level_map, node_map) orelse continue;
         const substation = substation_map.get(placement.repr_voltage_level_id) orelse continue;
 
         switch (ends.items.len) {
-            2 => try append_two_windings_transformer(tv, ends.items, substation, voltage_level_map, node_map, index, &ratio_tap_changer_map, &phase_tap_changer_map),
-            3 => try append_three_windings_transformer(tv, ends.items, substation, voltage_level_map, node_map, index, &ratio_tap_changer_map),
+            2 => try append_two_windings_transformer(transformer_view, ends.items, substation, voltage_level_map, node_map, index, &ratio_tap_changer_map, &phase_tap_changer_map),
+            3 => try append_three_windings_transformer(transformer_view, ends.items, substation, voltage_level_map, node_map, index, &ratio_tap_changer_map),
             else => continue,
         }
     }
