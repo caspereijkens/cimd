@@ -62,9 +62,9 @@ pub fn build_op_lims(
         var patl_value_str: ?[]const u8 = null;
         var patl_cl_mrid: ?[]const u8 = null;
 
-        if (index.current_limits_by_set.get(set.id)) |cls| {
-            for (cls.items) |cl| {
-                const current_limit_view = model.view(cl);
+        if (index.current_limits_by_set.get(set.id)) |current_limits| {
+            for (current_limits.items) |current_limit| {
+                const current_limit_view = model.view(current_limit);
                 const type_ref = try current_limit_view.getReference("OperationalLimit.OperationalLimitType") orelse continue;
                 const type_id = strip_hash(type_ref);
                 const type_info = index.limit_types.get(type_id) orelse continue;
@@ -72,7 +72,7 @@ pub fn build_op_lims(
 
                 patl_value_str = try current_limit_view.getProperty("CurrentLimit.value") orelse
                     try current_limit_view.getProperty("CurrentLimit.normalValue");
-                patl_cl_mrid = try current_limit_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(cl.id);
+                patl_cl_mrid = try current_limit_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(current_limit.id);
             }
         }
 
