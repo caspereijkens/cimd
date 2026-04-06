@@ -166,15 +166,44 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 
-    // Just like flags, top level steps are also listed in the `--help` menu.
-    //
-    // The Zig build system is entirely implemented in userland, which means
-    // that it cannot hook into private compiler APIs. All compilation work
-    // orchestrated by the build system will result in other Zig compiler
-    // subcommands being invoked with the right flags defined. You can observe
-    // these invocations when one fails (or you pass a flag to increase
-    // verbosity) to validate assumptions and diagnose problems.
-    //
-    // Lastly, the Zig build system is relatively simple and self-contained,
-    // and reading its source code will allow you to master it.
+    // Release step: build for all supported platforms at ReleaseFast.
+    // Outputs to zig-out/release/<target>/cimd[.exe].
+    // Run with: zig build release
+    const release_step = b.step("release", "Build release binaries for all platforms");
+
+    const ReleaseTarget = struct {
+        query: std.Target.Query,
+        /// User-facing name used for the output directory and archive filename.
+        name: []const u8,
+    };
+
+    const release_targets = [_]ReleaseTarget{
+        .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .macos }, .name = "aarch64-macos" },
+        .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .macos }, .name = "x86_64-macos" },
+        // musl ABI produces a fully static binary that runs on any Linux distro.
+        .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl }, .name = "x86_64-linux" },
+        .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .musl }, .name = "aarch64-linux" },
+        .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .windows }, .name = "x86_64-windows" },
+    };
+
+    for (release_targets) |rt| {
+        const release_target = b.resolveTargetQuery(rt.query);
+        const release_exe = b.addExecutable(.{
+            .name = "cimd",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/main.zig"),
+                .target = release_target,
+                .optimize = .ReleaseFast,
+                .imports = &.{
+                    .{ .name = "cimd", .module = mod },
+                    .{ .name = "build_options", .module = build_options.createModule() },
+                },
+            }),
+        });
+
+        const install = b.addInstallArtifact(release_exe, .{
+            .dest_dir = .{ .override = .{ .custom = b.fmt("release/{s}", .{rt.name}) } },
+        });
+        release_step.dependOn(&install.step);
+    }
 }
