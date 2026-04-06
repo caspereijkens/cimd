@@ -211,9 +211,9 @@ pub const TagBoundary = struct {
     end: u32,
 };
 
-/// Find all XML tag boundaries by pairing '<' and '>' characters
-/// Uses SIMD to find delimiters, then pairs them sequentially
-/// Returns ArrayList of TagBoundary in document order
+/// Find all XML tag boundaries by pairing '<' and '>' characters.
+/// Uses two SIMD passes (one per delimiter) then zips the results.
+/// Returns ArrayList of TagBoundary in document order.
 pub fn find_tag_boundaries(
     gpa: std.mem.Allocator,
     xml: []const u8,
@@ -233,7 +233,7 @@ pub fn find_tag_boundaries(
 
     if (lt_positions.items.len == 0 and gt_positions.items.len == 0) return result;
 
-    // Check that we have as many lt as gt brackets, otherwise the input data is malformed.
+    // Unequal counts mean malformed XML (e.g. unmatched '<' or '>').
     if (lt_positions.items.len != gt_positions.items.len) {
         return error.MalformedXML;
     }
@@ -241,7 +241,7 @@ pub fn find_tag_boundaries(
     try result.ensureTotalCapacity(gpa, lt_positions.items.len);
 
     for (lt_positions.items, gt_positions.items) |lt_pos, gt_pos| {
-        // In well-formed XML, '>' must come after '<'
+        // In well-formed XML, '>' must come after '<'.
         if (gt_pos <= lt_pos) {
             return error.MalformedXML;
         }
@@ -343,6 +343,7 @@ pub fn find_closing_tag(
             if (xml[tag.start + 1] == '/') {
                 const tag_type = extract_tag_type(xml, tag.start + 1) catch continue;
                 if (std.mem.eql(u8, opening_tag_type, tag_type)) {
+                    assert(depth > 0);
                     depth -= 1;
                     if (depth == 0) break :blk @intCast(i);
                 }
@@ -350,6 +351,7 @@ pub fn find_closing_tag(
                 // Opening tag (not self-closing)
                 const tag_type = extract_tag_type(xml, tag.start) catch continue;
                 if (std.mem.eql(u8, opening_tag_type, tag_type)) {
+                    assert(depth < std.math.maxInt(u32));
                     depth += 1;
                 }
             }
