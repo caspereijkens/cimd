@@ -39,7 +39,8 @@ pub fn find_byte_simd(
     const unroll_size = VECTOR_LEN * unroll_factor;
 
     while (i + unroll_size <= haystack.len) : (i += unroll_size) {
-        // Process 4 SIMD vectors in parallel
+        // Worst case: every byte in the block matches — reserve before entering.
+        try result.ensureUnusedCapacity(gpa, unroll_size);
         inline for (0..unroll_factor) |j| {
             const offset = i + j * VECTOR_LEN;
             const chunk: Chunk = haystack[offset..][0..VECTOR_LEN].*;
@@ -49,7 +50,6 @@ pub fn find_byte_simd(
             var m = mask;
             while (m != 0) {
                 const bit_pos = @ctz(m);
-                // appendAssumeCapacity (no bounds check)
                 result.appendAssumeCapacity(@intCast(offset + bit_pos));
                 m &= m - 1;
             }
@@ -58,6 +58,7 @@ pub fn find_byte_simd(
 
     // Handle remaining full vectors
     while (i + VECTOR_LEN <= haystack.len) : (i += VECTOR_LEN) {
+        try result.ensureUnusedCapacity(gpa, VECTOR_LEN);
         const chunk: Chunk = haystack[i..][0..VECTOR_LEN].*;
         const matches: @Vector(VECTOR_LEN, bool) = chunk == all_needles;
         const mask: Mask = @bitCast(matches);
@@ -73,6 +74,7 @@ pub fn find_byte_simd(
     // Handle remainder - scalar fallback
     while (i < haystack.len) : (i += 1) {
         if (haystack[i] == needle) {
+            try result.ensureUnusedCapacity(gpa, 1);
             result.appendAssumeCapacity(@intCast(i));
         }
     }
@@ -146,6 +148,8 @@ pub fn find_pattern(
 
     // Process 4 vectors per iteration
     while (i + unroll_size <= haystack.len) : (i += unroll_size) {
+        // Worst case: every byte in the block is the pattern's first byte.
+        try result.ensureUnusedCapacity(gpa, unroll_size);
         inline for (0..unroll_factor) |j| {
             const offset = i + j * VECTOR_LEN;
             const chunk: Chunk = haystack[offset..][0..VECTOR_LEN].*;
@@ -168,6 +172,7 @@ pub fn find_pattern(
 
     // Remaining full vectors
     while (i + VECTOR_LEN <= haystack.len) : (i += VECTOR_LEN) {
+        try result.ensureUnusedCapacity(gpa, VECTOR_LEN);
         const chunk: Chunk = haystack[i..][0..VECTOR_LEN].*;
         const matches: @Vector(VECTOR_LEN, bool) = chunk == all_first_bytes;
         const mask: Mask = @bitCast(matches);
@@ -189,6 +194,7 @@ pub fn find_pattern(
     while (i < haystack.len) : (i += 1) {
         if (haystack[i] == first_byte) {
             if (verify_and_extract_pattern(haystack, i, needle)) |match| {
+                try result.ensureUnusedCapacity(gpa, 1);
                 result.appendAssumeCapacity(match);
             }
         }
@@ -205,9 +211,9 @@ pub const TagBoundary = struct {
     end: u32,
 };
 
-/// Find all XML tag boundaries by pairing '<' and '>' characters
-/// Uses SIMD to find delimiters, then pairs them sequentially
-/// Returns ArrayList of TagBoundary in document order
+/// Find all XML tag boundaries by pairing '<' and '>' characters.
+/// Uses two SIMD passes (one per delimiter) then zips the results.
+/// Returns ArrayList of TagBoundary in document order.
 pub fn find_tag_boundaries(
     gpa: std.mem.Allocator,
     xml: []const u8,
@@ -227,7 +233,7 @@ pub fn find_tag_boundaries(
 
     if (lt_positions.items.len == 0 and gt_positions.items.len == 0) return result;
 
-    // Check that we have as many lt as gt brackets, otherwise the input data is malformed.
+    // Unequal counts mean malformed XML (e.g. unmatched '<' or '>').
     if (lt_positions.items.len != gt_positions.items.len) {
         return error.MalformedXML;
     }
@@ -235,7 +241,7 @@ pub fn find_tag_boundaries(
     try result.ensureTotalCapacity(gpa, lt_positions.items.len);
 
     for (lt_positions.items, gt_positions.items) |lt_pos, gt_pos| {
-        // In well-formed XML, '>' must come after '<'
+        // In well-formed XML, '>' must come after '<'.
         if (gt_pos <= lt_pos) {
             return error.MalformedXML;
         }
@@ -322,7 +328,6 @@ pub fn find_closing_tag(
     boundaries: []const TagBoundary,
     opening_tag_idx: u32,
 ) error{ NoClosingTag, SelfClosingTag, MalformedTag }!u32 {
-    // I have chosen assert over error here because I think this is always a programmer error and never can be caused by bad user input.
     assert(opening_tag_idx < boundaries.len);
 
     const opening_tag = boundaries[opening_tag_idx];
@@ -337,6 +342,7 @@ pub fn find_closing_tag(
             if (xml[tag.start + 1] == '/') {
                 const tag_type = extract_tag_type(xml, tag.start + 1) catch continue;
                 if (std.mem.eql(u8, opening_tag_type, tag_type)) {
+                    assert(depth > 0);
                     depth -= 1;
                     if (depth == 0) break :blk @intCast(i);
                 }
@@ -344,6 +350,7 @@ pub fn find_closing_tag(
                 // Opening tag (not self-closing)
                 const tag_type = extract_tag_type(xml, tag.start) catch continue;
                 if (std.mem.eql(u8, opening_tag_type, tag_type)) {
+                    assert(depth < std.math.maxInt(u32));
                     depth += 1;
                 }
             }
@@ -410,54 +417,97 @@ pub fn get_reference_from_indices(
     return null;
 }
 
-/// Represents a CIM object with lazy property access
-/// Zero-copy, index-based design for minimal memory footprint
-pub const CimObject = struct {
+/// Pre-compute closing tag indices for all boundaries.
+/// closing_for[i] == i means self-closing. Otherwise closing_for[i] is the
+/// index of the matching closing boundary.
+/// Caller owns the returned slice.
+pub fn build_closing_index(
+    gpa: std.mem.Allocator,
     xml: []const u8,
     boundaries: []const TagBoundary,
+) ![]u32 {
+    const closing_for = try gpa.alloc(u32, boundaries.len);
+    errdefer gpa.free(closing_for);
 
+    // Default: each tag closes itself (correct for self-closing; overwritten for pairs).
+    for (closing_for, 0..) |*v, i| v.* = @intCast(i);
+
+    // Stack entries: opening tag type + its boundary index.
+    const StackEntry = struct { type_name: []const u8, idx: u32 };
+    var stack: std.ArrayListUnmanaged(StackEntry) = .empty;
+    defer stack.deinit(gpa);
+
+    for (boundaries, 0..) |tag, i| {
+        if (xml[tag.end - 1] == '/') {
+            // Self-closing — already defaulted, nothing to push.
+        } else if (xml[tag.start + 1] == '/') {
+            // Closing tag — pop matching opener from stack top.
+            const type_name = extract_tag_type(xml, tag.start + 1) catch continue;
+            if (stack.items.len > 0 and std.mem.eql(u8, stack.items[stack.items.len - 1].type_name, type_name)) {
+                const opener = stack.pop();
+                if (opener) |opener_val| {
+                    closing_for[opener_val.idx] = @intCast(i);
+                }
+            }
+        } else {
+            // Opening tag — push.
+            const type_name = extract_tag_type(xml, tag.start) catch continue;
+            try stack.append(gpa, .{ .type_name = type_name, .idx = @intCast(i) });
+        }
+    }
+
+    return closing_for;
+}
+
+/// Represents a CIM object with lazy property access
+/// Compact CIM object — indices and identity only, no embedded XML context.
+/// Cheap to copy and store. Use CimObjectView (via CimModel.view) to access properties.
+pub const CimObject = struct {
     object_tag_idx: u32,
     closing_tag_idx: u32,
-
     id: []const u8,
     type_name: []const u8,
 
+    /// xml and boundaries are needed only to extract type_name; they are not stored.
     pub fn init(
         xml: []const u8,
         boundaries: []const TagBoundary,
         object_tag_idx: u32,
         closing_tag_idx: u32,
-    ) error{ NoRdfId, NoRdfAbout, MalformedTag }!CimObject {
-        const start = boundaries[object_tag_idx].start;
-        const id = extract_rdf_id(xml, start) catch |err| switch (err) {
-            error.NoRdfId => try extract_rdf_about(xml, start),
-            error.MalformedTag => return error.MalformedTag,
-        };
+        id: []const u8,
+    ) error{MalformedTag}!CimObject {
+        assert(id.len > 0);
         return .{
-            .xml = xml,
-            .boundaries = boundaries,
             .object_tag_idx = object_tag_idx,
             .closing_tag_idx = closing_tag_idx,
             .id = id,
             .type_name = try extract_tag_type(xml, boundaries[object_tag_idx].start),
         };
     }
+};
 
-    /// Get a text property value by name
-    /// Returns null if property doesn't exist
-    pub fn getProperty(self: CimObject, property_name: []const u8) error{MalformedTag}!?[]const u8 {
+/// Ephemeral view binding a CimObject to its XML context.
+/// Create via CimModel.view(obj). Stack-allocated; do not store in arrays.
+pub const CimObjectView = struct {
+    xml: []const u8,
+    boundaries: []const TagBoundary,
+    object_tag_idx: u32,
+    closing_tag_idx: u32,
+    id: []const u8,
+    type_name: []const u8,
+
+    /// Get a text property value by name.
+    pub fn getProperty(self: CimObjectView, property_name: []const u8) error{MalformedTag}!?[]const u8 {
         return get_property_from_indices(self.xml, self.boundaries, self.object_tag_idx, self.closing_tag_idx, property_name);
     }
 
-    /// Get a reference (rdf:resource) value by name
-    /// Returns null if property doesn't exist or has no rdf:resource
-    pub fn getReference(self: CimObject, property_name: []const u8) error{MalformedTag}!?[]const u8 {
+    /// Get a reference (rdf:resource) value by name.
+    pub fn getReference(self: CimObjectView, property_name: []const u8) error{MalformedTag}!?[]const u8 {
         return get_reference_from_indices(self.xml, self.boundaries, self.object_tag_idx, self.closing_tag_idx, property_name);
     }
 
     /// Batch-fetch multiple text properties in a single scan through child tags.
-    /// Returns a fixed-size array of optional values corresponding to each name.
-    pub fn getProperties(self: CimObject, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
+    pub fn getProperties(self: CimObjectView, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
         var result: [names.len]?[]const u8 = .{null} ** names.len;
 
         if (self.closing_tag_idx == self.object_tag_idx) return result;
@@ -483,8 +533,7 @@ pub const CimObject = struct {
     }
 
     /// Batch-fetch multiple rdf:resource references in a single scan through child tags.
-    /// Returns a fixed-size array of optional values corresponding to each name.
-    pub fn getReferences(self: CimObject, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
+    pub fn getReferences(self: CimObjectView, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
         var result: [names.len]?[]const u8 = .{null} ** names.len;
 
         if (self.closing_tag_idx == self.object_tag_idx) return result;
@@ -509,28 +558,17 @@ pub const CimObject = struct {
         return result;
     }
 
-    /// Get all text properties (not references) as a HashMap
-    pub fn getAllProperties(self: CimObject, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
+    /// Get all text properties (not references) as a HashMap.
+    pub fn getAllProperties(self: CimObjectView, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
         var result = std.StringHashMap([]const u8).init(gpa);
         errdefer result.deinit();
 
-        // Handle self-closing tags
         if (self.closing_tag_idx == self.object_tag_idx) return result;
 
-        // Iterate through all tags between opening and closing
         for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx], self.object_tag_idx + 1..) |tag, i| {
-            // Skip closing and self-closing tags
-            if (self.xml[tag.start + 1] == '/') {
-                continue;
-            }
-            if (self.xml[tag.end - 1] == '/') {
-                continue;
-            }
+            // In CIM XML, references are always self-closing; properties never are.
+            if (self.xml[tag.start + 1] == '/' or self.xml[tag.end - 1] == '/') continue;
             const tag_type = try extract_tag_type(self.xml, tag.start);
-            const reference = try extract_rdf_resource(self.xml, tag.start);
-            if (reference != null) {
-                continue;
-            }
             const content = self.xml[tag.end + 1 .. self.boundaries[i + 1].start];
             try result.put(tag_type, content);
         }
@@ -538,20 +576,15 @@ pub const CimObject = struct {
         return result;
     }
 
-    /// Get all rdf:resource references as a HashMap
-    pub fn getAllReferences(self: CimObject, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
+    /// Get all rdf:resource references as a HashMap.
+    pub fn getAllReferences(self: CimObjectView, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
         var result = std.StringHashMap([]const u8).init(gpa);
         errdefer result.deinit();
 
-        // Handle self-closing tags
         if (self.closing_tag_idx == self.object_tag_idx) return result;
 
-        // Iterate through all tags between opening and closing
         for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx]) |tag| {
-            // Skip closing tags (self-closing do have references though)
-            if (self.xml[tag.start + 1] == '/') {
-                continue;
-            }
+            if (self.xml[tag.start + 1] == '/') continue;
 
             const tag_type = extract_tag_type(self.xml, tag.start) catch continue;
             const reference = extract_rdf_resource(self.xml, tag.start) catch continue;

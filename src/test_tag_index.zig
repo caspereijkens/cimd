@@ -2,6 +2,31 @@ const std = @import("std");
 const assert = std.debug.assert;
 const tag_index = @import("tag_index.zig");
 const CimObject = tag_index.CimObject;
+const CimObjectView = tag_index.CimObjectView;
+
+/// Test helper: extract id from the tag at tag_idx, then build a CimObjectView.
+/// Mirrors the two-step pattern that CimModel.init uses in production.
+fn make_cim_object(
+    xml: []const u8,
+    boundaries: []const tag_index.TagBoundary,
+    tag_idx: u32,
+    closing_idx: u32,
+) !CimObjectView {
+    const start = boundaries[tag_idx].start;
+    const id = tag_index.extract_rdf_id(xml, start) catch |err| switch (err) {
+        error.NoRdfId => try tag_index.extract_rdf_about(xml, start),
+        error.MalformedTag => return error.MalformedTag,
+    };
+    const obj = try CimObject.init(xml, boundaries, tag_idx, closing_idx, id);
+    return .{
+        .xml = xml,
+        .boundaries = boundaries,
+        .object_tag_idx = obj.object_tag_idx,
+        .closing_tag_idx = obj.closing_tag_idx,
+        .id = obj.id,
+        .type_name = obj.type_name,
+    };
+}
 
 test "tag_index.find_byte_simd - finds all angle brackets" {
     const gpa = std.testing.allocator;
@@ -1677,7 +1702,7 @@ test "tag_index.CimObject - create simple object" {
     const closing = try tag_index.find_closing_tag(xml, boundaries.items, 0);
 
     // Create CimObject
-    const obj = try tag_index.CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     // Check metadata
     try std.testing.expectEqualStrings("_SS1", obj.id);
@@ -1698,7 +1723,7 @@ test "tag_index.CimObject - getProperty returns text content" {
     defer boundaries.deinit(gpa);
 
     const closing = try tag_index.find_closing_tag(xml, boundaries.items, 0);
-    const obj = try tag_index.CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     // Get properties
     const name = try obj.getProperty("IdentifiedObject.name");
@@ -1723,7 +1748,7 @@ test "tag_index.CimObject - getProperty returns null when not found" {
     defer boundaries.deinit(gpa);
 
     const closing = try tag_index.find_closing_tag(xml, boundaries.items, 0);
-    const obj = try tag_index.CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     const result = try obj.getProperty("NonExistent.property");
     try std.testing.expectEqual(@as(?[]const u8, null), result);
@@ -1743,7 +1768,7 @@ test "tag_index.CimObject - getReference returns rdf:resource value" {
     defer boundaries.deinit(gpa);
 
     const closing = try tag_index.find_closing_tag(xml, boundaries.items, 0);
-    const obj = try tag_index.CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     // Check metadata
     try std.testing.expectEqualStrings("_T1", obj.id);
@@ -1772,7 +1797,7 @@ test "tag_index.CimObject - getReference returns null when not found" {
     defer boundaries.deinit(gpa);
 
     const closing = try tag_index.find_closing_tag(xml, boundaries.items, 0);
-    const obj = try tag_index.CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     const result = try obj.getReference("NonExistent.property");
     try std.testing.expectEqual(@as(?[]const u8, null), result);
@@ -1793,7 +1818,7 @@ test "tag_index.CimObject - mixed properties and references" {
     defer boundaries.deinit(gpa);
 
     const closing = try tag_index.find_closing_tag(xml, boundaries.items, 0);
-    const obj = try tag_index.CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     // Check metadata
     try std.testing.expectEqualStrings("_L1", obj.id);
@@ -1823,7 +1848,7 @@ test "tag_index.CimObject - empty object (no properties)" {
     defer boundaries.deinit(gpa);
 
     const closing = try tag_index.find_closing_tag(xml, boundaries.items, 0);
-    const obj = try tag_index.CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     try std.testing.expectEqualStrings("_O1", obj.id);
     try std.testing.expectEqualStrings("Object", obj.type_name);
@@ -1841,7 +1866,7 @@ test "tag_index.CimObject - object with long ID" {
     defer boundaries.deinit(gpa);
 
     const closing = try tag_index.find_closing_tag(xml, boundaries.items, 0);
-    const obj = try tag_index.CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     try std.testing.expectEqualStrings("_Very_Long_Identifier_With_Many_Characters_12345", obj.id);
 }
@@ -1855,7 +1880,7 @@ test "tag_index.CimObject - object with dots in type name" {
     defer boundaries.deinit(gpa);
 
     const closing = try tag_index.find_closing_tag(xml, boundaries.items, 0);
-    const obj = try tag_index.CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     try std.testing.expectEqualStrings("_ID1", obj.id);
     try std.testing.expectEqualStrings("IdentifiedObject.name", obj.type_name);
@@ -1880,7 +1905,7 @@ test "tag_index.CimObject - multiple objects from same XML" {
 
     // First Substation (index 1)
     const closing1 = try tag_index.find_closing_tag(xml, boundaries.items, 1);
-    const obj1 = try tag_index.CimObject.init(xml, boundaries.items, 1, closing1);
+    const obj1 = try make_cim_object(xml, boundaries.items, 1, closing1);
 
     try std.testing.expectEqualStrings("_SS1", obj1.id);
     try std.testing.expectEqualStrings("Substation", obj1.type_name);
@@ -1891,7 +1916,7 @@ test "tag_index.CimObject - multiple objects from same XML" {
 
     // Second Substation (index 5)
     const closing2 = try tag_index.find_closing_tag(xml, boundaries.items, 5);
-    const obj2 = try tag_index.CimObject.init(xml, boundaries.items, 5, closing2);
+    const obj2 = try make_cim_object(xml, boundaries.items, 5, closing2);
 
     try std.testing.expectEqualStrings("_SS2", obj2.id);
     try std.testing.expectEqualStrings("Substation", obj2.type_name);
@@ -1924,7 +1949,7 @@ test "tag_index.CimObject - self-closing tag" {
     };
     try std.testing.expectEqual(@as(u32, 1), closing); // Self-closing returns same index
 
-    const obj = try tag_index.CimObject.init(xml, boundaries.items, 1, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 1, closing);
 
     try std.testing.expectEqualStrings("_SS1", obj.id);
     try std.testing.expectEqualStrings("Substation", obj.type_name);
@@ -1950,7 +1975,7 @@ test "tag_index.CimObject - getProperty on self-closing tag returns null" {
         try std.testing.expectEqual(error.SelfClosingTag, err);
         break :blk 0; // Use same index for self-closing
     };
-    const obj = try tag_index.CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     // Verify self-closing
     try std.testing.expectEqual(obj.object_tag_idx, obj.closing_tag_idx);
@@ -1975,7 +2000,7 @@ test "tag_index.CimObject - getReference on self-closing tag returns null" {
         try std.testing.expectEqual(error.SelfClosingTag, err);
         break :blk 0; // Use same index for self-closing
     };
-    const obj = try tag_index.CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     // Verify self-closing
     try std.testing.expectEqual(obj.object_tag_idx, obj.closing_tag_idx);
@@ -2029,7 +2054,7 @@ test "CimObject.getAllProperties - returns all text properties" {
     defer boundaries.deinit(gpa);
 
     const closing = try tag_index.find_closing_tag(xml, boundaries.items, 0);
-    const obj = try CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     var props = try obj.getAllProperties(gpa);
     defer props.deinit();
@@ -2065,7 +2090,7 @@ test "CimObject.getAllReferences - returns all rdf:resource references" {
     defer boundaries.deinit(gpa);
 
     const closing = try tag_index.find_closing_tag(xml, boundaries.items, 0);
-    const obj = try CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     var refs = try obj.getAllReferences(gpa);
     defer refs.deinit();
@@ -2098,7 +2123,7 @@ test "CimObject.getAllProperties - empty object returns empty map" {
         try std.testing.expectEqual(error.SelfClosingTag, err);
         break :blk 0;
     };
-    const obj = try CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     var props = try obj.getAllProperties(gpa);
     defer props.deinit();
@@ -2118,7 +2143,7 @@ test "CimObject.getAllReferences - empty object returns empty map" {
         try std.testing.expectEqual(error.SelfClosingTag, err);
         break :blk 0;
     };
-    const obj = try CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     var refs = try obj.getAllReferences(gpa);
     defer refs.deinit();
@@ -2142,7 +2167,7 @@ test "CimObject.getAllProperties - handles mixed properties and references" {
     defer boundaries.deinit(gpa);
 
     const closing = try tag_index.find_closing_tag(xml, boundaries.items, 0);
-    const obj = try CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     var props = try obj.getAllProperties(gpa);
     defer props.deinit();
@@ -2179,7 +2204,7 @@ test "tag_index.CimObject - getProperties batch matches individual getProperty" 
     defer boundaries.deinit(gpa);
 
     const closing = try tag_index.find_closing_tag(xml, boundaries.items, 0);
-    const obj = try CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     // Batch fetch
     const props = try obj.getProperties(.{
@@ -2217,7 +2242,7 @@ test "tag_index.CimObject - getProperties returns null for missing names" {
     defer boundaries.deinit(gpa);
 
     const closing = try tag_index.find_closing_tag(xml, boundaries.items, 0);
-    const obj = try CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     const props = try obj.getProperties(.{
         "IdentifiedObject.name",
@@ -2240,7 +2265,7 @@ test "tag_index.CimObject - getProperties on self-closing tag returns all null" 
     var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
     defer boundaries.deinit(gpa);
 
-    const obj = try CimObject.init(xml, boundaries.items, 0, 0);
+    const obj = try make_cim_object(xml, boundaries.items, 0, 0);
 
     const props = try obj.getProperties(.{
         "IdentifiedObject.name",
@@ -2267,7 +2292,7 @@ test "tag_index.CimObject - getReferences batch matches individual getReference"
     defer boundaries.deinit(gpa);
 
     const closing = try tag_index.find_closing_tag(xml, boundaries.items, 0);
-    const obj = try CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     // Batch fetch references
     const refs = try obj.getReferences(.{
@@ -2296,7 +2321,7 @@ test "tag_index.CimObject - getReferences returns null for missing names" {
     defer boundaries.deinit(gpa);
 
     const closing = try tag_index.find_closing_tag(xml, boundaries.items, 0);
-    const obj = try CimObject.init(xml, boundaries.items, 0, closing);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     const refs = try obj.getReferences(.{
         "Terminal.ConductingEquipment",
@@ -2317,7 +2342,7 @@ test "tag_index.CimObject - getReferences on self-closing tag returns all null" 
     var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
     defer boundaries.deinit(gpa);
 
-    const obj = try CimObject.init(xml, boundaries.items, 0, 0);
+    const obj = try make_cim_object(xml, boundaries.items, 0, 0);
 
     const refs = try obj.getReferences(.{
         "Terminal.ConductingEquipment",

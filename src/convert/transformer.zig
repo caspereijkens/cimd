@@ -10,6 +10,7 @@ const testing = std.testing;
 
 const CimModel = cim_model.CimModel;
 const CimObject = tag_index.CimObject;
+const CimObjectView = tag_index.CimObjectView;
 const CimIndex = cim_index.CimIndex;
 const placement_mod = @import("placement.zig");
 const connection_mod = @import("connection.zig");
@@ -23,25 +24,26 @@ const NodeMap = connection_mod.NodeMap;
 fn build_ends_by_transformer(
     gpa: std.mem.Allocator,
     model: *const CimModel,
-) !std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObject)) {
-    var ends_by_transformer: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObject)) = .empty;
+) !std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObjectView)) {
+    var ends_by_transformer: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObjectView)) = .empty;
 
     const ends = model.get_objects_by_type("PowerTransformerEnd");
 
     try ends_by_transformer.ensureTotalCapacity(gpa, @intCast(ends.len));
 
     for (ends) |end| {
-        const transformer_ref = try end.getReference("PowerTransformerEnd.PowerTransformer") orelse continue;
+        const end_view = model.view(end);
+        const transformer_ref = try end_view.getReference("PowerTransformerEnd.PowerTransformer") orelse continue;
         const transformer_id = strip_hash(transformer_ref);
 
         const gop = ends_by_transformer.getOrPutAssumeCapacity(transformer_id);
         if (!gop.found_existing) gop.value_ptr.* = .empty;
-        try gop.value_ptr.append(gpa, end);
+        try gop.value_ptr.append(gpa, end_view);
     }
 
     var it = ends_by_transformer.valueIterator();
     while (it.next()) |transformer_ends| {
-        std.sort.block(CimObject, transformer_ends.items, {}, less_than_fn);
+        std.sort.block(CimObjectView, transformer_ends.items, {}, less_than_fn);
     }
 
     assert(ends.len == 0 or ends_by_transformer.count() > 0);
@@ -51,7 +53,7 @@ fn build_ends_by_transformer(
 
 const TapChangerCommon = struct { low_step: i32, normal_step: i32, ltc_flag: bool };
 
-fn read_tap_changer_common(tap_changer: CimObject) !?TapChangerCommon {
+fn read_tap_changer_common(tap_changer: CimObjectView) !?TapChangerCommon {
     const low_step_str = try tap_changer.getProperty("TapChanger.lowStep") orelse return null;
     const low_step = try std.fmt.parseInt(i32, low_step_str, 10);
     const normal_step_str = try tap_changer.getProperty("TapChanger.normalStep") orelse return null;
@@ -63,7 +65,7 @@ fn read_tap_changer_common(tap_changer: CimObject) !?TapChangerCommon {
 
 const TapChangerBaseStep = struct { r: f64, x: f64, g: f64, b: f64, rho: f64 };
 
-fn read_tap_changer_base_step(point: CimObject) !?TapChangerBaseStep {
+fn read_tap_changer_base_step(point: CimObjectView) !?TapChangerBaseStep {
     const r = try std.fmt.parseFloat(f64, try point.getProperty("TapChangerTablePoint.r") orelse "0.0");
     const x = try std.fmt.parseFloat(f64, try point.getProperty("TapChangerTablePoint.x") orelse "0.0");
     const g = try std.fmt.parseFloat(f64, try point.getProperty("TapChangerTablePoint.g") orelse "0.0");
@@ -82,8 +84,9 @@ fn build_ratio_table_points(
     var points_by_table: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(iidm.RatioTapChangerStep)) = .empty;
     try points_by_table.ensureTotalCapacity(gpa, @intCast(tables.len));
     for (points) |point| {
-        const table_ref = try point.getReference("RatioTapChangerTablePoint.RatioTapChangerTable") orelse continue;
-        const base = try read_tap_changer_base_step(point) orelse continue;
+        const point_view = model.view(point);
+        const table_ref = try point_view.getReference("RatioTapChangerTablePoint.RatioTapChangerTable") orelse continue;
+        const base = try read_tap_changer_base_step(point_view) orelse continue;
         const gop = points_by_table.getOrPutAssumeCapacity(strip_hash(table_ref));
         if (!gop.found_existing) gop.value_ptr.* = .empty;
         try gop.value_ptr.append(gpa, .{ .r = base.r, .x = base.x, .g = base.g, .b = base.b, .rho = base.rho });
@@ -94,7 +97,7 @@ fn build_ratio_table_points(
 
 fn build_linear_ratio_steps(
     gpa: std.mem.Allocator,
-    tap_changer: CimObject,
+    tap_changer: CimObjectView,
     low_step: i32,
 ) !?std.ArrayListUnmanaged(iidm.RatioTapChangerStep) {
     const high_step_str = try tap_changer.getProperty("TapChanger.highStep") orelse return null;
@@ -131,17 +134,18 @@ fn build_ratio_tap_changer_map(
     try ratio_tap_changer_map.ensureTotalCapacity(gpa, @intCast(tap_changers.len));
 
     for (tap_changers) |tap_changer| {
-        const end_ref = try tap_changer.getReference("RatioTapChanger.TransformerEnd") orelse continue;
-        const common = try read_tap_changer_common(tap_changer) orelse continue;
+        const tap_changer_view = model.view(tap_changer);
+        const end_ref = try tap_changer_view.getReference("RatioTapChanger.TransformerEnd") orelse continue;
+        const common = try read_tap_changer_common(tap_changer_view) orelse continue;
 
-        const owned_steps = if (try tap_changer.getReference("RatioTapChanger.RatioTapChangerTable")) |table_ref| blk: {
+        const owned_steps = if (try tap_changer_view.getReference("RatioTapChanger.RatioTapChangerTable")) |table_ref| blk: {
             const steps = points_by_table.get(strip_hash(table_ref)) orelse continue;
             var s: std.ArrayListUnmanaged(iidm.RatioTapChangerStep) = .empty;
             try s.ensureTotalCapacity(gpa, steps.items.len);
             s.appendSliceAssumeCapacity(steps.items);
             break :blk s;
         } else blk: {
-            break :blk try build_linear_ratio_steps(gpa, tap_changer, common.low_step) orelse continue;
+            break :blk try build_linear_ratio_steps(gpa, tap_changer_view, common.low_step) orelse continue;
         };
 
         ratio_tap_changer_map.putAssumeCapacity(strip_hash(end_ref), .{
@@ -174,11 +178,12 @@ fn build_phase_tap_changer_map(
     const points = model.get_objects_by_type("PhaseTapChangerTablePoint");
 
     for (points) |point| {
-        const table_ref = try point.getReference("PhaseTapChangerTablePoint.PhaseTapChangerTable") orelse continue;
+        const point_view = model.view(point);
+        const table_ref = try point_view.getReference("PhaseTapChangerTablePoint.PhaseTapChangerTable") orelse continue;
         const table_id = strip_hash(table_ref);
 
-        const base = try read_tap_changer_base_step(point) orelse continue;
-        const alpha_str = try point.getProperty("PhaseTapChangerTablePoint.angle") orelse "0.0";
+        const base = try read_tap_changer_base_step(point_view) orelse continue;
+        const alpha_str = try point_view.getProperty("PhaseTapChangerTablePoint.angle") orelse "0.0";
         const alpha = try std.fmt.parseFloat(f64, alpha_str);
 
         const gop = points_by_table.getOrPutAssumeCapacity(table_id);
@@ -199,12 +204,13 @@ fn build_phase_tap_changer_map(
     try phase_tap_changer_map.ensureTotalCapacity(gpa, @intCast(tap_changers.len));
 
     for (tap_changers) |tap_changer| {
-        const end_ref = try tap_changer.getReference("PhaseTapChanger.TransformerEnd") orelse continue;
+        const tap_changer_view = model.view(tap_changer);
+        const end_ref = try tap_changer_view.getReference("PhaseTapChanger.TransformerEnd") orelse continue;
         const end_id = strip_hash(end_ref);
 
-        const common = try read_tap_changer_common(tap_changer) orelse continue;
+        const common = try read_tap_changer_common(tap_changer_view) orelse continue;
 
-        const table_ref = try tap_changer.getReference("PhaseTapChanger.PhaseTapChangerTable") orelse continue;
+        const table_ref = try tap_changer_view.getReference("PhaseTapChanger.PhaseTapChangerTable") orelse continue;
         const table_id = strip_hash(table_ref);
         const steps = points_by_table.get(table_id) orelse continue;
 
@@ -224,7 +230,7 @@ fn build_phase_tap_changer_map(
     return phase_tap_changer_map;
 }
 
-fn less_than_fn(_: void, end0: CimObject, end1: CimObject) bool {
+fn less_than_fn(_: void, end0: CimObjectView, end1: CimObjectView) bool {
     const end_number0_str = end0.getProperty("TransformerEnd.endNumber") catch "0" orelse "0";
     const end_number0 = std.fmt.parseInt(u32, end_number0_str, 10) catch 0;
 
@@ -234,11 +240,11 @@ fn less_than_fn(_: void, end0: CimObject, end1: CimObject) bool {
     return end_number0 < end_number1;
 }
 
-const TestEnd = struct { model: cim_model.CimModel, end: CimObject };
+const TestEnd = struct { model: cim_model.CimModel, end: CimObjectView };
 
 fn make_end(xml: []const u8) !TestEnd {
     const model = try cim_model.CimModel.init(testing.allocator, xml);
-    return .{ .model = model, .end = model.get_objects_by_type("PowerTransformerEnd")[0] };
+    return .{ .model = model, .end = model.view(model.get_objects_by_type("PowerTransformerEnd")[0]) };
 }
 
 test "less_than_fn: end 1 < end 2" {
@@ -327,7 +333,7 @@ test "less_than_fn: transitivity — end1 < end2 and end2 < end3 implies end1 < 
 
 const EndElectrical = struct { r: f64, x: f64, g: f64, b: f64, rated_u: f64, rated_s: ?f64 };
 
-fn read_end_electrical(end: CimObject) !?EndElectrical {
+fn read_end_electrical(end: CimObjectView) !?EndElectrical {
     const rated_u = try std.fmt.parseFloat(f64, try end.getProperty("PowerTransformerEnd.ratedU") orelse return null);
     const r = try std.fmt.parseFloat(f64, try end.getProperty("PowerTransformerEnd.r") orelse "0.0");
     const x = try std.fmt.parseFloat(f64, try end.getProperty("PowerTransformerEnd.x") orelse "0.0");
@@ -341,7 +347,7 @@ fn read_end_electrical(end: CimObject) !?EndElectrical {
 }
 
 fn resolve_end_placement(
-    end: CimObject,
+    end: CimObjectView,
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const NodeMap,
@@ -354,7 +360,7 @@ fn resolve_end_placement(
 
 fn pre_allocate_transformers(
     gpa: std.mem.Allocator,
-    ends_by_transformer: *const std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObject)),
+    ends_by_transformer: *const std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObjectView)),
     substation_map: *const std.StringHashMapUnmanaged(*iidm.Substation),
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     index: *const CimIndex,
@@ -391,8 +397,8 @@ fn pre_allocate_transformers(
 }
 
 fn append_two_windings_transformer(
-    transformer: CimObject,
-    ends: []const CimObject,
+    transformer: CimObjectView,
+    ends: []const CimObjectView,
     substation: *iidm.Substation,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const NodeMap,
@@ -413,7 +419,7 @@ fn append_two_windings_transformer(
     const mrid = try transformer.getProperty("IdentifiedObject.mRID") orelse strip_underscore(transformer.id);
     const name = try transformer.getProperty("IdentifiedObject.name");
 
-    // Tap changers keyed by end rdf:ID (strip_hash of reference = end.id). fetchRemove takes ownership.
+    // Tap changers keyed by end rdf:ID (= end.id). fetchRemove takes ownership.
     const ratio_tc = ratio_tap_changer_map.fetchRemove(ends[0].id) orelse
         ratio_tap_changer_map.fetchRemove(ends[1].id);
     const phase_tc = phase_tap_changer_map.fetchRemove(ends[0].id) orelse
@@ -444,8 +450,8 @@ fn append_two_windings_transformer(
 }
 
 fn append_three_windings_transformer(
-    transformer: CimObject,
-    ends: []const CimObject,
+    transformer: CimObjectView,
+    ends: []const CimObjectView,
     substation: *iidm.Substation,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const NodeMap,
@@ -464,7 +470,7 @@ fn append_three_windings_transformer(
     const mrid = try transformer.getProperty("IdentifiedObject.mRID") orelse strip_underscore(transformer.id);
     const name = try transformer.getProperty("IdentifiedObject.name");
 
-    // Tap changers keyed by end rdf:ID. fetchRemove takes ownership.
+    // Tap changers keyed by end rdf:ID (= end.id). fetchRemove takes ownership.
     const rtc1 = ratio_tap_changer_map.fetchRemove(ends[0].id);
     const rtc2 = ratio_tap_changer_map.fetchRemove(ends[1].id);
     const rtc3 = ratio_tap_changer_map.fetchRemove(ends[2].id);
@@ -518,7 +524,7 @@ pub fn convert_transformers(
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const NodeMap,
 ) !void {
-    var ends_by_transformer = try build_ends_by_transformer(gpa, model);
+    var ends_by_transformer: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObjectView)) = try build_ends_by_transformer(gpa, model);
     defer {
         var it = ends_by_transformer.valueIterator();
         while (it.next()) |list| list.deinit(gpa);
@@ -543,14 +549,15 @@ pub fn convert_transformers(
 
     const transformers = model.get_objects_by_type("PowerTransformer");
     for (transformers) |transformer| {
+        const transformer_view = model.view(transformer);
         const ends = ends_by_transformer.get(transformer.id) orelse continue;
         const end1 = ends.items[0];
         const placement = try resolve_end_placement(end1, index, voltage_level_map, node_map) orelse continue;
         const substation = substation_map.get(placement.repr_voltage_level_id) orelse continue;
 
         switch (ends.items.len) {
-            2 => try append_two_windings_transformer(transformer, ends.items, substation, voltage_level_map, node_map, index, &ratio_tap_changer_map, &phase_tap_changer_map),
-            3 => try append_three_windings_transformer(transformer, ends.items, substation, voltage_level_map, node_map, index, &ratio_tap_changer_map),
+            2 => try append_two_windings_transformer(transformer_view, ends.items, substation, voltage_level_map, node_map, index, &ratio_tap_changer_map, &phase_tap_changer_map),
+            3 => try append_three_windings_transformer(transformer_view, ends.items, substation, voltage_level_map, node_map, index, &ratio_tap_changer_map),
             else => continue,
         }
     }

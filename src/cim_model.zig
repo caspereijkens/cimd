@@ -23,12 +23,12 @@ pub const CimModel = struct {
         var id_to_index = std.StringHashMap(u32).init(gpa);
         errdefer id_to_index.deinit();
 
-        var temp_type_index = std.StringHashMap(std.ArrayList(u32)).init(gpa);
-        errdefer {
-            var it = temp_type_index.valueIterator();
-            while (it.next()) |list| list.deinit(gpa);
-            temp_type_index.deinit();
-        }
+        const closing_for = try tag_index.build_closing_index(gpa, xml, boundaries.items);
+        defer gpa.free(closing_for);
+
+        // Pass 1: collect objects and count per type.
+        var type_counts = std.StringHashMap(u32).init(gpa);
+        defer type_counts.deinit();
 
         for (boundaries.items, 0..) |tag, i| {
             // Try rdf:ID first, then fall back to rdf:about (for FullModel etc.)
@@ -37,74 +37,60 @@ pub const CimModel = struct {
                 error.MalformedTag => continue,
             };
             if (id.len > 0) {
-                const closing_tag: u32 = tag_index.find_closing_tag(xml, boundaries.items, @intCast(i)) catch |err| blk: {
-                    // Handle self-closing tags by using the same index for open and close
-                    if (err == error.SelfClosingTag) {
-                        break :blk @intCast(i);
-                    }
-                    return err;
-                };
+                // Pass pre-computed id — avoids re-scanning the tag in CimObject.init.
                 const object = try tag_index.CimObject.init(
                     xml,
                     boundaries.items,
                     @intCast(i),
-                    closing_tag,
+                    closing_for[i],
+                    id,
                 );
                 try objects.append(gpa, object);
-                try id_to_index.put(id, @intCast(objects.items.len - 1));
-                const type_name = object.type_name;
-                const object_idx: u32 = @intCast(objects.items.len - 1);
-                const result = try temp_type_index.getOrPut(type_name);
-                if (!result.found_existing) {
-                    result.value_ptr.* = .empty;
-                }
-                try result.value_ptr.append(gpa, object_idx);
+                const entry = try type_counts.getOrPut(object.type_name);
+                if (!entry.found_existing) entry.value_ptr.* = 0;
+                entry.value_ptr.* += 1;
             }
         }
 
-        // Convert boundaries to get final slice address
+        // Convert boundaries to get final slice address.
         const final_boundaries = try boundaries.toOwnedSlice(gpa);
 
-        // Rearrange objects by type for zero-copy get_objects_by_type
+        // Pass 2: compute write cursors (prefix sums) and populate type_index.
         const sorted_objects = try gpa.alloc(CimObject, objects.items.len);
         errdefer gpa.free(sorted_objects);
 
         var type_index = std.StringHashMap(TypeRange).init(gpa);
         errdefer type_index.deinit();
 
-        var write_pos: u32 = 0;
-        var temp_it = temp_type_index.iterator();
-        while (temp_it.next()) |entry| {
-            const type_name = entry.key_ptr.*;
-            const indices = entry.value_ptr.*;
-            const start = write_pos;
-            for (indices.items) |idx| {
-                sorted_objects[write_pos] = objects.items[idx];
-                sorted_objects[write_pos].boundaries = final_boundaries;
-                write_pos += 1;
-            }
-            try type_index.put(type_name, .{ .start = start, .len = @intCast(indices.items.len) });
+        // write_cursors maps type_name → next write position within sorted_objects.
+        var write_cursors = std.StringHashMap(u32).init(gpa);
+        defer write_cursors.deinit();
+        try write_cursors.ensureTotalCapacity(type_counts.count());
+        try type_index.ensureTotalCapacity(type_counts.count());
+
+        var pos: u32 = 0;
+        var count_it = type_counts.iterator();
+        while (count_it.next()) |entry| {
+            write_cursors.putAssumeCapacity(entry.key_ptr.*, pos);
+            type_index.putAssumeCapacity(entry.key_ptr.*, .{ .start = pos, .len = entry.value_ptr.* });
+            pos += entry.value_ptr.*;
         }
 
-        // Free temporary type index (inner ArrayLists + map)
-        {
-            var it = temp_type_index.valueIterator();
-            while (it.next()) |list| list.deinit(gpa);
-            temp_type_index.deinit();
+        // Pass 3: fill sorted_objects using write cursors.
+        for (objects.items) |obj| {
+            const cursor = write_cursors.getPtr(obj.type_name).?;
+            sorted_objects[cursor.*] = obj;
+            cursor.* += 1;
         }
-        // Reset so errdefer is a no-op
-        temp_type_index = std.StringHashMap(std.ArrayList(u32)).init(gpa);
-        temp_type_index.deinit();
 
-        // Free original objects ArrayList (we copied into sorted_objects)
+        // Free original objects ArrayList (copied into sorted_objects).
         objects.deinit(gpa);
-        // Reset so errdefer is a no-op
         objects = .empty;
 
-        // Rebuild id_to_index to point at sorted positions
-        id_to_index.clearRetainingCapacity();
+        // Build id_to_index from sorted positions.
+        try id_to_index.ensureTotalCapacity(@intCast(sorted_objects.len));
         for (sorted_objects, 0..) |obj, index| {
-            try id_to_index.put(obj.id, @intCast(index));
+            id_to_index.putAssumeCapacity(obj.id, @intCast(index));
         }
 
         return .{
@@ -123,9 +109,21 @@ pub const CimModel = struct {
         gpa.free(self.boundaries);
     }
 
-    pub fn getObjectById(self: CimModel, id: []const u8) ?*const CimObject {
+    /// Bind a stored CimObject to this model's XML context for property access.
+    pub fn view(self: CimModel, obj: CimObject) tag_index.CimObjectView {
+        return .{
+            .xml = self.xml,
+            .boundaries = self.boundaries,
+            .object_tag_idx = obj.object_tag_idx,
+            .closing_tag_idx = obj.closing_tag_idx,
+            .id = obj.id,
+            .type_name = obj.type_name,
+        };
+    }
+
+    pub fn getObjectById(self: CimModel, id: []const u8) ?tag_index.CimObjectView {
         const idx = self.id_to_index.get(id) orelse return null;
-        return &self.objects[idx];
+        return self.view(self.objects[idx]);
     }
 
     pub fn get_objects_by_type(self: CimModel, type_name: []const u8) []const CimObject {

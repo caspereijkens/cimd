@@ -92,28 +92,30 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, network: *iidm.
 
     try network.areas.ensureTotalCapacity(gpa, control_areas.len);
 
-    for (control_areas) |ca| {
-        const ca_mrid = try ca.getProperty("IdentifiedObject.mRID") orelse strip_underscore(ca.id);
-        const ca_name = try ca.getProperty("IdentifiedObject.name") orelse ca_mrid;
+    for (control_areas) |control_area| {
+        const control_area_view = model.view(control_area);
+        const control_area_mrid = try control_area_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(control_area.id);
+        const control_area_name = try control_area_view.getProperty("IdentifiedObject.name") orelse control_area_mrid;
 
         // ControlArea.type is a rdf:resource; extract the fragment after '#'.
         const area_type: []const u8 = blk: {
-            const raw = try ca.getReference("ControlArea.type") orelse break :blk "ControlAreaTypeKind.Interchange";
+            const raw = try control_area_view.getReference("ControlArea.type") orelse break :blk "ControlAreaTypeKind.Interchange";
             const hash = std.mem.lastIndexOfScalar(u8, raw, '#') orelse break :blk raw;
             break :blk raw[hash + 1 ..];
         };
 
         // Collect all TieFlow objects that reference this ControlArea.
-        const tieflows = model.get_objects_by_type("TieFlow");
+        const tie_flows = model.get_objects_by_type("TieFlow");
         var boundaries: std.ArrayListUnmanaged(iidm.AreaBoundary) = .empty;
         errdefer boundaries.deinit(gpa);
 
-        for (tieflows) |tf| {
-            const ca_ref = try tf.getReference("TieFlow.ControlArea") orelse continue;
-            const ca_id = strip_hash(ca_ref);
-            if (!std.mem.eql(u8, ca_id, ca.id) and !std.mem.eql(u8, ca_id, ca_mrid)) continue;
+        for (tie_flows) |tie_flow| {
+            const tie_flow_view = model.view(tie_flow);
+            const control_area_ref = try tie_flow_view.getReference("TieFlow.ControlArea") orelse continue;
+            const control_area_id = strip_hash(control_area_ref);
+            if (!std.mem.eql(u8, control_area_id, control_area.id) and !std.mem.eql(u8, control_area_id, control_area_mrid)) continue;
 
-            const term_ref = try tf.getReference("TieFlow.Terminal") orelse continue;
+            const term_ref = try tie_flow_view.getReference("TieFlow.Terminal") orelse continue;
             const term_id = strip_hash(term_ref);
             const term_obj = model.getObjectById(term_id) orelse continue;
 
@@ -131,8 +133,8 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, network: *iidm.
 
         assert(boundaries.items.len > 0);
         network.areas.appendAssumeCapacity(.{
-            .id = ca_mrid,
-            .name = ca_name,
+            .id = control_area_mrid,
+            .name = control_area_name,
             .area_type = area_type,
             .boundaries = boundaries,
         });
@@ -150,7 +152,7 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
 
     // ---- FullModel metadata: id, caseDate, forecastDistance ----
     const full_models = model.get_objects_by_type("FullModel");
-    const eq_full_model: ?*const cim_model.CimObject = if (full_models.len > 0) &full_models[0] else null;
+    const eq_full_model: ?tag_index.CimObjectView = if (full_models.len > 0) model.view(full_models[0]) else null;
     const network_id = if (eq_full_model) |fm| fm.id else "unknown";
     const scenario_time: ?[]const u8 = if (eq_full_model) |fm|
         try fm.getProperty("Model.scenarioTime")
@@ -217,25 +219,26 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
     // step = TapChanger.normalStep.
     {
         // Build a map: transformer_mrid -> list of TapChangerInfo
-        var xfmr_tc_map: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(iidm.TapChangerInfo)) = .empty;
+        var xfmr_tap_changer_map: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(iidm.TapChangerInfo)) = .empty;
         defer {
-            var it = xfmr_tc_map.iterator();
+            var it = xfmr_tap_changer_map.iterator();
             while (it.next()) |entry| entry.value_ptr.deinit(gpa);
-            xfmr_tc_map.deinit(gpa);
+            xfmr_tap_changer_map.deinit(gpa);
         }
 
-        const tc_types = [_]struct { type_name: []const u8, is_phase: bool }{
+        const tap_changer_types = [_]struct { type_name: []const u8, is_phase: bool }{
             .{ .type_name = "RatioTapChanger", .is_phase = false },
             .{ .type_name = "PhaseTapChangerTabular", .is_phase = true },
         };
-        for (tc_types) |tc_type| {
-            for (model.get_objects_by_type(tc_type.type_name)) |tc| {
-                const step_str = try tc.getProperty("TapChanger.normalStep") orelse continue;
+        for (tap_changer_types) |tap_changer_type| {
+            for (model.get_objects_by_type(tap_changer_type.type_name)) |tap_changer| {
+                const tap_changer_view = model.view(tap_changer);
+                const step_str = try tap_changer_view.getProperty("TapChanger.normalStep") orelse continue;
                 const step = std.fmt.parseInt(i32, std.mem.trim(u8, step_str, " \t\r\n"), 10) catch continue;
-                const tc_mrid = try tc.getProperty("IdentifiedObject.mRID") orelse strip_underscore(tc.id);
+                const tap_changer_mrid = try tap_changer_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(tap_changer.id);
 
                 // TransformerEnd → PowerTransformer
-                const end_ref = try tc.getReference(if (tc_type.is_phase) "PhaseTapChanger.TransformerEnd" else "RatioTapChanger.TransformerEnd") orelse continue;
+                const end_ref = try tap_changer_view.getReference(if (tap_changer_type.is_phase) "PhaseTapChanger.TransformerEnd" else "RatioTapChanger.TransformerEnd") orelse continue;
                 const end_id = strip_hash(end_ref);
                 const end_obj = model.getObjectById(end_id) orelse continue;
                 const xfmr_ref = try end_obj.getReference("PowerTransformerEnd.PowerTransformer") orelse continue;
@@ -243,19 +246,19 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
                 const xfmr_obj = model.getObjectById(xfmr_id) orelse continue;
                 const xfmr_mrid = try xfmr_obj.getProperty("IdentifiedObject.mRID") orelse strip_underscore(xfmr_id);
 
-                const gop = try xfmr_tc_map.getOrPut(gpa, xfmr_mrid);
+                const gop = try xfmr_tap_changer_map.getOrPut(gpa, xfmr_mrid);
                 if (!gop.found_existing) gop.value_ptr.* = .empty;
                 try gop.value_ptr.append(gpa, .{
-                    .id = tc_mrid,
-                    .tap_changer_type = if (tc_type.is_phase) "PhaseTapChangerTabular" else null,
+                    .id = tap_changer_mrid,
+                    .tap_changer_type = if (tap_changer_type.is_phase) "PhaseTapChangerTabular" else null,
                     .step = step,
                 });
             }
         }
 
-        if (xfmr_tc_map.count() > 0) {
-            try network.extensions.ensureTotalCapacity(gpa, network.extensions.items.len + xfmr_tc_map.count());
-            var it = xfmr_tc_map.iterator();
+        if (xfmr_tap_changer_map.count() > 0) {
+            try network.extensions.ensureTotalCapacity(gpa, network.extensions.items.len + xfmr_tap_changer_map.count());
+            var it = xfmr_tap_changer_map.iterator();
             while (it.next()) |entry| {
                 network.extensions.appendAssumeCapacity(.{
                     .id = entry.key_ptr.*,
@@ -302,15 +305,16 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
     {
         const machines = model.get_objects_by_type("SynchronousMachine");
         var crc_count: usize = 0;
-        for (machines) |m| {
-            if (try m.getProperty("SynchronousMachine.qPercent") != null) crc_count += 1;
+        for (machines) |machine| {
+            if (try model.view(machine).getProperty("SynchronousMachine.qPercent") != null) crc_count += 1;
         }
         if (crc_count > 0) {
             try network.extensions.ensureTotalCapacity(gpa, network.extensions.items.len + crc_count);
-            for (machines) |m| {
-                const qpct_str = try m.getProperty("SynchronousMachine.qPercent") orelse continue;
+            for (machines) |machine| {
+                const machine_view = model.view(machine);
+                const qpct_str = try machine_view.getProperty("SynchronousMachine.qPercent") orelse continue;
                 const qpct = std.fmt.parseFloat(f64, std.mem.trim(u8, qpct_str, " \t\r\n")) catch continue;
-                const mrid = try m.getProperty("IdentifiedObject.mRID") orelse strip_underscore(m.id);
+                const mrid = try machine_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(machine.id);
                 network.extensions.appendAssumeCapacity(.{
                     .id = mrid,
                     .coordinated_reactive_control = .{ .q_percent = qpct },
@@ -344,7 +348,8 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
         for (0..fm_count) |round| {
             const start_i: usize = if (round == 0) 1 else 0;
             const end_i: usize = if (round == 0) fm_count else 1;
-            for (full_models[start_i..end_i]) |fm| {
+            for (full_models[start_i..end_i]) |fm_obj| {
+                const fm = model.view(fm_obj);
                 const fm_id = fm.id;
                 const mas = try fm.getProperty("Model.modelingAuthoritySet") orelse "";
                 const raw_desc = try fm.getProperty("Model.description") orelse "";
@@ -384,25 +389,26 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
 
         // --- baseVoltageMapping ---
         // EQ FullModel is always first in XML order; EQBD FullModel (if present) comes after.
-        const eq_boundary: u32 = if (full_models.len >= 2)
-            full_models[1].boundaries[full_models[1].object_tag_idx].start
-        else
-            std.math.maxInt(u32);
+        const eq_boundary: u32 = if (full_models.len >= 2) blk: {
+            const full_model_view = model.view(full_models[1]);
+            break :blk full_model_view.boundaries[full_model_view.object_tag_idx].start;
+        } else std.math.maxInt(u32);
 
         const base_voltages = model.get_objects_by_type("BaseVoltage");
-        var bv_list: std.ArrayListUnmanaged(iidm.BaseVoltage) = .empty;
-        errdefer bv_list.deinit(gpa);
-        try bv_list.ensureTotalCapacity(gpa, base_voltages.len);
-        for (base_voltages) |bv| {
-            const bv_mrid = try bv.getProperty("IdentifiedObject.mRID") orelse strip_underscore(bv.id);
-            const nom_v_str = try bv.getProperty("BaseVoltage.nominalVoltage") orelse continue;
+        var base_voltage_list: std.ArrayListUnmanaged(iidm.BaseVoltage) = .empty;
+        errdefer base_voltage_list.deinit(gpa);
+        try base_voltage_list.ensureTotalCapacity(gpa, base_voltages.len);
+        for (base_voltages) |base_voltage| {
+            const base_voltage_view = model.view(base_voltage);
+            const base_voltage_mrid = try base_voltage_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(base_voltage.id);
+            const nom_v_str = try base_voltage_view.getProperty("BaseVoltage.nominalVoltage") orelse continue;
             const nom_v = std.fmt.parseFloat(f64, std.mem.trim(u8, nom_v_str, " \t\r\n")) catch continue;
-            const xml_pos = bv.boundaries[bv.object_tag_idx].start;
+            const xml_pos = base_voltage_view.boundaries[base_voltage_view.object_tag_idx].start;
             const source: []const u8 = if (xml_pos < eq_boundary) "IGM" else "BOUNDARY";
-            bv_list.appendAssumeCapacity(.{ .nominal_voltageoltage = nom_v, .source = source, .id = bv_mrid });
+            base_voltage_list.appendAssumeCapacity(.{ .nominal_voltageoltage = nom_v, .source = source, .id = base_voltage_mrid });
         }
         // Sort BaseVoltages by nominalVoltage ascending (matches PyPowSyBl output order).
-        std.mem.sort(iidm.BaseVoltage, bv_list.items, {}, struct {
+        std.mem.sort(iidm.BaseVoltage, base_voltage_list.items, {}, struct {
             fn lessThan(_: void, a: iidm.BaseVoltage, b: iidm.BaseVoltage) bool {
                 return a.nominal_voltageoltage < b.nominal_voltageoltage;
             }
@@ -412,11 +418,11 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
         try network.extensions.append(gpa, .{
             .id = network.id,
             .cgmes_metadata_models = if (metadata_models.items.len > 0) .{ .models = metadata_models } else null,
-            .base_voltage_mapping = if (bv_list.items.len > 0) .{ .base_voltages = bv_list } else null,
+            .base_voltage_mapping = if (base_voltage_list.items.len > 0) .{ .base_voltages = base_voltage_list } else null,
             .cim_characteristics = .{ .topology_kind = "NODE_BREAKER", .cim_version = 100 },
         });
         metadata_models = .empty; // ownership transferred
-        bv_list = .empty; // ownership transferred
+        base_voltage_list = .empty; // ownership transferred
 
         if (fm_count > 0) try network.extension_versions.append(gpa, .{ .extension_name = "cgmesMetadataModels" });
         if (base_voltages.len > 0) try network.extension_versions.append(gpa, .{ .extension_name = "baseVoltageMapping" });

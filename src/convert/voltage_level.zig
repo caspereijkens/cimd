@@ -9,13 +9,14 @@ const assert = std.debug.assert;
 
 const CimModel = cim_model.CimModel;
 const CimObject = tag_index.CimObject;
+const CimObjectView = tag_index.CimObjectView;
 const CimIndex = cim_index.CimIndex;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
 // Resolve the nominal voltage for a VoltageLevel.
 // VoltageLevel.BaseVoltage -> BaseVoltage.nominalVoltage -> parseFloat.
-fn resolve_nominal_voltageoltage(model: *const CimModel, voltage_level: CimObject) !?f64 {
+fn resolve_nominal_voltageoltage(model: *const CimModel, voltage_level: CimObjectView) !?f64 {
     const base_voltage_ref = try voltage_level.getReference("VoltageLevel.BaseVoltage") orelse return null;
     const base_voltage = model.getObjectById(strip_hash(base_voltage_ref)) orelse return null;
     const nominal_voltageoltage_str = try base_voltage.getProperty("BaseVoltage.nominalVoltage") orelse return null;
@@ -29,7 +30,7 @@ fn append_voltage_level(
     gpa: std.mem.Allocator,
     model: *const CimModel,
     index: *const CimIndex,
-    voltage_level: CimObject,
+    voltage_level: CimObjectView,
     network: *iidm.Network,
     substation_id_map: *std.StringHashMapUnmanaged(usize),
     repr_to_stub_mrids: *const std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)),
@@ -91,7 +92,7 @@ pub fn convert_voltage_levels(
 
     for (voltage_levels) |voltage_level| {
         if (index.voltage_level_merge.contains(voltage_level.id)) continue;
-        const substation_ref = try voltage_level.getReference("VoltageLevel.Substation") orelse continue;
+        const substation_ref = try model.view(voltage_level).getReference("VoltageLevel.Substation") orelse continue;
         const substation_idx = substation_id_map.get(strip_hash(substation_ref)) orelse continue;
         voltage_level_counts[substation_idx] += 1;
     }
@@ -123,7 +124,7 @@ pub fn convert_voltage_levels(
     // Second, create VoltageLevel objects.
     for (voltage_levels) |voltage_level| {
         if (index.voltage_level_merge.contains(voltage_level.id)) continue;
-        try append_voltage_level(gpa, model, index, voltage_level, network, substation_id_map, &repr_to_stub_mrids);
+        try append_voltage_level(gpa, model, index, model.view(voltage_level), network, substation_id_map, &repr_to_stub_mrids);
     }
 
     assert(voltage_levels.len - index.voltage_level_merge.count() == blk: {
@@ -157,7 +158,7 @@ pub fn build_voltage_level_map(
 
     for (voltage_levels) |voltage_level| {
         if (index.voltage_level_merge.contains(voltage_level.id)) continue;
-        const substation_ref = try voltage_level.getReference("VoltageLevel.Substation") orelse continue;
+        const substation_ref = try model.view(voltage_level).getReference("VoltageLevel.Substation") orelse continue;
         const substation_idx = substation_id_map.get(strip_hash(substation_ref)) orelse continue;
         substation_map.putAssumeCapacity(voltage_level.id, &network.substations.items[substation_idx]);
 

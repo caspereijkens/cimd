@@ -98,8 +98,13 @@ fn read_path(gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
     if (try zip.is_zip_file(file)) {
         var zip_buffer: [4096]u8 = undefined;
         var file_reader = file.reader(&zip_buffer);
-        const extracted_files = try zip.extract_to_memory(gpa, &file_reader, .{});
-        return extracted_files.items[0].data;
+        var extracted_files = try zip.extract_to_memory(gpa, &file_reader, .{});
+        // Take ownership of the first entry's data, then free everything else.
+        const data = extracted_files.items[0].data;
+        gpa.free(extracted_files.items[0].filename);
+        for (extracted_files.items[1..]) |f| f.deinit(gpa);
+        extracted_files.deinit(gpa);
+        return data;
     } else {
         return try read_file_to_memory(gpa, file);
     }
