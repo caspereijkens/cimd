@@ -1,0 +1,16 @@
+<svg viewBox="0 0 600 110" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<line x1="96.0" y1="12" x2="96.0" y2="82" stroke="#E5E7EB" stroke-width="1"/>
+<text x="96.0" y="104" text-anchor="middle" font-size="11" fill="#6B7280">0s</text>
+<line x1="245.3" y1="12" x2="245.3" y2="82" stroke="#E5E7EB" stroke-width="1"/>
+<text x="245.3" y="104" text-anchor="middle" font-size="11" fill="#6B7280">1s</text>
+<line x1="394.7" y1="12" x2="394.7" y2="82" stroke="#E5E7EB" stroke-width="1"/>
+<text x="394.7" y="104" text-anchor="middle" font-size="11" fill="#6B7280">2s</text>
+<line x1="544.0" y1="12" x2="544.0" y2="82" stroke="#E5E7EB" stroke-width="1"/>
+<text x="544.0" y="104" text-anchor="middle" font-size="11" fill="#6B7280">3s</text>
+<text x="88" y="33.5" text-anchor="end" font-size="13" font-weight="500" fill="#111827">cimd</text>
+<rect x="96" y="18.0" width="26.3" height="22" fill="#F26522" rx="3"/>
+<text x="128.3" y="33.5" font-size="13" fill="#111827">0.176s</text>
+<text x="88" y="69.5" text-anchor="end" font-size="13" font-weight="500" fill="#111827">pypowsybl</text>
+<rect x="96" y="54.0" width="353.3" height="22" fill="#8B5CF6" rx="3"/>
+<text x="455.3" y="69.5" font-size="13" fill="#111827">2.366s</text>
+</svg>

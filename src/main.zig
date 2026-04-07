@@ -5,8 +5,11 @@ const build_options = @import("build_options");
 const print = @import("print.zig");
 const zip = @import("zip.zig");
 const cim_model = @import("cim_model.zig");
+const tag_index = @import("tag_index.zig");
 const converter = @import("converter.zig");
 const browse = @import("browse.zig");
+
+const assert = std.debug.assert;
 
 pub fn main() !void {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -22,8 +25,8 @@ pub fn main() !void {
     switch (command) {
         .eq => |eq| switch (eq) {
             .convert => |c| try command_eq_convert(gpa, c.eq_path, c.eqbd_path, c.output_path),
-            .browse => |c| try command_eq_browse(gpa, c.eq_path, c.eqbd_path, c.entry_id),
-            .get => |c| try command_eq_get(gpa, c.eq_path, c.eqbd_path, c.mrid, c.type_filter),
+            .browse => |c| try command_eq_browse(gpa, c.eq_path, c.eqbd_path, c.mrid),
+            .get => |c| try command_eq_get(gpa, c.eq_path, c.eqbd_path, c.mrid, c.type_filter, c.fields, c.count, c.json),
             .types => |c| try command_eq_types(gpa, c.eq_path, c.eqbd_path, c.json),
         },
         .version => |v| try command_version(v.verbose, v.json),
@@ -66,15 +69,7 @@ fn command_version(verbose: bool, json: bool) !void {
 }
 
 fn command_eq_convert(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, output_path: ?[]const u8) !void {
-    var xml = try read_path(gpa, eq_path);
-
-    if (eqbd_path) |path| {
-        const eqbd_xml = try read_path(gpa, path);
-        const merged = try std.mem.concat(gpa, u8, &[_][]const u8{ xml, eqbd_xml });
-        xml = merged;
-    }
-
-    var model = try cim_model.CimModel.init(gpa, xml);
+    var model = try load_model(gpa, eq_path, eqbd_path);
     defer model.deinit(gpa);
 
     var network = try converter.convert(gpa, &model);
@@ -128,38 +123,89 @@ fn command_eq_convert(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[
     try file_writer.interface.flush();
 }
 
-fn command_eq_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, entry_id: []const u8) !void {
-    var xml = try read_path(gpa, eq_path);
-
-    if (eqbd_path) |path| {
-        const eqbd_xml = try read_path(gpa, path);
-        xml = try std.mem.concat(gpa, u8, &.{ xml, eqbd_xml });
-    }
-
-    var model = try cim_model.CimModel.init(gpa, xml);
+fn command_eq_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, mrid: []const u8) !void {
+    var model = try load_model(gpa, eq_path, eqbd_path);
     defer model.deinit(gpa);
 
-    try browse.browse(gpa, &model, xml, entry_id);
+    try browse.browse(gpa, &model, model.xml, mrid);
 }
 
-fn command_eq_get(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, mrid: []const u8, type_filter: ?[]const u8) !void {
-    _ = gpa;
-    _ = eq_path;
-    _ = eqbd_path;
-    _ = mrid;
-    _ = type_filter;
-    print.stderr("eq get: not yet implemented", .{});
+fn command_eq_get(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, mrid: ?[]const u8, type_filter: ?[]const u8, fields_str: ?[]const u8, count: bool, json: bool) !void {
+    assert(mrid != null or type_filter != null);
+    if (mrid != null and count) print.stderr("eq get: --count requires --type without <mrid>", .{});
+    if (mrid != null and fields_str != null) print.stderr("eq get: --fields requires --type without <mrid>", .{});
+
+    var model = try load_model(gpa, eq_path, eqbd_path);
+    defer model.deinit(gpa);
+
+    // ── Single-object mode ────────────────────────────────────────────────────
+    if (mrid) |mrid_val| {
+        const object = model.getObjectById(mrid_val) orelse
+            print.not_found("No object found with id '{s}'", .{mrid_val});
+
+        if (type_filter) |type_name| {
+            if (!std.mem.eql(u8, type_name, object.type_name))
+                print.not_found("Object '{s}' is of type '{s}', not '{s}'", .{ mrid_val, object.type_name, type_name });
+        }
+
+        if (json) {
+            try print.display_object_json(gpa, object);
+        } else {
+            try print.display_object(gpa, object);
+        }
+        return;
+    }
+
+    // ── List mode ─────────────────────────────────────────────────────────────
+    const type_name = type_filter.?;
+    const objects = model.get_objects_by_type(type_name);
+    if (objects.len == 0)
+        print.not_found("No objects of type '{s}' found. Run 'cimd eq types' to see available types.", .{type_name});
+
+    if (count) {
+        if (json) {
+            try print.stdout("{{\"type\":\"{s}\",\"count\":{d}}}\n", .{ type_name, objects.len });
+        } else {
+            try print.stdout("{d}\n", .{objects.len});
+        }
+        return;
+    }
+
+    // Parse --fields into a stack-allocated slice of names.
+    var fields_buf: [32][]const u8 = undefined;
+    var n_fields: usize = 0;
+    if (fields_str) |fs| {
+        var it = std.mem.splitScalar(u8, fs, ',');
+        while (it.next()) |f| {
+            if (n_fields == fields_buf.len) print.stderr("eq get: --fields: too many fields (max 32)", .{});
+            fields_buf[n_fields] = std.mem.trim(u8, f, " ");
+            n_fields += 1;
+        }
+    }
+    const fields = fields_buf[0..n_fields];
+
+    if (json) {
+        try print.display_object_list_json(&model, objects, fields);
+    } else {
+        for (objects) |obj| {
+            const view = model.view(obj);
+            try print.stdout("{s}", .{obj.id});
+            if (fields.len == 0) {
+                const name = try view.getProperty("IdentifiedObject.name") orelse "N/A";
+                try print.stdout(" | {s}", .{name});
+            } else {
+                for (fields) |field| {
+                    const val = try view.getProperty(field) orelse "N/A";
+                    try print.stdout(" | {s}", .{val});
+                }
+            }
+            try print.stdout("\n", .{});
+        }
+    }
 }
 
 fn command_eq_types(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, json: bool) !void {
-    var xml = try read_path(gpa, eq_path);
-
-    if (eqbd_path) |path| {
-        const eqbd_xml = try read_path(gpa, path);
-        xml = try std.mem.concat(gpa, u8, &.{ xml, eqbd_xml });
-    }
-
-    var model = try cim_model.CimModel.init(gpa, xml);
+    var model = try load_model(gpa, eq_path, eqbd_path);
     defer model.deinit(gpa);
 
     if (json) {
@@ -170,6 +216,15 @@ fn command_eq_types(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]c
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
+
+fn load_model(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8) !cim_model.CimModel {
+    var xml = try read_path(gpa, eq_path);
+    if (eqbd_path) |path| {
+        const eqbd_xml = try read_path(gpa, path);
+        xml = try std.mem.concat(gpa, u8, &.{ xml, eqbd_xml });
+    }
+    return cim_model.CimModel.init(gpa, xml);
+}
 
 fn read_path(gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
     const cwd = std.fs.cwd();

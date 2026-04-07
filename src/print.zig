@@ -1,6 +1,7 @@
 const std = @import("std");
 const cim_model = @import("cim_model.zig");
 const tag_index = @import("tag_index.zig");
+const utils = @import("utils.zig");
 
 /// Print a usage error to stderr and exit 2.
 /// Use for invalid arguments, missing flags, bad input — anything the caller did wrong.
@@ -82,7 +83,7 @@ pub fn display_object_inventory(gpa: std.mem.Allocator, model: cim_model.CimMode
     try stdout("Total: {d} objects\n\n", .{total});
 }
 
-pub fn displayObject(gpa: std.mem.Allocator, obj: tag_index.CimObjectView) !void {
+pub fn display_object(gpa: std.mem.Allocator, obj: tag_index.CimObjectView) !void {
     try stdout("Type: {s}\n", .{obj.type_name});
     try stdout("ID: {s}\n", .{obj.id});
 
@@ -149,6 +150,51 @@ pub fn displayObject(gpa: std.mem.Allocator, obj: tag_index.CimObjectView) !void
 pub fn display_object_list(gpa: std.mem.Allocator, model: *const cim_model.CimModel, objects: []const tag_index.CimObject) !void {
     for (objects, 1..) |obj, i| {
         try stdout("[{d}] {s}\n", .{ i, obj.id });
-        try displayObject(gpa, model.view(obj));
+        try display_object(gpa, model.view(obj));
     }
+}
+
+pub fn display_object_json(gpa: std.mem.Allocator, obj: tag_index.CimObjectView) !void {
+    var props = try obj.getAllProperties(gpa);
+    defer props.deinit();
+    var refs = try obj.getAllReferences(gpa);
+    defer refs.deinit();
+
+    try stdout("{{\"id\":\"{s}\",\"type\":\"{s}\",\"properties\":{{", .{ obj.id, obj.type_name });
+    var first = true;
+    var prop_it = props.iterator();
+    while (prop_it.next()) |entry| {
+        if (!first) try stdout(",", .{});
+        try stdout("\"{s}\":\"{s}\"", .{ entry.key_ptr.*, entry.value_ptr.* });
+        first = false;
+    }
+    try stdout("}},\"references\":{{", .{});
+    first = true;
+    var ref_it = refs.iterator();
+    while (ref_it.next()) |entry| {
+        if (!first) try stdout(",", .{});
+        try stdout("\"{s}\":\"{s}\"", .{ entry.key_ptr.*, utils.strip_hash(entry.value_ptr.*) });
+        first = false;
+    }
+    try stdout("}}}}\n", .{});
+}
+
+pub fn display_object_list_json(model: *const cim_model.CimModel, objects: []const tag_index.CimObject, fields: []const []const u8) !void {
+    try stdout("[", .{});
+    for (objects, 0..) |obj, i| {
+        if (i > 0) try stdout(",", .{});
+        const view = model.view(obj);
+        try stdout("{{\"id\":\"{s}\",\"type\":\"{s}\"", .{ obj.id, obj.type_name });
+        if (fields.len == 0) {
+            const name = try view.getProperty("IdentifiedObject.name") orelse "";
+            try stdout(",\"IdentifiedObject.name\":\"{s}\"", .{name});
+        } else {
+            for (fields) |field| {
+                const val = try view.getProperty(field) orelse "";
+                try stdout(",\"{s}\":\"{s}\"", .{ field, val });
+            }
+        }
+        try stdout("}}", .{});
+    }
+    try stdout("]\n", .{});
 }

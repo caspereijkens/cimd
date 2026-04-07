@@ -84,22 +84,33 @@ const help_eq_browse =
 ;
 
 const help_eq_get =
-    \\Usage: cimd eq get <file> <mrid> [options]
+    \\Usage: cimd eq get <file> [<mrid>] [options]
     \\
-    \\Fetch a single CIM object by mRID and print it as JSON.
+    \\Fetch a CIM object by mRID, or list all objects of a given type.
+    \\At least one of <mrid> or --type must be provided.
     \\Exits 0 on success, 1 if the mRID is not found.
     \\
     \\Arguments:
     \\  <file>    EQ profile (XML or ZIP)
-    \\  <mrid>    mRID of the object to fetch
+    \\  <mrid>    mRID of the object to fetch (optional if --type is given)
     \\
     \\Options:
-    \\  --eqbd <file>     EQBD boundary profile (XML or ZIP)
-    \\  --type <type>     Filter by CIM type (e.g. PowerTransformer)
+    \\  --eqbd <file>          EQBD boundary profile (XML or ZIP)
+    \\  --type <type>          Filter by CIM type (e.g. PowerTransformer)
+    \\                         Without <mrid>: list all objects of this type
+    \\                         With <mrid>: verify the object is of this type
+    \\  --fields <f1,f2,...>   Properties to include in list output (list mode only)
+    \\                         Default: IdentifiedObject.name
+    \\  --count                Print only the count of matching objects (list mode only)
+    \\  --json                 Output as JSON
     \\
     \\Examples:
     \\  cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
+    \\  cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 --json
     \\  cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 --type PowerTransformer
+    \\  cimd eq get data/eq.zip --type PowerTransformer --json
+    \\  cimd eq get data/eq.zip --type PowerTransformer --count
+    \\  cimd eq get data/eq.zip --type VoltageLevel --fields IdentifiedObject.name,VoltageLevel.nominalVoltage
     \\
 ;
 
@@ -157,14 +168,17 @@ pub const Command = union(enum) {
         pub const Browse = struct {
             eq_path: []const u8,
             eqbd_path: ?[]const u8,
-            entry_id: []const u8,
+            mrid: []const u8,
         };
 
         pub const Get = struct {
             eq_path: []const u8,
             eqbd_path: ?[]const u8,
-            mrid: []const u8,
+            mrid: ?[]const u8,
             type_filter: ?[]const u8,
+            fields: ?[]const u8,
+            count: bool,
+            json: bool,
         };
 
         pub const Types = struct {
@@ -258,7 +272,7 @@ fn parse_eq_convert(args: *std.process.ArgIterator) Command {
 fn parse_eq_browse(args: *std.process.ArgIterator) Command {
     var eq_path: ?[]const u8 = null;
     var eqbd_path: ?[]const u8 = null;
-    var entry_id: ?[]const u8 = null;
+    var mrid: ?[]const u8 = null;
 
     while (args.next()) |arg| {
         if (eql(arg, "-h") or eql(arg, "--help")) {
@@ -274,20 +288,20 @@ fn parse_eq_browse(args: *std.process.ArgIterator) Command {
             validate_path(arg, "eq browse");
             validate_cgmes_extension(arg, "eq browse");
             eq_path = arg;
-        } else if (entry_id == null) {
-            entry_id = arg;
+        } else if (mrid == null) {
+            mrid = arg;
         } else {
             print.stderr("eq browse: unexpected argument '{s}'", .{arg});
         }
     }
 
     if (eq_path == null) print.stderr("eq browse: <file> is required", .{});
-    if (entry_id == null) print.stderr("eq browse: <mrid> is required", .{});
+    if (mrid == null) print.stderr("eq browse: <mrid> is required", .{});
 
     return .{ .eq = .{ .browse = .{
         .eq_path = eq_path.?,
         .eqbd_path = eqbd_path,
-        .entry_id = entry_id.?,
+        .mrid = mrid.?,
     } } };
 }
 
@@ -296,6 +310,9 @@ fn parse_eq_get(args: *std.process.ArgIterator) Command {
     var eqbd_path: ?[]const u8 = null;
     var mrid: ?[]const u8 = null;
     var type_filter: ?[]const u8 = null;
+    var fields: ?[]const u8 = null;
+    var count = false;
+    var json = false;
 
     while (args.next()) |arg| {
         if (eql(arg, "-h") or eql(arg, "--help")) {
@@ -308,6 +325,13 @@ fn parse_eq_get(args: *std.process.ArgIterator) Command {
         } else if (eql(arg, "--type")) {
             type_filter = args.next() orelse
                 print.stderr("eq get: --type requires a CIM type name", .{});
+        } else if (eql(arg, "--fields")) {
+            fields = args.next() orelse
+                print.stderr("eq get: --fields requires a comma-separated list of property names", .{});
+        } else if (eql(arg, "--count")) {
+            count = true;
+        } else if (eql(arg, "--json")) {
+            json = true;
         } else if (is_flag(arg)) {
             print.stderr("eq get: unknown option '{s}'", .{arg});
         } else if (eq_path == null) {
@@ -322,13 +346,16 @@ fn parse_eq_get(args: *std.process.ArgIterator) Command {
     }
 
     if (eq_path == null) print.stderr("eq get: <file> is required", .{});
-    if (mrid == null) print.stderr("eq get: <mrid> is required", .{});
+    if (mrid == null and type_filter == null) print.stderr("eq get: <mrid> or --type is required", .{});
 
     return .{ .eq = .{ .get = .{
         .eq_path = eq_path.?,
         .eqbd_path = eqbd_path,
-        .mrid = mrid.?,
+        .mrid = mrid,
         .type_filter = type_filter,
+        .fields = fields,
+        .count = count,
+        .json = json,
     } } };
 }
 

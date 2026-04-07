@@ -20,7 +20,7 @@ Operate on a CGMES EQ (Equipment) profile.
 
 Subcommands:
   convert    Convert EQ profile to JIIDM JSON
-  browse     Interactively browse equipment objects by following references
+  browse     Interactively browse equipment objects
   get        Fetch a single object by mRID (JSON output)
   types      List all CIM types present in the file
 
@@ -72,22 +72,33 @@ Examples:
 ```
 $ cimd eq get --help
 
-Usage: cimd eq get <file> <mrid> [options]
+Usage: cimd eq get <file> [<mrid>] [options]
 
-Fetch a single CIM object by mRID and print it as JSON.
+Fetch a CIM object by mRID, or list all objects of a given type.
+At least one of <mrid> or --type must be provided.
 Exits 0 on success, 1 if the mRID is not found.
 
 Arguments:
   <file>    EQ profile (XML or ZIP)
-  <mrid>    mRID of the object to fetch
+  <mrid>    mRID of the object to fetch (optional if --type is given)
 
 Options:
-  --eqbd <file>     EQBD boundary profile (XML or ZIP)
-  --type <type>     Filter by CIM type (e.g. PowerTransformer)
+  --eqbd <file>          EQBD boundary profile (XML or ZIP)
+  --type <type>          Filter by CIM type (e.g. PowerTransformer)
+                         Without <mrid>: list all objects of this type
+                         With <mrid>: verify the object is of this type
+  --fields <f1,f2,...>   Properties to include in list output (list mode only)
+                         Default: IdentifiedObject.name
+  --count                Print only the count of matching objects (list mode only)
+  --json                 Output as JSON
 
 Examples:
   cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
+  cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 --json
   cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 --type PowerTransformer
+  cimd eq get data/eq.zip --type PowerTransformer --json
+  cimd eq get data/eq.zip --type PowerTransformer --count
+  cimd eq get data/eq.zip --type VoltageLevel --fields IdentifiedObject.name,VoltageLevel.nominalVoltage
 ```
 
 ### Types
