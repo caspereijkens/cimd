@@ -11,8 +11,9 @@ const strip_underscore = utils.strip_underscore;
 
 const switch_types = [_][]const u8{ "Breaker", "Disconnector", "LoadBreakSwitch" };
 
-pub const CimObject = tag_index.CimObject;
-pub const CimObjectView = tag_index.CimObjectView;
+const CimObject = tag_index.CimObject;
+const CimObjectView = tag_index.CimObjectView;
+
 const CimModel = cim_model.CimModel;
 
 pub const TerminalInfo = struct {

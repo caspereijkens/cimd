@@ -5,8 +5,11 @@ const build_options = @import("build_options");
 const print = @import("print.zig");
 const zip = @import("zip.zig");
 const cim_model = @import("cim_model.zig");
+const tag_index = @import("tag_index.zig");
 const converter = @import("converter.zig");
 const browse = @import("browse.zig");
+
+const assert = std.debug.assert;
 
 pub fn main() !void {
     var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -20,15 +23,37 @@ pub fn main() !void {
     const command = cli.parse_args(&arg_iterator);
 
     switch (command) {
-        .index => |_| try command_index(gpa, command.index.paths),
-        .convert => |c| try command_convert(gpa, c.eq_path, c.eqbd_path, c.output_path, c.verbose),
-        .version => |_| try command_version(command.version.verbose),
-        .browse => |c| try command_browse(gpa, c.eq_path, c.eqbd_path, c.entry_id),
+        .eq => |eq| switch (eq) {
+            .convert => |c| try command_eq_convert(gpa, c.eq_path, c.eqbd_path, c.output_path),
+            .browse => |c| try command_eq_browse(gpa, c.eq_path, c.eqbd_path, c.mrid),
+            .get => |c| try command_eq_get(gpa, c.eq_path, c.eqbd_path, c.mrid, c.type_filter, c.fields, c.count, c.json),
+            .types => |c| try command_eq_types(gpa, c.eq_path, c.eqbd_path, c.json),
+        },
+        .version => |v| try command_version(v.verbose, v.json),
     }
 }
 
-fn command_version(verbose: bool) !void {
+fn command_version(verbose: bool, json: bool) !void {
     const version_string = build_options.version;
+
+    if (json) {
+        if (verbose) {
+            try print.stdout(
+                \\{{"version":"{s}","zig":"{s}","target":"{s}-{s}","optimize":"{s}"}}
+                \\
+            , .{
+                version_string,
+                builtin.zig_version_string,
+                @tagName(builtin.cpu.arch),
+                @tagName(builtin.os.tag),
+                @tagName(builtin.mode),
+            });
+        } else {
+            try print.stdout("{{\"version\":\"{s}\"}}\n", .{version_string});
+        }
+        return;
+    }
+
     try print.stdout("cimd {s}\n", .{version_string});
 
     if (verbose) {
@@ -43,82 +68,8 @@ fn command_version(verbose: bool) !void {
     }
 }
 
-fn command_index(gpa: std.mem.Allocator, paths: []const []const u8) !void {
-    const cwd = std.fs.cwd();
-    var buffer: [4096]u8 = undefined;
-
-    for (paths) |path| {
-        const file = try cwd.openFile(path, .{});
-        defer file.close();
-
-        if (try zip.is_zip_file(file)) {
-            // ZIP file: extract to memory and process each contained file
-            var file_reader = file.reader(&buffer);
-            var extracted_files = try zip.extract_to_memory(gpa, &file_reader, .{});
-            defer {
-                for (extracted_files.items) |extracted_file| {
-                    extracted_file.deinit(gpa);
-                }
-                extracted_files.deinit(gpa);
-            }
-
-            for (extracted_files.items) |extracted_file| {
-                try print.stdout("File: {s}\n", .{extracted_file.filename});
-
-                var model = try cim_model.CimModel.init(gpa, extracted_file.data);
-                defer model.deinit(gpa);
-
-                try print.display_object_inventory(gpa, model);
-                try print.stdout("\n", .{});
-            }
-        } else {
-            // Regular XML file: read to memory and process
-            try print.stdout("File: {s}\n", .{path});
-
-            const xml = try read_file_to_memory(gpa, file);
-            defer gpa.free(xml);
-
-            var model = try cim_model.CimModel.init(gpa, xml);
-            defer model.deinit(gpa);
-
-            try print.display_object_inventory(gpa, model);
-        }
-    }
-}
-
-fn read_path(gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
-    const cwd = std.fs.cwd();
-
-    const file = try cwd.openFile(file_path, .{});
-    defer file.close();
-
-    if (try zip.is_zip_file(file)) {
-        var zip_buffer: [4096]u8 = undefined;
-        var file_reader = file.reader(&zip_buffer);
-        var extracted_files = try zip.extract_to_memory(gpa, &file_reader, .{});
-        // Take ownership of the first entry's data, then free everything else.
-        const data = extracted_files.items[0].data;
-        gpa.free(extracted_files.items[0].filename);
-        for (extracted_files.items[1..]) |f| f.deinit(gpa);
-        extracted_files.deinit(gpa);
-        return data;
-    } else {
-        return try read_file_to_memory(gpa, file);
-    }
-}
-
-fn command_convert(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, output_path: ?[]const u8, verbose: bool) !void {
-    _ = verbose;
-
-    var xml = try read_path(gpa, eq_path);
-
-    if (eqbd_path) |path| {
-        const eqbd_xml = try read_path(gpa, path);
-        const merged = try std.mem.concat(gpa, u8, &[_][]const u8{ xml, eqbd_xml });
-        xml = merged;
-    }
-
-    var model = try cim_model.CimModel.init(gpa, xml);
+fn command_eq_convert(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, output_path: ?[]const u8) !void {
+    var model = try load_model(gpa, eq_path, eqbd_path);
     defer model.deinit(gpa);
 
     var network = try converter.convert(gpa, &model);
@@ -146,17 +97,17 @@ fn command_convert(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]co
             total_generators += voltage_level.generators.items.len;
         }
     }
-    std.debug.print("Substations: {d}\n", .{network.substations.items.len});
-    std.debug.print("VoltageLevels: {d}\n", .{total_voltage_levels});
-    std.debug.print("BusbarSections: {d}\n", .{total_busbar_sections});
-    std.debug.print("Switches: {d}\n", .{total_switches});
-    std.debug.print("Loads: {d}\n", .{total_loads});
-    std.debug.print("Shunts: {d}\n", .{total_shunts});
-    std.debug.print("StaticVarCompensators: {d}\n", .{total_svcs});
-    std.debug.print("Generators: {d}\n", .{total_generators});
-    std.debug.print("2-winding transformers: {d}\n", .{total_2w});
-    std.debug.print("3-winding transformers: {d}\n", .{total_3w});
-    std.debug.print("Lines: {d}\n", .{network.lines.items.len});
+    try print.stdout("Substations: {d}\n", .{network.substations.items.len});
+    try print.stdout("VoltageLevels: {d}\n", .{total_voltage_levels});
+    try print.stdout("BusbarSections: {d}\n", .{total_busbar_sections});
+    try print.stdout("Switches: {d}\n", .{total_switches});
+    try print.stdout("Loads: {d}\n", .{total_loads});
+    try print.stdout("Shunts: {d}\n", .{total_shunts});
+    try print.stdout("StaticVarCompensators: {d}\n", .{total_svcs});
+    try print.stdout("Generators: {d}\n", .{total_generators});
+    try print.stdout("2-winding transformers: {d}\n", .{total_2w});
+    try print.stdout("3-winding transformers: {d}\n", .{total_3w});
+    try print.stdout("Lines: {d}\n", .{network.lines.items.len});
 
     const cwd = std.fs.cwd();
     const output_file = if (output_path) |path|
@@ -165,38 +116,137 @@ fn command_convert(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]co
         std.fs.File.stdout();
     defer if (output_path != null) output_file.close();
 
-    var write_buffer: [8192]u8 = undefined;
+    var write_buffer: [4096]u8 = undefined;
     var file_writer = std.fs.File.Writer.init(output_file, &write_buffer);
     try std.json.Stringify.value(network, .{}, &file_writer.interface);
     try file_writer.interface.writeByte('\n');
     try file_writer.interface.flush();
 }
 
-fn command_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, entry_id: []const u8) !void {
-    var xml = try read_path(gpa, eq_path);
+fn command_eq_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, mrid: []const u8) !void {
+    var model = try load_model(gpa, eq_path, eqbd_path);
+    defer model.deinit(gpa);
 
+    try browse.browse(gpa, &model, model.xml, mrid);
+}
+
+fn command_eq_get(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, mrid: ?[]const u8, type_filter: ?[]const u8, fields_str: ?[]const u8, count: bool, json: bool) !void {
+    assert(mrid != null or type_filter != null);
+    if (mrid != null and count) print.stderr("eq get: --count requires --type without <mrid>", .{});
+    if (mrid != null and fields_str != null) print.stderr("eq get: --fields requires --type without <mrid>", .{});
+
+    var model = try load_model(gpa, eq_path, eqbd_path);
+    defer model.deinit(gpa);
+
+    // Single-object mode 
+    if (mrid) |mrid_val| {
+        const object = model.getObjectById(mrid_val) orelse
+            print.not_found("No object found with id '{s}'", .{mrid_val});
+
+        if (type_filter) |type_name| {
+            if (!std.mem.eql(u8, type_name, object.type_name))
+                print.not_found("Object '{s}' is of type '{s}', not '{s}'", .{ mrid_val, object.type_name, type_name });
+        }
+
+        if (json) {
+            try print.display_object_json(gpa, object);
+        } else {
+            try print.display_object(gpa, object);
+        }
+        return;
+    }
+
+    // List mode 
+    const type_name = type_filter.?;
+    const objects = model.get_objects_by_type(type_name);
+    if (objects.len == 0)
+        print.not_found("No objects of type '{s}' found. Run 'cimd eq types' to see available types.", .{type_name});
+
+    if (count) {
+        if (json) {
+            try print.stdout("{{\"type\":\"{s}\",\"count\":{d}}}\n", .{ type_name, objects.len });
+        } else {
+            try print.stdout("{d}\n", .{objects.len});
+        }
+        return;
+    }
+
+    // Parse --fields into a stack-allocated slice of names.
+    var fields_buf: [32][]const u8 = undefined;
+    var n_fields: usize = 0;
+    if (fields_str) |fs| {
+        var it = std.mem.splitScalar(u8, fs, ',');
+        while (it.next()) |f| {
+            if (n_fields == fields_buf.len) print.stderr("eq get: --fields: too many fields (max 32)", .{});
+            fields_buf[n_fields] = std.mem.trim(u8, f, " ");
+            n_fields += 1;
+        }
+    }
+    const fields = fields_buf[0..n_fields];
+
+    if (json) {
+        try print.display_object_list_json(&model, objects, fields);
+    } else {
+        for (objects) |obj| {
+            const view = model.view(obj);
+            try print.stdout("{s}", .{obj.id});
+            if (fields.len == 0) {
+                const name = try view.getProperty("IdentifiedObject.name") orelse "N/A";
+                try print.stdout(" | {s}", .{name});
+            } else {
+                for (fields) |field| {
+                    const val = try view.getProperty(field) orelse "N/A";
+                    try print.stdout(" | {s}", .{val});
+                }
+            }
+            try print.stdout("\n", .{});
+        }
+    }
+}
+
+fn command_eq_types(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, json: bool) !void {
+    var model = try load_model(gpa, eq_path, eqbd_path);
+    defer model.deinit(gpa);
+
+    if (json) {
+        try print.display_object_inventory_json(gpa, model);
+    } else {
+        try print.display_object_inventory(gpa, model);
+    }
+}
+
+// ── Shared helpers ────────────────────────────────────────────────────────────
+
+fn load_model(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8) !cim_model.CimModel {
+    var xml = try read_path(gpa, eq_path);
     if (eqbd_path) |path| {
         const eqbd_xml = try read_path(gpa, path);
         xml = try std.mem.concat(gpa, u8, &.{ xml, eqbd_xml });
     }
-
-    var model = try cim_model.CimModel.init(gpa, xml);
-    defer model.deinit(gpa);
-
-    try browse.browse(gpa, &model, xml, entry_id);
+    return cim_model.CimModel.init(gpa, xml);
 }
 
-/// Read file into memory (used for unzipped usecase)
-pub fn read_file_to_memory(
-    gpa: std.mem.Allocator,
-    file: std.fs.File,
-) ![]u8 {
-    const file_size = try file.getEndPos();
+fn read_path(gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
+    const cwd = std.fs.cwd();
+    const file = try cwd.openFile(file_path, .{});
+    defer file.close();
 
-    // Reject files >4GB (matches our u32 indexing limit)
-    if (file_size > std.math.maxInt(u32)) {
-        return error.FileTooLarge;
+    if (try zip.is_zip_file(file)) {
+        var zip_buffer: [8192]u8 = undefined;
+        var file_reader = file.reader(&zip_buffer);
+        var extracted_files = try zip.extract_to_memory(gpa, &file_reader, .{});
+        const data = extracted_files.items[0].data;
+        gpa.free(extracted_files.items[0].filename);
+        for (extracted_files.items[1..]) |f| f.deinit(gpa);
+        extracted_files.deinit(gpa);
+        return data;
+    } else {
+        return try read_file_to_memory(gpa, file);
     }
+}
 
+pub fn read_file_to_memory(gpa: std.mem.Allocator, file: std.fs.File) ![]u8 {
+    const file_size = try file.getEndPos();
+    if (file_size > std.math.maxInt(u32)) return error.FileTooLarge;
     return try file.readToEndAlloc(gpa, file_size);
 }

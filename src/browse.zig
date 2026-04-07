@@ -9,12 +9,12 @@ const strip_hash = @import("utils.zig").strip_hash;
 
 /// Interactively browse CIM objects by following rdf:resource references.
 /// `xml` must be the same backing slice used to build `model`.
-/// `entry_id` is the rdf:ID (without leading `_`) of the first object to display.
+/// `mrid` is the mRID of the first object to display.
 pub fn browse(
     gpa: std.mem.Allocator,
     model: *const cim_model.CimModel,
     xml: []const u8,
-    entry_id: []const u8,
+    mrid: []const u8,
 ) !void {
     var trace_ids: std.ArrayList([]const u8) = .empty;
     defer trace_ids.deinit(gpa);
@@ -27,14 +27,13 @@ pub fn browse(
     var ref_list: std.ArrayList([]const u8) = .empty;
     defer ref_list.deinit(gpa);
 
-    var id = entry_id;
+    var id = mrid;
 
     while (true) blk: {
         assert(trace_ids.items.len == trace_types.items.len);
 
         const object = model.getObjectById(id) orelse {
-            print.stderr("The rdf ID {s} was not found in the model.", .{id});
-            return error.RdfIdNotFound;
+            print.not_found("{s}", .{id});
         };
         const opening_tag = object.boundaries[object.object_tag_idx];
         const closing_tag = object.boundaries[object.closing_tag_idx];
