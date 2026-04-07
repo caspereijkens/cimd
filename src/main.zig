@@ -138,7 +138,7 @@ fn command_eq_get(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]con
     var model = try load_model(gpa, eq_path, eqbd_path);
     defer model.deinit(gpa);
 
-    // ── Single-object mode ────────────────────────────────────────────────────
+    // Single-object mode 
     if (mrid) |mrid_val| {
         const object = model.getObjectById(mrid_val) orelse
             print.not_found("No object found with id '{s}'", .{mrid_val});
@@ -156,7 +156,7 @@ fn command_eq_get(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]con
         return;
     }
 
-    // ── List mode ─────────────────────────────────────────────────────────────
+    // List mode 
     const type_name = type_filter.?;
     const objects = model.get_objects_by_type(type_name);
     if (objects.len == 0)
