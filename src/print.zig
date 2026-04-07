@@ -2,10 +2,20 @@ const std = @import("std");
 const cim_model = @import("cim_model.zig");
 const tag_index = @import("tag_index.zig");
 
-/// Format and print an error message to stderr, then exit with an exit code of 1.
+/// Print a usage error to stderr and exit 2.
+/// Use for invalid arguments, missing flags, bad input — anything the caller did wrong.
 pub fn stderr(comptime fmt_str: []const u8, args: anytype) noreturn {
     var buf: [4096]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, "error: " ++ fmt_str ++ "\n", args) catch "error: (message too long)\n";
+    _ = std.fs.File.stderr().write(msg) catch {};
+    std.process.exit(2);
+}
+
+/// Print a not-found message to stderr and exit 1.
+/// Use when a requested resource (e.g. mRID) does not exist in the model.
+pub fn not_found(comptime fmt_str: []const u8, args: anytype) noreturn {
+    var buf: [4096]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "not found: " ++ fmt_str ++ "\n", args) catch "not found: (message too long)\n";
     _ = std.fs.File.stderr().write(msg) catch {};
     std.process.exit(1);
 }
@@ -14,6 +24,31 @@ pub fn stdout(comptime fmt_str: []const u8, args: anytype) !void {
     var buf: [4096]u8 = undefined;
     const msg = try std.fmt.bufPrint(&buf, fmt_str, args);
     _ = try std.fs.File.stdout().write(msg);
+}
+
+pub fn display_object_inventory_json(gpa: std.mem.Allocator, model: cim_model.CimModel) !void {
+    var counts = try model.getTypeCounts(gpa);
+    defer counts.deinit();
+
+    var type_names: std.ArrayList([]const u8) = .empty;
+    defer type_names.deinit(gpa);
+
+    var it = counts.iterator();
+    while (it.next()) |entry| try type_names.append(gpa, entry.key_ptr.*);
+
+    std.mem.sort([]const u8, type_names.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lessThan);
+
+    try stdout("[", .{});
+    for (type_names.items, 0..) |type_name, i| {
+        const count = counts.get(type_name).?;
+        if (i > 0) try stdout(",", .{});
+        try stdout("{{\"type\":\"{s}\",\"count\":{d}}}", .{ type_name, count });
+    }
+    try stdout("]\n", .{});
 }
 
 pub fn display_object_inventory(gpa: std.mem.Allocator, model: cim_model.CimModel) !void {

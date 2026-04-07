@@ -1,70 +1,112 @@
 # cimd
-cimd is a high-performance tool for working with CGMES (Common Grid Model Exchange Standard) data.
+cimd is a high-performance tool for working with CGMES (Common Grid Model Exchange Standard) data. See https://cimd.eu for more information.
 
+## Performance
 
-## Pipeline
+![CGMES EQ → JIIDM conversion benchmark: cimd vs pypowsybl](docs/benchmark.svg)
 
-cimd is a pipeline of the following stages:
+*Converting a real-world 4.8 MB zipped EQ file to JIIDM.*
 
-1. **Check if file is zipped**
-   - If no: read full file into memory
-   - If yes: unzip all files into memory
-   - Warning: (extracted) filesize must be < 4GB
+*Measured on Apple M4 Pro · both tools processing the same EQ + EQBD input · median of 6 warm runs.*
 
-2. **Index the file one-by-one**
-   - Find all locations of `<` and `>` in the file (leveraging SIMD for turbo)
-   - Make a list of all tags (CIM objects AND property tags) that holds the bare minimum: where does each tag start (location in the text) and where does each tag stop
-   - For each tag with an `rdf:ID` (these are CIM objects), we collect metadata:
-     - Extract the object's ID (e.g., `_SS1`) and its position
-     - Find the closing tag index for this object
-     - Extract the object's type (e.g., `Substation`)
-     - Build two indices:
-       - `id_to_index`: HashMap from ID → position in objects array
-       - `type_index`: HashMap from type name → list of object array indices
+<!-- FEATURES_START -->
+## Features
+```
+$ cimd eq --help
 
-     This metadata forms the **CimModel** struct - a pure index with zero content copying. The CimModel is the foundation where each feature of cimd will build on. It is like a big index of where what is in the text, but without storing any content. The content stays in the original XML, and only when the content is really needed, we look them up via the index that was created. 
+Usage: cimd eq <subcommand> <file> [options]
 
-This system design is what should make CIMD very fast.
+Operate on a CGMES EQ (Equipment) profile.
 
-## Visual Example
-Here's what's actually stored in the `CimModel` when parsing a simple XML file:
+Subcommands:
+  convert    Convert EQ profile to JIIDM JSON
+  browse     Interactively browse equipment objects by following references
+  get        Fetch a single object by mRID (JSON output)
+  types      List all CIM types present in the file
 
-Original XML:
-```xml
-<cim:Substation rdf:ID="_SS1">
-  <cim:IdentifiedObject.name>North Station</cim:IdentifiedObject.name>
-</cim:Substation>
+Use 'cimd eq <subcommand> --help' for more information.
 ```
 
-CimModel structure:
+### Convert
 ```
-CimModel
-├── xml: "<cim:Substation rdf:ID=\"_SS1\">..." → [pointer to original buffer]
-│
-├── boundaries: []TagBoundary
-│   ├── [0] { start: 0, end: 33 }      → <cim:Substation rdf:ID="_SS1">
-│   ├── [1] { start: 34, end: 63 }     → <cim:IdentifiedObject.name>
-│   ├── [2] { start: 64, end: 99 }     → </cim:IdentifiedObject.name>
-│   └── [3] { start: 100, end: 116 }   → </cim:Substation>
-│
-├── objects: []CimObject
-│   └── [0] CimObject
-│       ├── xml → [pointer to same buffer]
-│       ├── boundaries → [pointer to same boundaries array]
-│       ├── object_tag_idx: 0          → points to boundaries[0]
-│       ├── closing_tag_idx: 3         → points to boundaries[3]
-│       ├── id: "_SS1"                 → slice of xml[29..33]
-│       └── type_name: "Substation"    → slice of xml[5..15]
-│
-├── id_to_index: HashMap<string, u32>
-│   └── "_SS1" → 0                     → points to objects[0]
-│
-└── type_index: HashMap<string, []u32>
-    └── "Substation" → [0]             → [objects[0]]
+$ cimd eq convert --help
+
+Usage: cimd eq convert <file> [options]
+
+Convert a CGMES EQ profile to JIIDM JSON format.
+Output is written to stdout unless --output is given.
+
+Arguments:
+  <file>            EQ profile (XML or ZIP)
+
+Options:
+  --eqbd <file>     EQBD boundary profile (XML or ZIP)
+  --output <file>   Write output to file instead of stdout
+
+Examples:
+  cimd eq convert data/eq.zip
+  cimd eq convert data/eq.zip --eqbd eqbd.zip
+  cimd eq convert data/eq.zip --output network.json
 ```
 
-And this should hold all the information to perform the cimd operations.
+### Browse
+```
+$ cimd eq browse --help
 
+Usage: cimd eq browse <file> <mrid> [options]
 
-## Conversion to JIIDM
-One of the main challenges in the JIIDM conversion is that some of the voltage levels are merged. This merge creates we have *stubs* and *representatives*: *stubs* are merged into *representatives*. So, each equipment that is referencing a CIM voltage level, has to be rerouted to its representative voltage level. In the majority of cases, the referenced voltage level *is* the representative, but in some minority of cases the referenced voltage level is a stub.  
+Interactively browse equipment objects by following rdf:resource references.
+
+Arguments:
+  <file>    EQ profile (XML or ZIP)
+  <mrid>    mRID of the object to start browsing from
+
+Options:
+  --eqbd <file>     EQBD boundary profile (XML or ZIP)
+
+Examples:
+  cimd eq browse data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
+```
+
+### Get
+```
+$ cimd eq get --help
+
+Usage: cimd eq get <file> <mrid> [options]
+
+Fetch a single CIM object by mRID and print it as JSON.
+Exits 0 on success, 1 if the mRID is not found.
+
+Arguments:
+  <file>    EQ profile (XML or ZIP)
+  <mrid>    mRID of the object to fetch
+
+Options:
+  --eqbd <file>     EQBD boundary profile (XML or ZIP)
+  --type <type>     Filter by CIM type (e.g. PowerTransformer)
+
+Examples:
+  cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
+  cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 --type PowerTransformer
+```
+
+### Types
+```
+$ cimd eq types --help
+
+Usage: cimd eq types <file> [options]
+
+List all CIM types present in the EQ profile with object counts.
+
+Arguments:
+  <file>            EQ profile (XML or ZIP)
+
+Options:
+  --eqbd <file>     EQBD boundary profile (XML or ZIP)
+  --json            Output as JSON array of {type, count} objects
+
+Examples:
+  cimd eq types data/eq.zip
+  cimd eq types data/eq.zip --json
+```
+<!-- FEATURES_END -->

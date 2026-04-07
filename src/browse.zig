@@ -33,8 +33,7 @@ pub fn browse(
         assert(trace_ids.items.len == trace_types.items.len);
 
         const object = model.getObjectById(id) orelse {
-            print.stderr("The rdf ID {s} was not found in the model.", .{id});
-            return error.RdfIdNotFound;
+            print.not_found("{s}", .{id});
         };
         const opening_tag = object.boundaries[object.object_tag_idx];
         const closing_tag = object.boundaries[object.closing_tag_idx];
