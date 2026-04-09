@@ -41,6 +41,7 @@ const help_eq =
     \\  browse     Interactively browse equipment objects
     \\  get        Fetch a single object by mRID (JSON output)
     \\  types      List all CIM types present in the file
+    \\  diff       Semantic diff between two EQ profiles
     \\
     \\Use 'cimd eq <subcommand> --help' for more information.
     \\
@@ -132,6 +133,40 @@ const help_eq_types =
     \\
 ;
 
+const help_eq_diff =
+    \\Usage: cimd eq diff <file1> <file2> [options]
+    \\
+    \\Compare two CGMES EQ profiles semantically. Objects are matched by mRID
+    \\across both files; properties are compared field-by-field. XML attribute
+    \\order and whitespace differences are ignored.
+    \\
+    \\Exit codes:
+    \\  0  files are identical (no differences found)
+    \\  1  differences found
+    \\  2  usage error
+    \\
+    \\Arguments:
+    \\  <file1>    First EQ profile (XML or ZIP)
+    \\  <file2>    Second EQ profile (XML or ZIP)
+    \\
+    \\Options:
+    \\  --eqbd <file>   EQBD boundary profile (applied to both models)
+    \\  --mrid <id>     Diff a single object by mRID
+    \\  --type <name>   Restrict diff to a specific CIM type
+    \\                  With --mrid: verify the object is of this type
+    \\  --summary       Print only per-type counts (added/removed/changed)
+    \\  --json          Output as NDJSON (one object per change)
+    \\
+    \\Examples:
+    \\  cimd eq diff eq_v1.zip eq_v2.zip
+    \\  cimd eq diff eq_v1.zip eq_v2.zip --mrid _abc123
+    \\  cimd eq diff eq_v1.zip eq_v2.zip --mrid _abc123 --type PowerTransformer
+    \\  cimd eq diff eq_v1.zip eq_v2.zip --type PowerTransformer
+    \\  cimd eq diff eq_v1.zip eq_v2.zip --json | jq .
+    \\  cimd eq diff eq_v1.zip eq_v2.zip --summary
+    \\
+;
+
 const help_version =
     \\Usage: cimd version [options]
     \\
@@ -158,6 +193,7 @@ pub const Command = union(enum) {
         browse: Browse,
         get: Get,
         types: Types,
+        diff: Diff,
 
         pub const Convert = struct {
             eq_path: []const u8,
@@ -184,6 +220,22 @@ pub const Command = union(enum) {
         pub const Types = struct {
             eq_path: []const u8,
             eqbd_path: ?[]const u8,
+            json: bool,
+        };
+
+        pub const Diff = struct {
+            eq_path1: []const u8,
+            eq_path2: []const u8,
+            /// Applied to both models.
+            eqbd_path: ?[]const u8,
+            /// When set, diff only this one object.
+            mrid: ?[]const u8,
+            /// Restrict comparison to this CIM type.
+            /// With mrid: verifies the object is of this type.
+            type_filter: ?[]const u8,
+            /// Print only per-type counts, no per-property detail.
+            summary: bool,
+            /// Output as NDJSON instead of human-readable text.
             json: bool,
         };
     };
@@ -230,6 +282,7 @@ fn parse_eq(args: *std.process.ArgIterator) Command {
     if (eql(sub, "browse")) return parse_eq_browse(args);
     if (eql(sub, "get")) return parse_eq_get(args);
     if (eql(sub, "types")) return parse_eq_types(args);
+    if (eql(sub, "diff")) return parse_eq_diff(args);
 
     print.stderr("eq: unknown subcommand '{s}'\n\n" ++ help_eq, .{sub});
 }
@@ -389,6 +442,62 @@ fn parse_eq_types(args: *std.process.ArgIterator) Command {
     return .{ .eq = .{ .types = .{
         .eq_path = eq_path.?,
         .eqbd_path = eqbd_path,
+        .json = json,
+    } } };
+}
+
+fn parse_eq_diff(args: *std.process.ArgIterator) Command {
+    var eq_path1: ?[]const u8 = null;
+    var eq_path2: ?[]const u8 = null;
+    var eqbd_path: ?[]const u8 = null;
+    var mrid: ?[]const u8 = null;
+    var type_filter: ?[]const u8 = null;
+    var summary = false;
+    var json = false;
+
+    while (args.next()) |arg| {
+        if (eql(arg, "-h") or eql(arg, "--help")) {
+            write_stdout(help_eq_diff);
+            std.process.exit(0);
+        }
+        if (eql(arg, "--eqbd")) {
+            eqbd_path = args.next() orelse
+                print.stderr("eq diff: --eqbd requires a file path", .{});
+        } else if (eql(arg, "--mrid")) {
+            mrid = args.next() orelse
+                print.stderr("eq diff: --mrid requires an mRID value", .{});
+        } else if (eql(arg, "--type")) {
+            type_filter = args.next() orelse
+                print.stderr("eq diff: --type requires a CIM type name", .{});
+        } else if (eql(arg, "--summary")) {
+            summary = true;
+        } else if (eql(arg, "--json")) {
+            json = true;
+        } else if (is_flag(arg)) {
+            print.stderr("eq diff: unknown option '{s}'", .{arg});
+        } else if (eq_path1 == null) {
+            validate_path(arg, "eq diff");
+            validate_cgmes_extension(arg, "eq diff");
+            eq_path1 = arg;
+        } else if (eq_path2 == null) {
+            validate_path(arg, "eq diff");
+            validate_cgmes_extension(arg, "eq diff");
+            eq_path2 = arg;
+        } else {
+            print.stderr("eq diff: unexpected argument '{s}'", .{arg});
+        }
+    }
+
+    if (eq_path1 == null) print.stderr("eq diff: <file1> is required", .{});
+    if (eq_path2 == null) print.stderr("eq diff: <file2> is required", .{});
+
+    return .{ .eq = .{ .diff = .{
+        .eq_path1 = eq_path1.?,
+        .eq_path2 = eq_path2.?,
+        .eqbd_path = eqbd_path,
+        .mrid = mrid,
+        .type_filter = type_filter,
+        .summary = summary,
         .json = json,
     } } };
 }

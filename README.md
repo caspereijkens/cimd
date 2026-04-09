@@ -9,6 +9,13 @@ cimd is a high-performance tool for working with CGMES (Common Grid Model Exchan
 
 *Measured on Apple M4 Pro · both tools processing the same EQ + EQBD input · median of 6 warm runs.*
 
+## Contributing
+`cimd` is alpha software. Using `cimd` today means participating in its development. 
+
+`cimd` is not yet complete. The main functionality is present but it is only tested against the Dutch transmission grid model. We are fully aware that there will be edge cases of other TSO members that are not considered yet. I am working hard to make cimd ENTSOE-complete.
+
+So, using cimd today does imply participating in the development process to some degree, which usually means inquiring about the development status of a feature you need, or reporting a bug by opening a discussion on CodeBerg or Github. You are most welcome to get in touch so we can improve cimd for your usecase.
+
 <!-- FEATURES_START -->
 ## Features
 ```
@@ -23,6 +30,7 @@ Subcommands:
   browse     Interactively browse equipment objects
   get        Fetch a single object by mRID (JSON output)
   types      List all CIM types present in the file
+  diff       Semantic diff between two EQ profiles
 
 Use 'cimd eq <subcommand> --help' for more information.
 ```
@@ -119,5 +127,41 @@ Options:
 Examples:
   cimd eq types data/eq.zip
   cimd eq types data/eq.zip --json
+```
+
+### Diff
+```
+$ cimd eq diff --help
+
+Usage: cimd eq diff <file1> <file2> [options]
+
+Compare two CGMES EQ profiles semantically. Objects are matched by mRID
+across both files; properties are compared field-by-field. XML attribute
+order and whitespace differences are ignored.
+
+Exit codes:
+  0  files are identical (no differences found)
+  1  differences found
+  2  usage error
+
+Arguments:
+  <file1>    First EQ profile (XML or ZIP)
+  <file2>    Second EQ profile (XML or ZIP)
+
+Options:
+  --eqbd <file>   EQBD boundary profile (applied to both models)
+  --mrid <id>     Diff a single object by mRID
+  --type <name>   Restrict diff to a specific CIM type
+                  With --mrid: verify the object is of this type
+  --summary       Print only per-type counts (added/removed/changed)
+  --json          Output as NDJSON (one object per change)
+
+Examples:
+  cimd eq diff eq_v1.zip eq_v2.zip
+  cimd eq diff eq_v1.zip eq_v2.zip --mrid _abc123
+  cimd eq diff eq_v1.zip eq_v2.zip --mrid _abc123 --type PowerTransformer
+  cimd eq diff eq_v1.zip eq_v2.zip --type PowerTransformer
+  cimd eq diff eq_v1.zip eq_v2.zip --json | jq .
+  cimd eq diff eq_v1.zip eq_v2.zip --summary
 ```
 <!-- FEATURES_END -->

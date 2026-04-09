@@ -153,13 +153,13 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
     // ---- FullModel metadata: id, caseDate, forecastDistance ----
     const full_models = model.get_objects_by_type("FullModel");
     const eq_full_model: ?tag_index.CimObjectView = if (full_models.len > 0) model.view(full_models[0]) else null;
-    const network_id = if (eq_full_model) |fm| fm.id else "unknown";
-    const scenario_time: ?[]const u8 = if (eq_full_model) |fm|
-        try fm.getProperty("Model.scenarioTime")
+    const network_id = if (eq_full_model) |full_model_view| full_model_view.id else "unknown";
+    const scenario_time: ?[]const u8 = if (eq_full_model) |full_model_view|
+        try full_model_view.getProperty("Model.scenarioTime")
     else
         null;
-    const created_time: ?[]const u8 = if (eq_full_model) |fm|
-        try fm.getProperty("Model.created")
+    const created_time: ?[]const u8 = if (eq_full_model) |full_model_view|
+        try full_model_view.getProperty("Model.created")
     else
         null;
     const forecast_distance: u32 = blk: {
@@ -344,40 +344,40 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
             metadata_models.deinit(gpa);
         }
 
-        const fm_count = full_models.len;
-        for (0..fm_count) |round| {
+        const full_model_count = full_models.len;
+        for (0..full_model_count) |round| {
             const start_i: usize = if (round == 0) 1 else 0;
-            const end_i: usize = if (round == 0) fm_count else 1;
-            for (full_models[start_i..end_i]) |fm_obj| {
-                const fm = model.view(fm_obj);
-                const fm_id = fm.id;
-                const mas = try fm.getProperty("Model.modelingAuthoritySet") orelse "";
-                const raw_desc = try fm.getProperty("Model.description") orelse "";
+            const end_i: usize = if (round == 0) full_model_count else 1;
+            for (full_models[start_i..end_i]) |full_model| {
+                const full_model_view = model.view(full_model);
+                const full_model_view_id = full_model_view.id;
+                const mas = try full_model_view.getProperty("Model.modelingAuthoritySet") orelse "";
+                const raw_desc = try full_model_view.getProperty("Model.description") orelse "";
                 const desc = try decode_xml_entities(gpa, raw_desc);
-                const version_str = try fm.getProperty("Model.version") orelse "0";
+                const version_str = try full_model_view.getProperty("Model.version") orelse "0";
                 const version = std.fmt.parseInt(u32, std.mem.trim(u8, version_str, " \t\r\n"), 10) catch 0;
 
                 var profiles: std.ArrayListUnmanaged(iidm.ModelProfile) = .empty;
                 var dependent_on: std.ArrayListUnmanaged(iidm.DependentOnModel) = .empty;
                 var subset: []const u8 = "UNKNOWN";
-                for (fm.boundaries[fm.object_tag_idx + 1 .. fm.closing_tag_idx], fm.object_tag_idx + 1..) |tag, ti| {
-                    if (fm.xml[tag.start + 1] == '/') continue; // skip closing tags
-                    const is_self_closing = fm.xml[tag.end - 1] == '/';
-                    const tag_type = tag_index.extract_tag_type(fm.xml, tag.start) catch continue;
+                for (full_model_view.boundaries[full_model_view.object_tag_idx + 1 .. full_model_view.closing_tag_idx], full_model_view.object_tag_idx + 1..) |tag, ti| {
+                    if (full_model_view.xml[tag.start + 1] == '/') continue; // skip closing tags
+                    const is_self_closing = full_model_view.xml[tag.end - 1] == '/';
+                    const tag_type = tag_index.extract_tag_type(full_model_view.xml, tag.start) catch continue;
                     if (std.mem.eql(u8, tag_type, "Model.profile") and !is_self_closing) {
-                        const content = fm.xml[tag.end + 1 .. fm.boundaries[ti + 1].start];
+                        const content = full_model_view.xml[tag.end + 1 .. full_model_view.boundaries[ti + 1].start];
                         try profiles.append(gpa, .{ .content = content });
                         const s = profile_to_subset(content);
                         if (!std.mem.eql(u8, s, "UNKNOWN")) subset = s;
                     } else if (std.mem.eql(u8, tag_type, "Model.DependentOn")) {
-                        const ref = tag_index.extract_rdf_resource(fm.xml, tag.start) catch continue;
+                        const ref = tag_index.extract_rdf_resource(full_model_view.xml, tag.start) catch continue;
                         if (ref) |r| try dependent_on.append(gpa, .{ .content = r });
                     }
                 }
                 try metadata_models.append(gpa, .{
                     .subset = subset,
                     .modeling_authority_set = mas,
-                    .id = fm_id,
+                    .id = full_model_view_id,
                     .version = version,
                     .description = desc,
                     .profiles = profiles,
@@ -385,7 +385,7 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
                 });
             }
         }
-        assert(metadata_models.items.len == fm_count);
+        assert(metadata_models.items.len == full_model_count);
 
         // --- baseVoltageMapping ---
         // EQ FullModel is always first in XML order; EQBD FullModel (if present) comes after.
@@ -424,7 +424,7 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
         metadata_models = .empty; // ownership transferred
         base_voltage_list = .empty; // ownership transferred
 
-        if (fm_count > 0) try network.extension_versions.append(gpa, .{ .extension_name = "cgmesMetadataModels" });
+        if (full_model_count > 0) try network.extension_versions.append(gpa, .{ .extension_name = "cgmesMetadataModels" });
         if (base_voltages.len > 0) try network.extension_versions.append(gpa, .{ .extension_name = "baseVoltageMapping" });
         try network.extension_versions.append(gpa, .{ .extension_name = "cimCharacteristics" });
     }
