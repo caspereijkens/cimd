@@ -8,6 +8,7 @@ const cim_model = @import("cim_model.zig");
 const tag_index = @import("tag_index.zig");
 const converter = @import("converter.zig");
 const browse = @import("browse.zig");
+const diff = @import("diff.zig");
 
 const assert = std.debug.assert;
 
@@ -28,6 +29,7 @@ pub fn main() !void {
             .browse => |c| try command_eq_browse(gpa, c.eq_path, c.eqbd_path, c.mrid),
             .get => |c| try command_eq_get(gpa, c.eq_path, c.eqbd_path, c.mrid, c.type_filter, c.fields, c.count, c.json),
             .types => |c| try command_eq_types(gpa, c.eq_path, c.eqbd_path, c.json),
+            .diff => |c| try command_eq_diff(gpa, c),
         },
         .version => |v| try command_version(v.verbose, v.json),
     }
@@ -215,7 +217,45 @@ fn command_eq_types(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]c
     }
 }
 
-// ── Shared helpers ────────────────────────────────────────────────────────────
+fn command_eq_diff(gpa: std.mem.Allocator, c: cli.Command.Eq.Diff) !void {
+    // Load both models independently. Each holds its own XML backing.
+    var model1 = try load_model(gpa, c.eq_path1, c.eqbd_path);
+    defer model1.deinit(gpa);
+
+    var model2 = try load_model(gpa, c.eq_path2, c.eqbd_path);
+    defer model2.deinit(gpa);
+
+    const options = diff.DiffOptions{
+        .type_filter = c.type_filter,
+        .json = c.json,
+        .summary = c.summary,
+    };
+
+    // Stream diff output to a buffered stdout writer.
+    var out_buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.Writer.init(std.fs.File.stdout(), &out_buffer);
+
+    const had_diffs = if (c.mrid) |mrid| blk: {
+        const status = try diff.diff_single(
+            gpa, &model1, &model2, mrid, c.eq_path1, c.eq_path2, options, &writer.interface,
+        );
+        break :blk switch (status) {
+            .not_found => print.not_found("No object found with mRID '{s}' in either file", .{mrid}),
+            .type_mismatch => |actual| print.stderr(
+                "eq diff: object '{s}' is of type '{s}', not '{s}'",
+                .{ mrid, actual, c.type_filter.? },
+            ),
+            .diff => |d| d,
+        };
+    } else try diff.diff_models(
+        gpa, &model1, &model2, c.eq_path1, c.eq_path2, options, &writer.interface,
+    );
+
+    try writer.interface.flush();
+
+    // Exit 1 when differences exist so callers can branch on the exit code.
+    if (had_diffs) std.process.exit(1);
+}
 
 fn load_model(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8) !cim_model.CimModel {
     var xml = try read_path(gpa, eq_path);
@@ -245,7 +285,7 @@ fn read_path(gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
     }
 }
 
-pub fn read_file_to_memory(gpa: std.mem.Allocator, file: std.fs.File) ![]u8 {
+fn read_file_to_memory(gpa: std.mem.Allocator, file: std.fs.File) ![]u8 {
     const file_size = try file.getEndPos();
     if (file_size > std.math.maxInt(u32)) return error.FileTooLarge;
     return try file.readToEndAlloc(gpa, file_size);

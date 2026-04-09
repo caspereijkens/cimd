@@ -28,7 +28,7 @@ new_block() {
   "$CIMD" eq --help
   echo '```'
 
-  for sub in convert browse get types; do
+  for sub in convert browse get types diff; do
     # Capitalise first letter for the heading.
     heading="$(echo "$sub" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
     echo ""
