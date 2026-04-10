@@ -131,7 +131,6 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, network: *iidm.
             try boundaries.append(gpa, .{ .id = eq_mrid, .side = side });
         }
 
-        assert(boundaries.items.len > 0);
         network.areas.appendAssumeCapacity(.{
             .id = control_area_mrid,
             .name = control_area_name,

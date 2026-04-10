@@ -51,11 +51,12 @@ fn writeFloat(jws: anytype, value: f64) !void {
 }
 
 /// Write an optional float to JSON
-fn write_optional_float(jws: anytype, value: ?f64) !void {
+/// Write a JSON object field + value only when value is non-null.
+/// Callers must NOT emit the objectField themselves — this helper handles both.
+fn write_optional_float_field(jws: anytype, field_name: []const u8, value: ?f64) !void {
     if (value) |v| {
+        try jws.objectField(field_name);
         try writeFloat(jws, v);
-    } else {
-        try jws.write(null);
     }
 }
 
@@ -527,20 +528,20 @@ pub const Generator = struct {
         try jws.write(self.name);
         try jws.objectField("energySource");
         try jws.write(self.energy_source);
-        try jws.objectField("minP");
-        try write_optional_float(jws, self.min_p);
-        try jws.objectField("maxP");
-        try write_optional_float(jws, self.max_p);
+        try write_optional_float_field(jws, "minP", self.min_p);
+        try write_optional_float_field(jws, "maxP", self.max_p);
         if (self.rated_s) |rs| {
             try jws.objectField("ratedS");
             try writeFloat(jws, rs);
         }
+        try jws.objectField("voltageRegulatorOn");
+        try jws.write(self.voltage_regulator_on);
         if (self.is_condenser) {
             try jws.objectField("isCondenser");
             try jws.write(true);
         }
-        try jws.objectField("voltageRegulatorOn");
-        try jws.write(self.voltage_regulator_on);
+        try jws.objectField("node");
+        try jws.write(self.node);
         if (self.regulating_terminal) |rt| {
             try jws.objectField("regulatingTerminal");
             try jws.beginObject();
@@ -548,8 +549,6 @@ pub const Generator = struct {
             try jws.write(rt);
             try jws.endObject();
         }
-        try jws.objectField("node");
-        try jws.write(self.node);
         if (self.aliases.items.len > 0) {
             try jws.objectField("aliases");
             try jws.write(self.aliases.items);
@@ -766,12 +765,9 @@ pub const VoltageLevel = struct {
         try jws.write(self.id);
         try jws.objectField("name");
         try jws.write(self.name);
-        try jws.objectField("nominalV");
-        try write_optional_float(jws, self.nominal_voltageoltage);
-        try jws.objectField("lowVoltageLimit");
-        try write_optional_float(jws, self.low_voltage_limit);
-        try jws.objectField("highVoltageLimit");
-        try write_optional_float(jws, self.high_voltage_limit);
+        try write_optional_float_field(jws, "nominalV", self.nominal_voltageoltage);
+        try write_optional_float_field(jws, "lowVoltageLimit", self.low_voltage_limit);
+        try write_optional_float_field(jws, "highVoltageLimit", self.high_voltage_limit);
         try jws.objectField("topologyKind");
         try jws.write("NODE_BREAKER");
         if (self.aliases.items.len > 0) {
@@ -861,8 +857,7 @@ pub const FictitiousVoltageLevel = struct {
         try jws.write(self.name);
         try jws.objectField("fictitious");
         try jws.write(true);
-        try jws.objectField("nominalV");
-        try write_optional_float(jws, self.nominal_voltage);
+        try write_optional_float_field(jws, "nominalV", self.nominal_voltage);
         try jws.objectField("topologyKind");
         try jws.write("NODE_BREAKER");
         try jws.objectField("properties");
@@ -1237,20 +1232,7 @@ pub const ThreeWindingsTransformer = struct {
         try jws.write(self.id);
         try jws.objectField("name");
         try jws.write(self.name);
-        try jws.objectField("ratedU0");
-        try writeFloat(jws, self.rated_u0);
-        try jws.objectField("voltageLevelId1");
-        try jws.write(self.voltage_level_id1);
-        try jws.objectField("node1");
-        try jws.write(self.node1);
-        try jws.objectField("voltageLevelId2");
-        try jws.write(self.voltage_level_id2);
-        try jws.objectField("node2");
-        try jws.write(self.node2);
-        try jws.objectField("voltageLevelId3");
-        try jws.write(self.voltage_level_id3);
-        try jws.objectField("node3");
-        try jws.write(self.node3);
+        // Electrical parameters per leg come before VL/node assignments (parser is order-sensitive).
         try jws.objectField("r1");
         try writeFloat(jws, self.r1);
         try jws.objectField("x1");
@@ -1293,6 +1275,20 @@ pub const ThreeWindingsTransformer = struct {
             try jws.objectField("ratedS3");
             try writeFloat(jws, rs);
         }
+        try jws.objectField("ratedU0");
+        try writeFloat(jws, self.rated_u0);
+        try jws.objectField("voltageLevelId1");
+        try jws.write(self.voltage_level_id1);
+        try jws.objectField("node1");
+        try jws.write(self.node1);
+        try jws.objectField("voltageLevelId2");
+        try jws.write(self.voltage_level_id2);
+        try jws.objectField("node2");
+        try jws.write(self.node2);
+        try jws.objectField("voltageLevelId3");
+        try jws.write(self.voltage_level_id3);
+        try jws.objectField("node3");
+        try jws.write(self.node3);
         if (self.selected_op_lims_group_id1) |sid| {
             try jws.objectField("selectedOperationalLimitsGroupId1");
             try jws.write(sid);
