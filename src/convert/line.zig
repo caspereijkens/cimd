@@ -29,7 +29,7 @@ fn resolve_line_terminal(
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const NodeMap,
-    boundary_conn_node_vl_map: *const std.StringHashMapUnmanaged(u32),
+    boundary_conn_node_voltage_level_map: *const std.StringHashMapUnmanaged(u32),
     terminal_node_map: *const std.StringHashMapUnmanaged(u32),
     network: *const iidm.Network,
 ) ?LinePlacement {
@@ -42,10 +42,10 @@ fn resolve_line_terminal(
     }
 
     // Boundary placement: unique node per terminal, pre-assigned in terminal_node_map.
-    const fict_vl_idx = boundary_conn_node_vl_map.get(conn_node_id) orelse return null;
+    const fict_voltage_level_idx = boundary_conn_node_voltage_level_map.get(conn_node_id) orelse return null;
     const node = terminal_node_map.get(t.id) orelse return null;
     return .{
-        .voltage_level_id = network.fictitious_voltage_levels.items[fict_vl_idx].id,
+        .voltage_level_id = network.fictitious_voltage_levels.items[fict_voltage_level_idx].id,
         .node = node,
     };
 }
@@ -149,8 +149,8 @@ pub fn convert_lines(
     }
 
     // Pass 2: create fictitious VLs + terminal→node map.
-    var boundary_conn_node_vl_map: std.StringHashMapUnmanaged(u32) = .empty;
-    defer boundary_conn_node_vl_map.deinit(gpa);
+    var boundary_conn_node_voltage_level_map: std.StringHashMapUnmanaged(u32) = .empty;
+    defer boundary_conn_node_voltage_level_map.deinit(gpa);
     var terminal_node_map: std.StringHashMapUnmanaged(u32) = .empty;
     defer terminal_node_map.deinit(gpa);
 
@@ -162,7 +162,7 @@ pub fn convert_lines(
         assert(count > 0);
 
         // id is heap-allocated; freed by FictitiousVoltageLevel.deinit.
-        const fict_vl_id = try std.fmt.allocPrint(gpa, "{s}_VL", .{info.conn_node_mrid});
+        const fict_voltage_level_id = try std.fmt.allocPrint(gpa, "{s}_VL", .{info.conn_node_mrid});
 
         // One IC per terminal: {0,1}, {0,2}, ..., {0,count}.
         var ics: std.ArrayListUnmanaged(iidm.InternalConnection) = .empty;
@@ -171,15 +171,15 @@ pub fn convert_lines(
             ics.appendAssumeCapacity(.{ .node1 = 0, .node2 = @intCast(i + 1) });
         }
 
-        const fict_vl_idx: u32 = @intCast(network.fictitious_voltage_levels.items.len);
+        const fict_voltage_level_idx: u32 = @intCast(network.fictitious_voltage_levels.items.len);
         try network.fictitious_voltage_levels.append(gpa, .{
-            .id = fict_vl_id,
+            .id = fict_voltage_level_id,
             .name = info.conn_node_name,
             .nominal_voltage = info.nominal_voltage,
             .line_container_id = info.container_mrid,
             .internal_connections = ics,
         });
-        try boundary_conn_node_vl_map.put(gpa, conn_node_id, fict_vl_idx);
+        try boundary_conn_node_voltage_level_map.put(gpa, conn_node_id, fict_voltage_level_idx);
 
         // Assign nodes 1, 2, 3, ... to each terminal in encounter order.
         for (info.terminal_ids.items, 1..) |term_id, node| {
@@ -202,8 +202,8 @@ pub fn convert_lines(
         const t = ei_terminals.items[0];
         const conn_node_id = t.conn_node_id orelse continue;
 
-        const fict_vl_idx = boundary_conn_node_vl_map.get(conn_node_id) orelse continue;
-        const fvl = &network.fictitious_voltage_levels.items[fict_vl_idx];
+        const fict_voltage_level_idx = boundary_conn_node_voltage_level_map.get(conn_node_id) orelse continue;
+        const fvl = &network.fictitious_voltage_levels.items[fict_voltage_level_idx];
 
         var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
         errdefer aliases.deinit(gpa);
@@ -257,7 +257,7 @@ pub fn convert_lines(
             index,
             voltage_level_map,
             node_map,
-            &boundary_conn_node_vl_map,
+            &boundary_conn_node_voltage_level_map,
             &terminal_node_map,
             network,
         ) orelse continue;
@@ -266,7 +266,7 @@ pub fn convert_lines(
             index,
             voltage_level_map,
             node_map,
-            &boundary_conn_node_vl_map,
+            &boundary_conn_node_voltage_level_map,
             &terminal_node_map,
             network,
         ) orelse continue;
@@ -343,7 +343,7 @@ pub fn convert_lines(
             index,
             voltage_level_map,
             node_map,
-            &boundary_conn_node_vl_map,
+            &boundary_conn_node_voltage_level_map,
             &terminal_node_map,
             network,
         ) orelse continue;
@@ -352,7 +352,7 @@ pub fn convert_lines(
             index,
             voltage_level_map,
             node_map,
-            &boundary_conn_node_vl_map,
+            &boundary_conn_node_voltage_level_map,
             &terminal_node_map,
             network,
         ) orelse continue;
