@@ -35,7 +35,13 @@ fn run_diff(
     var result = DiffResult{ .had_diffs = false, .buf = undefined, .len = 0 };
     var fbs = std.io.fixedBufferStream(&result.buf);
     result.had_diffs = try diff.diff_models(
-        gpa, &model1, &model2, "file1.xml", "file2.xml", options, fbs.writer(),
+        gpa,
+        &model1,
+        &model2,
+        "file1.xml",
+        "file2.xml",
+        options,
+        fbs.writer(),
     );
     result.len = fbs.pos;
     return result;
@@ -797,7 +803,14 @@ fn run_diff_single(
     var result = SingleResult{ .status = .not_found, .buf = undefined, .len = 0 };
     var fbs = std.io.fixedBufferStream(&result.buf);
     result.status = try diff.diff_single(
-        gpa, &model1, &model2, mrid, "file1.xml", "file2.xml", options, fbs.writer(),
+        gpa,
+        &model1,
+        &model2,
+        mrid,
+        "file1.xml",
+        "file2.xml",
+        options,
+        fbs.writer(),
     );
     result.len = fbs.pos;
     return result;

@@ -140,7 +140,7 @@ fn command_eq_get(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]con
     var model = try load_model(gpa, eq_path, eqbd_path);
     defer model.deinit(gpa);
 
-    // Single-object mode 
+    // Single-object mode
     if (mrid) |mrid_val| {
         const object = model.getObjectById(mrid_val) orelse
             print.not_found("No object found with id '{s}'", .{mrid_val});
@@ -158,7 +158,7 @@ fn command_eq_get(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]con
         return;
     }
 
-    // List mode 
+    // List mode
     const type_name = type_filter.?;
     const objects = model.get_objects_by_type(type_name);
     if (objects.len == 0)
@@ -237,7 +237,14 @@ fn command_eq_diff(gpa: std.mem.Allocator, c: cli.Command.Eq.Diff) !void {
 
     const had_diffs = if (c.mrid) |mrid| blk: {
         const status = try diff.diff_single(
-            gpa, &model1, &model2, mrid, c.eq_path1, c.eq_path2, options, &writer.interface,
+            gpa,
+            &model1,
+            &model2,
+            mrid,
+            c.eq_path1,
+            c.eq_path2,
+            options,
+            &writer.interface,
         );
         break :blk switch (status) {
             .not_found => print.not_found("No object found with mRID '{s}' in either file", .{mrid}),
@@ -248,7 +255,13 @@ fn command_eq_diff(gpa: std.mem.Allocator, c: cli.Command.Eq.Diff) !void {
             .diff => |d| d,
         };
     } else try diff.diff_models(
-        gpa, &model1, &model2, c.eq_path1, c.eq_path2, options, &writer.interface,
+        gpa,
+        &model1,
+        &model2,
+        c.eq_path1,
+        c.eq_path2,
+        options,
+        &writer.interface,
     );
 
     try writer.interface.flush();
