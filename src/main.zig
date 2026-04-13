@@ -99,17 +99,17 @@ fn command_eq_convert(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[
             total_generators += voltage_level.generators.items.len;
         }
     }
-    try print.stdout("Substations: {d}\n", .{network.substations.items.len});
-    try print.stdout("VoltageLevels: {d}\n", .{total_voltage_levels});
-    try print.stdout("BusbarSections: {d}\n", .{total_busbar_sections});
-    try print.stdout("Switches: {d}\n", .{total_switches});
-    try print.stdout("Loads: {d}\n", .{total_loads});
-    try print.stdout("Shunts: {d}\n", .{total_shunts});
-    try print.stdout("StaticVarCompensators: {d}\n", .{total_svcs});
-    try print.stdout("Generators: {d}\n", .{total_generators});
-    try print.stdout("2-winding transformers: {d}\n", .{total_2w});
-    try print.stdout("3-winding transformers: {d}\n", .{total_3w});
-    try print.stdout("Lines: {d}\n", .{network.lines.items.len});
+    try print.stderr_info("Substations: {d}\n", .{network.substations.items.len});
+    try print.stderr_info("VoltageLevels: {d}\n", .{total_voltage_levels});
+    try print.stderr_info("BusbarSections: {d}\n", .{total_busbar_sections});
+    try print.stderr_info("Switches: {d}\n", .{total_switches});
+    try print.stderr_info("Loads: {d}\n", .{total_loads});
+    try print.stderr_info("Shunts: {d}\n", .{total_shunts});
+    try print.stderr_info("StaticVarCompensators: {d}\n", .{total_svcs});
+    try print.stderr_info("Generators: {d}\n", .{total_generators});
+    try print.stderr_info("2-winding transformers: {d}\n", .{total_2w});
+    try print.stderr_info("3-winding transformers: {d}\n", .{total_3w});
+    try print.stderr_info("Lines: {d}\n", .{network.lines.items.len});
 
     const cwd = std.fs.cwd();
     const output_file = if (output_path) |path|
