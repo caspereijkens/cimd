@@ -21,6 +21,14 @@ pub fn not_found(comptime fmt_str: []const u8, args: anytype) noreturn {
     std.process.exit(1);
 }
 
+/// Write informational (non-error) output to stderr. Returns an error on write failure.
+/// Use for diagnostic/progress output that should not pollute stdout data.
+pub fn stderr_info(comptime fmt_str: []const u8, args: anytype) !void {
+    var buf: [4096]u8 = undefined;
+    const msg = try std.fmt.bufPrint(&buf, fmt_str, args);
+    _ = try std.fs.File.stderr().write(msg);
+}
+
 pub fn stdout(comptime fmt_str: []const u8, args: anytype) !void {
     var buf: [4096]u8 = undefined;
     const msg = try std.fmt.bufPrint(&buf, fmt_str, args);

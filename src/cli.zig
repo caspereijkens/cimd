@@ -400,6 +400,7 @@ fn parse_eq_get(args: *std.process.ArgIterator) Command {
 
     if (eq_path == null) print.stderr("eq get: <file> is required", .{});
     if (mrid == null and type_filter == null) print.stderr("eq get: <mrid> or --type is required", .{});
+    if (count and mrid != null) print.stderr("eq get: --count takes no value; '{s}' was parsed as <mrid> (use --type without <mrid> for list mode)", .{mrid.?});
 
     return .{ .eq = .{ .get = .{
         .eq_path = eq_path.?,
