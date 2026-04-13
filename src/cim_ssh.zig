@@ -111,6 +111,58 @@ pub const CimSsh = struct {
     }
 };
 
+/// A merged view of an EQ object and its SSH patch (if any).
+/// SSH properties and references shadow EQ values — SSH is checked first,
+/// EQ is the fallback. Create once per object (find_patch runs at init),
+/// then call getProperty/getReference freely without repeated SSH lookups.
+pub const CimMergedView = struct {
+    eq: tag_index.CimObjectView,
+    ssh: ?SshContext,
+
+    const SshContext = struct {
+        xml: []const u8,
+        boundaries: []const tag_index.TagBoundary,
+        patch: SshPatch,
+    };
+
+    pub fn init(eq: tag_index.CimObjectView, mrid: []const u8, ssh_opt: ?CimSsh) CimMergedView {
+        assert(mrid.len > 0);
+        if (ssh_opt) |ssh| {
+            if (ssh.find_patch(mrid)) |patch| {
+                return .{
+                    .eq = eq,
+                    .ssh = .{ .xml = ssh.xml, .boundaries = ssh.boundaries, .patch = patch },
+                };
+            }
+        }
+        return .{ .eq = eq, .ssh = null };
+    }
+
+    /// Get a text property. SSH value takes priority over EQ value.
+    pub fn getProperty(self: CimMergedView, name: []const u8) !?[]const u8 {
+        if (self.ssh) |s| {
+            if (try tag_index.get_property_from_indices(
+                s.xml, s.boundaries,
+                s.patch.patch_tag_idx, s.patch.closing_tag_idx,
+                name,
+            )) |v| return v;
+        }
+        return self.eq.getProperty(name);
+    }
+
+    /// Get an rdf:resource reference. SSH value takes priority over EQ value.
+    pub fn getReference(self: CimMergedView, name: []const u8) !?[]const u8 {
+        if (self.ssh) |s| {
+            if (try tag_index.get_reference_from_indices(
+                s.xml, s.boundaries,
+                s.patch.patch_tag_idx, s.patch.closing_tag_idx,
+                name,
+            )) |v| return v;
+        }
+        return self.eq.getReference(name);
+    }
+};
+
 /// Returns the stripped mRID if this tag is an SSH equipment patch, null otherwise.
 /// Accepts rdf:ID="_mrid" → "mrid" and rdf:about="#_mrid" → "mrid".
 /// Rejects metadata (urn: URIs, FullModel, etc.).

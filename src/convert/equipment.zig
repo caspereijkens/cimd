@@ -14,6 +14,7 @@ const get_switch_slices = cim_index.get_switch_slices;
 const CimModel = cim_model.CimModel;
 const CimObject = tag_index.CimObject;
 const CimSsh = @import("../cim_ssh.zig").CimSsh;
+const CimMergedView = @import("../cim_ssh.zig").CimMergedView;
 const CimIndex = cim_index.CimIndex;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
@@ -425,37 +426,35 @@ pub fn convert_generators(
     }
 
     for (machines) |machine| {
-        const machine_view = model.view(machine);
         const placement = resolve_equipment_placement(index, voltage_level_map, node_map, machine.id) orelse continue;
         const voltage_level = placement.voltage_level;
         const node = placement.node;
 
-        const mrid = try machine_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(machine.id);
-        const name = try machine_view.getProperty("IdentifiedObject.name");
+        // Resolve mRID first (needed for merged view lookup), then build merged view.
+        // All subsequent attribute reads go through view — SSH values shadow EQ values.
+        const eq_view = model.view(machine);
+        const mrid = try eq_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(machine.id);
+        const view = CimMergedView.init(eq_view, mrid, ssh_opt);
+
+        const name = try view.getProperty("IdentifiedObject.name");
 
         const rated_s: ?f64 = blk: {
-            const s = try machine_view.getProperty("RotatingMachine.ratedS") orelse break :blk null;
+            const s = try view.getProperty("RotatingMachine.ratedS") orelse break :blk null;
             break :blk try std.fmt.parseFloat(f64, s);
         };
 
-        const control_enabled_str = try machine_view.getProperty("RegulatingCondEq.controlEnabled") orelse "false";
+        const control_enabled_str = try view.getProperty("RegulatingCondEq.controlEnabled") orelse "false";
         const voltage_regulator_on = std.mem.eql(u8, control_enabled_str, "true");
 
         // Determine condenser status using EQ type + SSH operatingMode.
         // EQ SynchronousMachine.type declares capability; SSH operatingMode is the runtime decision.
-        // For "generatorOrCondenser" machines, SSH is authoritative. Without SSH, default to generator.
-        const type_ref = try machine_view.getReference("SynchronousMachine.type") orelse "";
+        // For "generatorOrCondenser" machines, SSH operatingMode is authoritative.
+        // Without SSH (or no patch), default to generator.
+        const type_ref = try view.getReference("SynchronousMachine.type") orelse "";
         const is_generator_or_condenser = std.mem.indexOf(u8, type_ref, "generatorOrCondenser") != null;
         const is_condenser = if (is_generator_or_condenser) blk: {
-            const ssh_patch = if (ssh_opt) |ssh| ssh.find_patch(mrid) else null;
-            const mode_ref = if (ssh_patch) |p|
-                try (if (ssh_opt) |ssh| ssh.getReferenceFromPatch(p, "SynchronousMachine.operatingMode") else null)
-            else
-                null;
-            break :blk if (mode_ref) |ref|
-                std.mem.indexOf(u8, ref, "ondenser") != null
-            else
-                false; // generatorOrCondenser without SSH → assume generator
+            const mode_ref = try view.getReference("SynchronousMachine.operatingMode");
+            break :blk if (mode_ref) |ref| std.mem.indexOf(u8, ref, "ondenser") != null else false;
         } else
             std.mem.indexOf(u8, type_ref, "ondenser") != null;
         // Extract "kind value" from a CIM enum URL: part after the last '.' in the fragment.
@@ -474,7 +473,7 @@ pub fn convert_generators(
         var unit_mrid: ?[]const u8 = null;
         var wind_unit_type: ?[]const u8 = null;
         var fuel_type: ?[]const u8 = null;
-        if (try machine_view.getReference("RotatingMachine.GeneratingUnit")) |unit_ref| {
+        if (try view.getReference("RotatingMachine.GeneratingUnit")) |unit_ref| {
             const unit_id = strip_hash(unit_ref);
             if (model.getObjectById(unit_id)) |unit| {
                 energy_source = energy_source_from_cim_type(unit.type_name);
@@ -504,18 +503,18 @@ pub fn convert_generators(
         var curve_points: std.ArrayListUnmanaged(iidm.ReactiveCapabilityCurvePoint) = .empty;
         var min_max_reactive_limits: ?iidm.MinMaxReactiveLimits = null;
 
-        if (try machine_view.getReference("SynchronousMachine.InitialReactiveCapabilityCurve")) |curve_ref| {
+        if (try view.getReference("SynchronousMachine.InitialReactiveCapabilityCurve")) |curve_ref| {
             if (index.curve_points.get(strip_hash(curve_ref))) |points| {
                 try curve_points.appendSlice(gpa, points.items);
             }
         }
 
         if (curve_points.items.len == 0) {
-            const min_q: ?f64 = if (try machine_view.getProperty("SynchronousMachine.minQ")) |v|
+            const min_q: ?f64 = if (try view.getProperty("SynchronousMachine.minQ")) |v|
                 try std.fmt.parseFloat(f64, v)
             else
                 null;
-            const max_q: ?f64 = if (try machine_view.getProperty("SynchronousMachine.maxQ")) |v|
+            const max_q: ?f64 = if (try view.getProperty("SynchronousMachine.maxQ")) |v|
                 try std.fmt.parseFloat(f64, v)
             else
                 null;
@@ -528,7 +527,7 @@ pub fn convert_generators(
         var regulating_terminal: ?[]const u8 = null;
         var rc_mrid: ?[]const u8 = null;
         var rc_mode_lower: ?[]u8 = null;
-        if (try machine_view.getReference("RegulatingCondEq.RegulatingControl")) |rc_ref| {
+        if (try view.getReference("RegulatingCondEq.RegulatingControl")) |rc_ref| {
             const rc_id = strip_hash(rc_ref);
             if (model.getObjectById(rc_id)) |rc| {
                 rc_mrid = try rc.getProperty("IdentifiedObject.mRID") orelse strip_underscore(rc_id);
