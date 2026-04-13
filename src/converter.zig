@@ -86,7 +86,7 @@ fn parse_iso8601_seconds(s: []const u8) ?i64 {
 ///   boundary.id   = ConductingEquipment mRID of the TieFlow.Terminal
 ///   boundary.side = sequenceNumber of the TieFlow.Terminal (1→"ONE", 2→"TWO")
 ///   boundary.ac   = true (always, as all equipment is AC in EQ profiles)
-fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, network: *iidm.Network) !void {
+fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh, network: *iidm.Network) !void {
     const control_areas = model.get_objects_by_type("ControlArea");
     assert(network.areas.items.len == 0);
     if (control_areas.len == 0) return;
@@ -132,10 +132,16 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, network: *iidm.
             try boundaries.append(gpa, .{ .id = eq_mrid, .side = side });
         }
 
+        const interchange_target: ?f64 = if (ssh_opt) |ssh| blk: {
+            const v = try ssh.getProperty(control_area_mrid, "ControlArea.netInterchange") orelse break :blk null;
+            break :blk std.fmt.parseFloat(f64, std.mem.trim(u8, v, " \t\r\n")) catch null;
+        } else null;
+
         network.areas.appendAssumeCapacity(.{
             .id = control_area_mrid,
             .name = control_area_name,
             .area_type = area_type,
+            .interchange_target = interchange_target,
             .boundaries = boundaries,
         });
     }
@@ -198,14 +204,14 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh)
 
     try equipment_conv.pre_allocate_equipment(gpa, model, &index, &voltage_level_map);
     try equipment_conv.convert_busbar_sections(model, &index, &voltage_level_map, &node_map);
-    try equipment_conv.convert_switches(model, &index, &voltage_level_map, &node_map);
-    try equipment_conv.convert_loads(gpa, model, &index, &voltage_level_map, &node_map);
-    try equipment_conv.convert_shunts(model, &index, &voltage_level_map, &node_map);
-    try equipment_conv.convert_static_var_compensators(model, &index, &voltage_level_map, &node_map);
+    try equipment_conv.convert_switches(model, &index, &voltage_level_map, &node_map, ssh_opt);
+    try equipment_conv.convert_loads(gpa, model, &index, &voltage_level_map, &node_map, ssh_opt);
+    try equipment_conv.convert_shunts(gpa, model, &index, &voltage_level_map, &node_map, ssh_opt);
+    try equipment_conv.convert_static_var_compensators(model, &index, &voltage_level_map, &node_map, ssh_opt);
     try equipment_conv.convert_generators(gpa, model, &index, &voltage_level_map, &node_map, ssh_opt);
     try transformer_conv.convert_transformers(gpa, model, &index, &substation_map, &voltage_level_map, &node_map);
-    try line_conv.convert_lines(gpa, model, &index, &network, &voltage_level_map, &node_map);
-    try convert_areas(gpa, model, &network);
+    try line_conv.convert_lines(gpa, model, &index, &network, &voltage_level_map, &node_map, ssh_opt);
+    try convert_areas(gpa, model, ssh_opt, &network);
 
     // -------------------------------------------------------------------------
     // Emit top-level extensions.
@@ -270,9 +276,9 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh)
         }
     }
 
-    // detail extension: every load gets {fixedActivePower, fixedReactivePower,
-    // variableActivePower, variableReactivePower} all zero. The EQ profile does
-    // not provide a fixed/variable power split; PyPowSyBl defaults to all-zero.
+    // detail extension: every load gets fixedActivePower/fixedReactivePower from EQ
+    // (EnergyConsumer.pfixed/qfixed), and variableActivePower/variableReactivePower
+    // computed as total (SSH p0/q0) minus fixed.
     {
         var load_count: usize = 0;
         for (network.substations.items) |substation| {
@@ -287,10 +293,10 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh)
                     network.extensions.appendAssumeCapacity(.{
                         .id = load.id,
                         .detail = .{
-                            .fixed_active_power = 0.0,
-                            .fixed_reactive_power = 0.0,
-                            .variable_active_power = 0.0,
-                            .variable_reactive_power = 0.0,
+                            .fixed_active_power = load.fixed_active_power,
+                            .fixed_reactive_power = load.fixed_reactive_power,
+                            .variable_active_power = load.p0 - load.fixed_active_power,
+                            .variable_reactive_power = load.q0 - load.fixed_reactive_power,
                         },
                     });
                 }
@@ -301,26 +307,48 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh)
         }
     }
 
-    // coordinatedReactiveControl: generators with SynchronousMachine.qPercent.
+    // Generator extensions: coordinatedReactiveControl (qPercent) and activePowerControl
+    // (normalPF). Both are keyed by generator mRID and must be merged into a single Extension
+    // entry per generator — pypowsybl emits one combined entry, not two separate ones.
     {
-        const machines = model.get_objects_by_type("SynchronousMachine");
-        var crc_count: usize = 0;
-        for (machines) |machine| {
-            if (try model.view(machine).getProperty("SynchronousMachine.qPercent") != null) crc_count += 1;
-        }
-        if (crc_count > 0) {
-            try network.extensions.ensureTotalCapacity(gpa, network.extensions.items.len + crc_count);
-            for (machines) |machine| {
-                const machine_view = model.view(machine);
-                const qpct_str = try machine_view.getProperty("SynchronousMachine.qPercent") orelse continue;
-                const qpct = std.fmt.parseFloat(f64, std.mem.trim(u8, qpct_str, " \t\r\n")) catch continue;
-                const mrid = try machine_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(machine.id);
-                network.extensions.appendAssumeCapacity(.{
-                    .id = mrid,
-                    .coordinated_reactive_control = .{ .q_percent = qpct },
-                });
+        var has_crc = false;
+        var has_apc = false;
+        var gen_ext_count: usize = 0;
+        for (network.substations.items) |substation| {
+            for (substation.voltage_levels.items) |voltage_level| {
+                for (voltage_level.generators.items) |gen| {
+                    if (gen.q_percent != null or gen.participation_factor != null) {
+                        gen_ext_count += 1;
+                        if (gen.q_percent != null) has_crc = true;
+                        if (gen.participation_factor != null) has_apc = true;
+                    }
+                }
             }
-            try network.extension_versions.append(gpa, .{ .extension_name = "coordinatedReactiveControl" });
+        }
+        if (gen_ext_count > 0) {
+            try network.extensions.ensureTotalCapacity(gpa, network.extensions.items.len + gen_ext_count);
+            for (network.substations.items) |substation| {
+                for (substation.voltage_levels.items) |voltage_level| {
+                    for (voltage_level.generators.items) |gen| {
+                        if (gen.q_percent == null and gen.participation_factor == null) continue;
+                        const crc: ?iidm.CoordinatedReactiveControl = if (gen.q_percent) |qp|
+                            .{ .q_percent = qp }
+                        else
+                            null;
+                        const apc: ?iidm.ActivePowerControl = if (gen.participation_factor) |pf|
+                            .{ .participate = true, .participation_factor = pf }
+                        else
+                            null;
+                        network.extensions.appendAssumeCapacity(.{
+                            .id = gen.id,
+                            .coordinated_reactive_control = crc,
+                            .active_power_control = apc,
+                        });
+                    }
+                }
+            }
+            if (has_crc) try network.extension_versions.append(gpa, .{ .extension_name = "coordinatedReactiveControl" });
+            if (has_apc) try network.extension_versions.append(gpa, .{ .extension_name = "activePowerControl" });
         }
     }
 

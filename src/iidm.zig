@@ -179,6 +179,10 @@ pub const Load = struct {
     id: []const u8,
     name: ?[]const u8,
     load_type: LoadType,
+    p0: f64 = 0.0,
+    q0: f64 = 0.0,
+    fixed_active_power: f64 = 0.0,
+    fixed_reactive_power: f64 = 0.0,
     node: u32,
     exponential_model: ?ExponentialModel = null,
     zip_model: ?ZipModel = null,
@@ -193,6 +197,10 @@ pub const Load = struct {
         try jws.write(self.name);
         try jws.objectField("loadType");
         try jws.write(self.load_type);
+        try jws.objectField("p0");
+        try writeFloat(jws, self.p0);
+        try jws.objectField("q0");
+        try writeFloat(jws, self.q0);
         try jws.objectField("node");
         try jws.write(self.node);
         if (self.aliases.items.len > 0) {
@@ -242,6 +250,8 @@ pub const Shunt = struct {
     name: ?[]const u8,
     section_count: u32,
     voltage_regulator_on: bool,
+    target_v: ?f64 = null,
+    target_deadband: ?f64 = null,
     regulating_terminal: ?[]const u8 = null,
     node: u32,
     shunt_linear_model: ShuntLinearModel,
@@ -258,6 +268,14 @@ pub const Shunt = struct {
         try jws.write(self.section_count);
         try jws.objectField("voltageRegulatorOn");
         try jws.write(self.voltage_regulator_on);
+        if (self.target_v) |tv| {
+            try jws.objectField("targetV");
+            try writeFloat(jws, tv);
+        }
+        if (self.target_deadband) |td| {
+            try jws.objectField("targetDeadband");
+            try writeFloat(jws, td);
+        }
         try jws.objectField("node");
         try jws.write(self.node);
         if (self.aliases.items.len > 0) {
@@ -511,9 +529,14 @@ pub const Generator = struct {
     min_p: ?f64,
     max_p: ?f64,
     rated_s: ?f64,
+    target_p: ?f64 = null,
+    target_q: ?f64 = null,
     is_condenser: bool = false,
     voltage_regulator_on: bool,
+    target_v: ?f64 = null,
     regulating_terminal: ?[]const u8 = null,
+    participation_factor: ?f64 = null,
+    q_percent: ?f64 = null,
     node: u32,
     reactive_capability_curve_points: std.ArrayListUnmanaged(ReactiveCapabilityCurvePoint),
     min_max_reactive_limits: ?MinMaxReactiveLimits = null,
@@ -534,8 +557,20 @@ pub const Generator = struct {
             try jws.objectField("ratedS");
             try writeFloat(jws, rs);
         }
+        if (self.target_p) |tp| {
+            try jws.objectField("targetP");
+            try writeFloat(jws, tp);
+        }
+        if (self.target_q) |tq| {
+            try jws.objectField("targetQ");
+            try writeFloat(jws, tq);
+        }
         try jws.objectField("voltageRegulatorOn");
         try jws.write(self.voltage_regulator_on);
+        if (self.target_v) |tv| {
+            try jws.objectField("targetV");
+            try writeFloat(jws, tv);
+        }
         if (self.is_condenser) {
             try jws.objectField("isCondenser");
             try jws.write(true);
@@ -1750,6 +1785,20 @@ pub const CoordinatedReactiveControl = struct {
     }
 };
 
+pub const ActivePowerControl = struct {
+    participate: bool,
+    participation_factor: f64,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("participate");
+        try jws.write(self.participate);
+        try jws.objectField("participationFactor");
+        try writeFloat(jws, self.participation_factor);
+        try jws.endObject();
+    }
+};
+
 pub const Extension = struct {
     id: []const u8,
     cgmes_tap_changers: ?CgmesTapChangers = null,
@@ -1759,6 +1808,7 @@ pub const Extension = struct {
     cim_characteristics: ?CimCharacteristics = null,
     detail: ?LoadDetail = null,
     coordinated_reactive_control: ?CoordinatedReactiveControl = null,
+    active_power_control: ?ActivePowerControl = null,
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
         try jws.beginObject();
@@ -1791,6 +1841,10 @@ pub const Extension = struct {
         if (self.coordinated_reactive_control) |crc| {
             try jws.objectField("coordinatedReactiveControl");
             try crc.jsonStringify(jws);
+        }
+        if (self.active_power_control) |apc| {
+            try jws.objectField("activePowerControl");
+            try apc.jsonStringify(jws);
         }
         try jws.endObject();
     }
@@ -1838,6 +1892,7 @@ pub const Area = struct {
     id: []const u8,
     name: []const u8,
     area_type: []const u8,
+    interchange_target: ?f64 = null,
     boundaries: std.ArrayListUnmanaged(AreaBoundary) = .empty,
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
@@ -1848,6 +1903,10 @@ pub const Area = struct {
         try jws.write(self.name);
         try jws.objectField("areaType");
         try jws.write(self.area_type);
+        if (self.interchange_target) |v| {
+            try jws.objectField("interchangeTarget");
+            try writeFloat(jws, v);
+        }
         try jws.objectField("areaBoundaries");
         try jws.write(self.boundaries.items);
         try jws.endObject();

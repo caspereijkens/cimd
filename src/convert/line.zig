@@ -57,6 +57,7 @@ pub fn convert_lines(
     network: *iidm.Network,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const NodeMap,
+    ssh_opt: ?@import("../cim_ssh.zig").CimSsh,
 ) !void {
     const lines = model.get_objects_by_type("ACLineSegment");
     const series_compensators = model.get_objects_by_type("SeriesCompensator");
@@ -216,6 +217,22 @@ pub fn convert_lines(
         properties.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = "EquivalentInjection" });
         properties.appendAssumeCapacity(.{ .name = "CGMES.regulationCapability", .value = "false" });
 
+        // SSH EquivalentInjection.p/q — load convention (negative = injecting) → negate for targetP/Q.
+        const target_p: ?f64 = if (ssh_opt) |ssh|
+            if (try ssh.getProperty(mrid, "EquivalentInjection.p")) |v|
+                -(std.fmt.parseFloat(f64, v) catch 0.0)
+            else
+                null
+        else
+            null;
+        const target_q: ?f64 = if (ssh_opt) |ssh|
+            if (try ssh.getProperty(mrid, "EquivalentInjection.q")) |v|
+                -(std.fmt.parseFloat(f64, v) catch 0.0)
+            else
+                null
+        else
+            null;
+
         const float_max = std.math.floatMax(f64);
         try fictitious_voltage_level.generators.append(gpa, .{
             .id = mrid,
@@ -224,6 +241,8 @@ pub fn convert_lines(
             .min_p = -float_max,
             .max_p = float_max,
             .rated_s = null,
+            .target_p = target_p,
+            .target_q = target_q,
             .voltage_regulator_on = false,
             .node = 0,
             .reactive_capability_curve_points = .empty,

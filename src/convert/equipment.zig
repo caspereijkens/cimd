@@ -146,6 +146,7 @@ pub fn convert_switches(
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const NodeMap,
+    ssh_opt: ?CimSsh,
 ) !void {
     const switch_slices = get_switch_slices(model);
 
@@ -164,13 +165,15 @@ pub fn convert_switches(
             const repr_voltage_level_id = cim_index.find_voltage_level(&index.voltage_level_merge, container0_id);
             const voltage_level = voltage_level_map.get(repr_voltage_level_id) orelse continue;
 
-            const switch_view = model.view(sw);
-            const mrid = try switch_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(sw.id);
-            const name = try switch_view.getProperty("IdentifiedObject.name");
+            const eq_view = model.view(sw);
+            const mrid = try eq_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(sw.id);
+            const view = CimMergedView.init(eq_view, mrid, ssh_opt);
+            const name = try view.getProperty("IdentifiedObject.name");
 
-            const open_str = try switch_view.getProperty("Switch.open") orelse "false";
+            // Switch.open and Switch.retained are SSH attributes — EQ does not carry open state.
+            const open_str = try view.getProperty("Switch.open") orelse "false";
             const open = std.mem.eql(u8, open_str, "true");
-            const retained_str = try switch_view.getProperty("Switch.retained") orelse "false";
+            const retained_str = try view.getProperty("Switch.retained") orelse "false";
             const retained = std.mem.eql(u8, retained_str, "true");
 
             const kind = iidm.SwitchKind.from_cim_type(sw.type_name);
@@ -196,14 +199,16 @@ pub fn convert_loads(
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const NodeMap,
+    ssh_opt: ?CimSsh,
 ) !void {
     const energy_consumers = model.get_objects_by_type("EnergyConsumer");
     const conform_loads = model.get_objects_by_type("ConformLoad");
     const non_conform_loads = model.get_objects_by_type("NonConformLoad");
 
-    try convert_load_type(gpa, model, index, voltage_level_map, node_map, energy_consumers);
-    try convert_load_type(gpa, model, index, voltage_level_map, node_map, conform_loads);
-    try convert_load_type(gpa, model, index, voltage_level_map, node_map, non_conform_loads);
+    try convert_load_type(gpa, model, index, voltage_level_map, node_map, ssh_opt, energy_consumers, false);
+    try convert_load_type(gpa, model, index, voltage_level_map, node_map, ssh_opt, conform_loads, false);
+    // NonConformLoad: all power is fixed by definition — p0/q0 go into fixed, variable = 0.
+    try convert_load_type(gpa, model, index, voltage_level_map, node_map, ssh_opt, non_conform_loads, true);
 }
 
 fn convert_load_type(
@@ -212,16 +217,19 @@ fn convert_load_type(
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const NodeMap,
+    ssh_opt: ?CimSsh,
     loads: []const CimObject,
+    non_conform: bool,
 ) !void {
     for (loads) |load| {
-        const load_view = model.view(load);
+        const eq_view = model.view(load);
         const placement = resolve_equipment_placement(index, voltage_level_map, node_map, load.id) orelse continue;
         const voltage_level = placement.voltage_level;
         const node = placement.node;
 
-        const mrid = try load_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(load.id);
-        const name = try load_view.getProperty("IdentifiedObject.name");
+        const mrid = try eq_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(load.id);
+        const view = CimMergedView.init(eq_view, mrid, ssh_opt);
+        const name = try view.getProperty("IdentifiedObject.name");
 
         // alias: CGMES.Terminal1 = terminal mRID
         var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
@@ -245,7 +253,7 @@ fn convert_load_type(
         // Load response characteristic → exponentialModel or zipModel.
         var exp_model: ?iidm.ExponentialModel = null;
         var zip_model: ?iidm.ZipModel = null;
-        if (try load_view.getReference("EnergyConsumer.LoadResponse")) |lr_ref| {
+        if (try view.getReference("EnergyConsumer.LoadResponse")) |lr_ref| {
             if (model.getObjectById(strip_hash(lr_ref))) |lrc| {
                 const exp_str = try lrc.getProperty("LoadResponseCharacteristic.exponentModel") orelse "false";
                 if (std.mem.eql(u8, exp_str, "true")) {
@@ -267,11 +275,41 @@ fn convert_load_type(
             }
         }
 
+        // SSH EnergyConsumer.p/q are in load convention (positive = consuming) — matches IIDM p0/q0.
+        const p0: f64 = if (try view.getProperty("EnergyConsumer.p")) |v|
+            std.fmt.parseFloat(f64, v) catch 0.0
+        else
+            0.0;
+        const q0: f64 = if (try view.getProperty("EnergyConsumer.q")) |v|
+            std.fmt.parseFloat(f64, v) catch 0.0
+        else
+            0.0;
+
+        // detail extension fixed/variable split:
+        // NonConformLoad — all power is fixed by definition (does not vary with load group).
+        // ConformLoad / EnergyConsumer — fixed = pfixed (EQ), variable = p0 - pfixed.
+        const fixed_active_power: f64 = if (non_conform)
+            p0
+        else if (try view.getProperty("EnergyConsumer.pfixed")) |v|
+            std.fmt.parseFloat(f64, v) catch 0.0
+        else
+            0.0;
+        const fixed_reactive_power: f64 = if (non_conform)
+            q0
+        else if (try view.getProperty("EnergyConsumer.qfixed")) |v|
+            std.fmt.parseFloat(f64, v) catch 0.0
+        else
+            0.0;
+
         assert(mrid.len > 0);
         voltage_level.loads.appendAssumeCapacity(.{
             .id = mrid,
             .name = name,
             .load_type = .other,
+            .p0 = p0,
+            .q0 = q0,
+            .fixed_active_power = fixed_active_power,
+            .fixed_reactive_power = fixed_reactive_power,
             .node = node,
             .exponential_model = exp_model,
             .zip_model = zip_model,
@@ -284,37 +322,86 @@ fn convert_load_type(
 }
 
 pub fn convert_shunts(
+    gpa: std.mem.Allocator,
     model: *const CimModel,
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const NodeMap,
+    ssh_opt: ?CimSsh,
 ) !void {
     const shunts = model.get_objects_by_type("LinearShuntCompensator");
     assert(shunts.len == 0 or voltage_level_map.count() > 0);
 
     for (shunts) |shunt| {
-        const shunt_view = model.view(shunt);
+        const eq_view = model.view(shunt);
         const placement = resolve_equipment_placement(index, voltage_level_map, node_map, shunt.id) orelse continue;
         const voltage_level = placement.voltage_level;
         const node = placement.node;
 
-        const mrid = try shunt_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(shunt.id);
-        const name = try shunt_view.getProperty("IdentifiedObject.name");
+        const mrid = try eq_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(shunt.id);
+        const view = CimMergedView.init(eq_view, mrid, ssh_opt);
+        const name = try view.getProperty("IdentifiedObject.name");
 
-        const sections_str = try shunt_view.getProperty("ShuntCompensator.sections") orelse "0";
+        // ShuntCompensator.sections (current in-service sections) is an SSH attribute.
+        // ShuntCompensator.maximumSections and electrical data are EQ attributes.
+        const sections_str = try view.getProperty("ShuntCompensator.sections") orelse "0";
         const section_count: u32 = @intCast(try std.fmt.parseInt(i64, sections_str, 10));
 
-        const max_sections_str = try shunt_view.getProperty("ShuntCompensator.maximumSections") orelse "0";
+        const max_sections_str = try view.getProperty("ShuntCompensator.maximumSections") orelse "0";
         const max_section_count: u32 = @intCast(try std.fmt.parseInt(i64, max_sections_str, 10));
 
-        const b_per_section_str = try shunt_view.getProperty("LinearShuntCompensator.bPerSection") orelse "0.0";
+        const b_per_section_str = try view.getProperty("LinearShuntCompensator.bPerSection") orelse "0.0";
         const b_per_section = try std.fmt.parseFloat(f64, b_per_section_str);
 
-        const g_per_section_str = try shunt_view.getProperty("LinearShuntCompensator.gPerSection") orelse "0.0";
+        const g_per_section_str = try view.getProperty("LinearShuntCompensator.gPerSection") orelse "0.0";
         const g_per_section = try std.fmt.parseFloat(f64, g_per_section_str);
 
-        const control_enabled_str = try shunt_view.getProperty("RegulatingCondEq.controlEnabled") orelse "false";
+        const control_enabled_str = try view.getProperty("RegulatingCondEq.controlEnabled") orelse "false";
         const voltage_regulator_on = std.mem.eql(u8, control_enabled_str, "true");
+
+        // RegulatingControl: resolve RC mRID for targetV, targetDeadband (SSH), regulatingTerminal, and properties.
+        var target_v: ?f64 = null;
+        var target_deadband: ?f64 = null;
+        var rc_mrid: ?[]const u8 = null;
+        var regulating_terminal: ?[]const u8 = null;
+        if (try eq_view.getReference("RegulatingCondEq.RegulatingControl")) |rc_ref| {
+            const rc_id = strip_hash(rc_ref);
+            if (model.getObjectById(rc_id)) |rc_view| {
+                rc_mrid = try rc_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(rc_id);
+                // Resolve regulatingTerminal: RC.Terminal → CN → reachable BBS mRID.
+                // Skip if RC terminal is on the shunt itself (local regulation → null).
+                if (try rc_view.getReference("RegulatingControl.Terminal")) |rt_ref| {
+                    const rt_id = strip_hash(rt_ref);
+                    const rt_equipment = index.terminal_equipment.get(rt_id) orelse "";
+                    const is_local = std.mem.eql(u8, rt_equipment, shunt.id);
+                    if (!is_local) {
+                        if (index.terminal_conn_node.get(rt_id)) |conn_node_id| {
+                            regulating_terminal = index.conn_node_reachable_busbar_section.get(conn_node_id);
+                        }
+                    }
+                }
+            }
+            if (rc_mrid) |rm| {
+                if (ssh_opt) |ssh| {
+                    if (try ssh.getProperty(rm, "RegulatingControl.targetValue")) |v|
+                        target_v = std.fmt.parseFloat(f64, v) catch null;
+                    if (try ssh.getProperty(rm, "RegulatingControl.targetDeadband")) |v|
+                        target_deadband = std.fmt.parseFloat(f64, v) catch null;
+                }
+            }
+        }
+
+        // normalSections: EQ attribute, emitted as CGMES.normalSections property.
+        const normal_sections_str = try eq_view.getProperty("ShuntCompensator.normalSections");
+
+        var props: std.ArrayListUnmanaged(iidm.Property) = .empty;
+        const prop_count: usize = (if (rc_mrid != null) @as(usize, 1) else 0) +
+            (if (normal_sections_str != null) @as(usize, 1) else 0);
+        if (prop_count > 0) {
+            try props.ensureTotalCapacity(gpa, prop_count);
+            if (rc_mrid) |rm| props.appendAssumeCapacity(.{ .name = "CGMES.RegulatingControl", .value = rm });
+            if (normal_sections_str) |ns| props.appendAssumeCapacity(.{ .name = "CGMES.normalSections", .value = ns });
+        }
 
         assert(mrid.len > 0);
         voltage_level.shunts.appendAssumeCapacity(.{
@@ -322,6 +409,9 @@ pub fn convert_shunts(
             .name = name,
             .section_count = section_count,
             .voltage_regulator_on = voltage_regulator_on,
+            .target_v = target_v,
+            .target_deadband = target_deadband,
+            .regulating_terminal = regulating_terminal,
             .node = node,
             .shunt_linear_model = .{
                 .b_per_section = b_per_section,
@@ -329,7 +419,7 @@ pub fn convert_shunts(
                 .max_section_count = max_section_count,
             },
             .aliases = .empty,
-            .properties = .empty,
+            .properties = props,
         });
     }
 }
@@ -339,29 +429,31 @@ pub fn convert_static_var_compensators(
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const NodeMap,
+    ssh_opt: ?CimSsh,
 ) !void {
     const static_var_compensators = model.get_objects_by_type("StaticVarCompensator");
     assert(static_var_compensators.len == 0 or voltage_level_map.count() > 0);
 
     for (static_var_compensators) |static_var_compensator| {
-        const static_var_compensator_view = model.view(static_var_compensator);
+        const eq_view = model.view(static_var_compensator);
         const placement = resolve_equipment_placement(index, voltage_level_map, node_map, static_var_compensator.id) orelse continue;
         const voltage_level = placement.voltage_level;
         const node = placement.node;
 
-        const mrid = try static_var_compensator_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(static_var_compensator.id);
-        const name = try static_var_compensator_view.getProperty("IdentifiedObject.name");
+        const mrid = try eq_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(static_var_compensator.id);
+        const view = CimMergedView.init(eq_view, mrid, ssh_opt);
+        const name = try view.getProperty("IdentifiedObject.name");
 
-        const b_min_str = try static_var_compensator_view.getProperty("StaticVarCompensator.bMin") orelse "0.0";
+        const b_min_str = try view.getProperty("StaticVarCompensator.bMin") orelse "0.0";
         const b_min = try std.fmt.parseFloat(f64, b_min_str);
 
-        const b_max_str = try static_var_compensator_view.getProperty("StaticVarCompensator.bMax") orelse "0.0";
+        const b_max_str = try view.getProperty("StaticVarCompensator.bMax") orelse "0.0";
         const b_max = try std.fmt.parseFloat(f64, b_max_str);
 
-        const control_enabled_str = try static_var_compensator_view.getProperty("RegulatingCondEq.controlEnabled") orelse "false";
+        const control_enabled_str = try view.getProperty("RegulatingCondEq.controlEnabled") orelse "false";
         const regulating = std.mem.eql(u8, control_enabled_str, "true");
 
-        const regulation_mode_ref = try static_var_compensator_view.getReference("StaticVarCompensator.regulationMode");
+        const regulation_mode_ref = try view.getReference("StaticVarCompensator.regulationMode");
         const regulation_mode: iidm.SvcRegulationMode = blk: {
             const ref = regulation_mode_ref orelse break :blk .off;
             if (std.mem.endsWith(u8, ref, "voltage")) break :blk .voltage;
@@ -446,17 +538,11 @@ pub fn convert_generators(
         const control_enabled_str = try view.getProperty("RegulatingCondEq.controlEnabled") orelse "false";
         const voltage_regulator_on = std.mem.eql(u8, control_enabled_str, "true");
 
-        // Determine condenser status using EQ type + SSH operatingMode.
-        // EQ SynchronousMachine.type declares capability; SSH operatingMode is the runtime decision.
-        // For "generatorOrCondenser" machines, SSH operatingMode is authoritative.
-        // Without SSH (or no patch), default to generator.
-        const type_ref = try view.getReference("SynchronousMachine.type") orelse "";
-        const is_generator_or_condenser = std.mem.indexOf(u8, type_ref, "generatorOrCondenser") != null;
-        const is_condenser = if (is_generator_or_condenser) blk: {
-            const mode_ref = try view.getReference("SynchronousMachine.operatingMode");
-            break :blk if (mode_ref) |ref| std.mem.indexOf(u8, ref, "ondenser") != null else false;
-        } else
-            std.mem.indexOf(u8, type_ref, "ondenser") != null;
+        // isCondenser is a capability flag from EQ (can this machine act as a condenser?).
+        // It is true if EQ SynchronousMachine.type contains "condenser" (either "condenser"
+        // or "generatorOrCondenser"). SSH operatingMode does not affect this flag.
+        const type_ref = try eq_view.getReference("SynchronousMachine.type") orelse "";
+        const is_condenser = std.mem.indexOf(u8, type_ref, "ondenser") != null;
         // Extract "kind value" from a CIM enum URL: part after the last '.' in the fragment.
         // e.g. "http://...#SynchronousMachineKind.generatorOrCondenser" → "generatorOrCondenser"
         const type_fragment: ?[]const u8 = blk: {
@@ -466,13 +552,15 @@ pub fn convert_generators(
             break :blk frag[dot + 1 ..];
         };
 
-        // Resolve GeneratingUnit for min_p, max_p, energy source, GeneratingUnit mRID, and wind type.
+        // Resolve GeneratingUnit for min_p, max_p, energy source, GeneratingUnit mRID, wind type,
+        // and SSH normalPF (used for activePowerControl extension).
         var min_p: ?f64 = null;
         var max_p: ?f64 = null;
         var energy_source: iidm.EnergySource = .other;
         var unit_mrid: ?[]const u8 = null;
         var wind_unit_type: ?[]const u8 = null;
         var fuel_type: ?[]const u8 = null;
+        var participation_factor: ?f64 = null;
         if (try view.getReference("RotatingMachine.GeneratingUnit")) |unit_ref| {
             const unit_id = strip_hash(unit_ref);
             if (model.getObjectById(unit_id)) |unit| {
@@ -496,6 +584,12 @@ pub fn convert_generators(
                 }
                 // ThermalGeneratingUnit: look up fuel type from FossilFuel inverse map.
                 fuel_type = fuel_type_map.get(unit_id);
+                // SSH GeneratingUnit.normalPF → activePowerControl participationFactor.
+                if (ssh_opt) |ssh| {
+                    const gu_mrid = unit_mrid orelse strip_underscore(unit_id);
+                    if (try ssh.getProperty(gu_mrid, "GeneratingUnit.normalPF")) |v|
+                        participation_factor = std.fmt.parseFloat(f64, v) catch null;
+                }
             }
         }
 
@@ -523,14 +617,22 @@ pub fn convert_generators(
             }
         }
 
-        // Resolve regulatingTerminal, CGMES.RegulatingControl mRID, and CGMES.mode.
+        // Resolve regulatingTerminal, CGMES.RegulatingControl mRID, CGMES.mode, and targetV.
         var regulating_terminal: ?[]const u8 = null;
         var rc_mrid: ?[]const u8 = null;
         var rc_mode_lower: ?[]u8 = null;
+        var target_v: ?f64 = null;
         if (try view.getReference("RegulatingCondEq.RegulatingControl")) |rc_ref| {
             const rc_id = strip_hash(rc_ref);
             if (model.getObjectById(rc_id)) |rc| {
                 rc_mrid = try rc.getProperty("IdentifiedObject.mRID") orelse strip_underscore(rc_id);
+                // SSH RegulatingControl.targetValue → IIDM targetV.
+                if (rc_mrid) |rm| {
+                    if (ssh_opt) |ssh| {
+                        if (try ssh.getProperty(rm, "RegulatingControl.targetValue")) |v|
+                            target_v = std.fmt.parseFloat(f64, v) catch null;
+                    }
+                }
                 // CGMES.mode: full URL of RegulatingControl.mode, lowercased.
                 if (try rc.getReference("RegulatingControl.mode")) |mode_ref| {
                     rc_mode_lower = try gpa.alloc(u8, mode_ref.len);
@@ -577,6 +679,22 @@ pub fn convert_generators(
         if (rc_mrid) |rm| gen_props.appendAssumeCapacity(.{ .name = "CGMES.RegulatingControl", .value = rm });
         if (wind_unit_type) |wt| gen_props.appendAssumeCapacity(.{ .name = "CGMES.windGenUnitType", .value = wt });
 
+        // SSH RotatingMachine.p/q are in load convention (negative = generating).
+        // IIDM targetP/targetQ use generator convention (positive = generating) → negate.
+        const target_p: ?f64 = if (try view.getProperty("RotatingMachine.p")) |v|
+            -(try std.fmt.parseFloat(f64, v))
+        else
+            null;
+        const target_q: ?f64 = if (try view.getProperty("RotatingMachine.q")) |v|
+            -(try std.fmt.parseFloat(f64, v))
+        else
+            null;
+
+        const q_percent: ?f64 = blk: {
+            const v = try view.getProperty("SynchronousMachine.qPercent") orelse break :blk null;
+            break :blk std.fmt.parseFloat(f64, std.mem.trim(u8, v, " \t\r\n")) catch null;
+        };
+
         assert(mrid.len > 0);
         voltage_level.generators.appendAssumeCapacity(.{
             .id = mrid,
@@ -585,12 +703,17 @@ pub fn convert_generators(
             .min_p = min_p,
             .max_p = max_p,
             .rated_s = rated_s,
+            .target_p = target_p,
+            .target_q = target_q,
             .is_condenser = is_condenser,
             .voltage_regulator_on = voltage_regulator_on,
+            .target_v = target_v,
             .node = node,
             .reactive_capability_curve_points = curve_points,
             .min_max_reactive_limits = min_max_reactive_limits,
             .regulating_terminal = regulating_terminal,
+            .participation_factor = participation_factor,
+            .q_percent = q_percent,
             .aliases = gen_aliases,
             .properties = gen_props,
         });
