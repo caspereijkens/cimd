@@ -58,11 +58,13 @@ const help_eq_convert =
     \\
     \\Options:
     \\  --eqbd <file>     EQBD boundary profile (XML or ZIP)
+    \\  --ssh <file>      SSH steady-state hypothesis profile (XML or ZIP)
     \\  --output <file>   Write output to file instead of stdout
     \\
     \\Examples:
     \\  cimd eq convert data/eq.zip
     \\  cimd eq convert data/eq.zip --eqbd eqbd.zip
+    \\  cimd eq convert data/eq.zip --eqbd eqbd.zip --ssh ssh.zip
     \\  cimd eq convert data/eq.zip --output network.json
     \\
 ;
@@ -78,6 +80,7 @@ const help_eq_browse =
     \\
     \\Options:
     \\  --eqbd <file>     EQBD boundary profile (XML or ZIP)
+    \\  --ssh <file>      SSH steady-state hypothesis profile (XML or ZIP)
     \\
     \\Examples:
     \\  cimd eq browse data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
@@ -97,6 +100,7 @@ const help_eq_get =
     \\
     \\Options:
     \\  --eqbd <file>          EQBD boundary profile (XML or ZIP)
+    \\  --ssh <file>           SSH steady-state hypothesis profile (XML or ZIP)
     \\  --type <type>          Filter by CIM type (e.g. PowerTransformer)
     \\                         Without <mrid>: list all objects of this type
     \\                         With <mrid>: verify the object is of this type
@@ -125,6 +129,7 @@ const help_eq_types =
     \\
     \\Options:
     \\  --eqbd <file>     EQBD boundary profile (XML or ZIP)
+    \\  --ssh <file>      SSH steady-state hypothesis profile (XML or ZIP)
     \\  --json            Output as JSON array of {type, count} objects
     \\
     \\Examples:
@@ -198,18 +203,21 @@ pub const Command = union(enum) {
         pub const Convert = struct {
             eq_path: []const u8,
             eqbd_path: ?[]const u8,
+            ssh_path: ?[]const u8,
             output_path: ?[]const u8,
         };
 
         pub const Browse = struct {
             eq_path: []const u8,
             eqbd_path: ?[]const u8,
+            ssh_path: ?[]const u8,
             mrid: []const u8,
         };
 
         pub const Get = struct {
             eq_path: []const u8,
             eqbd_path: ?[]const u8,
+            ssh_path: ?[]const u8,
             mrid: ?[]const u8,
             type_filter: ?[]const u8,
             fields: ?[]const u8,
@@ -220,6 +228,7 @@ pub const Command = union(enum) {
         pub const Types = struct {
             eq_path: []const u8,
             eqbd_path: ?[]const u8,
+            ssh_path: ?[]const u8,
             json: bool,
         };
 
@@ -290,6 +299,7 @@ fn parse_eq(args: *std.process.ArgIterator) Command {
 fn parse_eq_convert(args: *std.process.ArgIterator) Command {
     var eq_path: ?[]const u8 = null;
     var eqbd_path: ?[]const u8 = null;
+    var ssh_path: ?[]const u8 = null;
     var output_path: ?[]const u8 = null;
 
     while (args.next()) |arg| {
@@ -300,6 +310,9 @@ fn parse_eq_convert(args: *std.process.ArgIterator) Command {
         if (eql(arg, "--eqbd")) {
             eqbd_path = args.next() orelse
                 print.stderr("eq convert: --eqbd requires a file path", .{});
+        } else if (eql(arg, "--ssh")) {
+            ssh_path = args.next() orelse
+                print.stderr("eq convert: --ssh requires a file path", .{});
         } else if (eql(arg, "--output")) {
             output_path = args.next() orelse
                 print.stderr("eq convert: --output requires a file path", .{});
@@ -318,6 +331,7 @@ fn parse_eq_convert(args: *std.process.ArgIterator) Command {
     return .{ .eq = .{ .convert = .{
         .eq_path = eq_path.?,
         .eqbd_path = eqbd_path,
+        .ssh_path = ssh_path,
         .output_path = output_path,
     } } };
 }
@@ -325,6 +339,7 @@ fn parse_eq_convert(args: *std.process.ArgIterator) Command {
 fn parse_eq_browse(args: *std.process.ArgIterator) Command {
     var eq_path: ?[]const u8 = null;
     var eqbd_path: ?[]const u8 = null;
+    var ssh_path: ?[]const u8 = null;
     var mrid: ?[]const u8 = null;
 
     while (args.next()) |arg| {
@@ -335,6 +350,9 @@ fn parse_eq_browse(args: *std.process.ArgIterator) Command {
         if (eql(arg, "--eqbd")) {
             eqbd_path = args.next() orelse
                 print.stderr("eq browse: --eqbd requires a file path", .{});
+        } else if (eql(arg, "--ssh")) {
+            ssh_path = args.next() orelse
+                print.stderr("eq browse: --ssh requires a file path", .{});
         } else if (is_flag(arg)) {
             print.stderr("eq browse: unknown option '{s}'", .{arg});
         } else if (eq_path == null) {
@@ -354,6 +372,7 @@ fn parse_eq_browse(args: *std.process.ArgIterator) Command {
     return .{ .eq = .{ .browse = .{
         .eq_path = eq_path.?,
         .eqbd_path = eqbd_path,
+        .ssh_path = ssh_path,
         .mrid = mrid.?,
     } } };
 }
@@ -361,6 +380,7 @@ fn parse_eq_browse(args: *std.process.ArgIterator) Command {
 fn parse_eq_get(args: *std.process.ArgIterator) Command {
     var eq_path: ?[]const u8 = null;
     var eqbd_path: ?[]const u8 = null;
+    var ssh_path: ?[]const u8 = null;
     var mrid: ?[]const u8 = null;
     var type_filter: ?[]const u8 = null;
     var fields: ?[]const u8 = null;
@@ -375,6 +395,9 @@ fn parse_eq_get(args: *std.process.ArgIterator) Command {
         if (eql(arg, "--eqbd")) {
             eqbd_path = args.next() orelse
                 print.stderr("eq get: --eqbd requires a file path", .{});
+        } else if (eql(arg, "--ssh")) {
+            ssh_path = args.next() orelse
+                print.stderr("eq get: --ssh requires a file path", .{});
         } else if (eql(arg, "--type")) {
             type_filter = args.next() orelse
                 print.stderr("eq get: --type requires a CIM type name", .{});
@@ -405,6 +428,7 @@ fn parse_eq_get(args: *std.process.ArgIterator) Command {
     return .{ .eq = .{ .get = .{
         .eq_path = eq_path.?,
         .eqbd_path = eqbd_path,
+        .ssh_path = ssh_path,
         .mrid = mrid,
         .type_filter = type_filter,
         .fields = fields,
@@ -416,6 +440,7 @@ fn parse_eq_get(args: *std.process.ArgIterator) Command {
 fn parse_eq_types(args: *std.process.ArgIterator) Command {
     var eq_path: ?[]const u8 = null;
     var eqbd_path: ?[]const u8 = null;
+    var ssh_path: ?[]const u8 = null;
     var json = false;
 
     while (args.next()) |arg| {
@@ -426,6 +451,9 @@ fn parse_eq_types(args: *std.process.ArgIterator) Command {
         if (eql(arg, "--eqbd")) {
             eqbd_path = args.next() orelse
                 print.stderr("eq types: --eqbd requires a file path", .{});
+        } else if (eql(arg, "--ssh")) {
+            ssh_path = args.next() orelse
+                print.stderr("eq types: --ssh requires a file path", .{});
         } else if (eql(arg, "--json")) {
             json = true;
         } else if (is_flag(arg)) {
@@ -443,6 +471,7 @@ fn parse_eq_types(args: *std.process.ArgIterator) Command {
     return .{ .eq = .{ .types = .{
         .eq_path = eq_path.?,
         .eqbd_path = eqbd_path,
+        .ssh_path = ssh_path,
         .json = json,
     } } };
 }

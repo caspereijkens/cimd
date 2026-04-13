@@ -10,6 +10,7 @@ const connection_conv = @import("convert/connection.zig");
 const equipment_conv = @import("convert/equipment.zig");
 const transformer_conv = @import("convert/transformer.zig");
 const line_conv = @import("convert/line.zig");
+const CimSsh = @import("cim_ssh.zig").CimSsh;
 
 const assert = std.debug.assert;
 const CimModel = cim_model.CimModel;
@@ -142,7 +143,7 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, network: *iidm.
 
 /// Convert a CimModel into an IIDM Network.
 /// Caller owns the returned network and must call network.deinit(gpa).
-pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
+pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh) !iidm.Network {
     assert(model.get_objects_by_type("Substation").len > 0);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
@@ -201,7 +202,7 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel) !iidm.Network {
     try equipment_conv.convert_loads(gpa, model, &index, &voltage_level_map, &node_map);
     try equipment_conv.convert_shunts(model, &index, &voltage_level_map, &node_map);
     try equipment_conv.convert_static_var_compensators(model, &index, &voltage_level_map, &node_map);
-    try equipment_conv.convert_generators(gpa, model, &index, &voltage_level_map, &node_map);
+    try equipment_conv.convert_generators(gpa, model, &index, &voltage_level_map, &node_map, ssh_opt);
     try transformer_conv.convert_transformers(gpa, model, &index, &substation_map, &voltage_level_map, &node_map);
     try line_conv.convert_lines(gpa, model, &index, &network, &voltage_level_map, &node_map);
     try convert_areas(gpa, model, &network);

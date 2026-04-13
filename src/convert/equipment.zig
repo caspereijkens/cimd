@@ -13,6 +13,7 @@ const get_switch_slices = cim_index.get_switch_slices;
 
 const CimModel = cim_model.CimModel;
 const CimObject = tag_index.CimObject;
+const CimSsh = @import("../cim_ssh.zig").CimSsh;
 const CimIndex = cim_index.CimIndex;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
@@ -397,6 +398,7 @@ pub fn convert_generators(
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const NodeMap,
+    ssh_opt: ?CimSsh,
 ) !void {
     const machines = model.get_objects_by_type("SynchronousMachine");
     assert(machines.len == 0 or voltage_level_map.count() > 0);
@@ -439,10 +441,23 @@ pub fn convert_generators(
         const control_enabled_str = try machine_view.getProperty("RegulatingCondEq.controlEnabled") orelse "false";
         const voltage_regulator_on = std.mem.eql(u8, control_enabled_str, "true");
 
-        // SynchronousMachineKind enum: "condenser" or "generatorOrCondenser" (capital C).
-        // Search for the common lowercase suffix "ondenser" to match both.
+        // Determine condenser status using EQ type + SSH operatingMode.
+        // EQ SynchronousMachine.type declares capability; SSH operatingMode is the runtime decision.
+        // For "generatorOrCondenser" machines, SSH is authoritative. Without SSH, default to generator.
         const type_ref = try machine_view.getReference("SynchronousMachine.type") orelse "";
-        const is_condenser = std.mem.indexOf(u8, type_ref, "ondenser") != null;
+        const is_generator_or_condenser = std.mem.indexOf(u8, type_ref, "generatorOrCondenser") != null;
+        const is_condenser = if (is_generator_or_condenser) blk: {
+            const ssh_patch = if (ssh_opt) |ssh| ssh.find_patch(mrid) else null;
+            const mode_ref = if (ssh_patch) |p|
+                try (if (ssh_opt) |ssh| ssh.getReferenceFromPatch(p, "SynchronousMachine.operatingMode") else null)
+            else
+                null;
+            break :blk if (mode_ref) |ref|
+                std.mem.indexOf(u8, ref, "ondenser") != null
+            else
+                false; // generatorOrCondenser without SSH → assume generator
+        } else
+            std.mem.indexOf(u8, type_ref, "ondenser") != null;
         // Extract "kind value" from a CIM enum URL: part after the last '.' in the fragment.
         // e.g. "http://...#SynchronousMachineKind.generatorOrCondenser" → "generatorOrCondenser"
         const type_fragment: ?[]const u8 = blk: {
