@@ -199,12 +199,13 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh)
     var voltage_level_map = try voltage_level_conv.build_voltage_level_map(gpa, model, &index, &network, &sub_id_map, &substation_map);
     defer voltage_level_map.deinit(gpa);
 
-    var node_map = try connection_conv.build_node_map(gpa, model, &index, &voltage_level_map);
+    var node_map = try connection_conv.build_node_map(gpa, model, &index, &voltage_level_map, ssh_opt);
     defer node_map.deinit(gpa);
 
     try equipment_conv.pre_allocate_equipment(gpa, model, &index, &voltage_level_map);
-    try equipment_conv.convert_busbar_sections(model, &index, &voltage_level_map, &node_map);
-    try equipment_conv.convert_switches(model, &index, &voltage_level_map, &node_map, ssh_opt);
+    try equipment_conv.convert_busbar_sections(gpa, model, &index, &voltage_level_map, &node_map);
+    try equipment_conv.convert_switches(gpa, model, &index, &voltage_level_map, &node_map, ssh_opt);
+    try equipment_conv.convert_fictitious_switches(gpa, model, &index, &voltage_level_map, &node_map, ssh_opt);
     try equipment_conv.convert_loads(gpa, model, &index, &voltage_level_map, &node_map, ssh_opt);
     try equipment_conv.convert_shunts(gpa, model, &index, &voltage_level_map, &node_map, ssh_opt);
     try equipment_conv.convert_static_var_compensators(model, &index, &voltage_level_map, &node_map, ssh_opt);

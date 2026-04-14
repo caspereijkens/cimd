@@ -328,7 +328,7 @@ test "forecastDistance: scenarioTime 8h after created → 480 minutes" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, EQ_XML);
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model);
+    var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
 
     // 2026-01-01T09:00Z − 2026-01-01T01:00Z = 8h = 480 min
@@ -341,7 +341,7 @@ test "line: gch and bch split equally across both sides" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, EQ_XML);
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model);
+    var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
 
     const line = find_line(network, "LINE1") orelse return error.TestFailed;
@@ -360,7 +360,7 @@ test "boundary line: creates a fictitious VL and LINE_BNDRY lands in it" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, EQ_XML);
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model);
+    var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
 
     // Exactly one boundary CN → exactly one fictitious VL.
@@ -385,7 +385,7 @@ test "generator: energy_source derived from GeneratingUnit CIM type" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, EQ_XML);
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model);
+    var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
 
     const gen_th = find_generator(network, "GEN_TH") orelse return error.TestFailed;
@@ -399,7 +399,7 @@ test "generator: min_p and max_p read from GeneratingUnit" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, EQ_XML);
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model);
+    var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
 
     const gen = find_generator(network, "GEN_TH") orelse return error.TestFailed;
@@ -413,7 +413,7 @@ test "generator: is_condenser true when SynchronousMachine.type contains condens
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, EQ_XML);
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model);
+    var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
 
     const condenser = find_generator(network, "GEN_CO") orelse return error.TestFailed;
@@ -430,7 +430,7 @@ test "generator: reactive capability curve takes precedence over minQ/maxQ" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, EQ_XML);
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model);
+    var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
 
     const gen_cu = find_generator(network, "GEN_CU") orelse return error.TestFailed;
@@ -447,7 +447,7 @@ test "generator: minQ/maxQ used as fallback when no curve" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, EQ_XML);
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model);
+    var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
 
     const gen_th = find_generator(network, "GEN_TH") orelse return error.TestFailed;
@@ -464,7 +464,7 @@ test "SVC: regulationMode voltage fragment → .voltage" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, EQ_XML);
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model);
+    var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
 
     for (network.substations.items) |substation| {
@@ -487,7 +487,7 @@ test "detail extension: every load gets fixedActivePower etc. all zero" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, EQ_XML);
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model);
+    var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
 
     const ext = find_extension(network, "LOAD1") orelse return error.TestFailed;
@@ -514,7 +514,7 @@ test "coordinatedReactiveControl: generator with qPercent gets extension" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, EQ_XML);
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model);
+    var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
 
     const ext = find_extension(network, "GEN_CO") orelse return error.TestFailed;
@@ -533,7 +533,7 @@ test "areas: ControlArea produces one area with TieFlow boundary" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, EQ_XML);
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model);
+    var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
 
     try std.testing.expectEqual(@as(usize, 1), network.areas.items.len);
@@ -552,7 +552,7 @@ test "shunt: section count, bPerSection, voltage_regulator_on parsed correctly" 
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, EQ_XML);
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model);
+    var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
 
     for (network.substations.items) |substation| {
@@ -578,7 +578,7 @@ test "line: both terminal aliases present with correct types and content" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, EQ_XML);
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model);
+    var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
 
     const line = find_line(network, "LINE1") orelse return error.TestFailed;
@@ -604,7 +604,7 @@ test "line: CGMES.originalClass property is ACLineSegment" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, EQ_XML);
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model);
+    var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
 
     const line = find_line(network, "LINE1") orelse return error.TestFailed;

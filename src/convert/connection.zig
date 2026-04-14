@@ -3,14 +3,16 @@ const iidm = @import("../iidm.zig");
 const cim_model = @import("../cim_model.zig");
 const cim_index = @import("../cim_index.zig");
 const utils = @import("../utils.zig");
+const CimSsh = @import("../cim_ssh.zig").CimSsh;
 
 const assert = std.debug.assert;
 
 const CimModel = cim_model.CimModel;
 const CimIndex = cim_index.CimIndex;
 const strip_hash = utils.strip_hash;
+const strip_underscore = utils.strip_underscore;
 
-const switch_type_names = [_][]const u8{ "Breaker", "Disconnector", "LoadBreakSwitch" };
+pub const switch_type_names = [_][]const u8{ "Breaker", "Disconnector", "LoadBreakSwitch" };
 
 fn is_switch_type(type_name: []const u8) bool {
     for (switch_type_names) |sw| {
@@ -29,7 +31,7 @@ pub const NodeMap = std.StringHashMapUnmanaged(u32);
 /// Equipment type processing order for Phase 2 node allocation.
 /// Matches PyPowSyBl's CGMES importer processing sequence.
 /// BusbarSections and switch types are excluded (handled in Phase 1).
-const phase2_equipment_types = [_][]const u8{
+pub const phase2_equipment_types = [_][]const u8{
     "ACLineSegment",
     "PowerTransformer",
     "SynchronousMachine",
@@ -40,6 +42,7 @@ const phase2_equipment_types = [_][]const u8{
     "StaticVarCompensator",
     "SeriesCompensator",
 };
+
 
 /// Build the terminal → node map and populate internalConnections on all VLs.
 ///
@@ -65,6 +68,7 @@ pub fn build_node_map(
     model: *const CimModel,
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
+    ssh_opt: ?CimSsh,
 ) !NodeMap {
     assert(index.conn_node_container.count() > 0);
 
@@ -188,14 +192,26 @@ pub fn build_node_map(
                 const voltage_level_ctr = voltage_level_counters.getPtr(repr_voltage_level_id) orelse continue;
                 const has_busbar_section = index.conn_node_to_busbar_section.contains(conn_node_id);
 
+                // SSH-disconnected terminals get a dedicated node but no IC.
+                // convert_fictitious_switches creates the fictitious switch instead.
+                const ssh_disconnected = is_ssh_terminal_disconnected(ssh_opt, t.id);
+
                 if (has_busbar_section or conn_node_first_seen.contains(conn_node_id)) {
                     const terminal_node = voltage_level_ctr.*;
                     voltage_level_ctr.* += 1;
                     node_map.putAssumeCapacity(t.id, terminal_node);
-                    voltage_level.node_breaker_topology.internal_connections.appendAssumeCapacity(.{
-                        .node1 = conn_node,
-                        .node2 = terminal_node,
-                    });
+                    if (!ssh_disconnected) {
+                        voltage_level.node_breaker_topology.internal_connections.appendAssumeCapacity(.{
+                            .node1 = conn_node,
+                            .node2 = terminal_node,
+                        });
+                    }
+                } else if (ssh_disconnected) {
+                    // SSH-disconnected on first visit: allocate dedicated node, don't take
+                    // the "first seen" slot so an SSH-connected co-terminal can use the CN node.
+                    const terminal_node = voltage_level_ctr.*;
+                    voltage_level_ctr.* += 1;
+                    node_map.putAssumeCapacity(t.id, terminal_node);
                 } else {
                     node_map.putAssumeCapacity(t.id, conn_node);
                     conn_node_first_seen.putAssumeCapacity(conn_node_id, {});
@@ -207,4 +223,16 @@ pub fn build_node_map(
     assert(node_map.count() <= index.terminal_conn_node.count());
 
     return node_map;
+}
+
+/// Returns true if the terminal is marked as disconnected in SSH
+/// (ACDCTerminal.connected = "false"). The terminal raw rdf:ID is used
+/// to look up the SSH patch; strip_underscore converts it to the mRID key.
+pub fn is_ssh_terminal_disconnected(ssh_opt: ?CimSsh, terminal_id: []const u8) bool {
+    assert(terminal_id.len > 0);
+    const ssh = ssh_opt orelse return false;
+    const mrid = strip_underscore(terminal_id);
+    const connected = ssh.getProperty(mrid, "ACDCTerminal.connected") catch return false;
+    const val = connected orelse return false;
+    return std.mem.eql(u8, val, "false");
 }

@@ -1,0 +1,328 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 240 238"
+   width="240"
+   height="238"
+   version="1.1"
+   id="svg244"
+   sodipodi:docname="cimd-icon-square-v6.svg"
+   inkscape:version="1.2.2 (b0a8486541, 2022-12-01)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs248" />
+  <sodipodi:namedview
+     id="namedview246"
+     pagecolor="#ffffff"
+     bordercolor="#666666"
+     borderopacity="1.0"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     showgrid="false"
+     inkscape:zoom="3.5210084"
+     inkscape:cx="63.334129"
+     inkscape:cy="119"
+     inkscape:window-width="1920"
+     inkscape:window-height="1008"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="g242" />
+  <!--
+    Exact layout from sketch. 8 rows + closing tag = 9 rows total.
+    Each row is a rotation of: < C I M D / >
+    But /> is treated as a ligature/unit in some rows.
+
+    Row 0: < C I M D > <       (opening tag, wraps)
+    Row 1: C I M / > < C
+    Row 2: I M / > < C I
+    Row 3: M / > < C I M       (wait, sketch says M /> < C I M)
+    Row 4: / > < C I M /
+    Row 5: > < C i m D *       (identity/wrap, lowercase = ghost)
+    Row 6: * C I m d / >       (ghost row)
+    Row 7: < / C I M D >       (closing tag)
+
+    Tokens: < C I M D / >  (7, Z/7Z)
+    Col centres (7 cols in 240px): 17, 51, 86, 120, 154, 189, 223
+    Row centres (8 rows in 272px, step 34): 19, 53, 87, 121, 155, 189, 223, 253
+
+    Colors:
+      < > → #F7A41D orange
+      / → #e8e0d4 off-white
+      C I M D → #e8e0d4 off-white
+      * → #e8e0d4 dim (opacity 0.3, marks the identity coset)
+      lowercase cimd → opacity 0.25 (ghost)
+  -->
+  <g
+     font-family="'Courier New', Courier, monospace"
+     font-size="16"
+     font-weight="bold"
+     text-anchor="middle"
+     dominant-baseline="central"
+     id="g242">
+    <!-- ROW 0: < C I M D > < -->
+    <text
+       x="17"
+       y="19"
+       fill="#F7A41D"
+       id="text144">&lt;</text>
+    <text
+       x="51"
+       y="19"
+       fill="#e8e0d4"
+       id="text146">C</text>
+    <text
+       x="86"
+       y="19"
+       fill="#e8e0d4"
+       id="text148">M</text>
+    <text
+       x="120"
+       y="19"
+       fill="#e8e0d4"
+       id="text150">D</text>
+    <text
+       x="155"
+       y="19"
+       fill="#f7a41d"
+       id="text154">&gt;</text>
+    <text
+       x="189"
+       y="19"
+       fill="#f7a41d"
+       id="text156">&lt;</text>
+    <!-- ROW 1: C I M D / > < -->
+    <text
+       x="17"
+       y="53"
+       fill="#e8e0d4"
+       id="text158">C</text>
+    <text
+       x="51"
+       y="53"
+       fill="#e8e0d4"
+       id="text160">I</text>
+    <text
+       x="86"
+       y="53"
+       fill="#e8e0d4"
+       id="text162">M</text>
+    <text
+       x="120"
+       y="53"
+       fill="#e8e0d4"
+       id="text164">D</text>
+    <text
+       x="154"
+       y="53"
+       fill="#e8e0d4"
+       id="text166">/</text>
+    <text
+       x="189"
+       y="53"
+       fill="#F7A41D"
+       id="text168">&gt;</text>
+    <text
+       x="223"
+       y="53"
+       fill="#F7A41D"
+       id="text170">&lt;</text>
+    <!-- ROW 2: I M D / > < C -->
+    <text
+       x="17"
+       y="87"
+       fill="#e8e0d4"
+       id="text172">I</text>
+    <text
+       x="51"
+       y="87"
+       fill="#e8e0d4"
+       id="text174">M</text>
+    <text
+       x="86"
+       y="87"
+       fill="#e8e0d4"
+       id="text176">D</text>
+    <text
+       x="120"
+       y="87"
+       fill="#e8e0d4"
+       id="text178">/</text>
+    <text
+       x="154"
+       y="87"
+       fill="#F7A41D"
+       id="text180">&gt;</text>
+    <text
+       x="189"
+       y="87"
+       fill="#F7A41D"
+       id="text182">&lt;</text>
+    <text
+       x="223"
+       y="87"
+       fill="#e8e0d4"
+       id="text184">C</text>
+    <!-- ROW 3: M D / > < C I -->
+    <text
+       x="17"
+       y="121"
+       fill="#e8e0d4"
+       id="text186">M</text>
+    <text
+       x="51"
+       y="121"
+       fill="#e8e0d4"
+       id="text188">D</text>
+    <text
+       x="86"
+       y="121"
+       fill="#e8e0d4"
+       id="text190">/</text>
+    <text
+       x="120"
+       y="121"
+       fill="#F7A41D"
+       id="text192">&gt;</text>
+    <text
+       x="154"
+       y="121"
+       fill="#F7A41D"
+       id="text194">&lt;</text>
+    <text
+       x="189"
+       y="121"
+       fill="#e8e0d4"
+       id="text196">C</text>
+    <text
+       x="223"
+       y="121"
+       fill="#e8e0d4"
+       id="text198">I</text>
+    <!-- ROW 4: D / > < C I M -->
+    <text
+       x="17"
+       y="155"
+       fill="#e8e0d4"
+       id="text200">D</text>
+    <text
+       x="51"
+       y="155"
+       fill="#e8e0d4"
+       id="text202">/</text>
+    <text
+       x="86"
+       y="155"
+       fill="#F7A41D"
+       id="text204">&gt;</text>
+    <text
+       x="120"
+       y="155"
+       fill="#F7A41D"
+       id="text206">&lt;</text>
+    <text
+       x="154"
+       y="155"
+       fill="#e8e0d4"
+       id="text208">C</text>
+    <text
+       x="189"
+       y="155"
+       fill="#e8e0d4"
+       id="text210">I</text>
+    <text
+       x="223"
+       y="155"
+       fill="#e8e0d4"
+       id="text212">M</text>
+    <!-- ROW 5: / > < C I M D -->
+    <text
+       x="17"
+       y="189"
+       fill="#e8e0d4"
+       id="text214">/</text>
+    <text
+       x="51"
+       y="189"
+       fill="#F7A41D"
+       id="text216">&gt;</text>
+    <text
+       x="86"
+       y="189"
+       fill="#F7A41D"
+       id="text218">&lt;</text>
+    <text
+       x="120"
+       y="189"
+       fill="#e8e0d4"
+       id="text220">C</text>
+    <text
+       x="154"
+       y="189"
+       fill="#e8e0d4"
+       id="text222">I</text>
+    <text
+       x="189"
+       y="189"
+       fill="#e8e0d4"
+       id="text224">M</text>
+    <text
+       x="189.00035"
+       y="220.86644"
+       fill="#e8e0d4"
+       id="text224-6">D</text>
+    <text
+       x="223"
+       y="189"
+       fill="#e8e0d4"
+       id="text226"
+       style="-inkscape-font-specification:'Courier New, Courier, monospace, Bold';font-family:'Courier New', Courier, monospace;font-weight:bold;font-style:normal;font-stretch:normal;font-variant:normal;font-size:16px;font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-east-asian:normal;fill:#e8e0d4"><tspan
+         sodipodi:role="line"
+         id="tspan4018">/</tspan></text>
+    <!-- ROW 6: < C I / > — closing tag -->
+    <text
+       x="51"
+       y="221"
+       fill="#f7a41d"
+       id="text228">&lt;</text>
+    <text
+       x="119.99978"
+       y="221"
+       fill="#e8e0d4"
+       id="text230">C</text>
+    <text
+       x="154"
+       y="221"
+       fill="#e8e0d4"
+       id="text232">M</text>
+    <text
+       x="86"
+       y="221"
+       fill="#e8e0d4"
+       id="text234">/</text>
+    <text
+       x="224"
+       y="221"
+       fill="#f7a41d"
+       id="text236">&gt;</text>
+    <text
+       x="16.99972"
+       y="221.00041"
+       fill="#f7a41d"
+       id="text236-3">&gt;</text>
+    <text
+       x="189"
+       y="221"
+       fill="#e8e0d4"
+       id="text238" />
+    <text
+       x="223"
+       y="221"
+       fill="#e8e0d4"
+       id="text240" />
+  </g>
+</svg>

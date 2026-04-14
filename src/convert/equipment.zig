@@ -117,6 +117,7 @@ pub fn pre_allocate_equipment(
 }
 
 pub fn convert_busbar_sections(
+    gpa: std.mem.Allocator,
     model: *const CimModel,
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
@@ -132,16 +133,31 @@ pub fn convert_busbar_sections(
         const busbar_section_view = model.view(busbar_section);
         const mrid = try busbar_section_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(busbar_section.id);
         const name = try busbar_section_view.getProperty("IdentifiedObject.name");
+
+        // alias: CGMES.Terminal1 = terminal mRID
+        var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
+        errdefer aliases.deinit(gpa);
+        if (index.equipment_terminals.get(busbar_section.id)) |terminals| {
+            if (terminals.items.len > 0) {
+                const t_view = model.getObjectById(terminals.items[0].id) orelse continue;
+                const t_mrid = try t_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(terminals.items[0].id);
+                try aliases.ensureTotalCapacity(gpa, 1);
+                aliases.appendAssumeCapacity(.{ .type = "CGMES.Terminal1", .content = t_mrid });
+            }
+        }
+
         voltage_level.node_breaker_topology.busbar_sections.appendAssumeCapacity(.{
             .id = mrid,
             .name = name,
             .node = node,
-            .aliases = .empty,
+            .aliases = aliases,
         });
+        aliases = .empty; // ownership transferred
     }
 }
 
 pub fn convert_switches(
+    gpa: std.mem.Allocator,
     model: *const CimModel,
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
@@ -166,7 +182,9 @@ pub fn convert_switches(
             const voltage_level = voltage_level_map.get(repr_voltage_level_id) orelse continue;
 
             const eq_view = model.view(sw);
-            const mrid = try eq_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(sw.id);
+            const mrid_raw = try eq_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(sw.id);
+            const mrid = try gpa.dupe(u8, mrid_raw);
+            errdefer gpa.free(mrid);
             const view = CimMergedView.init(eq_view, mrid, ssh_opt);
             const name = try view.getProperty("IdentifiedObject.name");
 
@@ -178,6 +196,29 @@ pub fn convert_switches(
 
             const kind = iidm.SwitchKind.from_cim_type(sw.type_name);
 
+            // aliases: CGMES.Terminal1 and CGMES.Terminal2 (terminals are in sequence order)
+            var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
+            errdefer aliases.deinit(gpa);
+            {
+                const t1_view = model.getObjectById(terminals.items[0].id) orelse continue;
+                const t1_mrid = try t1_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(terminals.items[0].id);
+                const t2_view = model.getObjectById(terminals.items[1].id) orelse continue;
+                const t2_mrid = try t2_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(terminals.items[1].id);
+                try aliases.ensureTotalCapacity(gpa, 2);
+                aliases.appendAssumeCapacity(.{ .type = "CGMES.Terminal1", .content = t1_mrid });
+                aliases.appendAssumeCapacity(.{ .type = "CGMES.Terminal2", .content = t2_mrid });
+            }
+
+            // properties: CGMES.originalClass and CGMES.normalOpen (EQ design-time attributes)
+            var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
+            errdefer properties.deinit(gpa);
+            {
+                const normal_open_str = try eq_view.getProperty("Switch.normalOpen") orelse "false";
+                try properties.ensureTotalCapacity(gpa, 2);
+                properties.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = sw.type_name });
+                properties.appendAssumeCapacity(.{ .name = "CGMES.normalOpen", .value = normal_open_str });
+            }
+
             voltage_level.node_breaker_topology.switches.appendAssumeCapacity(.{
                 .id = mrid,
                 .name = name,
@@ -186,9 +227,130 @@ pub fn convert_switches(
                 .open = open,
                 .node1 = node0,
                 .node2 = node1,
-                .aliases = .empty,
-                .properties = .empty,
+                .aliases = aliases,
+                .properties = properties,
             });
+            aliases = .empty; // ownership transferred
+            properties = .empty; // ownership transferred
+        }
+    }
+}
+
+/// Create fictitious open breakers for terminals whose ConnectivityNode has no
+/// switch connectivity, no BusbarSection, and is the sole non-switch/non-BBS
+/// terminal on that CN.  PyPowSyBl synthesises these to represent "disconnected"
+/// terminals in node-breaker topology.
+pub fn convert_fictitious_switches(
+    gpa: std.mem.Allocator,
+    model: *const CimModel,
+    index: *const CimIndex,
+    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
+    node_map: *const connection_mod.NodeMap,
+    ssh_opt: ?CimSsh,
+) !void {
+    assert(voltage_level_map.count() > 0);
+
+    // Build the set of CNs that have at least one switch terminal attached.
+    var cn_has_switch: std.StringHashMapUnmanaged(void) = .empty;
+    defer cn_has_switch.deinit(gpa);
+    try cn_has_switch.ensureTotalCapacity(gpa, @intCast(index.terminal_conn_node.count()));
+
+    for (connection_mod.switch_type_names) |sw_type| {
+        for (model.get_objects_by_type(sw_type)) |sw| {
+            const terminals = index.equipment_terminals.get(sw.id) orelse continue;
+            for (terminals.items) |t| {
+                const cn_id = t.conn_node_id orelse continue;
+                cn_has_switch.putAssumeCapacity(cn_id, {});
+            }
+        }
+    }
+
+    // Count non-switch, non-BBS terminals per CN (same pass as build_node_map Phase 2).
+    var cn_other_count: std.StringHashMapUnmanaged(u32) = .empty;
+    defer cn_other_count.deinit(gpa);
+    try cn_other_count.ensureTotalCapacity(gpa, @intCast(index.conn_node_container.count()));
+
+    for (connection_mod.phase2_equipment_types) |eq_type| {
+        for (model.get_objects_by_type(eq_type)) |equip| {
+            const terminals = index.equipment_terminals.get(equip.id) orelse continue;
+            for (terminals.items) |t| {
+                const cn_id = t.conn_node_id orelse continue;
+                if (index.conn_node_container.get(cn_id) == null) continue;
+                const gop = cn_other_count.getOrPutAssumeCapacity(cn_id);
+                if (!gop.found_existing) gop.value_ptr.* = 0;
+                gop.value_ptr.* += 1;
+            }
+        }
+    }
+
+    // PyPowSyBl creates fictitious switches for:
+    // 1. SSH-disconnected terminals (any equipment type — ACDCTerminal.connected=false in SSH).
+    // 2. Structurally isolated injection terminals (SM/LSC/SVC on a CN with no switch and
+    //    exactly one non-BBS/non-switch terminal) — these represent equipment not connected
+    //    via any switch in the node-breaker topology.
+    //
+    // Loads (EnergyConsumer, ConformLoad, NonConformLoad) never receive fictitious switches.
+    for (connection_mod.phase2_equipment_types) |eq_type| {
+        const is_injection = std.mem.eql(u8, eq_type, "SynchronousMachine") or
+            std.mem.eql(u8, eq_type, "LinearShuntCompensator") or
+            std.mem.eql(u8, eq_type, "StaticVarCompensator");
+
+        for (model.get_objects_by_type(eq_type)) |equip| {
+            const terminals = index.equipment_terminals.get(equip.id) orelse continue;
+            for (terminals.items) |t| {
+                const cn_id = t.conn_node_id orelse continue;
+
+                const ssh_disconnected = connection_mod.is_ssh_terminal_disconnected(ssh_opt, t.id);
+                if (ssh_disconnected) {
+                    // SSH-disconnected: always create fictitious regardless of type or CN topology.
+                    // No-switch check is skipped — pypow creates fictitious even when the
+                    // CN has switch connectivity if the terminal is marked disconnected.
+                } else {
+                    // Not SSH-disconnected: structural isolation check for injection types only.
+                    if (!is_injection) continue;
+                    if (cn_has_switch.contains(cn_id)) continue;
+                    // BBS-CN terminals always get ICs in build_node_map — no fictitious needed.
+                    // Non-BBS-CN: fictitious only when this is the sole non-switch/non-BBS terminal.
+                    const cn_has_bbs = index.conn_node_to_busbar_section.contains(cn_id);
+                    if (cn_has_bbs) continue;
+                    const other_count = cn_other_count.get(cn_id) orelse 0;
+                    if (other_count != 1) continue;
+                }
+
+                // Resolve to a representative VL.
+                const container_id = index.conn_node_container.get(cn_id) orelse continue;
+                const repr_id = cim_index.find_voltage_level(&index.voltage_level_merge, container_id);
+                const voltage_level = voltage_level_map.get(repr_id) orelse continue;
+
+                // Get terminal mRID for the switch id/name.
+                const t_view = model.getObjectById(t.id) orelse continue;
+                const t_mrid = try t_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(t.id);
+
+                const terminal_node = node_map.get(t.id) orelse 0;
+                const isolated_node = terminal_node +% 1; // value stripped by diff; just needs to differ
+
+                var props: std.ArrayListUnmanaged(iidm.Property) = .empty;
+                errdefer props.deinit(gpa);
+                try props.ensureTotalCapacity(gpa, 2);
+                props.appendAssumeCapacity(.{ .name = "CGMES.Terminal", .value = t_mrid });
+                props.appendAssumeCapacity(.{ .name = "CGMES.isCreatedForDisconnectedTerminal", .value = "true" });
+
+                const sw_id = try std.fmt.allocPrint(gpa, "{s}_SW_fict", .{t_mrid});
+
+                try voltage_level.node_breaker_topology.switches.append(gpa, .{
+                    .id = sw_id,
+                    .name = t_mrid,
+                    .fictitious = true,
+                    .kind = .breaker,
+                    .retained = false,
+                    .open = true,
+                    .node1 = terminal_node,
+                    .node2 = isolated_node,
+                    .aliases = .empty,
+                    .properties = props,
+                });
+                props = .empty; // ownership transferred
+            }
         }
     }
 }

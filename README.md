@@ -1,11 +1,13 @@
+![LOGO](docs/cimd-icon-square-transparent.svg)
+
 # cimd
-cimd is a high-performance tool for working with CGMES (Common Grid Model Exchange Standard) data. See https://cimd.eu for more information.
+cimd is a **C**ommand line **I**nterface for grid **M**odel **D**ata. It is a high-performance tool for working with CGMES (Common Grid Model Exchange Standard) data. See https://cimd.eu for more information.
 
 ## Performance
 
 ![CGMES EQ → JIIDM conversion benchmark: cimd vs pypowsybl](docs/benchmark.svg)
 
-*Converting a real-world 4.8 MB zipped EQ file to JIIDM.*
+*Converting a real-world 5MB zipped EQ file to JIIDM.*
 
 *Measured on Apple M4 Pro · both tools processing the same EQ + EQBD input · median of 6 warm runs.*
 

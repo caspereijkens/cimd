@@ -650,6 +650,7 @@ test "SwitchKind.from_cim_type: LoadBreakSwitch" {
 pub const Switch = struct {
     id: []const u8,
     name: ?[]const u8,
+    fictitious: bool = false,
     kind: SwitchKind,
     retained: bool = true,
     open: bool,
@@ -664,6 +665,10 @@ pub const Switch = struct {
         try jws.write(self.id);
         try jws.objectField("name");
         try jws.write(self.name);
+        if (self.fictitious) {
+            try jws.objectField("fictitious");
+            try jws.write(true);
+        }
         try jws.objectField("kind");
         try jws.write(self.kind);
         try jws.objectField("retained");
@@ -686,6 +691,7 @@ pub const Switch = struct {
     }
 
     pub fn deinit(self: *Switch, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
         self.aliases.deinit(allocator);
         self.properties.deinit(allocator);
     }
