@@ -6,6 +6,7 @@
 const std = @import("std");
 const converter = @import("converter.zig");
 const CimModel = @import("cim_model.zig").CimModel;
+const CimSsh = @import("cim_ssh.zig").CimSsh;
 
 /// Minimal EQ model with enough objects to exercise every edge case.
 /// Objects and their purpose:
@@ -281,6 +282,26 @@ const EQ_XML =
     \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
     \\  </cim:Terminal>
     \\
+    \\  <!-- Breaker in VL1: CN_BusbarSection <-> CN_SW, normalOpen=true -->
+    \\  <cim:ConnectivityNode rdf:ID="_CN_SW">
+    \\    <cim:IdentifiedObject.mRID>CN_SW</cim:IdentifiedObject.mRID>
+    \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#_VL1"/>
+    \\  </cim:ConnectivityNode>
+    \\  <cim:Breaker rdf:ID="_BRK1">
+    \\    <cim:IdentifiedObject.mRID>BRK1</cim:IdentifiedObject.mRID>
+    \\    <cim:Switch.normalOpen>true</cim:Switch.normalOpen>
+    \\  </cim:Breaker>
+    \\  <cim:Terminal rdf:ID="_T_BRK1_1">
+    \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BRK1"/>
+    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN_BusbarSection"/>
+    \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+    \\  </cim:Terminal>
+    \\  <cim:Terminal rdf:ID="_T_BRK1_2">
+    \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BRK1"/>
+    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN_SW"/>
+    \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+    \\  </cim:Terminal>
+    \\
     \\  <!-- ControlArea with one TieFlow boundary -->
     \\  <cim:ControlArea rdf:ID="_CA1">
     \\    <cim:IdentifiedObject.mRID>CA1</cim:IdentifiedObject.mRID>
@@ -291,6 +312,27 @@ const EQ_XML =
     \\    <cim:TieFlow.ControlArea rdf:resource="#_CA1"/>
     \\    <cim:TieFlow.Terminal rdf:resource="#_T_LINE1_1"/>
     \\  </cim:TieFlow>
+    \\</rdf:RDF>
+;
+
+/// SSH overlay used by SSH-specific tests.
+/// Covers three scenarios simultaneously (separate tests read the same parse):
+///   - T_LOAD1 marked disconnected  → fictitious switch for an EnergyConsumer (non-injection)
+///   - BRK1 open/retained state     → switch state from SSH, not EQ
+///   - LOAD1 p/q values             → p0/q0 from SSH EnergyConsumer.p/q
+const SSH_XML =
+    \\<rdf:RDF>
+    \\  <cim:ACDCTerminal rdf:about="#_T_LOAD1">
+    \\    <cim:ACDCTerminal.connected>false</cim:ACDCTerminal.connected>
+    \\  </cim:ACDCTerminal>
+    \\  <cim:Breaker rdf:about="#_BRK1">
+    \\    <cim:Switch.open>true</cim:Switch.open>
+    \\    <cim:Switch.retained>false</cim:Switch.retained>
+    \\  </cim:Breaker>
+    \\  <cim:EnergyConsumer rdf:about="#_LOAD1">
+    \\    <cim:EnergyConsumer.p>100.0</cim:EnergyConsumer.p>
+    \\    <cim:EnergyConsumer.q>50.0</cim:EnergyConsumer.q>
+    \\  </cim:EnergyConsumer>
     \\</rdf:RDF>
 ;
 
@@ -318,6 +360,42 @@ fn find_extension(network: anytype, id: []const u8) ?@TypeOf(network.extensions.
 fn find_line(network: anytype, mrid: []const u8) ?@TypeOf(network.lines.items[0]) {
     for (network.lines.items) |line| {
         if (std.mem.eql(u8, line.id, mrid)) return line;
+    }
+    return null;
+}
+
+/// Find a BusbarSection by mRID across all VLs in all substations.
+fn find_busbar_section(network: anytype, mrid: []const u8) ?@TypeOf(network.substations.items[0].voltage_levels.items[0].node_breaker_topology.busbar_sections.items[0]) {
+    for (network.substations.items) |substation| {
+        for (substation.voltage_levels.items) |vl| {
+            for (vl.node_breaker_topology.busbar_sections.items) |bbs| {
+                if (std.mem.eql(u8, bbs.id, mrid)) return bbs;
+            }
+        }
+    }
+    return null;
+}
+
+/// Find a Switch by id across all VLs in all substations.
+fn find_switch(network: anytype, id: []const u8) ?@TypeOf(network.substations.items[0].voltage_levels.items[0].node_breaker_topology.switches.items[0]) {
+    for (network.substations.items) |substation| {
+        for (substation.voltage_levels.items) |vl| {
+            for (vl.node_breaker_topology.switches.items) |sw| {
+                if (std.mem.eql(u8, sw.id, id)) return sw;
+            }
+        }
+    }
+    return null;
+}
+
+/// Find a Load by mRID across all VLs in all substations.
+fn find_load(network: anytype, mrid: []const u8) ?@TypeOf(network.substations.items[0].voltage_levels.items[0].loads.items[0]) {
+    for (network.substations.items) |substation| {
+        for (substation.voltage_levels.items) |vl| {
+            for (vl.loads.items) |load| {
+                if (std.mem.eql(u8, load.id, mrid)) return load;
+            }
+        }
     }
     return null;
 }
@@ -611,4 +689,183 @@ test "line: CGMES.originalClass property is ACLineSegment" {
     try std.testing.expectEqual(@as(usize, 1), line.properties.items.len);
     try std.testing.expectEqualStrings("CGMES.originalClass", line.properties.items[0].name);
     try std.testing.expectEqualStrings("ACLineSegment", line.properties.items[0].value);
+}
+
+// ── BusbarSection alias ───────────────────────────────────────────────────────
+
+test "busbar section: CGMES.Terminal1 alias contains terminal mRID" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, EQ_XML);
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null);
+    defer network.deinit(gpa);
+
+    const bbs = find_busbar_section(network, "BusbarSection1") orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(usize, 1), bbs.aliases.items.len);
+    try std.testing.expectEqualStrings("CGMES.Terminal1", bbs.aliases.items[0].type);
+    // T_BusbarSection1 has no IdentifiedObject.mRID → fallback is strip_underscore(rdf:ID)
+    try std.testing.expectEqualStrings("T_BusbarSection1", bbs.aliases.items[0].content);
+}
+
+// ── Switch aliases and properties ─────────────────────────────────────────────
+
+test "switch: CGMES.Terminal1 and CGMES.Terminal2 aliases contain terminal mRIDs" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, EQ_XML);
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null);
+    defer network.deinit(gpa);
+
+    const sw = find_switch(network, "BRK1") orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(usize, 2), sw.aliases.items.len);
+
+    var found_t1 = false;
+    var found_t2 = false;
+    for (sw.aliases.items) |alias| {
+        if (std.mem.eql(u8, alias.type, "CGMES.Terminal1")) {
+            // seq=1 terminal is T_BRK1_1 (strip_underscore fallback)
+            try std.testing.expectEqualStrings("T_BRK1_1", alias.content);
+            found_t1 = true;
+        }
+        if (std.mem.eql(u8, alias.type, "CGMES.Terminal2")) {
+            try std.testing.expectEqualStrings("T_BRK1_2", alias.content);
+            found_t2 = true;
+        }
+    }
+    try std.testing.expect(found_t1);
+    try std.testing.expect(found_t2);
+}
+
+test "switch: CGMES.originalClass and CGMES.normalOpen properties" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, EQ_XML);
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null);
+    defer network.deinit(gpa);
+
+    const sw = find_switch(network, "BRK1") orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(usize, 2), sw.properties.items.len);
+
+    var found_class = false;
+    var found_normal_open = false;
+    for (sw.properties.items) |prop| {
+        if (std.mem.eql(u8, prop.name, "CGMES.originalClass")) {
+            try std.testing.expectEqualStrings("Breaker", prop.value);
+            found_class = true;
+        }
+        if (std.mem.eql(u8, prop.name, "CGMES.normalOpen")) {
+            try std.testing.expectEqualStrings("true", prop.value);
+            found_normal_open = true;
+        }
+    }
+    try std.testing.expect(found_class);
+    try std.testing.expect(found_normal_open);
+}
+
+// ── Fictitious switches ───────────────────────────────────────────────────────
+
+test "fictitious switch: created for structurally isolated SynchronousMachine" {
+    // GEN_TH is a SynchronousMachine on CN_GEN_TH which has no switch, no BusbarSection,
+    // and exactly one non-switch/non-BBS terminal.  PyPowSyBl synthesises a fictitious
+    // open Breaker for it so node-breaker topology stays connected.
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, EQ_XML);
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null);
+    defer network.deinit(gpa);
+
+    // Fictitious switch id = "<terminal_mRID>_SW_fict"
+    const sw = find_switch(network, "T_GEN_TH_SW_fict") orelse return error.TestFailed;
+    try std.testing.expect(sw.fictitious);
+    try std.testing.expect(sw.open);
+    try std.testing.expectEqual(.breaker, sw.kind);
+
+    // Must carry CGMES.isCreatedForDisconnectedTerminal=true
+    var found_marker = false;
+    for (sw.properties.items) |prop| {
+        if (std.mem.eql(u8, prop.name, "CGMES.isCreatedForDisconnectedTerminal")) {
+            try std.testing.expectEqualStrings("true", prop.value);
+            found_marker = true;
+        }
+    }
+    try std.testing.expect(found_marker);
+}
+
+test "fictitious switch: not created for EnergyConsumer without SSH" {
+    // Loads are never given fictitious switches by the structural isolation check —
+    // only SynchronousMachine / LinearShuntCompensator / StaticVarCompensator are.
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, EQ_XML);
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null);
+    defer network.deinit(gpa);
+
+    // LOAD1's terminal mRID is T_LOAD1; fictitious switch would be T_LOAD1_SW_fict.
+    try std.testing.expect(find_switch(network, "T_LOAD1_SW_fict") == null);
+}
+
+// ── SSH overlay: switch state ─────────────────────────────────────────────────
+
+test "SSH: switch open and retained state come from SSH overlay" {
+    // BRK1 in EQ has no Switch.open attribute (defaults false).
+    // SSH marks it open=true, retained=false.
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, EQ_XML);
+    defer model.deinit(gpa);
+    var ssh = try CimSsh.init(gpa, SSH_XML);
+    defer ssh.deinit(gpa);
+    var network = try converter.convert(gpa, &model, ssh);
+    defer network.deinit(gpa);
+
+    const sw = find_switch(network, "BRK1") orelse return error.TestFailed;
+    try std.testing.expect(sw.open);
+    try std.testing.expect(!sw.retained);
+}
+
+// ── SSH overlay: load p0/q0 ───────────────────────────────────────────────────
+
+test "SSH: load p0 and q0 read from EnergyConsumer.p and .q in SSH" {
+    // Without SSH, LOAD1 has p0=0.0 and q0=0.0 (no EnergyConsumer.p/q in EQ).
+    // SSH provides p=100.0 and q=50.0.
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, EQ_XML);
+    defer model.deinit(gpa);
+    var ssh = try CimSsh.init(gpa, SSH_XML);
+    defer ssh.deinit(gpa);
+    var network = try converter.convert(gpa, &model, ssh);
+    defer network.deinit(gpa);
+
+    const load = find_load(network, "LOAD1") orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(f64, 100.0), load.p0);
+    try std.testing.expectEqual(@as(f64, 50.0), load.q0);
+}
+
+// ── SSH overlay: disconnected terminal → fictitious switch ───────────────────
+
+test "SSH: disconnected terminal creates fictitious switch for any equipment type" {
+    // LOAD1 (EnergyConsumer) would never get a fictitious switch from the structural
+    // isolation check.  Marking its terminal as ACDCTerminal.connected=false in SSH
+    // forces creation regardless of equipment type.
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, EQ_XML);
+    defer model.deinit(gpa);
+    var ssh = try CimSsh.init(gpa, SSH_XML);
+    defer ssh.deinit(gpa);
+    var network = try converter.convert(gpa, &model, ssh);
+    defer network.deinit(gpa);
+
+    const sw = find_switch(network, "T_LOAD1_SW_fict") orelse return error.TestFailed;
+    try std.testing.expect(sw.fictitious);
+    try std.testing.expect(sw.open);
+    try std.testing.expectEqual(.breaker, sw.kind);
+
+    var found_terminal_prop = false;
+    for (sw.properties.items) |prop| {
+        if (std.mem.eql(u8, prop.name, "CGMES.Terminal")) {
+            // Terminal mRID is strip_underscore("_T_LOAD1") = "T_LOAD1"
+            try std.testing.expectEqualStrings("T_LOAD1", prop.value);
+            found_terminal_prop = true;
+        }
+    }
+    try std.testing.expect(found_terminal_prop);
 }
