@@ -109,6 +109,22 @@ pub const CimSsh = struct {
         const patch = self.find_patch(mrid) orelse return null;
         return self.getReferenceFromPatch(patch, reference_name);
     }
+
+    /// Get a property from the SSH FullModel metadata element.
+    /// Returns null if the FullModel is absent or the property is not found.
+    pub fn getFullModelProperty(self: CimSsh, property_name: []const u8) !?[]const u8 {
+        assert(property_name.len > 0);
+        assert(self.boundaries.len > 0);
+        for (self.boundaries, 0..) |tag, tag_idx| {
+            const type_name = tag_index.extract_tag_type(self.xml, tag.start) catch continue;
+            if (!std.mem.eql(u8, type_name, "FullModel")) continue;
+            const closing_idx = tag_index.find_closing_tag(self.xml, self.boundaries, @intCast(tag_idx)) catch continue;
+            return try tag_index.get_property_from_indices(
+                self.xml, self.boundaries, @intCast(tag_idx), closing_idx, property_name,
+            );
+        }
+        return null;
+    }
 };
 
 /// A merged view of an EQ object and its SSH patch (if any).
