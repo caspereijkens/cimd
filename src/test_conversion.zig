@@ -320,8 +320,18 @@ const EQ_XML =
 ///   - T_LOAD1 marked disconnected  → fictitious switch for an EnergyConsumer (non-injection)
 ///   - BRK1 open/retained state     → switch state from SSH, not EQ
 ///   - LOAD1 p/q values             → p0/q0 from SSH EnergyConsumer.p/q
+/// SSH XML includes a FullModel with times distinct from EQ so case_date /
+/// forecastDistance tests can verify the SSH values take precedence.
+///   EQ:  scenarioTime=2026-01-01T09:00Z, created=2026-01-01T01:00Z → 480 min
+///   SSH: scenarioTime=2026-01-02T15:00Z, created=2026-01-02T12:00Z → 180 min
 const SSH_XML =
     \\<rdf:RDF>
+    \\  <md:FullModel rdf:about="urn:uuid:SSH_FM1">
+    \\    <md:Model.scenarioTime>2026-01-02T15:00:00Z</md:Model.scenarioTime>
+    \\    <md:Model.created>2026-01-02T12:00:00Z</md:Model.created>
+    \\    <md:Model.profile>http://iec.ch/TC57/ns/CIM/SteadyStateHypothesis-EU/3.0</md:Model.profile>
+    \\    <md:Model.version>001</md:Model.version>
+    \\  </md:FullModel>
     \\  <cim:ACDCTerminal rdf:about="#_T_LOAD1">
     \\    <cim:ACDCTerminal.connected>false</cim:ACDCTerminal.connected>
     \\  </cim:ACDCTerminal>
@@ -868,4 +878,66 @@ test "SSH: disconnected terminal creates fictitious switch for any equipment typ
         }
     }
     try std.testing.expect(found_terminal_prop);
+}
+
+// ── SSH FullModel: case_date and forecastDistance patching ────────────────────
+
+test "SSH: case_date comes from SSH scenarioTime, not EQ" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, EQ_XML);
+    defer model.deinit(gpa);
+    var ssh = try CimSsh.init(gpa, SSH_XML);
+    defer ssh.deinit(gpa);
+    var network = try converter.convert(gpa, &model, ssh);
+    defer network.deinit(gpa);
+
+    // SSH scenarioTime is 2026-01-02T15:00:00Z; EQ has 2026-01-01T09:00:00Z.
+    const case_date = network.case_date orelse return error.TestFailed;
+    try std.testing.expectEqualStrings(
+        "2026-01-02T15:00:00Z",
+        std.mem.trim(u8, case_date, " \t\r\n"),
+    );
+}
+
+test "SSH: forecastDistance computed from SSH times, not EQ" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, EQ_XML);
+    defer model.deinit(gpa);
+    var ssh = try CimSsh.init(gpa, SSH_XML);
+    defer ssh.deinit(gpa);
+    var network = try converter.convert(gpa, &model, ssh);
+    defer network.deinit(gpa);
+
+    // SSH: 2026-01-02T15:00Z − 2026-01-02T12:00Z = 3 h = 180 min.
+    // EQ alone gives 480 min — SSH must override both times.
+    try std.testing.expectEqual(@as(u32, 180), network.forecast_distance);
+}
+
+// ── SSH FullModel: cgmesMetadataModels ────────────────────────────────────────
+
+test "SSH: FullModel appears as MetadataModel with subset SSH after EQ entry" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, EQ_XML);
+    defer model.deinit(gpa);
+    var ssh = try CimSsh.init(gpa, SSH_XML);
+    defer ssh.deinit(gpa);
+    var network = try converter.convert(gpa, &model, ssh);
+    defer network.deinit(gpa);
+
+    const ext = find_extension(network, network.id) orelse return error.TestFailed;
+    const meta = ext.cgmes_metadata_models orelse return error.TestFailed;
+
+    // EQ has 2 FullModels (EQ + EQBD stub); SSH adds 1 → 3 total.
+    try std.testing.expectEqual(@as(usize, 3), meta.models.items.len);
+
+    // SSH FullModel is last (it depends on EQ, so EQ comes before it).
+    const ssh_entry = meta.models.items[meta.models.items.len - 1];
+    try std.testing.expectEqualStrings("urn:uuid:SSH_FM1", ssh_entry.id);
+    try std.testing.expectEqualStrings("SSH", ssh_entry.subset);
+    try std.testing.expectEqual(@as(u32, 1), ssh_entry.version);
+    try std.testing.expectEqual(@as(usize, 1), ssh_entry.profiles.items.len);
+    try std.testing.expectEqualStrings(
+        "http://iec.ch/TC57/ns/CIM/SteadyStateHypothesis-EU/3.0",
+        ssh_entry.profiles.items[0].content,
+    );
 }

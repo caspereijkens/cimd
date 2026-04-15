@@ -27,9 +27,9 @@ pub fn main() !void {
     switch (command) {
         .eq => |eq| switch (eq) {
             .convert => |c| try command_eq_convert(gpa, c.eq_path, c.eqbd_path, c.ssh_path, c.output_path),
-            .browse => |c| try command_eq_browse(gpa, c.eq_path, c.eqbd_path, c.ssh_path, c.mrid),
-            .get => |c| try command_eq_get(gpa, c.eq_path, c.eqbd_path, c.ssh_path, c.mrid, c.type_filter, c.fields, c.count, c.json),
-            .types => |c| try command_eq_types(gpa, c.eq_path, c.eqbd_path, c.ssh_path, c.json),
+            .browse => |c| try command_eq_browse(gpa, c.eq_path, c.eqbd_path, c.mrid),
+            .get => |c| try command_eq_get(gpa, c.eq_path, c.eqbd_path, c.mrid, c.type_filter, c.fields, c.count, c.json),
+            .types => |c| try command_eq_types(gpa, c.eq_path, c.eqbd_path, c.json),
             .diff => |c| try command_eq_diff(gpa, c),
         },
         .version => |v| try command_version(v.verbose, v.json),
@@ -129,26 +129,20 @@ fn command_eq_convert(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[
     try file_writer.interface.flush();
 }
 
-fn command_eq_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, ssh_path: ?[]const u8, mrid: []const u8) !void {
+fn command_eq_browse(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, mrid: []const u8) !void {
     var model = try load_model(gpa, eq_path, eqbd_path);
     defer model.deinit(gpa);
-
-    var ssh_opt: ?CimSsh = if (ssh_path) |path| try load_ssh(gpa, path) else null;
-    defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
 
     try browse.browse(gpa, &model, model.xml, mrid);
 }
 
-fn command_eq_get(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, ssh_path: ?[]const u8, mrid: ?[]const u8, type_filter: ?[]const u8, fields_str: ?[]const u8, count: bool, json: bool) !void {
+fn command_eq_get(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, mrid: ?[]const u8, type_filter: ?[]const u8, fields_str: ?[]const u8, count: bool, json: bool) !void {
     assert(mrid != null or type_filter != null);
     if (mrid != null and count) print.stderr("eq get: --count requires --type without <mrid>", .{});
     if (mrid != null and fields_str != null) print.stderr("eq get: --fields requires --type without <mrid>", .{});
 
     var model = try load_model(gpa, eq_path, eqbd_path);
     defer model.deinit(gpa);
-
-    var ssh_opt: ?CimSsh = if (ssh_path) |path| try load_ssh(gpa, path) else null;
-    defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
 
     // Single-object mode
     if (mrid) |mrid_val| {
@@ -216,8 +210,7 @@ fn command_eq_get(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]con
     }
 }
 
-fn command_eq_types(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, ssh_path: ?[]const u8, json: bool) !void {
-    _ = ssh_path; // SSH state is irrelevant for type inventory — do not load it.
+fn command_eq_types(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, json: bool) !void {
     var model = try load_model(gpa, eq_path, eqbd_path);
     defer model.deinit(gpa);
 
