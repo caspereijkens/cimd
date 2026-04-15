@@ -217,11 +217,9 @@ fn command_eq_get(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]con
 }
 
 fn command_eq_types(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, ssh_path: ?[]const u8, json: bool) !void {
+    _ = ssh_path; // SSH state is irrelevant for type inventory — do not load it.
     var model = try load_model(gpa, eq_path, eqbd_path);
     defer model.deinit(gpa);
-
-    var ssh_opt: ?CimSsh = if (ssh_path) |path| try load_ssh(gpa, path) else null;
-    defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
 
     if (json) {
         try print.display_object_inventory_json(gpa, model);
@@ -287,7 +285,11 @@ fn load_model(gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u
     var xml = try read_path(gpa, eq_path);
     if (eqbd_path) |path| {
         const eqbd_xml = try read_path(gpa, path);
-        xml = try std.mem.concat(gpa, u8, &.{ xml, eqbd_xml });
+        const combined = try std.mem.concat(gpa, u8, &.{ xml, eqbd_xml });
+        // Free both source buffers immediately: only the concatenated buffer is needed going forward.
+        gpa.free(eqbd_xml);
+        gpa.free(xml);
+        xml = combined;
     }
     return cim_model.CimModel.init(gpa, xml);
 }

@@ -199,19 +199,20 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh)
     var voltage_level_map = try voltage_level_conv.build_voltage_level_map(gpa, model, &index, &network, &sub_id_map, &substation_map);
     defer voltage_level_map.deinit(gpa);
 
-    var node_map = try connection_conv.build_node_map(gpa, model, &index, &voltage_level_map, ssh_opt);
-    defer node_map.deinit(gpa);
+    var nm_result = try connection_conv.build_node_map(gpa, model, &index, &voltage_level_map, ssh_opt);
+    defer nm_result.deinit(gpa);
+    const node_map = &nm_result.node_map;
 
     try equipment_conv.pre_allocate_equipment(gpa, model, &index, &voltage_level_map);
-    try equipment_conv.convert_busbar_sections(gpa, model, &index, &voltage_level_map, &node_map);
-    try equipment_conv.convert_switches(gpa, model, &index, &voltage_level_map, &node_map, ssh_opt);
-    try equipment_conv.convert_fictitious_switches(gpa, model, &index, &voltage_level_map, &node_map, ssh_opt);
-    try equipment_conv.convert_loads(gpa, model, &index, &voltage_level_map, &node_map, ssh_opt);
-    try equipment_conv.convert_shunts(gpa, model, &index, &voltage_level_map, &node_map, ssh_opt);
-    try equipment_conv.convert_static_var_compensators(model, &index, &voltage_level_map, &node_map, ssh_opt);
-    try equipment_conv.convert_generators(gpa, model, &index, &voltage_level_map, &node_map, ssh_opt);
-    try transformer_conv.convert_transformers(gpa, model, &index, &substation_map, &voltage_level_map, &node_map);
-    try line_conv.convert_lines(gpa, model, &index, &network, &voltage_level_map, &node_map, ssh_opt);
+    try equipment_conv.convert_busbar_sections(gpa, model, &index, &voltage_level_map, node_map);
+    try equipment_conv.convert_switches(gpa, model, &index, &voltage_level_map, node_map, ssh_opt);
+    try equipment_conv.convert_fictitious_switches(gpa, model, &index, &voltage_level_map, node_map, &nm_result.cn_has_switch, &nm_result.cn_other_count, ssh_opt);
+    try equipment_conv.convert_loads(gpa, model, &index, &voltage_level_map, node_map, ssh_opt);
+    try equipment_conv.convert_shunts(gpa, model, &index, &voltage_level_map, node_map, ssh_opt);
+    try equipment_conv.convert_static_var_compensators(model, &index, &voltage_level_map, node_map, ssh_opt);
+    try equipment_conv.convert_generators(gpa, model, &index, &voltage_level_map, node_map, ssh_opt);
+    try transformer_conv.convert_transformers(gpa, model, &index, &substation_map, &voltage_level_map, node_map);
+    try line_conv.convert_lines(gpa, model, &index, &network, &voltage_level_map, node_map, ssh_opt);
     try convert_areas(gpa, model, ssh_opt, &network);
 
     // -------------------------------------------------------------------------

@@ -240,48 +240,20 @@ pub fn convert_switches(
 /// switch connectivity, no BusbarSection, and is the sole non-switch/non-BBS
 /// terminal on that CN.  PyPowSyBl synthesises these to represent "disconnected"
 /// terminals in node-breaker topology.
+/// cn_has_switch and cn_other_count are pre-computed by build_node_map as side effects
+/// of its Phase 1 and Phase 2 passes respectively.  Accepting them here avoids two extra
+/// full passes over all terminal data that would otherwise duplicate build_node_map's work.
 pub fn convert_fictitious_switches(
     gpa: std.mem.Allocator,
     model: *const CimModel,
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const connection_mod.NodeMap,
+    cn_has_switch: *const std.StringHashMapUnmanaged(void),
+    cn_other_count: *const std.StringHashMapUnmanaged(u32),
     ssh_opt: ?CimSsh,
 ) !void {
     assert(voltage_level_map.count() > 0);
-
-    // Build the set of CNs that have at least one switch terminal attached.
-    var cn_has_switch: std.StringHashMapUnmanaged(void) = .empty;
-    defer cn_has_switch.deinit(gpa);
-    try cn_has_switch.ensureTotalCapacity(gpa, @intCast(index.terminal_conn_node.count()));
-
-    for (connection_mod.switch_type_names) |sw_type| {
-        for (model.get_objects_by_type(sw_type)) |sw| {
-            const terminals = index.equipment_terminals.get(sw.id) orelse continue;
-            for (terminals.items) |t| {
-                const cn_id = t.conn_node_id orelse continue;
-                cn_has_switch.putAssumeCapacity(cn_id, {});
-            }
-        }
-    }
-
-    // Count non-switch, non-BBS terminals per CN (same pass as build_node_map Phase 2).
-    var cn_other_count: std.StringHashMapUnmanaged(u32) = .empty;
-    defer cn_other_count.deinit(gpa);
-    try cn_other_count.ensureTotalCapacity(gpa, @intCast(index.conn_node_container.count()));
-
-    for (connection_mod.phase2_equipment_types) |eq_type| {
-        for (model.get_objects_by_type(eq_type)) |equip| {
-            const terminals = index.equipment_terminals.get(equip.id) orelse continue;
-            for (terminals.items) |t| {
-                const cn_id = t.conn_node_id orelse continue;
-                if (index.conn_node_container.get(cn_id) == null) continue;
-                const gop = cn_other_count.getOrPutAssumeCapacity(cn_id);
-                if (!gop.found_existing) gop.value_ptr.* = 0;
-                gop.value_ptr.* += 1;
-            }
-        }
-    }
 
     // PyPowSyBl creates fictitious switches for:
     // 1. SSH-disconnected terminals (any equipment type — ACDCTerminal.connected=false in SSH).
