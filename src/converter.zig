@@ -160,10 +160,15 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh)
     const full_models = model.get_objects_by_type("FullModel");
     const eq_full_model: ?tag_index.CimObjectView = if (full_models.len > 0) model.view(full_models[0]) else null;
     const network_id = if (eq_full_model) |full_model_view| full_model_view.id else "unknown";
-    const scenario_time: ?[]const u8 = if (eq_full_model) |full_model_view|
-        try full_model_view.getProperty("Model.scenarioTime")
-    else
-        null;
+    const scenario_time: ?[]const u8 = blk: {
+        if (ssh_opt) |ssh| {
+            if (try ssh.getFullModelProperty("Model.scenarioTime")) |st| break :blk st;
+        }
+        break :blk if (eq_full_model) |full_model_view|
+            try full_model_view.getProperty("Model.scenarioTime")
+        else
+            null;
+    };
     const created_time: ?[]const u8 = if (eq_full_model) |full_model_view|
         try full_model_view.getProperty("Model.created")
     else

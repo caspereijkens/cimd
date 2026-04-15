@@ -109,6 +109,22 @@ pub const CimSsh = struct {
         const patch = self.find_patch(mrid) orelse return null;
         return self.getReferenceFromPatch(patch, reference_name);
     }
+
+    /// Get a property from the SSH FullModel metadata element.
+    /// Returns null if the FullModel is absent or the property is not found.
+    pub fn getFullModelProperty(self: CimSsh, property_name: []const u8) !?[]const u8 {
+        assert(property_name.len > 0);
+        assert(self.boundaries.len > 0);
+        for (self.boundaries, 0..) |tag, tag_idx| {
+            const type_name = tag_index.extract_tag_type(self.xml, tag.start) catch continue;
+            if (!std.mem.eql(u8, type_name, "FullModel")) continue;
+            const closing_idx = tag_index.find_closing_tag(self.xml, self.boundaries, @intCast(tag_idx)) catch continue;
+            return try tag_index.get_property_from_indices(
+                self.xml, self.boundaries, @intCast(tag_idx), closing_idx, property_name,
+            );
+        }
+        return null;
+    }
 };
 
 /// A merged view of an EQ object and its SSH patch (if any).
@@ -181,4 +197,61 @@ fn extract_patch_mrid(xml: []const u8, tag_start: u32) ?[]const u8 {
 
 fn patch_less_than(_: void, a: SshPatch, b: SshPatch) bool {
     return std.mem.order(u8, a.mrid, b.mrid) == .lt;
+}
+
+test "CimSsh.getFullModelProperty - returns scenarioTime from SSH FullModel" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:ssh-model-1">
+        \\    <md:Model.scenarioTime>2023-01-01T12:00:00Z</md:Model.scenarioTime>
+        \\    <md:Model.created>2023-01-01T10:00:00Z</md:Model.created>
+        \\  </md:FullModel>
+        \\  <cim:Switch rdf:ID="_sw1">
+        \\    <cim:Switch.open>false</cim:Switch.open>
+        \\  </cim:Switch>
+        \\</rdf:RDF>
+    ;
+    var ssh = try CimSsh.init(gpa, xml);
+    defer ssh.deinit(gpa);
+
+    const scenario_time = try ssh.getFullModelProperty("Model.scenarioTime");
+    try std.testing.expect(scenario_time != null);
+    try std.testing.expectEqualStrings("2023-01-01T12:00:00Z", std.mem.trim(u8, scenario_time.?, " \t\r\n"));
+
+    const created = try ssh.getFullModelProperty("Model.created");
+    try std.testing.expect(created != null);
+    try std.testing.expectEqualStrings("2023-01-01T10:00:00Z", std.mem.trim(u8, created.?, " \t\r\n"));
+}
+
+test "CimSsh.getFullModelProperty - returns null when property absent" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:ssh-model-2">
+        \\    <md:Model.created>2023-06-15T08:00:00Z</md:Model.created>
+        \\  </md:FullModel>
+        \\</rdf:RDF>
+    ;
+    var ssh = try CimSsh.init(gpa, xml);
+    defer ssh.deinit(gpa);
+
+    const result = try ssh.getFullModelProperty("Model.scenarioTime");
+    try std.testing.expectEqual(@as(?[]const u8, null), result);
+}
+
+test "CimSsh.getFullModelProperty - returns null when no FullModel present" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Switch rdf:ID="_sw1">
+        \\    <cim:Switch.open>true</cim:Switch.open>
+        \\  </cim:Switch>
+        \\</rdf:RDF>
+    ;
+    var ssh = try CimSsh.init(gpa, xml);
+    defer ssh.deinit(gpa);
+
+    const result = try ssh.getFullModelProperty("Model.scenarioTime");
+    try std.testing.expectEqual(@as(?[]const u8, null), result);
 }
