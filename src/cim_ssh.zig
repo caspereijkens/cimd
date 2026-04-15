@@ -110,20 +110,35 @@ pub const CimSsh = struct {
         return self.getReferenceFromPatch(patch, reference_name);
     }
 
+    /// Return a CimObjectView over the SSH FullModel metadata element.
+    /// Returns null if no FullModel is present in the SSH XML.
+    pub fn getFullModelView(self: CimSsh) !?tag_index.CimObjectView {
+        assert(self.boundaries.len > 0);
+        assert(self.xml.len > 0);
+        for (self.boundaries, 0..) |tag, tag_idx| {
+            const type_name = tag_index.extract_tag_type(self.xml, tag.start) catch continue;
+            if (!std.mem.eql(u8, type_name, "FullModel")) continue;
+            const closing_idx = tag_index.find_closing_tag(self.xml, self.boundaries, @intCast(tag_idx)) catch continue;
+            const id = tag_index.extract_rdf_about(self.xml, tag.start) catch continue;
+            return .{
+                .xml = self.xml,
+                .boundaries = self.boundaries,
+                .object_tag_idx = @intCast(tag_idx),
+                .closing_tag_idx = closing_idx,
+                .id = id,
+                .type_name = "FullModel",
+            };
+        }
+        return null;
+    }
+
     /// Get a property from the SSH FullModel metadata element.
     /// Returns null if the FullModel is absent or the property is not found.
     pub fn getFullModelProperty(self: CimSsh, property_name: []const u8) !?[]const u8 {
         assert(property_name.len > 0);
         assert(self.boundaries.len > 0);
-        for (self.boundaries, 0..) |tag, tag_idx| {
-            const type_name = tag_index.extract_tag_type(self.xml, tag.start) catch continue;
-            if (!std.mem.eql(u8, type_name, "FullModel")) continue;
-            const closing_idx = tag_index.find_closing_tag(self.xml, self.boundaries, @intCast(tag_idx)) catch continue;
-            return try tag_index.get_property_from_indices(
-                self.xml, self.boundaries, @intCast(tag_idx), closing_idx, property_name,
-            );
-        }
-        return null;
+        const view = try self.getFullModelView() orelse return null;
+        return view.getProperty(property_name);
     }
 };
 
@@ -197,6 +212,50 @@ fn extract_patch_mrid(xml: []const u8, tag_start: u32) ?[]const u8 {
 
 fn patch_less_than(_: void, a: SshPatch, b: SshPatch) bool {
     return std.mem.order(u8, a.mrid, b.mrid) == .lt;
+}
+
+test "CimSsh.getFullModelView - returns view with correct id and type_name" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:view-test-1">
+        \\    <md:Model.scenarioTime>2024-06-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
+        \\  <cim:Switch rdf:ID="_sw1">
+        \\    <cim:Switch.open>false</cim:Switch.open>
+        \\  </cim:Switch>
+        \\</rdf:RDF>
+    ;
+    var ssh = try CimSsh.init(gpa, xml);
+    defer ssh.deinit(gpa);
+
+    const view = try ssh.getFullModelView();
+    try std.testing.expect(view != null);
+    try std.testing.expectEqualStrings("urn:uuid:view-test-1", view.?.id);
+    try std.testing.expectEqualStrings("FullModel", view.?.type_name);
+    // Verify child properties are reachable through the view.
+    const st = try view.?.getProperty("Model.scenarioTime");
+    try std.testing.expect(st != null);
+    try std.testing.expectEqualStrings(
+        "2024-06-01T00:00:00Z",
+        std.mem.trim(u8, st.?, " \t\r\n"),
+    );
+}
+
+test "CimSsh.getFullModelView - returns null when no FullModel present" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Switch rdf:ID="_sw1">
+        \\    <cim:Switch.open>true</cim:Switch.open>
+        \\  </cim:Switch>
+        \\</rdf:RDF>
+    ;
+    var ssh = try CimSsh.init(gpa, xml);
+    defer ssh.deinit(gpa);
+
+    const view = try ssh.getFullModelView();
+    try std.testing.expectEqual(@as(?tag_index.CimObjectView, null), view);
 }
 
 test "CimSsh.getFullModelProperty - returns scenarioTime from SSH FullModel" {

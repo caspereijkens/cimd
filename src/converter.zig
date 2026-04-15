@@ -81,6 +81,56 @@ fn parse_iso8601_seconds(s: []const u8) ?i64 {
     return days_since_epoch * 86400 + hour * 3600 + minute * 60 + second;
 }
 
+/// Map a CGMES profile URL to its IIDM subset identifier.
+fn profile_to_subset(profile_url: []const u8) []const u8 {
+    assert(profile_url.len > 0);
+    if (std.mem.indexOf(u8, profile_url, "CoreEquipment") != null) return "EQUIPMENT";
+    if (std.mem.indexOf(u8, profile_url, "SteadyStateHypothesis") != null) return "SSH";
+    return "UNKNOWN";
+}
+
+/// Append one MetadataModel entry derived from a FullModel CimObjectView.
+fn append_metadata_model(
+    gpa: std.mem.Allocator,
+    view: tag_index.CimObjectView,
+    metadata_models: *std.ArrayListUnmanaged(iidm.MetadataModel),
+) !void {
+    assert(view.id.len > 0);
+    assert(view.closing_tag_idx > view.object_tag_idx);
+    const mas = try view.getProperty("Model.modelingAuthoritySet") orelse "";
+    const raw_desc = try view.getProperty("Model.description") orelse "";
+    const desc = try decode_xml_entities(gpa, raw_desc);
+    const version_str = try view.getProperty("Model.version") orelse "0";
+    const version = std.fmt.parseInt(u32, std.mem.trim(u8, version_str, " \t\r\n"), 10) catch 0;
+
+    var profiles: std.ArrayListUnmanaged(iidm.ModelProfile) = .empty;
+    var dependent_on: std.ArrayListUnmanaged(iidm.DependentOnModel) = .empty;
+    var subset: []const u8 = "UNKNOWN";
+    for (view.boundaries[view.object_tag_idx + 1 .. view.closing_tag_idx], view.object_tag_idx + 1..) |tag, ti| {
+        if (view.xml[tag.start + 1] == '/') continue; // skip closing tags
+        const is_self_closing = view.xml[tag.end - 1] == '/';
+        const tag_type = tag_index.extract_tag_type(view.xml, tag.start) catch continue;
+        if (std.mem.eql(u8, tag_type, "Model.profile") and !is_self_closing) {
+            const content = view.xml[tag.end + 1 .. view.boundaries[ti + 1].start];
+            try profiles.append(gpa, .{ .content = content });
+            const s = profile_to_subset(content);
+            if (!std.mem.eql(u8, s, "UNKNOWN")) subset = s;
+        } else if (std.mem.eql(u8, tag_type, "Model.DependentOn")) {
+            const ref = tag_index.extract_rdf_resource(view.xml, tag.start) catch continue;
+            if (ref) |r| try dependent_on.append(gpa, .{ .content = r });
+        }
+    }
+    try metadata_models.append(gpa, .{
+        .subset = subset,
+        .modeling_authority_set = mas,
+        .id = view.id,
+        .version = version,
+        .description = desc,
+        .profiles = profiles,
+        .dependent_on_models = dependent_on,
+    });
+}
+
 /// Convert ControlArea + TieFlow CIM objects to IIDM Area objects.
 /// Each ControlArea becomes one Area. Each TieFlow becomes one AreaBoundary:
 ///   boundary.id   = ConductingEquipment mRID of the TieFlow.Terminal
@@ -169,10 +219,15 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh)
         else
             null;
     };
-    const created_time: ?[]const u8 = if (eq_full_model) |full_model_view|
-        try full_model_view.getProperty("Model.created")
-    else
-        null;
+    const created_time: ?[]const u8 = blk: {
+        if (ssh_opt) |ssh| {
+            if (try ssh.getFullModelProperty("Model.created")) |ct| break :blk ct;
+        }
+        break :blk if (eq_full_model) |full_model_view|
+            try full_model_view.getProperty("Model.created")
+        else
+            null;
+    };
     const forecast_distance: u32 = blk: {
         const st = scenario_time orelse break :blk 0;
         const ct = created_time orelse break :blk 0;
@@ -364,15 +419,8 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh)
     // Order of fields in the entry: cgmesMetadataModels, baseVoltageMapping, cimCharacteristics.
     {
         // --- cgmesMetadataModels ---
-        // Order: dependencies (EQBD) first, then the main EQ model.
-        // Subset derived from profile URL: CoreEquipment → "EQUIPMENT", else "UNKNOWN".
-        const profile_to_subset = struct {
-            fn get(profile_url: []const u8) []const u8 {
-                if (std.mem.indexOf(u8, profile_url, "CoreEquipment") != null) return "EQUIPMENT";
-                return "UNKNOWN";
-            }
-        }.get;
-
+        // Order: dependencies (EQBD) first, then EQ, then SSH (which depends on EQ).
+        // Subset derived from profile URL via profile_to_subset().
         var metadata_models: std.ArrayListUnmanaged(iidm.MetadataModel) = .empty;
         errdefer {
             for (metadata_models.items) |*m| m.deinit(gpa);
@@ -380,47 +428,20 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh)
         }
 
         const full_model_count = full_models.len;
+        const ssh_full_model_view: ?tag_index.CimObjectView = if (ssh_opt) |ssh| try ssh.getFullModelView() else null;
+        const expected_model_count = full_model_count + @as(usize, if (ssh_full_model_view != null) 1 else 0);
+
         for (0..full_model_count) |round| {
             const start_i: usize = if (round == 0) 1 else 0;
             const end_i: usize = if (round == 0) full_model_count else 1;
             for (full_models[start_i..end_i]) |full_model| {
-                const full_model_view = model.view(full_model);
-                const full_model_view_id = full_model_view.id;
-                const mas = try full_model_view.getProperty("Model.modelingAuthoritySet") orelse "";
-                const raw_desc = try full_model_view.getProperty("Model.description") orelse "";
-                const desc = try decode_xml_entities(gpa, raw_desc);
-                const version_str = try full_model_view.getProperty("Model.version") orelse "0";
-                const version = std.fmt.parseInt(u32, std.mem.trim(u8, version_str, " \t\r\n"), 10) catch 0;
-
-                var profiles: std.ArrayListUnmanaged(iidm.ModelProfile) = .empty;
-                var dependent_on: std.ArrayListUnmanaged(iidm.DependentOnModel) = .empty;
-                var subset: []const u8 = "UNKNOWN";
-                for (full_model_view.boundaries[full_model_view.object_tag_idx + 1 .. full_model_view.closing_tag_idx], full_model_view.object_tag_idx + 1..) |tag, ti| {
-                    if (full_model_view.xml[tag.start + 1] == '/') continue; // skip closing tags
-                    const is_self_closing = full_model_view.xml[tag.end - 1] == '/';
-                    const tag_type = tag_index.extract_tag_type(full_model_view.xml, tag.start) catch continue;
-                    if (std.mem.eql(u8, tag_type, "Model.profile") and !is_self_closing) {
-                        const content = full_model_view.xml[tag.end + 1 .. full_model_view.boundaries[ti + 1].start];
-                        try profiles.append(gpa, .{ .content = content });
-                        const s = profile_to_subset(content);
-                        if (!std.mem.eql(u8, s, "UNKNOWN")) subset = s;
-                    } else if (std.mem.eql(u8, tag_type, "Model.DependentOn")) {
-                        const ref = tag_index.extract_rdf_resource(full_model_view.xml, tag.start) catch continue;
-                        if (ref) |r| try dependent_on.append(gpa, .{ .content = r });
-                    }
-                }
-                try metadata_models.append(gpa, .{
-                    .subset = subset,
-                    .modeling_authority_set = mas,
-                    .id = full_model_view_id,
-                    .version = version,
-                    .description = desc,
-                    .profiles = profiles,
-                    .dependent_on_models = dependent_on,
-                });
+                try append_metadata_model(gpa, model.view(full_model), &metadata_models);
             }
         }
-        assert(metadata_models.items.len == full_model_count);
+        if (ssh_full_model_view) |view| {
+            try append_metadata_model(gpa, view, &metadata_models);
+        }
+        assert(metadata_models.items.len == expected_model_count);
 
         // --- baseVoltageMapping ---
         // EQ FullModel is always first in XML order; EQBD FullModel (if present) comes after.
@@ -459,7 +480,7 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh)
         metadata_models = .empty; // ownership transferred
         base_voltage_list = .empty; // ownership transferred
 
-        if (full_model_count > 0) try network.extension_versions.append(gpa, .{ .extension_name = "cgmesMetadataModels" });
+        if (expected_model_count > 0) try network.extension_versions.append(gpa, .{ .extension_name = "cgmesMetadataModels" });
         if (base_voltages.len > 0) try network.extension_versions.append(gpa, .{ .extension_name = "baseVoltageMapping" });
         try network.extension_versions.append(gpa, .{ .extension_name = "cimCharacteristics" });
     }
@@ -490,4 +511,86 @@ test "parse_iso8601_seconds: midnight rollover gives correct delta" {
     const t_jan2 = parse_iso8601_seconds("2026-01-02T00:00:00Z") orelse return error.TestFailed;
     const t_jan1 = parse_iso8601_seconds("2026-01-01T23:00:00Z") orelse return error.TestFailed;
     try std.testing.expectEqual(@as(i64, 3600), t_jan2 - t_jan1);
+}
+
+// ── profile_to_subset ─────────────────────────────────────────────────────────
+
+test "profile_to_subset: CoreEquipment URL → EQUIPMENT" {
+    try std.testing.expectEqualStrings(
+        "EQUIPMENT",
+        profile_to_subset("http://iec.ch/TC57/ns/CIM/CoreEquipment-EU/3.0"),
+    );
+}
+
+test "profile_to_subset: SteadyStateHypothesis URL → SSH" {
+    try std.testing.expectEqualStrings(
+        "SSH",
+        profile_to_subset("http://iec.ch/TC57/ns/CIM/SteadyStateHypothesis-EU/3.0"),
+    );
+}
+
+test "profile_to_subset: unknown URL → UNKNOWN" {
+    try std.testing.expectEqualStrings(
+        "UNKNOWN",
+        profile_to_subset("http://example.com/SomeOtherProfile/1.0"),
+    );
+}
+
+// ── append_metadata_model ─────────────────────────────────────────────────────
+
+test "append_metadata_model: reads id/version/subset/profiles/DependentOn" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test-fm-1">
+        \\    <md:Model.modelingAuthoritySet>http://example.com/mas</md:Model.modelingAuthoritySet>
+        \\    <md:Model.version>003</md:Model.version>
+        \\    <md:Model.profile>http://iec.ch/TC57/ns/CIM/SteadyStateHypothesis-EU/3.0</md:Model.profile>
+        \\    <md:Model.DependentOn rdf:resource="urn:uuid:dep-1"/>
+        \\  </md:FullModel>
+        \\</rdf:RDF>
+    ;
+    var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    // Find FullModel tag and its closing tag.
+    var fm_tag_idx: u32 = 0;
+    var fm_closing_idx: u32 = 0;
+    for (boundaries.items, 0..) |tag, i| {
+        const type_name = tag_index.extract_tag_type(xml, tag.start) catch continue;
+        if (!std.mem.eql(u8, type_name, "FullModel")) continue;
+        fm_tag_idx = @intCast(i);
+        fm_closing_idx = try tag_index.find_closing_tag(xml, boundaries.items, fm_tag_idx);
+        break;
+    }
+
+    const view = tag_index.CimObjectView{
+        .xml = xml,
+        .boundaries = boundaries.items,
+        .object_tag_idx = fm_tag_idx,
+        .closing_tag_idx = fm_closing_idx,
+        .id = "urn:uuid:test-fm-1",
+        .type_name = "FullModel",
+    };
+
+    var metadata_models: std.ArrayListUnmanaged(iidm.MetadataModel) = .empty;
+    defer {
+        for (metadata_models.items) |*m| m.deinit(gpa);
+        metadata_models.deinit(gpa);
+    }
+    try append_metadata_model(gpa, view, &metadata_models);
+
+    try std.testing.expectEqual(@as(usize, 1), metadata_models.items.len);
+    const m = metadata_models.items[0];
+    try std.testing.expectEqualStrings("urn:uuid:test-fm-1", m.id);
+    try std.testing.expectEqualStrings("SSH", m.subset);
+    try std.testing.expectEqual(@as(u32, 3), m.version);
+    try std.testing.expectEqualStrings("http://example.com/mas", m.modeling_authority_set);
+    try std.testing.expectEqual(@as(usize, 1), m.profiles.items.len);
+    try std.testing.expectEqualStrings(
+        "http://iec.ch/TC57/ns/CIM/SteadyStateHypothesis-EU/3.0",
+        m.profiles.items[0].content,
+    );
+    try std.testing.expectEqual(@as(usize, 1), m.dependent_on_models.items.len);
+    try std.testing.expectEqualStrings("urn:uuid:dep-1", m.dependent_on_models.items[0].content);
 }
