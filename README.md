@@ -75,7 +75,6 @@ Arguments:
 
 Options:
   --eqbd <file>     EQBD boundary profile (XML or ZIP)
-  --ssh <file>      SSH steady-state hypothesis profile (XML or ZIP)
 
 Examples:
   cimd eq browse data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
@@ -97,7 +96,6 @@ Arguments:
 
 Options:
   --eqbd <file>          EQBD boundary profile (XML or ZIP)
-  --ssh <file>           SSH steady-state hypothesis profile (XML or ZIP)
   --type <type>          Filter by CIM type (e.g. PowerTransformer)
                          Without <mrid>: list all objects of this type
                          With <mrid>: verify the object is of this type
@@ -128,7 +126,6 @@ Arguments:
 
 Options:
   --eqbd <file>     EQBD boundary profile (XML or ZIP)
-  --ssh <file>      SSH steady-state hypothesis profile (XML or ZIP)
   --json            Output as JSON array of {type, count} objects
 
 Examples:
