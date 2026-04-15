@@ -43,7 +43,7 @@ fn build_ends_by_transformer(
 
     var it = ends_by_transformer.valueIterator();
     while (it.next()) |transformer_ends| {
-        std.sort.block(CimObjectView, transformer_ends.items, {}, less_than_fn);
+        std.sort.block(CimObjectView, transformer_ends.items, {}, view_less_than);
     }
 
     assert(ends.len == 0 or ends_by_transformer.count() > 0);
@@ -230,11 +230,11 @@ fn build_phase_tap_changer_map(
     return phase_tap_changer_map;
 }
 
-fn less_than_fn(_: void, end0: CimObjectView, end1: CimObjectView) bool {
-    const end_number0_str = end0.getProperty("TransformerEnd.endNumber") catch "0" orelse "0";
+fn view_less_than(_: void, a: CimObjectView, b: CimObjectView) bool {
+    const end_number0_str = a.getProperty("TransformerEnd.endNumber") catch "0" orelse "0";
     const end_number0 = std.fmt.parseInt(u32, end_number0_str, 10) catch 0;
 
-    const end_number1_str = end1.getProperty("TransformerEnd.endNumber") catch "0" orelse "0";
+    const end_number1_str = b.getProperty("TransformerEnd.endNumber") catch "0" orelse "0";
     const end_number1 = std.fmt.parseInt(u32, end_number1_str, 10) catch 0;
 
     return end_number0 < end_number1;
@@ -247,7 +247,7 @@ fn make_end(xml: []const u8) !TestEnd {
     return .{ .model = model, .end = model.view(model.get_objects_by_type("PowerTransformerEnd")[0]) };
 }
 
-test "less_than_fn: end 1 < end 2" {
+test "view_less_than: end 1 < end 2" {
     var t1 = try make_end(
         \\<rdf:RDF><cim:PowerTransformerEnd rdf:ID="_e1">
         \\  <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
@@ -260,21 +260,21 @@ test "less_than_fn: end 1 < end 2" {
         \\</cim:PowerTransformerEnd></rdf:RDF>
     );
     defer t2.model.deinit(testing.allocator);
-    try testing.expect(less_than_fn({}, t1.end, t2.end));
-    try testing.expect(!less_than_fn({}, t2.end, t1.end));
+    try testing.expect(view_less_than({}, t1.end, t2.end));
+    try testing.expect(!view_less_than({}, t2.end, t1.end));
 }
 
-test "less_than_fn: equal end numbers are not less than" {
+test "view_less_than: equal end numbers are not less than" {
     var t = try make_end(
         \\<rdf:RDF><cim:PowerTransformerEnd rdf:ID="_e1">
         \\  <cim:TransformerEnd.endNumber>2</cim:TransformerEnd.endNumber>
         \\</cim:PowerTransformerEnd></rdf:RDF>
     );
     defer t.model.deinit(testing.allocator);
-    try testing.expect(!less_than_fn({}, t.end, t.end));
+    try testing.expect(!view_less_than({}, t.end, t.end));
 }
 
-test "less_than_fn: missing endNumber falls back to 0, sorts before any numbered end" {
+test "view_less_than: missing endNumber falls back to 0, sorts before any numbered end" {
     var tm = try make_end(
         \\<rdf:RDF><cim:PowerTransformerEnd rdf:ID="_em">
         \\</cim:PowerTransformerEnd></rdf:RDF>
@@ -286,11 +286,11 @@ test "less_than_fn: missing endNumber falls back to 0, sorts before any numbered
         \\</cim:PowerTransformerEnd></rdf:RDF>
     );
     defer t1.model.deinit(testing.allocator);
-    try testing.expect(less_than_fn({}, tm.end, t1.end));
-    try testing.expect(!less_than_fn({}, t1.end, tm.end));
+    try testing.expect(view_less_than({}, tm.end, t1.end));
+    try testing.expect(!view_less_than({}, t1.end, tm.end));
 }
 
-test "less_than_fn: end 1 < end 3" {
+test "view_less_than: end 1 < end 3" {
     var t1 = try make_end(
         \\<rdf:RDF><cim:PowerTransformerEnd rdf:ID="_e1">
         \\  <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
@@ -303,11 +303,11 @@ test "less_than_fn: end 1 < end 3" {
         \\</cim:PowerTransformerEnd></rdf:RDF>
     );
     defer t3.model.deinit(testing.allocator);
-    try testing.expect(less_than_fn({}, t1.end, t3.end));
-    try testing.expect(!less_than_fn({}, t3.end, t1.end));
+    try testing.expect(view_less_than({}, t1.end, t3.end));
+    try testing.expect(!view_less_than({}, t3.end, t1.end));
 }
 
-test "less_than_fn: transitivity — end1 < end2 and end2 < end3 implies end1 < end3" {
+test "view_less_than: transitivity — end1 < end2 and end2 < end3 implies end1 < end3" {
     var t1 = try make_end(
         \\<rdf:RDF><cim:PowerTransformerEnd rdf:ID="_e1">
         \\  <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
@@ -326,9 +326,9 @@ test "less_than_fn: transitivity — end1 < end2 and end2 < end3 implies end1 < 
         \\</cim:PowerTransformerEnd></rdf:RDF>
     );
     defer t3.model.deinit(testing.allocator);
-    try testing.expect(less_than_fn({}, t1.end, t2.end)); // end1 < end2
-    try testing.expect(less_than_fn({}, t2.end, t3.end)); // end2 < end3
-    try testing.expect(less_than_fn({}, t1.end, t3.end)); // therefore end1 < end3
+    try testing.expect(view_less_than({}, t1.end, t2.end)); // end1 < end2
+    try testing.expect(view_less_than({}, t2.end, t3.end)); // end2 < end3
+    try testing.expect(view_less_than({}, t1.end, t3.end)); // therefore end1 < end3
 }
 
 const EndElectrical = struct { r: f64, x: f64, g: f64, b: f64, rated_u: f64, rated_s: ?f64 };

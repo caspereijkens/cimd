@@ -3,6 +3,8 @@ const tag_index = @import("tag_index.zig");
 pub const CimObject = tag_index.CimObject;
 const TagBoundary = tag_index.TagBoundary;
 
+const assert = std.debug.assert;
+
 pub const CimModel = struct {
     objects: []CimObject,
     id_to_index: std.StringHashMap(u32),
@@ -14,6 +16,8 @@ pub const CimModel = struct {
     const TypeRange = struct { start: u32, len: u32 };
 
     pub fn init(gpa: std.mem.Allocator, xml: []const u8) !CimModel {
+        assert(xml.len > 0);
+
         var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
         errdefer boundaries.deinit(gpa);
 
@@ -37,7 +41,6 @@ pub const CimModel = struct {
                 error.MalformedTag => continue,
             };
             if (id.len > 0) {
-                // Pass pre-computed id — avoids re-scanning the tag in CimObject.init.
                 const object = try tag_index.CimObject.init(
                     xml,
                     boundaries.items,
@@ -51,9 +54,6 @@ pub const CimModel = struct {
                 entry.value_ptr.* += 1;
             }
         }
-
-        // Convert boundaries to get final slice address.
-        const final_boundaries = try boundaries.toOwnedSlice(gpa);
 
         // Pass 2: compute write cursors (prefix sums) and populate type_index.
         const sorted_objects = try gpa.alloc(CimObject, objects.items.len);
@@ -98,7 +98,7 @@ pub const CimModel = struct {
             .id_to_index = id_to_index,
             .type_index = type_index,
             .xml = xml,
-            .boundaries = final_boundaries,
+            .boundaries = try boundaries.toOwnedSlice(gpa),
         };
     }
 

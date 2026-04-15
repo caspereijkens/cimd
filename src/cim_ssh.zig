@@ -1,0 +1,184 @@
+const std = @import("std");
+const tag_index = @import("tag_index.zig");
+const utils = @import("utils.zig");
+
+const assert = std.debug.assert;
+
+pub const SshPatch = struct {
+    mrid: []const u8,
+    patch_tag_idx: u32,
+    closing_tag_idx: u32,
+};
+
+pub const CimSsh = struct {
+    xml: []const u8,
+    boundaries: []const tag_index.TagBoundary,
+    patches: []const SshPatch,
+
+    pub fn init(gpa: std.mem.Allocator, xml: []const u8) !CimSsh {
+        assert(xml.len > 0);
+
+        var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
+        errdefer boundaries.deinit(gpa);
+
+        const closing_for = try tag_index.build_closing_index(gpa, xml, boundaries.items);
+        defer gpa.free(closing_for);
+
+        var patch_count: usize = 0;
+        for (boundaries.items) |tag| {
+            if (extract_patch_mrid(xml, tag.start) != null) patch_count += 1;
+        }
+
+        const patches = try gpa.alloc(SshPatch, patch_count);
+        errdefer gpa.free(patches);
+
+        var write_idx: usize = 0;
+        for (boundaries.items, 0..) |tag, tag_idx| {
+            const mrid = extract_patch_mrid(xml, tag.start) orelse continue;
+            assert(write_idx < patch_count);
+            patches[write_idx] = .{
+                .mrid = mrid,
+                .patch_tag_idx = @intCast(tag_idx),
+                .closing_tag_idx = closing_for[tag_idx],
+            };
+            write_idx += 1;
+        }
+        assert(write_idx == patch_count);
+
+        std.mem.sort(SshPatch, patches, {}, patch_less_than);
+
+        return .{
+            .xml = xml,
+            .boundaries = try boundaries.toOwnedSlice(gpa),
+            .patches = patches,
+        };
+    }
+
+    pub fn deinit(self: *CimSsh, gpa: std.mem.Allocator) void {
+        gpa.free(self.patches);
+        gpa.free(self.boundaries);
+    }
+
+    /// Look up the patch for an mRID. Returns null if not present in SSH.
+    /// Use the returned SshPatch with getPropertyFromPatch/getReferenceFromPatch
+    /// when reading multiple properties for the same object — avoids redundant
+    /// binary searches.
+    pub fn find_patch(self: CimSsh, mrid: []const u8) ?SshPatch {
+        assert(mrid.len > 0);
+        var lo: usize = 0;
+        var hi: usize = self.patches.len;
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            switch (std.mem.order(u8, self.patches[mid].mrid, mrid)) {
+                .lt => lo = mid + 1,
+                .gt => hi = mid,
+                .eq => return self.patches[mid],
+            }
+        }
+        return null;
+    }
+
+    /// Read a text property from a patch returned by find_patch.
+    pub fn getPropertyFromPatch(self: CimSsh, patch: SshPatch, property_name: []const u8) !?[]const u8 {
+        return tag_index.get_property_from_indices(
+            self.xml, self.boundaries,
+            patch.patch_tag_idx, patch.closing_tag_idx,
+            property_name,
+        );
+    }
+
+    /// Read an rdf:resource reference from a patch returned by find_patch.
+    pub fn getReferenceFromPatch(self: CimSsh, patch: SshPatch, reference_name: []const u8) !?[]const u8 {
+        return tag_index.get_reference_from_indices(
+            self.xml, self.boundaries,
+            patch.patch_tag_idx, patch.closing_tag_idx,
+            reference_name,
+        );
+    }
+
+    /// Convenience wrapper for single-property lookups (e.g. eq get).
+    /// For multiple properties on the same object, use find_patch + getPropertyFromPatch.
+    pub fn getProperty(self: CimSsh, mrid: []const u8, property_name: []const u8) !?[]const u8 {
+        const patch = self.find_patch(mrid) orelse return null;
+        return self.getPropertyFromPatch(patch, property_name);
+    }
+
+    /// Convenience wrapper for single-reference lookups.
+    /// For multiple references on the same object, use find_patch + getReferenceFromPatch.
+    pub fn getReference(self: CimSsh, mrid: []const u8, reference_name: []const u8) !?[]const u8 {
+        const patch = self.find_patch(mrid) orelse return null;
+        return self.getReferenceFromPatch(patch, reference_name);
+    }
+};
+
+/// A merged view of an EQ object and its SSH patch (if any).
+/// SSH properties and references shadow EQ values — SSH is checked first,
+/// EQ is the fallback. Create once per object (find_patch runs at init),
+/// then call getProperty/getReference freely without repeated SSH lookups.
+pub const CimMergedView = struct {
+    eq: tag_index.CimObjectView,
+    ssh: ?SshContext,
+
+    const SshContext = struct {
+        xml: []const u8,
+        boundaries: []const tag_index.TagBoundary,
+        patch: SshPatch,
+    };
+
+    pub fn init(eq: tag_index.CimObjectView, mrid: []const u8, ssh_opt: ?CimSsh) CimMergedView {
+        assert(mrid.len > 0);
+        if (ssh_opt) |ssh| {
+            if (ssh.find_patch(mrid)) |patch| {
+                return .{
+                    .eq = eq,
+                    .ssh = .{ .xml = ssh.xml, .boundaries = ssh.boundaries, .patch = patch },
+                };
+            }
+        }
+        return .{ .eq = eq, .ssh = null };
+    }
+
+    /// Get a text property. SSH value takes priority over EQ value.
+    pub fn getProperty(self: CimMergedView, name: []const u8) !?[]const u8 {
+        if (self.ssh) |s| {
+            if (try tag_index.get_property_from_indices(
+                s.xml, s.boundaries,
+                s.patch.patch_tag_idx, s.patch.closing_tag_idx,
+                name,
+            )) |v| return v;
+        }
+        return self.eq.getProperty(name);
+    }
+
+    /// Get an rdf:resource reference. SSH value takes priority over EQ value.
+    pub fn getReference(self: CimMergedView, name: []const u8) !?[]const u8 {
+        if (self.ssh) |s| {
+            if (try tag_index.get_reference_from_indices(
+                s.xml, s.boundaries,
+                s.patch.patch_tag_idx, s.patch.closing_tag_idx,
+                name,
+            )) |v| return v;
+        }
+        return self.eq.getReference(name);
+    }
+};
+
+/// Returns the stripped mRID if this tag is an SSH equipment patch, null otherwise.
+/// Accepts rdf:ID="_mrid" → "mrid" and rdf:about="#_mrid" → "mrid".
+/// Rejects metadata (urn: URIs, FullModel, etc.).
+fn extract_patch_mrid(xml: []const u8, tag_start: u32) ?[]const u8 {
+    if (tag_index.extract_rdf_id(xml, tag_start)) |raw| {
+        if (raw.len > 0 and raw[0] == '_') return utils.strip_underscore(raw);
+    } else |_| {}
+
+    if (tag_index.extract_rdf_about(xml, tag_start)) |raw| {
+        if (raw.len > 1 and raw[0] == '#' and raw[1] == '_')
+            return utils.strip_underscore(utils.strip_hash(raw));
+    } else |_| {}
+
+    return null;
+}
+
+fn patch_less_than(_: void, a: SshPatch, b: SshPatch) bool {
+    return std.mem.order(u8, a.mrid, b.mrid) == .lt;
+}

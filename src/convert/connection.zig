@@ -3,14 +3,16 @@ const iidm = @import("../iidm.zig");
 const cim_model = @import("../cim_model.zig");
 const cim_index = @import("../cim_index.zig");
 const utils = @import("../utils.zig");
+const CimSsh = @import("../cim_ssh.zig").CimSsh;
 
 const assert = std.debug.assert;
 
 const CimModel = cim_model.CimModel;
 const CimIndex = cim_index.CimIndex;
 const strip_hash = utils.strip_hash;
+const strip_underscore = utils.strip_underscore;
 
-const switch_type_names = [_][]const u8{ "Breaker", "Disconnector", "LoadBreakSwitch" };
+pub const switch_type_names = [_][]const u8{ "Breaker", "Disconnector", "LoadBreakSwitch" };
 
 fn is_switch_type(type_name: []const u8) bool {
     for (switch_type_names) |sw| {
@@ -26,10 +28,30 @@ fn is_switch_type(type_name: []const u8) bool {
 /// node with an internal connection back to the CN node.
 pub const NodeMap = std.StringHashMapUnmanaged(u32);
 
+/// Result of build_node_map. Bundles the node map with two auxiliary maps that are
+/// computed for free as side effects of the Phase 1 and Phase 2 passes, so that
+/// convert_fictitious_switches does not need to rebuild them from scratch.
+pub const NodeMapResult = struct {
+    node_map: NodeMap,
+    /// Set of ConnectivityNode IDs that have at least one switch terminal attached.
+    /// Built as a side effect of Phase 1 (switch terminal iteration).
+    cn_has_switch: std.StringHashMapUnmanaged(void),
+    /// Count of non-BusbarSection / non-switch terminals per ConnectivityNode,
+    /// restricted to phase2_equipment_types that have a valid VL container.
+    /// Built as a side effect of Phase 2 (equipment terminal iteration).
+    cn_other_count: std.StringHashMapUnmanaged(u32),
+
+    pub fn deinit(self: *NodeMapResult, gpa: std.mem.Allocator) void {
+        self.node_map.deinit(gpa);
+        self.cn_has_switch.deinit(gpa);
+        self.cn_other_count.deinit(gpa);
+    }
+};
+
 /// Equipment type processing order for Phase 2 node allocation.
 /// Matches PyPowSyBl's CGMES importer processing sequence.
 /// BusbarSections and switch types are excluded (handled in Phase 1).
-const phase2_equipment_types = [_][]const u8{
+pub const phase2_equipment_types = [_][]const u8{
     "ACLineSegment",
     "PowerTransformer",
     "SynchronousMachine",
@@ -40,6 +62,7 @@ const phase2_equipment_types = [_][]const u8{
     "StaticVarCompensator",
     "SeriesCompensator",
 };
+
 
 /// Build the terminal → node map and populate internalConnections on all VLs.
 ///
@@ -65,7 +88,8 @@ pub fn build_node_map(
     model: *const CimModel,
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-) !NodeMap {
+    ssh_opt: ?CimSsh,
+) !NodeMapResult {
     assert(index.conn_node_container.count() > 0);
 
     const conn_nodes = model.get_objects_by_type("ConnectivityNode");
@@ -136,7 +160,18 @@ pub fn build_node_map(
     }
 
     // Phase 1: assign BusbarSection and switch terminals to their CN base node.
+    // cn_has_switch is built as a free side effect of the switch terminal loop below.
+    var cn_has_switch: std.StringHashMapUnmanaged(void) = .empty;
+    errdefer cn_has_switch.deinit(gpa);
+    try cn_has_switch.ensureTotalCapacity(gpa, @intCast(index.terminal_conn_node.count()));
+
+    // cn_other_count is built as a free side effect of the Phase 2 terminal loop below.
+    var cn_other_count: std.StringHashMapUnmanaged(u32) = .empty;
+    errdefer cn_other_count.deinit(gpa);
+    try cn_other_count.ensureTotalCapacity(gpa, @intCast(index.conn_node_container.count()));
+
     var node_map: NodeMap = .empty;
+    errdefer node_map.deinit(gpa);
     try node_map.ensureTotalCapacity(gpa, @intCast(index.terminal_conn_node.count()));
 
     for (model.get_objects_by_type("BusbarSection")) |busbar_section| {
@@ -150,8 +185,10 @@ pub fn build_node_map(
         for (model.get_objects_by_type(sw_type)) |sw| {
             const terminals = index.equipment_terminals.get(sw.id) orelse continue;
             for (terminals.items) |t| {
-                const base_node = conn_node_base_nodes.get(t.conn_node_id orelse continue) orelse continue;
+                const conn_node_id = t.conn_node_id orelse continue;
+                const base_node = conn_node_base_nodes.get(conn_node_id) orelse continue;
                 node_map.putAssumeCapacity(t.id, base_node);
+                cn_has_switch.putAssumeCapacity(conn_node_id, {});
             }
         }
     }
@@ -183,19 +220,39 @@ pub fn build_node_map(
             for (terminals.items) |t| {
                 const conn_node_id = t.conn_node_id orelse continue;
                 const conn_node = conn_node_base_nodes.get(conn_node_id) orelse continue;
+                // Side effect: count phase2 terminals per CN for convert_fictitious_switches.
+                // conn_node lookup above already filters to CNs with a valid VL container,
+                // matching the index.conn_node_container check in the original standalone pass.
+                {
+                    const gop = cn_other_count.getOrPutAssumeCapacity(conn_node_id);
+                    if (!gop.found_existing) gop.value_ptr.* = 0;
+                    gop.value_ptr.* += 1;
+                }
                 const repr_voltage_level_id = conn_node_repr_voltage_level.get(conn_node_id) orelse continue;
                 const voltage_level = voltage_level_map.get(repr_voltage_level_id) orelse continue;
                 const voltage_level_ctr = voltage_level_counters.getPtr(repr_voltage_level_id) orelse continue;
                 const has_busbar_section = index.conn_node_to_busbar_section.contains(conn_node_id);
 
+                // SSH-disconnected terminals get a dedicated node but no IC.
+                // convert_fictitious_switches creates the fictitious switch instead.
+                const ssh_disconnected = is_ssh_terminal_disconnected(ssh_opt, t.id);
+
                 if (has_busbar_section or conn_node_first_seen.contains(conn_node_id)) {
                     const terminal_node = voltage_level_ctr.*;
                     voltage_level_ctr.* += 1;
                     node_map.putAssumeCapacity(t.id, terminal_node);
-                    voltage_level.node_breaker_topology.internal_connections.appendAssumeCapacity(.{
-                        .node1 = conn_node,
-                        .node2 = terminal_node,
-                    });
+                    if (!ssh_disconnected) {
+                        voltage_level.node_breaker_topology.internal_connections.appendAssumeCapacity(.{
+                            .node1 = conn_node,
+                            .node2 = terminal_node,
+                        });
+                    }
+                } else if (ssh_disconnected) {
+                    // SSH-disconnected on first visit: allocate dedicated node, don't take
+                    // the "first seen" slot so an SSH-connected co-terminal can use the CN node.
+                    const terminal_node = voltage_level_ctr.*;
+                    voltage_level_ctr.* += 1;
+                    node_map.putAssumeCapacity(t.id, terminal_node);
                 } else {
                     node_map.putAssumeCapacity(t.id, conn_node);
                     conn_node_first_seen.putAssumeCapacity(conn_node_id, {});
@@ -206,5 +263,21 @@ pub fn build_node_map(
 
     assert(node_map.count() <= index.terminal_conn_node.count());
 
-    return node_map;
+    return .{
+        .node_map = node_map,
+        .cn_has_switch = cn_has_switch,
+        .cn_other_count = cn_other_count,
+    };
+}
+
+/// Returns true if the terminal is marked as disconnected in SSH
+/// (ACDCTerminal.connected = "false"). The terminal raw rdf:ID is used
+/// to look up the SSH patch; strip_underscore converts it to the mRID key.
+pub fn is_ssh_terminal_disconnected(ssh_opt: ?CimSsh, terminal_id: []const u8) bool {
+    assert(terminal_id.len > 0);
+    const ssh = ssh_opt orelse return false;
+    const mrid = strip_underscore(terminal_id);
+    const connected = ssh.getProperty(mrid, "ACDCTerminal.connected") catch return false;
+    const val = connected orelse return false;
+    return std.mem.eql(u8, val, "false");
 }

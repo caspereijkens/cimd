@@ -779,8 +779,19 @@ fn build_voltage_limits(gpa: std.mem.Allocator, model: *const cim_model.CimModel
         const limit_set = model.getObjectById(strip_hash(limit_set_ref)) orelse continue;
         const terminal_ref = try limit_set.getReference("OperationalLimitSet.Terminal") orelse continue;
 
-        const conn_node_id = index.terminal_conn_node.get(strip_hash(terminal_ref)) orelse continue;
-        const container_id = index.conn_node_container.get(conn_node_id) orelse continue;
+        const terminal_id = strip_hash(terminal_ref);
+        const conn_node_id = index.terminal_conn_node.get(terminal_id) orelse continue;
+        // Resolve container via CN, falling back to terminal equipment's EquipmentContainer
+        // when the CN has no ConnectivityNode element (only referenced in Terminal elements).
+        const raw_container_id: []const u8 = if (index.conn_node_container.get(conn_node_id)) |id| id else blk: {
+            const terminal = model.getObjectById(terminal_id) orelse continue;
+            const eq_ref = try terminal.getReference("Terminal.ConductingEquipment") orelse continue;
+            const eq = model.getObjectById(strip_hash(eq_ref)) orelse continue;
+            const ec_ref = try eq.getReference("Equipment.EquipmentContainer") orelse continue;
+            break :blk strip_hash(ec_ref);
+        };
+        // Apply VL merge so limits are keyed by the representative VL.
+        const container_id = find_voltage_level(&index.voltage_level_merge, raw_container_id);
         const container = model.getObjectById(container_id) orelse continue;
 
         if (!std.mem.eql(u8, container.type_name, "VoltageLevel")) continue;
@@ -796,9 +807,15 @@ fn build_voltage_limits(gpa: std.mem.Allocator, model: *const cim_model.CimModel
         if (!gop.found_existing) gop.value_ptr.* = .{ .high_value = null, .low_value = null };
 
         if (std.mem.endsWith(u8, direction, "high")) {
-            gop.value_ptr.high_value = value;
+            // Most restrictive high limit is the minimum.
+            if (gop.value_ptr.high_value == null or value < gop.value_ptr.high_value.?) {
+                gop.value_ptr.high_value = value;
+            }
         } else {
-            gop.value_ptr.low_value = value;
+            // Most restrictive low limit is the maximum.
+            if (gop.value_ptr.low_value == null or value > gop.value_ptr.low_value.?) {
+                gop.value_ptr.low_value = value;
+            }
         }
     }
     assert(index.voltage_level_limits.count() <= voltage_limits.len);
