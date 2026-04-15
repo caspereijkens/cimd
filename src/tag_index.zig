@@ -440,21 +440,31 @@ pub fn build_closing_index(
     for (boundaries, 0..) |tag, i| {
         if (xml[tag.end - 1] == '/') {
             // Self-closing — already defaulted, nothing to push.
+        } else if (xml[tag.start + 1] == '!' or xml[tag.start + 1] == '?') {
+            // XML comment (<!--) or processing instruction (<?).
+            // Not an element — never pushed, never popped.
         } else if (xml[tag.start + 1] == '/') {
-            // Closing tag — pop matching opener from stack top.
-            const type_name = extract_tag_type(xml, tag.start + 1) catch continue;
-            if (stack.items.len > 0 and std.mem.eql(u8, stack.items[stack.items.len - 1].type_name, type_name)) {
-                const opener = stack.pop();
-                if (opener) |opener_val| {
-                    closing_for[opener_val.idx] = @intCast(i);
-                }
-            }
+            // Closing tag — must match the stack top; CGMES XML is always well-nested.
+            // Bound the type search to within this tag to prevent cross-tag colon matches.
+            const tag_xml = xml[tag.start .. tag.end + 1];
+            const type_name = extract_tag_type(tag_xml, 1) catch continue;
+            assert(stack.items.len > 0);
+            assert(std.mem.eql(u8, stack.items[stack.items.len - 1].type_name, type_name));
+            const opener = stack.pop().?;
+            closing_for[opener.idx] = @intCast(i);
         } else {
             // Opening tag — push.
-            const type_name = extract_tag_type(xml, tag.start) catch continue;
+            // Bound the type search to within this tag to prevent cross-tag colon matches
+            // (e.g. a boundary created by '<->' inside an XML comment could otherwise look
+            // past the boundary end and find the ':' in the following real tag's namespace).
+            const tag_xml = xml[tag.start .. tag.end + 1];
+            const type_name = extract_tag_type(tag_xml, 0) catch continue;
             try stack.append(gpa, .{ .type_name = type_name, .idx = @intCast(i) });
         }
     }
+
+    // Every opener must have been matched; a non-empty stack means unclosed tags.
+    assert(stack.items.len == 0);
 
     return closing_for;
 }
