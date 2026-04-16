@@ -65,8 +65,7 @@ fn append_substation(
         for (stubs.items, 1..) |stub_id, n| {
             const stub = model.getObjectById(stub_id) orelse continue;
             const stub_mrid = try stub.getProperty("IdentifiedObject.mRID") orelse strip_underscore(stub_id);
-            const alias_type = try std.fmt.allocPrint(gpa, "MergedSubstation{d}", .{n});
-            aliases.appendAssumeCapacity(.{ .type = alias_type, .content = stub_mrid });
+            aliases.appendAssumeCapacity(.{ .type_info = .{ .merged_substation = @intCast(n) }, .content = stub_mrid });
         }
     }
 

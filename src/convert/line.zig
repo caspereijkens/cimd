@@ -209,7 +209,7 @@ pub fn convert_lines(
         var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
         errdefer aliases.deinit(gpa);
         try aliases.ensureTotalCapacity(gpa, 1);
-        aliases.appendAssumeCapacity(.{ .type = "CGMES.Terminal1", .content = strip_underscore(terminal.id) });
+        aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal1" }, .content = strip_underscore(terminal.id) });
 
         var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
         errdefer properties.deinit(gpa);
@@ -294,8 +294,8 @@ pub fn convert_lines(
         var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
         errdefer aliases.deinit(gpa);
         try aliases.ensureTotalCapacity(gpa, 2);
-        aliases.appendAssumeCapacity(.{ .type = "CGMES.Terminal1", .content = strip_underscore(terminals.items[0].id) });
-        aliases.appendAssumeCapacity(.{ .type = "CGMES.Terminal2", .content = strip_underscore(terminals.items[1].id) });
+        aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal1" }, .content = strip_underscore(terminals.items[0].id) });
+        aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal2" }, .content = strip_underscore(terminals.items[1].id) });
 
         // properties: CGMES.originalClass
         var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
@@ -380,8 +380,8 @@ pub fn convert_lines(
         var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
         errdefer aliases.deinit(gpa);
         try aliases.ensureTotalCapacity(gpa, 2);
-        aliases.appendAssumeCapacity(.{ .type = "CGMES.Terminal1", .content = strip_underscore(terminals.items[0].id) });
-        aliases.appendAssumeCapacity(.{ .type = "CGMES.Terminal2", .content = strip_underscore(terminals.items[1].id) });
+        aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal1" }, .content = strip_underscore(terminals.items[0].id) });
+        aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal2" }, .content = strip_underscore(terminals.items[1].id) });
 
         // properties: CGMES.originalClass
         var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;

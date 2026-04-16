@@ -698,13 +698,25 @@ pub const Switch = struct {
 };
 
 pub const Alias = struct {
-    type: []const u8,
+    pub const Type = union(enum) {
+        merged_voltage_level: u32,
+        merged_substation: u32,
+        static_string: []const u8,
+    };
+
+    type_info: Type,
     content: []const u8,
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
         try jws.beginObject();
         try jws.objectField("type");
-        try jws.write(self.type);
+        var buf: [32]u8 = undefined;
+        const type_str = switch (self.type_info) {
+            .merged_voltage_level => |idx| std.fmt.bufPrint(&buf, "MergedVoltageLevel{d}", .{idx}) catch unreachable,
+            .merged_substation => |idx| std.fmt.bufPrint(&buf, "MergedSubstation{d}", .{idx}) catch unreachable,
+            .static_string => |s| s,
+        };
+        try jws.write(type_str);
         try jws.objectField("content");
         try jws.write(self.content);
         try jws.endObject();
