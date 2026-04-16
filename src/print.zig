@@ -5,37 +5,37 @@ const utils = @import("utils.zig");
 
 /// Print a usage error to stderr and exit 2.
 /// Use for invalid arguments, missing flags, bad input — anything the caller did wrong.
-pub fn stderr(comptime fmt_str: []const u8, args: anytype) noreturn {
+pub fn stderr(io: std.Io, comptime fmt_str: []const u8, args: anytype) noreturn {
     var buf: [4096]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, "error: " ++ fmt_str ++ "\n", args) catch "error: (message too long)\n";
-    _ = std.fs.File.stderr().write(msg) catch {};
+    _ = std.Io.File.stderr().writeStreamingAll(io, msg) catch {};
     std.process.exit(2);
 }
 
 /// Print a not-found message to stderr and exit 1.
 /// Use when a requested resource (e.g. mRID) does not exist in the model.
-pub fn not_found(comptime fmt_str: []const u8, args: anytype) noreturn {
+pub fn not_found(io: std.Io, comptime fmt_str: []const u8, args: anytype) noreturn {
     var buf: [4096]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, "not found: " ++ fmt_str ++ "\n", args) catch "not found: (message too long)\n";
-    _ = std.fs.File.stderr().write(msg) catch {};
+    _ = std.Io.File.stderr().writeStreamingAll(io, msg) catch {};
     std.process.exit(1);
 }
 
 /// Write informational (non-error) output to stderr. Returns an error on write failure.
 /// Use for diagnostic/progress output that should not pollute stdout data.
-pub fn stderr_info(comptime fmt_str: []const u8, args: anytype) !void {
+pub fn stderr_info(io: std.Io, comptime fmt_str: []const u8, args: anytype) !void {
     var buf: [4096]u8 = undefined;
     const msg = try std.fmt.bufPrint(&buf, fmt_str, args);
-    _ = try std.fs.File.stderr().write(msg);
+    _ = try std.Io.File.stderr().writeStreamingAll(io, msg);
 }
 
-pub fn stdout(comptime fmt_str: []const u8, args: anytype) !void {
+pub fn stdout(io: std.Io, comptime fmt_str: []const u8, args: anytype) !void {
     var buf: [4096]u8 = undefined;
     const msg = try std.fmt.bufPrint(&buf, fmt_str, args);
-    _ = try std.fs.File.stdout().write(msg);
+    try std.Io.File.stdout().writeStreamingAll(io, msg);
 }
 
-pub fn display_object_inventory_json(gpa: std.mem.Allocator, model: cim_model.CimModel) !void {
+pub fn display_object_inventory_json(io: std.Io, gpa: std.mem.Allocator, model: cim_model.CimModel) !void {
     var counts = try model.getTypeCounts(gpa);
     defer counts.deinit();
 
@@ -51,16 +51,16 @@ pub fn display_object_inventory_json(gpa: std.mem.Allocator, model: cim_model.Ci
         }
     }.lessThan);
 
-    try stdout("[", .{});
+    try stdout(io, "[", .{});
     for (type_names.items, 0..) |type_name, i| {
         const count = counts.get(type_name).?;
-        if (i > 0) try stdout(",", .{});
-        try stdout("{{\"type\":\"{s}\",\"count\":{d}}}", .{ type_name, count });
+        if (i > 0) try stdout(io, ",", .{});
+        try stdout(io, "{{\"type\":\"{s}\",\"count\":{d}}}", .{ type_name, count });
     }
-    try stdout("]\n", .{});
+    try stdout(io, "]\n", .{});
 }
 
-pub fn display_object_inventory(gpa: std.mem.Allocator, model: cim_model.CimModel) !void {
+pub fn display_object_inventory(io: std.Io, gpa: std.mem.Allocator, model: cim_model.CimModel) !void {
     var counts = try model.getTypeCounts(gpa);
     defer counts.deinit();
 
@@ -84,16 +84,16 @@ pub fn display_object_inventory(gpa: std.mem.Allocator, model: cim_model.CimMode
     var total: usize = 0;
     for (type_names.items) |type_name| {
         const count = counts.get(type_name).?;
-        try stdout("{s}: {d} objects\n", .{ type_name, count });
+        try stdout(io, "{s}: {d} objects\n", .{ type_name, count });
         total += count;
     }
 
-    try stdout("Total: {d} objects\n\n", .{total});
+    try stdout(io, "Total: {d} objects\n\n", .{total});
 }
 
-pub fn display_object(gpa: std.mem.Allocator, obj: tag_index.CimObjectView) !void {
-    try stdout("Type: {s}\n", .{obj.type_name});
-    try stdout("ID: {s}\n", .{obj.id});
+pub fn display_object(io: std.Io, gpa: std.mem.Allocator, obj: tag_index.CimObjectView) !void {
+    try stdout(io, "Type: {s}\n", .{obj.type_name});
+    try stdout(io, "ID: {s}\n", .{obj.id});
 
     // Get all properties and references
     var props = try obj.getAllProperties(gpa);
@@ -104,7 +104,7 @@ pub fn display_object(gpa: std.mem.Allocator, obj: tag_index.CimObjectView) !voi
 
     // Display properties if any
     if (props.count() > 0) {
-        try stdout("\nProperties:\n", .{});
+        try stdout(io, "\nProperties:\n", .{});
 
         // Sort property names for consistent output
         var prop_names: std.ArrayList([]const u8) = .empty;
@@ -123,13 +123,13 @@ pub fn display_object(gpa: std.mem.Allocator, obj: tag_index.CimObjectView) !voi
 
         for (prop_names.items) |name| {
             const value = props.get(name).?;
-            try stdout("  {s}: {s}\n", .{ name, value });
+            try stdout(io, "  {s}: {s}\n", .{ name, value });
         }
     }
 
     // Display references if any
     if (refs.count() > 0) {
-        try stdout("\nReferences:\n", .{});
+        try stdout(io, "\nReferences:\n", .{});
 
         // Sort reference names for consistent output
         var ref_names: std.ArrayList([]const u8) = .empty;
@@ -148,61 +148,61 @@ pub fn display_object(gpa: std.mem.Allocator, obj: tag_index.CimObjectView) !voi
 
         for (ref_names.items) |name| {
             const value = refs.get(name).?;
-            try stdout("  {s}: {s}\n", .{ name, value });
+            try stdout(io, "  {s}: {s}\n", .{ name, value });
         }
     }
 
-    try stdout("\n", .{});
+    try stdout(io, "\n", .{});
 }
 
-pub fn display_object_list(gpa: std.mem.Allocator, model: *const cim_model.CimModel, objects: []const tag_index.CimObject) !void {
+pub fn display_object_list(io: std.Io, gpa: std.mem.Allocator, model: *const cim_model.CimModel, objects: []const tag_index.CimObject) !void {
     for (objects, 1..) |obj, i| {
-        try stdout("[{d}] {s}\n", .{ i, obj.id });
+        try stdout(io, "[{d}] {s}\n", .{ i, obj.id });
         try display_object(gpa, model.view(obj));
     }
 }
 
-pub fn display_object_json(gpa: std.mem.Allocator, obj: tag_index.CimObjectView) !void {
+pub fn display_object_json(io: std.Io, gpa: std.mem.Allocator, obj: tag_index.CimObjectView) !void {
     var props = try obj.getAllProperties(gpa);
     defer props.deinit();
     var refs = try obj.getAllReferences(gpa);
     defer refs.deinit();
 
-    try stdout("{{\"id\":\"{s}\",\"type\":\"{s}\",\"properties\":{{", .{ obj.id, obj.type_name });
+    try stdout(io, "{{\"id\":\"{s}\",\"type\":\"{s}\",\"properties\":{{", .{ obj.id, obj.type_name });
     var first = true;
     var prop_it = props.iterator();
     while (prop_it.next()) |entry| {
-        if (!first) try stdout(",", .{});
-        try stdout("\"{s}\":\"{s}\"", .{ entry.key_ptr.*, entry.value_ptr.* });
+        if (!first) try stdout(io, ",", .{});
+        try stdout(io, "\"{s}\":\"{s}\"", .{ entry.key_ptr.*, entry.value_ptr.* });
         first = false;
     }
-    try stdout("}},\"references\":{{", .{});
+    try stdout(io, "}},\"references\":{{", .{});
     first = true;
     var ref_it = refs.iterator();
     while (ref_it.next()) |entry| {
-        if (!first) try stdout(",", .{});
-        try stdout("\"{s}\":\"{s}\"", .{ entry.key_ptr.*, utils.strip_hash(entry.value_ptr.*) });
+        if (!first) try stdout(io, ",", .{});
+        try stdout(io, "\"{s}\":\"{s}\"", .{ entry.key_ptr.*, utils.strip_hash(entry.value_ptr.*) });
         first = false;
     }
-    try stdout("}}}}\n", .{});
+    try stdout(io, "}}}}\n", .{});
 }
 
-pub fn display_object_list_json(model: *const cim_model.CimModel, objects: []const tag_index.CimObject, fields: []const []const u8) !void {
-    try stdout("[", .{});
+pub fn display_object_list_json(io: std.Io, model: *const cim_model.CimModel, objects: []const tag_index.CimObject, fields: []const []const u8) !void {
+    try stdout(io, "[", .{});
     for (objects, 0..) |obj, i| {
-        if (i > 0) try stdout(",", .{});
+        if (i > 0) try stdout(io, ",", .{});
         const view = model.view(obj);
-        try stdout("{{\"id\":\"{s}\",\"type\":\"{s}\"", .{ obj.id, obj.type_name });
+        try stdout(io, "{{\"id\":\"{s}\",\"type\":\"{s}\"", .{ obj.id, obj.type_name });
         if (fields.len == 0) {
             const name = try view.getProperty("IdentifiedObject.name") orelse "";
-            try stdout(",\"IdentifiedObject.name\":\"{s}\"", .{name});
+            try stdout(io, ",\"IdentifiedObject.name\":\"{s}\"", .{name});
         } else {
             for (fields) |field| {
                 const val = try view.getProperty(field) orelse "";
-                try stdout(",\"{s}\":\"{s}\"", .{ field, val });
+                try stdout(io, ",\"{s}\":\"{s}\"", .{ field, val });
             }
         }
-        try stdout("}}", .{});
+        try stdout(io, "}}", .{});
     }
-    try stdout("]\n", .{});
+    try stdout(io, "]\n", .{});
 }

@@ -2,3 +2,4 @@
 zig-out/
 data/
 .cimd/
+.DS_Store

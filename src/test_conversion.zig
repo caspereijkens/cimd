@@ -414,7 +414,7 @@ fn find_load(network: anytype, mrid: []const u8) ?@TypeOf(network.substations.it
 
 test "forecastDistance: scenarioTime 8h after created → 480 minutes" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -427,7 +427,7 @@ test "forecastDistance: scenarioTime 8h after created → 480 minutes" {
 
 test "line: gch and bch split equally across both sides" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -446,7 +446,7 @@ test "line: gch and bch split equally across both sides" {
 
 test "boundary line: creates a fictitious VL and LINE_BNDRY lands in it" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -471,7 +471,7 @@ test "boundary line: creates a fictitious VL and LINE_BNDRY lands in it" {
 
 test "generator: energy_source derived from GeneratingUnit CIM type" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -485,7 +485,7 @@ test "generator: energy_source derived from GeneratingUnit CIM type" {
 
 test "generator: min_p and max_p read from GeneratingUnit" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -499,7 +499,7 @@ test "generator: min_p and max_p read from GeneratingUnit" {
 
 test "generator: is_condenser true when SynchronousMachine.type contains condenser" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -516,7 +516,7 @@ test "generator: is_condenser true when SynchronousMachine.type contains condens
 
 test "generator: reactive capability curve takes precedence over minQ/maxQ" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -533,7 +533,7 @@ test "generator: reactive capability curve takes precedence over minQ/maxQ" {
 
 test "generator: minQ/maxQ used as fallback when no curve" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -550,7 +550,7 @@ test "generator: minQ/maxQ used as fallback when no curve" {
 
 test "SVC: regulationMode voltage fragment → .voltage" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -573,7 +573,7 @@ test "SVC: regulationMode voltage fragment → .voltage" {
 
 test "detail extension: every load gets fixedActivePower etc. all zero" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -600,7 +600,7 @@ test "detail extension: every load gets fixedActivePower etc. all zero" {
 
 test "coordinatedReactiveControl: generator with qPercent gets extension" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -619,7 +619,7 @@ test "coordinatedReactiveControl: generator with qPercent gets extension" {
 
 test "areas: ControlArea produces one area with TieFlow boundary" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -638,7 +638,7 @@ test "areas: ControlArea produces one area with TieFlow boundary" {
 
 test "shunt: section count, bPerSection, voltage_regulator_on parsed correctly" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -664,7 +664,7 @@ test "shunt: section count, bPerSection, voltage_regulator_on parsed correctly" 
 
 test "line: both terminal aliases present with correct types and content" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -690,7 +690,7 @@ test "line: both terminal aliases present with correct types and content" {
 
 test "line: CGMES.originalClass property is ACLineSegment" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -705,7 +705,7 @@ test "line: CGMES.originalClass property is ACLineSegment" {
 
 test "busbar section: CGMES.Terminal1 alias contains terminal mRID" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -721,7 +721,7 @@ test "busbar section: CGMES.Terminal1 alias contains terminal mRID" {
 
 test "switch: CGMES.Terminal1 and CGMES.Terminal2 aliases contain terminal mRIDs" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -748,7 +748,7 @@ test "switch: CGMES.Terminal1 and CGMES.Terminal2 aliases contain terminal mRIDs
 
 test "switch: CGMES.originalClass and CGMES.normalOpen properties" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -779,7 +779,7 @@ test "fictitious switch: created for structurally isolated SynchronousMachine" {
     // and exactly one non-switch/non-BBS terminal.  PyPowSyBl synthesises a fictitious
     // open Breaker for it so node-breaker topology stays connected.
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -805,7 +805,7 @@ test "fictitious switch: not created for EnergyConsumer without SSH" {
     // Loads are never given fictitious switches by the structural isolation check —
     // only SynchronousMachine / LinearShuntCompensator / StaticVarCompensator are.
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null);
     defer network.deinit(gpa);
@@ -820,7 +820,7 @@ test "SSH: switch open and retained state come from SSH overlay" {
     // BRK1 in EQ has no Switch.open attribute (defaults false).
     // SSH marks it open=true, retained=false.
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var ssh = try CimSsh.init(gpa, SSH_XML);
     defer ssh.deinit(gpa);
@@ -838,7 +838,7 @@ test "SSH: load p0 and q0 read from EnergyConsumer.p and .q in SSH" {
     // Without SSH, LOAD1 has p0=0.0 and q0=0.0 (no EnergyConsumer.p/q in EQ).
     // SSH provides p=100.0 and q=50.0.
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var ssh = try CimSsh.init(gpa, SSH_XML);
     defer ssh.deinit(gpa);
@@ -857,7 +857,7 @@ test "SSH: disconnected terminal creates fictitious switch for any equipment typ
     // isolation check.  Marking its terminal as ACDCTerminal.connected=false in SSH
     // forces creation regardless of equipment type.
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var ssh = try CimSsh.init(gpa, SSH_XML);
     defer ssh.deinit(gpa);
@@ -884,7 +884,7 @@ test "SSH: disconnected terminal creates fictitious switch for any equipment typ
 
 test "SSH: case_date comes from SSH scenarioTime, not EQ" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var ssh = try CimSsh.init(gpa, SSH_XML);
     defer ssh.deinit(gpa);
@@ -901,7 +901,7 @@ test "SSH: case_date comes from SSH scenarioTime, not EQ" {
 
 test "SSH: forecastDistance computed from SSH times, not EQ" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var ssh = try CimSsh.init(gpa, SSH_XML);
     defer ssh.deinit(gpa);
@@ -917,7 +917,7 @@ test "SSH: forecastDistance computed from SSH times, not EQ" {
 
 test "SSH: FullModel appears as MetadataModel with subset SSH after EQ entry" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, EQ_XML);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var ssh = try CimSsh.init(gpa, SSH_XML);
     defer ssh.deinit(gpa);

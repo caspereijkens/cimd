@@ -96,9 +96,9 @@ pub fn format_float_str(allocator: std.mem.Allocator, str: []const u8) ![]const 
         }
         return formatted;
     }
-    // Check if it already has a decimal point
+    // Check if it already has a decimal point — dupe so callers always own the result.
     if (std.mem.indexOfScalar(u8, str, '.') != null) {
-        return str;
+        return allocator.dupe(u8, str);
     }
     // Allocate new string with .0 suffix
     const result = try allocator.alloc(u8, str.len + 2);
@@ -224,7 +224,7 @@ pub const Load = struct {
 
     pub fn deinit(self: *Load, allocator: std.mem.Allocator) void {
         self.aliases.deinit(allocator);
-        self.properties.deinit(allocator);
+        free_properties(allocator, &self.properties);
     }
 };
 
@@ -300,7 +300,7 @@ pub const Shunt = struct {
 
     pub fn deinit(self: *Shunt, allocator: std.mem.Allocator) void {
         self.aliases.deinit(allocator);
-        self.properties.deinit(allocator);
+        free_properties(allocator, &self.properties);
     }
 };
 
@@ -354,7 +354,7 @@ pub const VsConverterStation = struct {
     pub fn deinit(self: *VsConverterStation, allocator: std.mem.Allocator) void {
         self.reactive_capability_curve_points.deinit(allocator);
         self.aliases.deinit(allocator);
-        self.properties.deinit(allocator);
+        free_properties(allocator, &self.properties);
     }
 };
 
@@ -444,7 +444,7 @@ pub const StaticVarCompensator = struct {
 
     pub fn deinit(self: *StaticVarCompensator, allocator: std.mem.Allocator) void {
         self.aliases.deinit(allocator);
-        self.properties.deinit(allocator);
+        free_properties(allocator, &self.properties);
     }
 };
 
@@ -608,7 +608,7 @@ pub const Generator = struct {
     pub fn deinit(self: *Generator, allocator: std.mem.Allocator) void {
         self.reactive_capability_curve_points.deinit(allocator);
         self.aliases.deinit(allocator);
-        self.properties.deinit(allocator);
+        free_properties(allocator, &self.properties);
     }
 };
 
@@ -693,7 +693,7 @@ pub const Switch = struct {
     pub fn deinit(self: *Switch, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
         self.aliases.deinit(allocator);
-        self.properties.deinit(allocator);
+        free_properties(allocator, &self.properties);
     }
 };
 
@@ -875,7 +875,7 @@ pub const VoltageLevel = struct {
         self.vs_converter_stations.deinit(allocator);
         self.lcc_converter_stations.deinit(allocator);
         self.aliases.deinit(allocator);
-        self.properties.deinit(allocator);
+        free_properties(allocator, &self.properties);
     }
 };
 
@@ -1125,7 +1125,7 @@ pub const OperationalLimitsGroup = struct {
     }
 
     pub fn deinit(self: *OperationalLimitsGroup, allocator: std.mem.Allocator) void {
-        self.properties.deinit(allocator);
+        free_properties(allocator, &self.properties);
         if (self.current_limits) |*cl| {
             cl.deinit(allocator);
         }
@@ -1383,7 +1383,15 @@ pub const ThreeWindingsTransformer = struct {
 pub const Property = struct {
     name: []const u8,
     value: []const u8,
+    /// True when `value` was heap-allocated and must be freed on deinit.
+    /// False (default) for string literals and slices into the XML backing.
+    owned_value: bool = false,
 };
+
+fn free_properties(allocator: std.mem.Allocator, properties: *std.ArrayListUnmanaged(Property)) void {
+    for (properties.items) |prop| if (prop.owned_value) allocator.free(prop.value);
+    properties.deinit(allocator);
+}
 
 pub const Substation = struct {
     id: []const u8,
@@ -1444,7 +1452,7 @@ pub const Substation = struct {
         }
         self.three_winding_transformers.deinit(allocator);
         self.aliases.deinit(allocator);
-        self.properties.deinit(allocator);
+        free_properties(allocator, &self.properties);
         self.geo_tags.deinit(allocator);
     }
 };
@@ -1518,7 +1526,7 @@ pub const Line = struct {
 
     pub fn deinit(self: *Line, allocator: std.mem.Allocator) void {
         self.aliases.deinit(allocator);
-        self.properties.deinit(allocator);
+        free_properties(allocator, &self.properties);
         for (self.op_lims_groups1.items) |*olg| {
             olg.deinit(allocator);
         }

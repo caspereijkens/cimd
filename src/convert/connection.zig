@@ -63,7 +63,6 @@ pub const phase2_equipment_types = [_][]const u8{
     "SeriesCompensator",
 };
 
-
 /// Build the terminal → node map and populate internalConnections on all VLs.
 ///
 /// Two-phase algorithm matching PyPowSyBl's NodeContainerMapping:

@@ -47,18 +47,18 @@ Convert a CGMES EQ profile to JIIDM JSON format.
 Output is written to stdout unless --output is given.
 
 Arguments:
-  <file>            EQ profile (XML or ZIP)
+  <file>                 EQ profile (XML or ZIP)
 
 Options:
-  --eqbd <file>     EQBD boundary profile (XML or ZIP)
-  --ssh <file>      SSH steady-state hypothesis profile (XML or ZIP)
-  --output <file>   Write output to file instead of stdout
+  -b, --eqbd <file>     EQBD boundary profile (XML or ZIP)
+  -s, --ssh <file>      SSH steady-state hypothesis profile (XML or ZIP)
+  -o, --output <file>   Write output to file instead of stdout
 
 Examples:
   cimd eq convert data/eq.zip
-  cimd eq convert data/eq.zip --eqbd eqbd.zip
-  cimd eq convert data/eq.zip --eqbd eqbd.zip --ssh ssh.zip
-  cimd eq convert data/eq.zip --output network.json
+  cimd eq convert data/eq.zip -b eqbd.zip
+  cimd eq convert data/eq.zip -b eqbd.zip -s ssh.zip
+  cimd eq convert data/eq.zip -o network.json
 ```
 
 ### Browse
@@ -74,7 +74,7 @@ Arguments:
   <mrid>    mRID of the object to start browsing from
 
 Options:
-  --eqbd <file>     EQBD boundary profile (XML or ZIP)
+  -b, --eqbd <file>     EQBD boundary profile (XML or ZIP)
 
 Examples:
   cimd eq browse data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
@@ -95,22 +95,22 @@ Arguments:
   <mrid>    mRID of the object to fetch (optional if --type is given)
 
 Options:
-  --eqbd <file>          EQBD boundary profile (XML or ZIP)
-  --type <type>          Filter by CIM type (e.g. PowerTransformer)
-                         Without <mrid>: list all objects of this type
-                         With <mrid>: verify the object is of this type
-  --fields <f1,f2,...>   Properties to include in list output (list mode only)
-                         Default: IdentifiedObject.name
-  --count                Print only the count of matching objects (list mode only)
-  --json                 Output as JSON
+  -b, --eqbd <file>          EQBD boundary profile (XML or ZIP)
+  -t, --type <type>          Filter by CIM type (e.g. PowerTransformer)
+                             Without <mrid>: list all objects of this type
+                             With <mrid>: verify the object is of this type
+  -f, --fields <f1,f2,...>   Properties to include in list output (list mode only)
+                             Default: IdentifiedObject.name
+  -c, --count                Print only the count of matching objects (list mode only)
+  -j, --json                 Output as JSON
 
 Examples:
   cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
-  cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 --json
-  cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 --type PowerTransformer
-  cimd eq get data/eq.zip --type PowerTransformer --json
-  cimd eq get data/eq.zip --type PowerTransformer --count
-  cimd eq get data/eq.zip --type VoltageLevel --fields IdentifiedObject.name,VoltageLevel.nominalVoltage
+  cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -j
+  cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -t PowerTransformer
+  cimd eq get data/eq.zip -t PowerTransformer -j
+  cimd eq get data/eq.zip -t PowerTransformer -c
+  cimd eq get data/eq.zip -t VoltageLevel -f IdentifiedObject.name,VoltageLevel.nominalVoltage
 ```
 
 ### Types
@@ -122,15 +122,15 @@ Usage: cimd eq types <file> [options]
 List all CIM types present in the EQ profile with object counts.
 
 Arguments:
-  <file>            EQ profile (XML or ZIP)
+  <file>                 EQ profile (XML or ZIP)
 
 Options:
-  --eqbd <file>     EQBD boundary profile (XML or ZIP)
-  --json            Output as JSON array of {type, count} objects
+  -b, --eqbd <file>     EQBD boundary profile (XML or ZIP)
+  -j, --json            Output as JSON array of {type, count} objects
 
 Examples:
   cimd eq types data/eq.zip
-  cimd eq types data/eq.zip --json
+  cimd eq types data/eq.zip -j
 ```
 
 ### Diff
@@ -153,19 +153,19 @@ Arguments:
   <file2>    Second EQ profile (XML or ZIP)
 
 Options:
-  --eqbd <file>   EQBD boundary profile (applied to both models)
-  --mrid <id>     Diff a single object by mRID
-  --type <name>   Restrict diff to a specific CIM type
-                  With --mrid: verify the object is of this type
-  --summary       Print only per-type counts (added/removed/changed)
-  --json          Output as NDJSON (one object per change)
+  -b, --eqbd <file>   EQBD boundary profile (applied to both models)
+  -i, --mrid <id>     Diff a single object by mRID
+  -t, --type <name>   Restrict diff to a specific CIM type
+                      With --mrid: verify the object is of this type
+  -s, --summary       Print only per-type counts (added/removed/changed)
+  -j, --json          Output as NDJSON (one object per change)
 
 Examples:
   cimd eq diff eq_v1.zip eq_v2.zip
-  cimd eq diff eq_v1.zip eq_v2.zip --mrid _abc123
-  cimd eq diff eq_v1.zip eq_v2.zip --mrid _abc123 --type PowerTransformer
-  cimd eq diff eq_v1.zip eq_v2.zip --type PowerTransformer
-  cimd eq diff eq_v1.zip eq_v2.zip --json | jq .
-  cimd eq diff eq_v1.zip eq_v2.zip --summary
+  cimd eq diff eq_v1.zip eq_v2.zip -i _abc123
+  cimd eq diff eq_v1.zip eq_v2.zip -i _abc123 -t PowerTransformer
+  cimd eq diff eq_v1.zip eq_v2.zip -t PowerTransformer
+  cimd eq diff eq_v1.zip eq_v2.zip -j | jq .
+  cimd eq diff eq_v1.zip eq_v2.zip -s
 ```
 <!-- FEATURES_END -->

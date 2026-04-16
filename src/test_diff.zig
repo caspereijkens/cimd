@@ -27,13 +27,13 @@ fn run_diff(
     xml2: []const u8,
     options: DiffOptions,
 ) !DiffResult {
-    var model1 = try CimModel.init(gpa, xml1);
+    var model1 = try CimModel.init(gpa, try gpa.dupe(u8, xml1));
     defer model1.deinit(gpa);
-    var model2 = try CimModel.init(gpa, xml2);
+    var model2 = try CimModel.init(gpa, try gpa.dupe(u8, xml2));
     defer model2.deinit(gpa);
 
     var result = DiffResult{ .had_diffs = false, .buf = undefined, .len = 0 };
-    var fbs = std.io.fixedBufferStream(&result.buf);
+    var writer: std.Io.Writer = .fixed(&result.buf);
     result.had_diffs = try diff.diff_models(
         gpa,
         &model1,
@@ -41,9 +41,9 @@ fn run_diff(
         "file1.xml",
         "file2.xml",
         options,
-        fbs.writer(),
+        &writer,
     );
-    result.len = fbs.pos;
+    result.len = writer.end;
     return result;
 }
 
@@ -778,6 +778,9 @@ const SingleResult = struct {
     status: diff.SingleDiffStatus,
     buf: [8192]u8,
     len: usize,
+    /// Owned copy of the type_mismatch name, valid after model deinit.
+    /// Null for all other status variants.
+    type_mismatch_name: ?[]u8 = null,
 
     fn output(self: *const SingleResult) []const u8 {
         return self.buf[0..self.len];
@@ -785,6 +788,10 @@ const SingleResult = struct {
 
     fn contains(self: *const SingleResult, needle: []const u8) bool {
         return std.mem.indexOf(u8, self.output(), needle) != null;
+    }
+
+    fn deinit(self: *SingleResult, gpa: std.mem.Allocator) void {
+        if (self.type_mismatch_name) |s| gpa.free(s);
     }
 };
 
@@ -795,24 +802,27 @@ fn run_diff_single(
     mrid: []const u8,
     options: DiffOptions,
 ) !SingleResult {
-    var model1 = try CimModel.init(gpa, xml1);
-    defer model1.deinit(gpa);
-    var model2 = try CimModel.init(gpa, xml2);
-    defer model2.deinit(gpa);
+    var model1 = try CimModel.init(gpa, try gpa.dupe(u8, xml1));
+    errdefer model1.deinit(gpa);
+    var model2 = try CimModel.init(gpa, try gpa.dupe(u8, xml2));
+    errdefer model2.deinit(gpa);
 
     var result = SingleResult{ .status = .not_found, .buf = undefined, .len = 0 };
-    var fbs = std.io.fixedBufferStream(&result.buf);
-    result.status = try diff.diff_single(
-        gpa,
-        &model1,
-        &model2,
-        mrid,
-        "file1.xml",
-        "file2.xml",
-        options,
-        fbs.writer(),
-    );
-    result.len = fbs.pos;
+    var writer: std.Io.Writer = .fixed(&result.buf);
+    const raw_status = try diff.diff_single(gpa, &model1, &model2, mrid, "file1.xml", "file2.xml", options, &writer);
+    result.len = writer.end;
+
+    // type_mismatch payload points into model xml — dupe it before models are freed.
+    result.status = switch (raw_status) {
+        .type_mismatch => |name| blk: {
+            result.type_mismatch_name = try gpa.dupe(u8, name);
+            break :blk .{ .type_mismatch = result.type_mismatch_name.? };
+        },
+        else => raw_status,
+    };
+
+    model2.deinit(gpa);
+    model1.deinit(gpa);
     return result;
 }
 
@@ -938,7 +948,8 @@ test "diff single - wrong type returns type_mismatch with actual type" {
         \\  </cim:Substation>
         \\</rdf:RDF>
     ;
-    const r = try run_diff_single(std.testing.allocator, xml1, xml2, "_SS1", .{ .type_filter = "PowerTransformer" });
+    var r = try run_diff_single(std.testing.allocator, xml1, xml2, "_SS1", .{ .type_filter = "PowerTransformer" });
+    defer r.deinit(std.testing.allocator);
     switch (r.status) {
         .type_mismatch => |actual| try std.testing.expectEqualStrings("Substation", actual),
         else => return error.TestUnexpectedResult,
@@ -953,7 +964,8 @@ test "diff single - type mismatch produces no output" {
         \\  </cim:Substation>
         \\</rdf:RDF>
     ;
-    const r = try run_diff_single(std.testing.allocator, xml, xml, "_SS1", .{ .type_filter = "PowerTransformer" });
+    var r = try run_diff_single(std.testing.allocator, xml, xml, "_SS1", .{ .type_filter = "PowerTransformer" });
+    defer r.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 0), r.len);
 }
 
@@ -983,7 +995,8 @@ test "diff single - type check applies to model2 when object only in model2, wro
         \\  </cim:Substation>
         \\</rdf:RDF>
     ;
-    const r = try run_diff_single(std.testing.allocator, xml1, xml2, "_SS1", .{ .type_filter = "VoltageLevel" });
+    var r = try run_diff_single(std.testing.allocator, xml1, xml2, "_SS1", .{ .type_filter = "VoltageLevel" });
+    defer r.deinit(std.testing.allocator);
     switch (r.status) {
         .type_mismatch => |actual| try std.testing.expectEqualStrings("Substation", actual),
         else => return error.TestUnexpectedResult,
