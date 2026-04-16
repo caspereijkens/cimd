@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) void {
 
     // Parse version from build.zig.zon using std.zon.parse
     const zon_contents = @embedFile("build.zig.zon");
-    const parsed = std.zon.parse.fromSlice(
+    const parsed = std.zon.parse.fromSliceAlloc(
         BuildZonFile,
         b.allocator,
         zon_contents,
@@ -39,6 +39,7 @@ pub fn build(b: *std.Build) void {
         .{},
     ) catch @panic("Failed to parse build.zig.zon");
     build_options.addOption([]const u8, "version", parsed.version);
+
     // It's also possible to define more custom flags to toggle optional features
     // of this build script using `b.option()`. All defined flags (including
     // target and optimize options) will be listed when running `zig build --help`
@@ -166,7 +167,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 
-    // Release step: build for all supported platforms at ReleaseFast.
+    // Release step: build for all supported platforms at ReleaseSafe.
     // Outputs to zig-out/release/<target>/cimd[.exe].
     // Run with: zig build release
     const release_step = b.step("release", "Build release binaries for all platforms");

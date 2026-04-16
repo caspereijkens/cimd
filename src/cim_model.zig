@@ -107,6 +107,7 @@ pub const CimModel = struct {
         self.id_to_index.deinit();
         gpa.free(self.objects);
         gpa.free(self.boundaries);
+        gpa.free(self.xml);
     }
 
     /// Bind a stored CimObject to this model's XML context for property access.

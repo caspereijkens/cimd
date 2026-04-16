@@ -243,7 +243,7 @@ fn view_less_than(_: void, a: CimObjectView, b: CimObjectView) bool {
 const TestEnd = struct { model: cim_model.CimModel, end: CimObjectView };
 
 fn make_end(xml: []const u8) !TestEnd {
-    const model = try cim_model.CimModel.init(testing.allocator, xml);
+    const model = try cim_model.CimModel.init(testing.allocator, try testing.allocator.dupe(u8, xml));
     return .{ .model = model, .end = model.view(model.get_objects_by_type("PowerTransformerEnd")[0]) };
 }
 

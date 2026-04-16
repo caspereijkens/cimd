@@ -190,13 +190,13 @@ fn diff_type(
     if (options.json or options.summary) {
         return diff_type_core(gpa, model1, model2, type_name, options, writer);
     }
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(gpa);
-    const buf_writer = buf.writer(gpa);
-    const stats = try diff_type_core(gpa, model1, model2, type_name, options, buf_writer);
+    var screen: std.Io.Writer.Allocating = .init(gpa);
+    defer screen.deinit();
+    const screen_writer = &screen.writer;
+    const stats = try diff_type_core(gpa, model1, model2, type_name, options, screen_writer);
     if (stats.any()) {
         try writer.print("\n@@ {s} @@\n", .{type_name});
-        try writer.writeAll(buf.items);
+        try writer.writeAll(screen.written());
     }
     return stats;
 }

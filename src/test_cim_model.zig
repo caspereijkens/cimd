@@ -18,7 +18,7 @@ test "CimModel.init - parses all top-level CIM objects" {
 
     const gpa = std.testing.allocator;
 
-    var model = try CimModel.init(gpa, xml);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     // Should find 3 CIM objects (not the rdf:RDF wrapper)
@@ -47,7 +47,7 @@ test "CimModel.getObjectById - finds object by ID" {
 
     const gpa = std.testing.allocator;
 
-    var model = try CimModel.init(gpa, xml);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     // Should find VL1
@@ -80,7 +80,7 @@ test "CimModel.get_objects_by_type - returns all objects of given type" {
 
     const gpa = std.testing.allocator;
 
-    var model = try CimModel.init(gpa, xml);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     // Get all Substations (should be 3)
@@ -114,7 +114,7 @@ test "CimModel.getTypeCounts - returns count of each object type" {
 
     const gpa = std.testing.allocator;
 
-    var model = try CimModel.init(gpa, xml);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     var counts = try model.getTypeCounts(gpa);
@@ -134,7 +134,7 @@ test "CimModel.init - handles empty XML" {
 
     const gpa = std.testing.allocator;
 
-    var model = try CimModel.init(gpa, xml);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     try std.testing.expectEqual(0, model.objects.len);
@@ -152,7 +152,7 @@ test "CimModel objects maintain CimObject functionality" {
 
     const gpa = std.testing.allocator;
 
-    var model = try CimModel.init(gpa, xml);
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     const obj = model.getObjectById("_SS1") orelse return error.TestFailed;

@@ -81,8 +81,10 @@ pub const CimSsh = struct {
     /// Read a text property from a patch returned by find_patch.
     pub fn getPropertyFromPatch(self: CimSsh, patch: SshPatch, property_name: []const u8) !?[]const u8 {
         return tag_index.get_property_from_indices(
-            self.xml, self.boundaries,
-            patch.patch_tag_idx, patch.closing_tag_idx,
+            self.xml,
+            self.boundaries,
+            patch.patch_tag_idx,
+            patch.closing_tag_idx,
             property_name,
         );
     }
@@ -90,8 +92,10 @@ pub const CimSsh = struct {
     /// Read an rdf:resource reference from a patch returned by find_patch.
     pub fn getReferenceFromPatch(self: CimSsh, patch: SshPatch, reference_name: []const u8) !?[]const u8 {
         return tag_index.get_reference_from_indices(
-            self.xml, self.boundaries,
-            patch.patch_tag_idx, patch.closing_tag_idx,
+            self.xml,
+            self.boundaries,
+            patch.patch_tag_idx,
+            patch.closing_tag_idx,
             reference_name,
         );
     }
@@ -173,8 +177,10 @@ pub const CimMergedView = struct {
     pub fn getProperty(self: CimMergedView, name: []const u8) !?[]const u8 {
         if (self.ssh) |s| {
             if (try tag_index.get_property_from_indices(
-                s.xml, s.boundaries,
-                s.patch.patch_tag_idx, s.patch.closing_tag_idx,
+                s.xml,
+                s.boundaries,
+                s.patch.patch_tag_idx,
+                s.patch.closing_tag_idx,
                 name,
             )) |v| return v;
         }
@@ -185,8 +191,10 @@ pub const CimMergedView = struct {
     pub fn getReference(self: CimMergedView, name: []const u8) !?[]const u8 {
         if (self.ssh) |s| {
             if (try tag_index.get_reference_from_indices(
-                s.xml, s.boundaries,
-                s.patch.patch_tag_idx, s.patch.closing_tag_idx,
+                s.xml,
+                s.boundaries,
+                s.patch.patch_tag_idx,
+                s.patch.closing_tag_idx,
                 name,
             )) |v| return v;
         }

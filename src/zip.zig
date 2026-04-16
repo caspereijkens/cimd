@@ -20,9 +20,9 @@
 const std = @import("std");
 
 // returns true if 'file' starts with PK34.
-pub fn is_zip_file(file: std.fs.File) !bool {
+pub fn is_zip_file(io: std.Io, file: std.Io.File) !bool {
     var magic: [4]u8 = undefined;
-    const bytes_read = try file.pread(&magic, 0); // pread does not advance offset
+    const bytes_read = try file.readPositional(io, &[_][]u8{&magic}, 0); // readPositional does not advance offset
 
     if (bytes_read < 4) return false;
 
@@ -66,7 +66,7 @@ fn is_bad_filename(filename: []const u8) bool {
 /// - Removed timestamp and CRC validation (kept only critical fields)
 fn parse_and_validate_local_header(
     entry: std.zip.Iterator.Entry,
-    stream: *std.fs.File.Reader,
+    stream: *std.Io.File.Reader,
 ) !u64 {
     // Reject files >4GB (our SIMD scanner uses u32 positions)
     if (entry.uncompressed_size > std.math.maxInt(u32)) {
@@ -87,8 +87,14 @@ fn parse_and_validate_local_header(
     // Validate critical fields match central directory
     if (local_header.version_needed_to_extract != entry.version_needed_to_extract)
         return error.ZipMismatchVersionNeeded;
+    if (local_header.last_modification_time != entry.last_modification_time)
+        return error.ZipMismatchModTime;
+    if (local_header.last_modification_date != entry.last_modification_date)
+        return error.ZipMismatchModDate;
     if (@as(u16, @bitCast(local_header.flags)) != @as(u16, @bitCast(entry.flags)))
         return error.ZipMismatchFlags;
+    if (local_header.crc32 != 0 and local_header.crc32 != entry.crc32)
+        return error.ZipMismatchCrc32;
     if (local_header.filename_len != entry.filename_len)
         return error.ZipMismatchFilenameLen;
 
@@ -110,7 +116,7 @@ fn parse_and_validate_local_header(
 fn extract_entry_to_memory(
     entry: std.zip.Iterator.Entry,
     gpa: std.mem.Allocator,
-    stream: *std.fs.File.Reader,
+    stream: *std.Io.File.Reader,
     options: std.zip.ExtractOptions,
 ) !ExtractedFile {
     // Validate compression method (only store and deflate supported)
@@ -211,7 +217,7 @@ fn extract_entry_to_memory(
 /// ```
 pub fn extract_to_memory(
     gpa: std.mem.Allocator,
-    stream: *std.fs.File.Reader,
+    stream: *std.Io.File.Reader,
     options: std.zip.ExtractOptions,
 ) !std.ArrayList(ExtractedFile) {
     var iter = try std.zip.Iterator.init(stream);

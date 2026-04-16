@@ -785,9 +785,6 @@ pub fn convert_generators(
                 }
             }
         }
-        // rc_mode_lower lifetime: owned by gpa, outlives the machine loop iteration.
-        // Freed by the network teardown (gpa deinit at program exit).
-
         // alias: CGMES.Terminal1 = terminal mRID
         var gen_aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
         errdefer gen_aliases.deinit(gpa);
@@ -807,7 +804,7 @@ pub fn convert_generators(
         try gen_props.ensureTotalCapacity(gpa, 7);
         if (fuel_type) |ft| gen_props.appendAssumeCapacity(.{ .name = "CGMES.fuelType", .value = ft });
         if (type_fragment) |tf| gen_props.appendAssumeCapacity(.{ .name = "CGMES.synchronousMachineType", .value = tf });
-        if (rc_mode_lower) |ml| gen_props.appendAssumeCapacity(.{ .name = "CGMES.mode", .value = ml });
+        if (rc_mode_lower) |ml| gen_props.appendAssumeCapacity(.{ .name = "CGMES.mode", .value = ml, .owned_value = true });
         gen_props.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = "SynchronousMachine" });
         if (unit_mrid) |um| gen_props.appendAssumeCapacity(.{ .name = "CGMES.GeneratingUnit", .value = um });
         if (rc_mrid) |rm| gen_props.appendAssumeCapacity(.{ .name = "CGMES.RegulatingControl", .value = rm });

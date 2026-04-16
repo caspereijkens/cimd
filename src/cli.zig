@@ -16,8 +16,6 @@ pub const ansi_green = "\x1b[92m";
 pub const ansi_default = "\x1b[0m";
 pub const ansi_yellow = "\x1b[33m";
 
-// ── Help strings ─────────────────────────────────────────────────────────────
-
 const help_main =
     \\Usage: cimd <command> [options]
     \\
@@ -54,18 +52,18 @@ const help_eq_convert =
     \\Output is written to stdout unless --output is given.
     \\
     \\Arguments:
-    \\  <file>            EQ profile (XML or ZIP)
+    \\  <file>                 EQ profile (XML or ZIP)
     \\
     \\Options:
-    \\  --eqbd <file>     EQBD boundary profile (XML or ZIP)
-    \\  --ssh <file>      SSH steady-state hypothesis profile (XML or ZIP)
-    \\  --output <file>   Write output to file instead of stdout
+    \\  -b, --eqbd <file>     EQBD boundary profile (XML or ZIP)
+    \\  -s, --ssh <file>      SSH steady-state hypothesis profile (XML or ZIP)
+    \\  -o, --output <file>   Write output to file instead of stdout
     \\
     \\Examples:
     \\  cimd eq convert data/eq.zip
-    \\  cimd eq convert data/eq.zip --eqbd eqbd.zip
-    \\  cimd eq convert data/eq.zip --eqbd eqbd.zip --ssh ssh.zip
-    \\  cimd eq convert data/eq.zip --output network.json
+    \\  cimd eq convert data/eq.zip -b eqbd.zip
+    \\  cimd eq convert data/eq.zip -b eqbd.zip -s ssh.zip
+    \\  cimd eq convert data/eq.zip -o network.json
     \\
 ;
 
@@ -79,7 +77,7 @@ const help_eq_browse =
     \\  <mrid>    mRID of the object to start browsing from
     \\
     \\Options:
-    \\  --eqbd <file>     EQBD boundary profile (XML or ZIP)
+    \\  -b, --eqbd <file>     EQBD boundary profile (XML or ZIP)
     \\
     \\Examples:
     \\  cimd eq browse data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
@@ -98,22 +96,22 @@ const help_eq_get =
     \\  <mrid>    mRID of the object to fetch (optional if --type is given)
     \\
     \\Options:
-    \\  --eqbd <file>          EQBD boundary profile (XML or ZIP)
-    \\  --type <type>          Filter by CIM type (e.g. PowerTransformer)
-    \\                         Without <mrid>: list all objects of this type
-    \\                         With <mrid>: verify the object is of this type
-    \\  --fields <f1,f2,...>   Properties to include in list output (list mode only)
-    \\                         Default: IdentifiedObject.name
-    \\  --count                Print only the count of matching objects (list mode only)
-    \\  --json                 Output as JSON
+    \\  -b, --eqbd <file>          EQBD boundary profile (XML or ZIP)
+    \\  -t, --type <type>          Filter by CIM type (e.g. PowerTransformer)
+    \\                             Without <mrid>: list all objects of this type
+    \\                             With <mrid>: verify the object is of this type
+    \\  -f, --fields <f1,f2,...>   Properties to include in list output (list mode only)
+    \\                             Default: IdentifiedObject.name
+    \\  -c, --count                Print only the count of matching objects (list mode only)
+    \\  -j, --json                 Output as JSON
     \\
     \\Examples:
     \\  cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
-    \\  cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 --json
-    \\  cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 --type PowerTransformer
-    \\  cimd eq get data/eq.zip --type PowerTransformer --json
-    \\  cimd eq get data/eq.zip --type PowerTransformer --count
-    \\  cimd eq get data/eq.zip --type VoltageLevel --fields IdentifiedObject.name,VoltageLevel.nominalVoltage
+    \\  cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -j
+    \\  cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -t PowerTransformer
+    \\  cimd eq get data/eq.zip -t PowerTransformer -j
+    \\  cimd eq get data/eq.zip -t PowerTransformer -c
+    \\  cimd eq get data/eq.zip -t VoltageLevel -f IdentifiedObject.name,VoltageLevel.nominalVoltage
     \\
 ;
 
@@ -123,15 +121,15 @@ const help_eq_types =
     \\List all CIM types present in the EQ profile with object counts.
     \\
     \\Arguments:
-    \\  <file>            EQ profile (XML or ZIP)
+    \\  <file>                 EQ profile (XML or ZIP)
     \\
     \\Options:
-    \\  --eqbd <file>     EQBD boundary profile (XML or ZIP)
-    \\  --json            Output as JSON array of {type, count} objects
+    \\  -b, --eqbd <file>     EQBD boundary profile (XML or ZIP)
+    \\  -j, --json            Output as JSON array of {{type, count}} objects
     \\
     \\Examples:
     \\  cimd eq types data/eq.zip
-    \\  cimd eq types data/eq.zip --json
+    \\  cimd eq types data/eq.zip -j
     \\
 ;
 
@@ -152,20 +150,20 @@ const help_eq_diff =
     \\  <file2>    Second EQ profile (XML or ZIP)
     \\
     \\Options:
-    \\  --eqbd <file>   EQBD boundary profile (applied to both models)
-    \\  --mrid <id>     Diff a single object by mRID
-    \\  --type <name>   Restrict diff to a specific CIM type
-    \\                  With --mrid: verify the object is of this type
-    \\  --summary       Print only per-type counts (added/removed/changed)
-    \\  --json          Output as NDJSON (one object per change)
+    \\  -b, --eqbd <file>   EQBD boundary profile (applied to both models)
+    \\  -i, --mrid <id>     Diff a single object by mRID
+    \\  -t, --type <name>   Restrict diff to a specific CIM type
+    \\                      With --mrid: verify the object is of this type
+    \\  -s, --summary       Print only per-type counts (added/removed/changed)
+    \\  -j, --json          Output as NDJSON (one object per change)
     \\
     \\Examples:
     \\  cimd eq diff eq_v1.zip eq_v2.zip
-    \\  cimd eq diff eq_v1.zip eq_v2.zip --mrid _abc123
-    \\  cimd eq diff eq_v1.zip eq_v2.zip --mrid _abc123 --type PowerTransformer
-    \\  cimd eq diff eq_v1.zip eq_v2.zip --type PowerTransformer
-    \\  cimd eq diff eq_v1.zip eq_v2.zip --json | jq .
-    \\  cimd eq diff eq_v1.zip eq_v2.zip --summary
+    \\  cimd eq diff eq_v1.zip eq_v2.zip -i _abc123
+    \\  cimd eq diff eq_v1.zip eq_v2.zip -i _abc123 -t PowerTransformer
+    \\  cimd eq diff eq_v1.zip eq_v2.zip -t PowerTransformer
+    \\  cimd eq diff eq_v1.zip eq_v2.zip -j | jq .
+    \\  cimd eq diff eq_v1.zip eq_v2.zip -s
     \\
 ;
 
@@ -175,12 +173,12 @@ const help_version =
     \\Print version and build information.
     \\
     \\Options:
-    \\  --verbose    Show detailed build information
-    \\  --json       Output as JSON
+    \\  -v, --verbose    Show detailed build information
+    \\  -j, --json       Output as JSON
     \\
     \\Examples:
     \\  cimd version
-    \\  cimd version --json
+    \\  cimd version -j
     \\
 ;
 
@@ -249,78 +247,74 @@ pub const Command = union(enum) {
     };
 };
 
-// ── Top-level dispatcher ──────────────────────────────────────────────────────
-
 /// Parse the command-line arguments passed to the cimd binary.
 /// Exits with code 2 on any usage error.
-pub fn parse_args(args: *std.process.ArgIterator) Command {
+pub fn parse_args(io: std.Io, args: *std.process.Args.Iterator) !Command {
     assert(args.skip()); // skip executable name
 
     const command_name = args.next() orelse
-        print.stderr("subcommand required\n\n" ++ help_main, .{});
+        print.stderr(io, "subcommand required\n\n" ++ help_main, .{});
 
-    if (eql(command_name, "-h") or eql(command_name, "--help")) {
-        write_stdout(help_main);
+    if (std.mem.eql(u8, command_name, "-h") or std.mem.eql(u8, command_name, "--help")) {
+        try print.stdout(io, help_main, .{});
         std.process.exit(0);
     }
 
-    if (eql(command_name, "eq")) return parse_eq(args);
-    if (eql(command_name, "version")) return parse_version(args);
+    if (std.mem.eql(u8, command_name, "eq")) return parse_eq(io, args);
+    if (std.mem.eql(u8, command_name, "version")) return parse_version(io, args);
 
-    print.stderr("unknown command '{s}'\n\n" ++ help_main, .{command_name});
+    print.stderr(io, "unknown command '{s}'\n\n" ++ help_main, .{command_name});
 }
 
-// ── eq ────────────────────────────────────────────────────────────────────────
-
-fn parse_eq(args: *std.process.ArgIterator) Command {
+fn parse_eq(io: std.Io, args: *std.process.Args.Iterator) !Command {
     const sub = args.next() orelse
-        print.stderr("eq: subcommand required\n\n" ++ help_eq, .{});
+        print.stderr(io, "eq: subcommand required\n\n" ++ help_eq, .{});
 
-    if (eql(sub, "-h") or eql(sub, "--help")) {
-        write_stdout(help_eq);
+    if (std.mem.eql(u8, sub, "-h") or std.mem.eql(u8, sub, "--help")) {
+        try print.stdout(io, help_eq, .{});
         std.process.exit(0);
     }
 
-    if (eql(sub, "convert")) return parse_eq_convert(args);
-    if (eql(sub, "browse")) return parse_eq_browse(args);
-    if (eql(sub, "get")) return parse_eq_get(args);
-    if (eql(sub, "types")) return parse_eq_types(args);
-    if (eql(sub, "diff")) return parse_eq_diff(args);
+    if (std.mem.eql(u8, sub, "convert")) return parse_eq_convert(io, args);
+    if (std.mem.eql(u8, sub, "browse")) return parse_eq_browse(io, args);
+    if (std.mem.eql(u8, sub, "get")) return parse_eq_get(io, args);
+    if (std.mem.eql(u8, sub, "types")) return parse_eq_types(io, args);
+    if (std.mem.eql(u8, sub, "diff")) return parse_eq_diff(io, args);
 
-    print.stderr("eq: unknown subcommand '{s}'\n\n" ++ help_eq, .{sub});
+    print.stderr(io, "eq: unknown subcommand '{s}'\n\n" ++ help_eq, .{sub});
 }
 
-fn parse_eq_convert(args: *std.process.ArgIterator) Command {
+fn parse_eq_convert(io: std.Io, args: *std.process.Args.Iterator) !Command {
     var eq_path: ?[]const u8 = null;
     var eqbd_path: ?[]const u8 = null;
     var ssh_path: ?[]const u8 = null;
     var output_path: ?[]const u8 = null;
 
     while (args.next()) |arg| {
-        if (eql(arg, "-h") or eql(arg, "--help")) {
-            write_stdout(help_eq_convert);
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            try print.stdout(io, help_eq_convert, .{});
             std.process.exit(0);
         }
-        if (eql(arg, "--eqbd")) {
+        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
             eqbd_path = args.next() orelse
-                print.stderr("eq convert: --eqbd requires a file path", .{});
-        } else if (eql(arg, "--ssh")) {
+                print.stderr(io, "eq convert: --eqbd requires a file path", .{});
+        } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--ssh")) {
             ssh_path = args.next() orelse
-                print.stderr("eq convert: --ssh requires a file path", .{});
-        } else if (eql(arg, "--output")) {
+                print.stderr(io, "eq convert: --ssh requires a file path", .{});
+        } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
             output_path = args.next() orelse
-                print.stderr("eq convert: --output requires a file path", .{});
+                print.stderr(io, "eq convert: --output requires a file path", .{});
         } else if (is_flag(arg)) {
-            print.stderr("eq convert: unknown option '{s}'", .{arg});
+            print.stderr(io, "eq convert: unknown option '{s}'", .{arg});
         } else {
-            if (eq_path != null) print.stderr("eq convert: unexpected argument '{s}'", .{arg});
-            validate_path(arg, "eq convert");
-            validate_cgmes_extension(arg, "eq convert");
+            if (eq_path != null) print.stderr(io, "eq convert: unexpected argument '{s}'", .{arg});
+            validate_path(io, arg, "eq convert");
+            validate_cgmes_extension(io, arg, "eq convert");
             eq_path = arg;
         }
     }
 
-    if (eq_path == null) print.stderr("eq convert: <file> is required", .{});
+    if (eq_path == null) print.stderr(io, "eq convert: <file> is required", .{});
 
     return .{ .eq = .{ .convert = .{
         .eq_path = eq_path.?,
@@ -330,34 +324,34 @@ fn parse_eq_convert(args: *std.process.ArgIterator) Command {
     } } };
 }
 
-fn parse_eq_browse(args: *std.process.ArgIterator) Command {
+fn parse_eq_browse(io: std.Io, args: *std.process.Args.Iterator) !Command {
     var eq_path: ?[]const u8 = null;
     var eqbd_path: ?[]const u8 = null;
     var mrid: ?[]const u8 = null;
 
     while (args.next()) |arg| {
-        if (eql(arg, "-h") or eql(arg, "--help")) {
-            write_stdout(help_eq_browse);
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            try print.stdout(io, help_eq_browse, .{});
             std.process.exit(0);
         }
-        if (eql(arg, "--eqbd")) {
+        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
             eqbd_path = args.next() orelse
-                print.stderr("eq browse: --eqbd requires a file path", .{});
+                print.stderr(io, "eq browse: --eqbd requires a file path", .{});
         } else if (is_flag(arg)) {
-            print.stderr("eq browse: unknown option '{s}'", .{arg});
+            print.stderr(io, "eq browse: unknown option '{s}'", .{arg});
         } else if (eq_path == null) {
-            validate_path(arg, "eq browse");
-            validate_cgmes_extension(arg, "eq browse");
+            validate_path(io, arg, "eq browse");
+            validate_cgmes_extension(io, arg, "eq browse");
             eq_path = arg;
         } else if (mrid == null) {
             mrid = arg;
         } else {
-            print.stderr("eq browse: unexpected argument '{s}'", .{arg});
+            print.stderr(io, "eq browse: unexpected argument '{s}'", .{arg});
         }
     }
 
-    if (eq_path == null) print.stderr("eq browse: <file> is required", .{});
-    if (mrid == null) print.stderr("eq browse: <mrid> is required", .{});
+    if (eq_path == null) print.stderr(io, "eq browse: <file> is required", .{});
+    if (mrid == null) print.stderr(io, "eq browse: <mrid> is required", .{});
 
     return .{ .eq = .{ .browse = .{
         .eq_path = eq_path.?,
@@ -366,7 +360,7 @@ fn parse_eq_browse(args: *std.process.ArgIterator) Command {
     } } };
 }
 
-fn parse_eq_get(args: *std.process.ArgIterator) Command {
+fn parse_eq_get(io: std.Io, args: *std.process.Args.Iterator) !Command {
     var eq_path: ?[]const u8 = null;
     var eqbd_path: ?[]const u8 = null;
     var mrid: ?[]const u8 = null;
@@ -376,39 +370,39 @@ fn parse_eq_get(args: *std.process.ArgIterator) Command {
     var json = false;
 
     while (args.next()) |arg| {
-        if (eql(arg, "-h") or eql(arg, "--help")) {
-            write_stdout(help_eq_get);
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            try print.stdout(io, help_eq_get, .{});
             std.process.exit(0);
         }
-        if (eql(arg, "--eqbd")) {
+        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
             eqbd_path = args.next() orelse
-                print.stderr("eq get: --eqbd requires a file path", .{});
-        } else if (eql(arg, "--type")) {
+                print.stderr(io, "eq get: --eqbd requires a file path", .{});
+        } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--type")) {
             type_filter = args.next() orelse
-                print.stderr("eq get: --type requires a CIM type name", .{});
-        } else if (eql(arg, "--fields")) {
+                print.stderr(io, "eq get: --type requires a CIM type name", .{});
+        } else if (std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--fields")) {
             fields = args.next() orelse
-                print.stderr("eq get: --fields requires a comma-separated list of property names", .{});
-        } else if (eql(arg, "--count")) {
+                print.stderr(io, "eq get: --fields requires a comma-separated list of property names", .{});
+        } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--count")) {
             count = true;
-        } else if (eql(arg, "--json")) {
+        } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
             json = true;
         } else if (is_flag(arg)) {
-            print.stderr("eq get: unknown option '{s}'", .{arg});
+            print.stderr(io, "eq get: unknown option '{s}'", .{arg});
         } else if (eq_path == null) {
-            validate_path(arg, "eq get");
-            validate_cgmes_extension(arg, "eq get");
+            validate_path(io, arg, "eq get");
+            validate_cgmes_extension(io, arg, "eq get");
             eq_path = arg;
         } else if (mrid == null) {
             mrid = arg;
         } else {
-            print.stderr("eq get: unexpected argument '{s}'", .{arg});
+            print.stderr(io, "eq get: unexpected argument '{s}'", .{arg});
         }
     }
 
-    if (eq_path == null) print.stderr("eq get: <file> is required", .{});
-    if (mrid == null and type_filter == null) print.stderr("eq get: <mrid> or --type is required", .{});
-    if (count and mrid != null) print.stderr("eq get: --count takes no value; '{s}' was parsed as <mrid> (use --type without <mrid> for list mode)", .{mrid.?});
+    if (eq_path == null) print.stderr(io, "eq get: <file> is required", .{});
+    if (mrid == null and type_filter == null) print.stderr(io, "eq get: <mrid> or --type is required", .{});
+    if (count and mrid != null) print.stderr(io, "eq get: --count takes no value; '{s}' was parsed as <mrid> (use --type without <mrid> for list mode)", .{mrid.?});
 
     return .{ .eq = .{ .get = .{
         .eq_path = eq_path.?,
@@ -421,32 +415,32 @@ fn parse_eq_get(args: *std.process.ArgIterator) Command {
     } } };
 }
 
-fn parse_eq_types(args: *std.process.ArgIterator) Command {
+fn parse_eq_types(io: std.Io, args: *std.process.Args.Iterator) !Command {
     var eq_path: ?[]const u8 = null;
     var eqbd_path: ?[]const u8 = null;
     var json = false;
 
     while (args.next()) |arg| {
-        if (eql(arg, "-h") or eql(arg, "--help")) {
-            write_stdout(help_eq_types);
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            try print.stdout(io, help_eq_types, .{});
             std.process.exit(0);
         }
-        if (eql(arg, "--eqbd")) {
+        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
             eqbd_path = args.next() orelse
-                print.stderr("eq types: --eqbd requires a file path", .{});
-        } else if (eql(arg, "--json")) {
+                print.stderr(io, "eq types: --eqbd requires a file path", .{});
+        } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
             json = true;
         } else if (is_flag(arg)) {
-            print.stderr("eq types: unknown option '{s}'", .{arg});
+            print.stderr(io, "eq types: unknown option '{s}'", .{arg});
         } else {
-            if (eq_path != null) print.stderr("eq types: unexpected argument '{s}'", .{arg});
-            validate_path(arg, "eq types");
-            validate_cgmes_extension(arg, "eq types");
+            if (eq_path != null) print.stderr(io, "eq types: unexpected argument '{s}'", .{arg});
+            validate_path(io, arg, "eq types");
+            validate_cgmes_extension(io, arg, "eq types");
             eq_path = arg;
         }
     }
 
-    if (eq_path == null) print.stderr("eq types: <file> is required", .{});
+    if (eq_path == null) print.stderr(io, "eq types: <file> is required", .{});
 
     return .{ .eq = .{ .types = .{
         .eq_path = eq_path.?,
@@ -455,7 +449,7 @@ fn parse_eq_types(args: *std.process.ArgIterator) Command {
     } } };
 }
 
-fn parse_eq_diff(args: *std.process.ArgIterator) Command {
+fn parse_eq_diff(io: std.Io, args: *std.process.Args.Iterator) !Command {
     var eq_path1: ?[]const u8 = null;
     var eq_path2: ?[]const u8 = null;
     var eqbd_path: ?[]const u8 = null;
@@ -465,40 +459,40 @@ fn parse_eq_diff(args: *std.process.ArgIterator) Command {
     var json = false;
 
     while (args.next()) |arg| {
-        if (eql(arg, "-h") or eql(arg, "--help")) {
-            write_stdout(help_eq_diff);
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            try print.stdout(io, help_eq_diff, .{});
             std.process.exit(0);
         }
-        if (eql(arg, "--eqbd")) {
+        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
             eqbd_path = args.next() orelse
-                print.stderr("eq diff: --eqbd requires a file path", .{});
-        } else if (eql(arg, "--mrid")) {
+                print.stderr(io, "eq diff: --eqbd requires a file path", .{});
+        } else if (std.mem.eql(u8, arg, "-i") or std.mem.eql(u8, arg, "--mrid")) {
             mrid = args.next() orelse
-                print.stderr("eq diff: --mrid requires an mRID value", .{});
-        } else if (eql(arg, "--type")) {
+                print.stderr(io, "eq diff: --mrid requires an mRID value", .{});
+        } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--type")) {
             type_filter = args.next() orelse
-                print.stderr("eq diff: --type requires a CIM type name", .{});
-        } else if (eql(arg, "--summary")) {
+                print.stderr(io, "eq diff: --type requires a CIM type name", .{});
+        } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--summary")) {
             summary = true;
-        } else if (eql(arg, "--json")) {
+        } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
             json = true;
         } else if (is_flag(arg)) {
-            print.stderr("eq diff: unknown option '{s}'", .{arg});
+            print.stderr(io, "eq diff: unknown option '{s}'", .{arg});
         } else if (eq_path1 == null) {
-            validate_path(arg, "eq diff");
-            validate_cgmes_extension(arg, "eq diff");
+            validate_path(io, arg, "eq diff");
+            validate_cgmes_extension(io, arg, "eq diff");
             eq_path1 = arg;
         } else if (eq_path2 == null) {
-            validate_path(arg, "eq diff");
-            validate_cgmes_extension(arg, "eq diff");
+            validate_path(io, arg, "eq diff");
+            validate_cgmes_extension(io, arg, "eq diff");
             eq_path2 = arg;
         } else {
-            print.stderr("eq diff: unexpected argument '{s}'", .{arg});
+            print.stderr(io, "eq diff: unexpected argument '{s}'", .{arg});
         }
     }
 
-    if (eq_path1 == null) print.stderr("eq diff: <file1> is required", .{});
-    if (eq_path2 == null) print.stderr("eq diff: <file2> is required", .{});
+    if (eq_path1 == null) print.stderr(io, "eq diff: <file1> is required", .{});
+    if (eq_path2 == null) print.stderr(io, "eq diff: <file2> is required", .{});
 
     return .{ .eq = .{ .diff = .{
         .eq_path1 = eq_path1.?,
@@ -511,56 +505,44 @@ fn parse_eq_diff(args: *std.process.ArgIterator) Command {
     } } };
 }
 
-// ── version ───────────────────────────────────────────────────────────────────
-
-fn parse_version(args: *std.process.ArgIterator) Command {
+fn parse_version(io: std.Io, args: *std.process.Args.Iterator) !Command {
     var verbose = false;
     var json = false;
 
     while (args.next()) |arg| {
-        if (eql(arg, "-h") or eql(arg, "--help")) {
-            write_stdout(help_version);
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            try print.stdout(io, help_version, .{});
             std.process.exit(0);
         }
-        if (eql(arg, "--verbose")) {
+        if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--verbose")) {
             verbose = true;
-        } else if (eql(arg, "--json")) {
+        } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
             json = true;
         } else {
-            print.stderr("version: unknown option '{s}'", .{arg});
+            print.stderr(io, "version: unknown option '{s}'", .{arg});
         }
     }
 
     return .{ .version = .{ .verbose = verbose, .json = json } };
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-inline fn eql(a: []const u8, comptime b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
-}
-
 inline fn is_flag(arg: []const u8) bool {
     return arg.len > 0 and arg[0] == '-';
 }
 
-fn write_stdout(text: []const u8) void {
-    _ = std.fs.File.stdout().write(text) catch std.process.exit(2);
-}
-
-fn validate_path(path: []const u8, comptime context: []const u8) void {
-    if (path.len == 0) print.stderr(context ++ ": path cannot be empty", .{});
+fn validate_path(io: std.Io, path: []const u8, comptime context: []const u8) void {
+    if (path.len == 0) print.stderr(io, context ++ ": path cannot be empty", .{});
     if (path.len > std.fs.max_path_bytes) {
-        print.stderr(context ++ ": path too long ({d} bytes, max {d})", .{
+        print.stderr(io, context ++ ": path too long ({d} bytes, max {d})", .{
             path.len, std.fs.max_path_bytes,
         });
     }
 }
 
-fn validate_cgmes_extension(path: []const u8, comptime context: []const u8) void {
-    if (path.len < 4) print.stderr(context ++ ": file must be .xml or .zip (got '{s}')", .{path});
+fn validate_cgmes_extension(io: std.Io, path: []const u8, comptime context: []const u8) void {
+    if (path.len < 4) print.stderr(io, context ++ ": file must be .xml or .zip (got '{s}')", .{path});
     const ext = std.fs.path.extension(path);
     if (!std.ascii.eqlIgnoreCase(ext, ".xml") and !std.ascii.eqlIgnoreCase(ext, ".zip")) {
-        print.stderr(context ++ ": file must be .xml or .zip (got '{s}')", .{path});
+        print.stderr(io, context ++ ": file must be .xml or .zip (got '{s}')", .{path});
     }
 }

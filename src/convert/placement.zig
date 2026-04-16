@@ -81,7 +81,7 @@ pub fn build_op_lims(
         try props.ensureTotalCapacity(gpa, 4);
         if (patl_value_str) |pv| {
             const formatted_pv = try iidm.format_float_str(gpa, std.mem.trim(u8, pv, " \t\r\n"));
-            props.appendAssumeCapacity(.{ .name = "CGMES.normalValue_CurrentLimit_patl", .value = formatted_pv });
+            props.appendAssumeCapacity(.{ .name = "CGMES.normalValue_CurrentLimit_patl", .value = formatted_pv, .owned_value = true });
         }
         props.appendAssumeCapacity(.{ .name = "CGMES.OperationalLimitSetName", .value = set_name });
         props.appendAssumeCapacity(.{ .name = "CGMES.OperationalLimitSetRdfID", .value = set_mrid });
