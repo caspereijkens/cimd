@@ -49,8 +49,7 @@ fn append_voltage_level(
         assert(stubs.items.len > 0);
         try aliases.ensureTotalCapacity(gpa, stubs.items.len);
         for (stubs.items, 1..) |stub_mrid, n| {
-            const alias_type = try std.fmt.allocPrint(gpa, "MergedVoltageLevel{d}", .{n});
-            aliases.appendAssumeCapacity(.{ .type = alias_type, .content = stub_mrid });
+            aliases.appendAssumeCapacity(.{ .type_info = .{ .merged_voltage_level = @intCast(n) }, .content = stub_mrid });
         }
     }
 

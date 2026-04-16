@@ -142,7 +142,7 @@ pub fn convert_busbar_sections(
                 const t_view = model.getObjectById(terminals.items[0].id) orelse continue;
                 const t_mrid = try t_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(terminals.items[0].id);
                 try aliases.ensureTotalCapacity(gpa, 1);
-                aliases.appendAssumeCapacity(.{ .type = "CGMES.Terminal1", .content = t_mrid });
+                aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal1" }, .content = t_mrid });
             }
         }
 
@@ -205,8 +205,8 @@ pub fn convert_switches(
                 const t2_view = model.getObjectById(terminals.items[1].id) orelse continue;
                 const t2_mrid = try t2_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(terminals.items[1].id);
                 try aliases.ensureTotalCapacity(gpa, 2);
-                aliases.appendAssumeCapacity(.{ .type = "CGMES.Terminal1", .content = t1_mrid });
-                aliases.appendAssumeCapacity(.{ .type = "CGMES.Terminal2", .content = t2_mrid });
+                aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal1" }, .content = t1_mrid });
+                aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal2" }, .content = t2_mrid });
             }
 
             // properties: CGMES.originalClass and CGMES.normalOpen (EQ design-time attributes)
@@ -372,7 +372,7 @@ fn convert_load_type(
             if (terminals.items.len > 0) {
                 const t_mrid = strip_underscore(terminals.items[0].id);
                 try aliases.ensureTotalCapacity(gpa, 1);
-                aliases.appendAssumeCapacity(.{ .type = "CGMES.Terminal1", .content = t_mrid });
+                aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal1" }, .content = t_mrid });
             }
         }
 
@@ -792,7 +792,7 @@ pub fn convert_generators(
             if (terminals.items.len > 0) {
                 const t_mrid = strip_underscore(terminals.items[0].id);
                 try gen_aliases.ensureTotalCapacity(gpa, 1);
-                gen_aliases.appendAssumeCapacity(.{ .type = "CGMES.Terminal1", .content = t_mrid });
+                gen_aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal1" }, .content = t_mrid });
             }
         }
 
