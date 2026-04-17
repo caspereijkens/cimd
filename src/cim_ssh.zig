@@ -57,6 +57,7 @@ pub const CimSsh = struct {
     pub fn deinit(self: *CimSsh, gpa: std.mem.Allocator) void {
         gpa.free(self.patches);
         gpa.free(self.boundaries);
+        gpa.free(self.xml);
     }
 
     /// Look up the patch for an mRID. Returns null if not present in SSH.
@@ -234,7 +235,7 @@ test "CimSsh.getFullModelView - returns view with correct id and type_name" {
         \\  </cim:Switch>
         \\</rdf:RDF>
     ;
-    var ssh = try CimSsh.init(gpa, xml);
+    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, xml));
     defer ssh.deinit(gpa);
 
     const view = try ssh.getFullModelView();
@@ -259,7 +260,7 @@ test "CimSsh.getFullModelView - returns null when no FullModel present" {
         \\  </cim:Switch>
         \\</rdf:RDF>
     ;
-    var ssh = try CimSsh.init(gpa, xml);
+    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, xml));
     defer ssh.deinit(gpa);
 
     const view = try ssh.getFullModelView();
@@ -279,7 +280,7 @@ test "CimSsh.getFullModelProperty - returns scenarioTime from SSH FullModel" {
         \\  </cim:Switch>
         \\</rdf:RDF>
     ;
-    var ssh = try CimSsh.init(gpa, xml);
+    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, xml));
     defer ssh.deinit(gpa);
 
     const scenario_time = try ssh.getFullModelProperty("Model.scenarioTime");
@@ -300,7 +301,7 @@ test "CimSsh.getFullModelProperty - returns null when property absent" {
         \\  </md:FullModel>
         \\</rdf:RDF>
     ;
-    var ssh = try CimSsh.init(gpa, xml);
+    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, xml));
     defer ssh.deinit(gpa);
 
     const result = try ssh.getFullModelProperty("Model.scenarioTime");
@@ -316,7 +317,7 @@ test "CimSsh.getFullModelProperty - returns null when no FullModel present" {
         \\  </cim:Switch>
         \\</rdf:RDF>
     ;
-    var ssh = try CimSsh.init(gpa, xml);
+    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, xml));
     defer ssh.deinit(gpa);
 
     const result = try ssh.getFullModelProperty("Model.scenarioTime");

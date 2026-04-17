@@ -824,7 +824,7 @@ test "SSH: switch open and retained state come from SSH overlay" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try CimSsh.init(gpa, SSH_XML);
+    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, ssh);
     defer network.deinit(gpa);
@@ -842,7 +842,7 @@ test "SSH: load p0 and q0 read from EnergyConsumer.p and .q in SSH" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try CimSsh.init(gpa, SSH_XML);
+    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, ssh);
     defer network.deinit(gpa);
@@ -861,7 +861,7 @@ test "SSH: disconnected terminal creates fictitious switch for any equipment typ
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try CimSsh.init(gpa, SSH_XML);
+    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, ssh);
     defer network.deinit(gpa);
@@ -888,7 +888,7 @@ test "SSH: case_date comes from SSH scenarioTime, not EQ" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try CimSsh.init(gpa, SSH_XML);
+    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, ssh);
     defer network.deinit(gpa);
@@ -905,7 +905,7 @@ test "SSH: forecastDistance computed from SSH times, not EQ" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try CimSsh.init(gpa, SSH_XML);
+    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, ssh);
     defer network.deinit(gpa);
@@ -921,7 +921,7 @@ test "SSH: FullModel appears as MetadataModel with subset SSH after EQ entry" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try CimSsh.init(gpa, SSH_XML);
+    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, ssh);
     defer network.deinit(gpa);
