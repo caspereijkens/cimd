@@ -675,11 +675,12 @@ test "line: both terminal aliases present with correct types and content" {
     var found_t1 = false;
     var found_t2 = false;
     for (line.aliases.items) |alias| {
-        if (std.mem.eql(u8, alias.type, "CGMES.Terminal1")) {
+        const type_str = switch (alias.type_info) { .static_string => |s| s, else => continue };
+        if (std.mem.eql(u8, type_str, "CGMES.Terminal1")) {
             try std.testing.expectEqualStrings("T_LINE1_1", alias.content);
             found_t1 = true;
         }
-        if (std.mem.eql(u8, alias.type, "CGMES.Terminal2")) {
+        if (std.mem.eql(u8, type_str, "CGMES.Terminal2")) {
             try std.testing.expectEqualStrings("T_LINE1_2", alias.content);
             found_t2 = true;
         }
@@ -712,7 +713,7 @@ test "busbar section: CGMES.Terminal1 alias contains terminal mRID" {
 
     const bbs = find_busbar_section(network, "BusbarSection1") orelse return error.TestFailed;
     try std.testing.expectEqual(@as(usize, 1), bbs.aliases.items.len);
-    try std.testing.expectEqualStrings("CGMES.Terminal1", bbs.aliases.items[0].type);
+    try std.testing.expectEqualStrings("CGMES.Terminal1", bbs.aliases.items[0].type_info.static_string);
     // T_BusbarSection1 has no IdentifiedObject.mRID → fallback is strip_underscore(rdf:ID)
     try std.testing.expectEqualStrings("T_BusbarSection1", bbs.aliases.items[0].content);
 }
@@ -732,12 +733,13 @@ test "switch: CGMES.Terminal1 and CGMES.Terminal2 aliases contain terminal mRIDs
     var found_t1 = false;
     var found_t2 = false;
     for (sw.aliases.items) |alias| {
-        if (std.mem.eql(u8, alias.type, "CGMES.Terminal1")) {
+        const type_str = switch (alias.type_info) { .static_string => |s| s, else => continue };
+        if (std.mem.eql(u8, type_str, "CGMES.Terminal1")) {
             // seq=1 terminal is T_BRK1_1 (strip_underscore fallback)
             try std.testing.expectEqualStrings("T_BRK1_1", alias.content);
             found_t1 = true;
         }
-        if (std.mem.eql(u8, alias.type, "CGMES.Terminal2")) {
+        if (std.mem.eql(u8, type_str, "CGMES.Terminal2")) {
             try std.testing.expectEqualStrings("T_BRK1_2", alias.content);
             found_t2 = true;
         }
