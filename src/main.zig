@@ -17,7 +17,7 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
 
-    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, gpa);
+    var args = try init.minimal.args.iterateAllocator(gpa);
     const command = try cli.parse_args(io, &args);
 
     switch (command) {
