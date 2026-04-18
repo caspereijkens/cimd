@@ -31,7 +31,6 @@ pub fn browse(
     defer trace_ids.deinit(gpa);
     var trace_types: std.ArrayList([]const u8) = .empty;
     defer trace_types.deinit(gpa);
-    // Both reused across iterations — backing memory is retained, no per-iteration allocation.
     var screen: std.Io.Writer.Allocating = .init(gpa);
     defer screen.deinit();
     var ref_list: std.ArrayList([]const u8) = .empty;
@@ -51,14 +50,14 @@ pub fn browse(
         var counter: u32 = 1;
 
         // Primary object XML (EQ, EQBD, or TP new-object).
-        counter = try render_fragment(writer, gpa, object_xml_slice(object), counter, &ref_list);
+        counter = try render_fragment(writer, gpa, tag_slice(object.xml, object.boundaries, object.object_tag_idx, object.closing_tag_idx), counter, &ref_list);
 
         // TP patch, if any — adds Terminal.TopologicalNode and similar references.
         if (tp_opt) |tp| {
             const stripped = strip_underscore(object.id);
             if (tp.find_patch(stripped)) |patch| {
                 try writer.writeAll("\n\n--- TP ---");
-                const patch_xml = tp.xml[tp.boundaries[patch.patch_tag_idx].start .. tp.boundaries[patch.closing_tag_idx].end + 1];
+                const patch_xml = tag_slice(tp.xml, tp.boundaries, patch.patch_tag_idx, patch.closing_tag_idx);
                 counter = try render_fragment(writer, gpa, patch_xml, counter, &ref_list);
             }
         }
@@ -68,7 +67,7 @@ pub fn browse(
             const stripped = strip_underscore(object.id);
             if (ssh.find_patch(stripped)) |patch| {
                 try writer.writeAll("\n\n--- SSH ---");
-                const patch_xml = ssh.xml[ssh.boundaries[patch.patch_tag_idx].start .. ssh.boundaries[patch.closing_tag_idx].end + 1];
+                const patch_xml = tag_slice(ssh.xml, ssh.boundaries, patch.patch_tag_idx, patch.closing_tag_idx);
                 counter = try render_fragment(writer, gpa, patch_xml, counter, &ref_list);
             }
         }
@@ -112,13 +111,20 @@ fn resolve_object(
     return null;
 }
 
-/// Slice out the XML fragment spanning an object's opening tag through its closing tag.
-/// Works for views regardless of their backing buffer (EQ, TP, SSH).
-fn object_xml_slice(view: tag_index.CimObjectView) []const u8 {
-    const open = view.boundaries[view.object_tag_idx].start;
-    const close = view.boundaries[view.closing_tag_idx].end + 1;
-    assert(close > open);
-    return view.xml[open..close];
+/// Slice out the XML fragment spanning an opening tag through its closing tag,
+/// extended backwards to the start of the line so original indentation is preserved.
+/// Used for primary objects (EQ/EQBD/TP new) and for TP/SSH patches.
+fn tag_slice(
+    xml: []const u8,
+    boundaries: []const tag_index.TagBoundary,
+    open_idx: u32,
+    close_idx: u32,
+) []const u8 {
+    const tag_start = boundaries[open_idx].start;
+    const close = boundaries[close_idx].end + 1;
+    const line_start = if (std.mem.lastIndexOfScalar(u8, xml[0..tag_start], '\n')) |nl| nl + 1 else 0;
+    assert(close > line_start);
+    return xml[line_start..close];
 }
 
 /// Render one XML fragment into `writer`, continuing reference numbering from `start_counter`.
@@ -136,6 +142,12 @@ fn render_fragment(
     var it = std.mem.splitScalar(u8, fragment_xml, '\n');
     var counter = start_counter;
     while (it.next()) |line| {
+        // Text-content continuation lines (from elements with embedded newlines) carry no tag;
+        // print verbatim so the XML stays readable instead of tripping tag extraction.
+        if (std.mem.indexOfScalar(u8, line, '<') == null) {
+            try writer.print("\n|     |  {s}", .{line});
+            continue;
+        }
         if (extract_rdf_id(line, 0) catch null != null) {
             try writer.writeAll("\n|     |  ");
             try append_colored_id_line(writer, line);
