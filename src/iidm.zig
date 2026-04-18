@@ -763,6 +763,51 @@ pub const InternalConnection = struct {
     }
 };
 
+pub const TopologyKind = enum {
+    node_breaker,
+    bus_breaker,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.write(switch (self) {
+            .node_breaker => "NODE_BREAKER",
+            .bus_breaker => "BUS_BREAKER",
+        });
+    }
+};
+
+pub const Bus = struct {
+    id: []const u8,
+    name: ?[]const u8 = null,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("id");
+        try jws.write(self.id);
+        if (self.name) |n| {
+            try jws.objectField("name");
+            try jws.write(n);
+        }
+        try jws.endObject();
+    }
+};
+
+pub const BusBreakerTopology = struct {
+    buses: std.ArrayListUnmanaged(Bus) = .empty,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        if (self.buses.items.len > 0) {
+            try jws.objectField("buses");
+            try jws.write(self.buses.items);
+        }
+        try jws.endObject();
+    }
+
+    pub fn deinit(self: *BusBreakerTopology, allocator: std.mem.Allocator) void {
+        self.buses.deinit(allocator);
+    }
+};
+
 pub const NodeBreakerTopology = struct {
     busbar_sections: std.ArrayListUnmanaged(BusbarSection),
     switches: std.ArrayListUnmanaged(Switch),
@@ -804,7 +849,9 @@ pub const VoltageLevel = struct {
     high_voltage_limit: ?f64,
     aliases: std.ArrayListUnmanaged(Alias),
     properties: std.ArrayListUnmanaged(Property),
+    topology_kind: TopologyKind = .node_breaker,
     node_breaker_topology: NodeBreakerTopology,
+    bus_breaker_topology: BusBreakerTopology = .{},
     generators: std.ArrayListUnmanaged(Generator),
     loads: std.ArrayListUnmanaged(Load),
     shunts: std.ArrayListUnmanaged(Shunt),
@@ -822,7 +869,7 @@ pub const VoltageLevel = struct {
         try write_optional_float_field(jws, "lowVoltageLimit", self.low_voltage_limit);
         try write_optional_float_field(jws, "highVoltageLimit", self.high_voltage_limit);
         try jws.objectField("topologyKind");
-        try jws.write("NODE_BREAKER");
+        try jws.write(self.topology_kind);
         if (self.aliases.items.len > 0) {
             try jws.objectField("aliases");
             try jws.write(self.aliases.items);
@@ -831,8 +878,16 @@ pub const VoltageLevel = struct {
             try jws.objectField("properties");
             try jws.write(self.properties.items);
         }
-        try jws.objectField("nodeBreakerTopology");
-        try jws.write(self.node_breaker_topology);
+        switch (self.topology_kind) {
+            .node_breaker => {
+                try jws.objectField("nodeBreakerTopology");
+                try jws.write(self.node_breaker_topology);
+            },
+            .bus_breaker => {
+                try jws.objectField("busBreakerTopology");
+                try jws.write(self.bus_breaker_topology);
+            },
+        }
         if (self.generators.items.len > 0) {
             try jws.objectField("generators");
             try jws.write(self.generators.items);
@@ -880,6 +935,7 @@ pub const VoltageLevel = struct {
             lcc.deinit(allocator);
         }
         self.node_breaker_topology.deinit(allocator);
+        self.bus_breaker_topology.deinit(allocator);
         self.generators.deinit(allocator);
         self.loads.deinit(allocator);
         self.shunts.deinit(allocator);

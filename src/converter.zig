@@ -11,6 +11,7 @@ const equipment_conv = @import("convert/equipment.zig");
 const transformer_conv = @import("convert/transformer.zig");
 const line_conv = @import("convert/line.zig");
 const CimSsh = @import("cim_ssh.zig").CimSsh;
+const CimTp = @import("cim_tp.zig").CimTp;
 
 const assert = std.debug.assert;
 const CimModel = cim_model.CimModel;
@@ -199,8 +200,11 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSs
 
 /// Convert a CimModel into an IIDM Network.
 /// Caller owns the returned network and must call network.deinit(gpa).
-pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh) !iidm.Network {
+/// When `tp_opt` is provided, topology is derived from the TP profile's
+/// TopologicalNodes (bus-branch mode) instead of EQ ConnectivityNodes + Switches.
+pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, tp_opt: ?CimTp, ssh_opt: ?CimSsh) !iidm.Network {
     assert(model.get_objects_by_type("Substation").len > 0);
+    if (tp_opt != null) return error.BusBranchNotImplemented;
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
     var index = try cim_index.CimIndex.build(gpa, model, boundary_ids);

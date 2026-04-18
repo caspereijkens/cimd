@@ -416,7 +416,7 @@ test "forecastDistance: scenarioTime 8h after created → 480 minutes" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     // 2026-01-01T09:00Z − 2026-01-01T01:00Z = 8h = 480 min
@@ -429,7 +429,7 @@ test "line: gch and bch split equally across both sides" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     const line = find_line(network, "LINE1") orelse return error.TestFailed;
@@ -448,7 +448,7 @@ test "boundary line: creates a fictitious VL and LINE_BNDRY lands in it" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     // Exactly one boundary CN → exactly one fictitious VL.
@@ -473,7 +473,7 @@ test "generator: energy_source derived from GeneratingUnit CIM type" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     const gen_th = find_generator(network, "GEN_TH") orelse return error.TestFailed;
@@ -487,7 +487,7 @@ test "generator: min_p and max_p read from GeneratingUnit" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     const gen = find_generator(network, "GEN_TH") orelse return error.TestFailed;
@@ -501,7 +501,7 @@ test "generator: is_condenser true when SynchronousMachine.type contains condens
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     const condenser = find_generator(network, "GEN_CO") orelse return error.TestFailed;
@@ -518,7 +518,7 @@ test "generator: reactive capability curve takes precedence over minQ/maxQ" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     const gen_cu = find_generator(network, "GEN_CU") orelse return error.TestFailed;
@@ -535,7 +535,7 @@ test "generator: minQ/maxQ used as fallback when no curve" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     const gen_th = find_generator(network, "GEN_TH") orelse return error.TestFailed;
@@ -552,7 +552,7 @@ test "SVC: regulationMode voltage fragment → .voltage" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     for (network.substations.items) |substation| {
@@ -575,7 +575,7 @@ test "detail extension: every load gets fixedActivePower etc. all zero" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     const ext = find_extension(network, "LOAD1") orelse return error.TestFailed;
@@ -602,7 +602,7 @@ test "coordinatedReactiveControl: generator with qPercent gets extension" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     const ext = find_extension(network, "GEN_CO") orelse return error.TestFailed;
@@ -621,7 +621,7 @@ test "areas: ControlArea produces one area with TieFlow boundary" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     try std.testing.expectEqual(@as(usize, 1), network.areas.items.len);
@@ -640,7 +640,7 @@ test "shunt: section count, bPerSection, voltage_regulator_on parsed correctly" 
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     for (network.substations.items) |substation| {
@@ -666,7 +666,7 @@ test "line: both terminal aliases present with correct types and content" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     const line = find_line(network, "LINE1") orelse return error.TestFailed;
@@ -696,7 +696,7 @@ test "line: CGMES.originalClass property is ACLineSegment" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     const line = find_line(network, "LINE1") orelse return error.TestFailed;
@@ -711,7 +711,7 @@ test "busbar section: CGMES.Terminal1 alias contains terminal mRID" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     const bbs = find_busbar_section(network, "BusbarSection1") orelse return error.TestFailed;
@@ -727,7 +727,7 @@ test "switch: CGMES.Terminal1 and CGMES.Terminal2 aliases contain terminal mRIDs
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     const sw = find_switch(network, "BRK1") orelse return error.TestFailed;
@@ -758,7 +758,7 @@ test "switch: CGMES.originalClass and CGMES.normalOpen properties" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     const sw = find_switch(network, "BRK1") orelse return error.TestFailed;
@@ -789,7 +789,7 @@ test "fictitious switch: created for structurally isolated SynchronousMachine" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     // Fictitious switch id = "<terminal_mRID>_SW_fict"
@@ -815,7 +815,7 @@ test "fictitious switch: not created for EnergyConsumer without SSH" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null);
     defer network.deinit(gpa);
 
     // LOAD1's terminal mRID is T_LOAD1; fictitious switch would be T_LOAD1_SW_fict.
@@ -832,7 +832,7 @@ test "SSH: switch open and retained state come from SSH overlay" {
     defer model.deinit(gpa);
     var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
-    var network = try converter.convert(gpa, &model, ssh);
+    var network = try converter.convert(gpa, &model, null, ssh);
     defer network.deinit(gpa);
 
     const sw = find_switch(network, "BRK1") orelse return error.TestFailed;
@@ -850,7 +850,7 @@ test "SSH: load p0 and q0 read from EnergyConsumer.p and .q in SSH" {
     defer model.deinit(gpa);
     var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
-    var network = try converter.convert(gpa, &model, ssh);
+    var network = try converter.convert(gpa, &model, null, ssh);
     defer network.deinit(gpa);
 
     const load = find_load(network, "LOAD1") orelse return error.TestFailed;
@@ -869,7 +869,7 @@ test "SSH: disconnected terminal creates fictitious switch for any equipment typ
     defer model.deinit(gpa);
     var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
-    var network = try converter.convert(gpa, &model, ssh);
+    var network = try converter.convert(gpa, &model, null, ssh);
     defer network.deinit(gpa);
 
     const sw = find_switch(network, "T_LOAD1_SW_fict") orelse return error.TestFailed;
@@ -896,7 +896,7 @@ test "SSH: case_date comes from SSH scenarioTime, not EQ" {
     defer model.deinit(gpa);
     var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
-    var network = try converter.convert(gpa, &model, ssh);
+    var network = try converter.convert(gpa, &model, null, ssh);
     defer network.deinit(gpa);
 
     // SSH scenarioTime is 2026-01-02T15:00:00Z; EQ has 2026-01-01T09:00:00Z.
@@ -913,7 +913,7 @@ test "SSH: forecastDistance computed from SSH times, not EQ" {
     defer model.deinit(gpa);
     var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
-    var network = try converter.convert(gpa, &model, ssh);
+    var network = try converter.convert(gpa, &model, null, ssh);
     defer network.deinit(gpa);
 
     // SSH: 2026-01-02T15:00Z − 2026-01-02T12:00Z = 3 h = 180 min.
@@ -929,7 +929,7 @@ test "SSH: FullModel appears as MetadataModel with subset SSH after EQ entry" {
     defer model.deinit(gpa);
     var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
-    var network = try converter.convert(gpa, &model, ssh);
+    var network = try converter.convert(gpa, &model, null, ssh);
     defer network.deinit(gpa);
 
     const ext = find_extension(network, network.id) orelse return error.TestFailed;

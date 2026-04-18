@@ -68,22 +68,30 @@ fn command_version(io: std.Io, verbose: bool, json: bool) !void {
 }
 
 fn command_convert(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Convert) !void {
-    if (c.tp_path != null) print.stderr(
-        io,
-        "convert: --topology (bus-branch) is not yet supported; use 'cimd browse -t ...' to inspect the TP profile",
-        .{},
-    );
-
     var model = try load_model(io, gpa, c.eq_path, c.eqbd_path);
     defer model.deinit(gpa);
+
+    var tp_opt: ?CimTp = if (c.tp_path) |path| try load_tp(io, gpa, path) else null;
+    defer if (tp_opt) |*tp| tp.deinit(gpa);
 
     var ssh_opt: ?CimSsh = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
     defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
 
-    var network = try converter.convert(gpa, &model, ssh_opt);
+    if (tp_opt) |tp| {
+        for (tp.new_objects) |obj| {
+            if (model.getObjectById(obj.id) != null) print.stderr(
+                io,
+                "convert: mRID collision: '{s}' is defined in both the primary file and the TP profile",
+                .{obj.id},
+            );
+        }
+    }
+
+    var network = try converter.convert(gpa, &model, tp_opt, ssh_opt);
     defer network.deinit(gpa);
 
     var total_voltage_levels: usize = 0;
+    var total_buses: usize = 0;
     var total_busbar_sections: usize = 0;
     var total_switches: usize = 0;
     var total_loads: usize = 0;
@@ -97,6 +105,7 @@ fn command_convert(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Convert) !
         total_2w += substation.two_winding_transformers.items.len;
         total_3w += substation.three_winding_transformers.items.len;
         for (substation.voltage_levels.items) |voltage_level| {
+            total_buses += voltage_level.bus_breaker_topology.buses.items.len;
             total_busbar_sections += voltage_level.node_breaker_topology.busbar_sections.items.len;
             total_switches += voltage_level.node_breaker_topology.switches.items.len;
             total_loads += voltage_level.loads.items.len;
@@ -107,6 +116,7 @@ fn command_convert(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Convert) !
     }
     try print.stderr_info(io, "Substations: {d}\n", .{network.substations.items.len});
     try print.stderr_info(io, "VoltageLevels: {d}\n", .{total_voltage_levels});
+    if (tp_opt != null) try print.stderr_info(io, "Buses: {d}\n", .{total_buses});
     try print.stderr_info(io, "BusbarSections: {d}\n", .{total_busbar_sections});
     try print.stderr_info(io, "Switches: {d}\n", .{total_switches});
     try print.stderr_info(io, "Loads: {d}\n", .{total_loads});
