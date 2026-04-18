@@ -675,7 +675,10 @@ test "line: both terminal aliases present with correct types and content" {
     var found_t1 = false;
     var found_t2 = false;
     for (line.aliases.items) |alias| {
-        const type_str = switch (alias.type_info) { .static_string => |s| s, else => continue };
+        const type_str = switch (alias.type_info) {
+            .static_string => |s| s,
+            else => continue,
+        };
         if (std.mem.eql(u8, type_str, "CGMES.Terminal1")) {
             try std.testing.expectEqualStrings("T_LINE1_1", alias.content);
             found_t1 = true;
@@ -733,7 +736,10 @@ test "switch: CGMES.Terminal1 and CGMES.Terminal2 aliases contain terminal mRIDs
     var found_t1 = false;
     var found_t2 = false;
     for (sw.aliases.items) |alias| {
-        const type_str = switch (alias.type_info) { .static_string => |s| s, else => continue };
+        const type_str = switch (alias.type_info) {
+            .static_string => |s| s,
+            else => continue,
+        };
         if (std.mem.eql(u8, type_str, "CGMES.Terminal1")) {
             // seq=1 terminal is T_BRK1_1 (strip_underscore fallback)
             try std.testing.expectEqualStrings("T_BRK1_1", alias.content);

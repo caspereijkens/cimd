@@ -185,7 +185,7 @@ pub fn convert_switches(
             const mrid_raw = try eq_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(sw.id);
             const mrid = try gpa.dupe(u8, mrid_raw);
             errdefer gpa.free(mrid);
-            const view = CimMergedView.init(eq_view, mrid, ssh_opt);
+            const view = CimMergedView.init(eq_view, mrid, null, ssh_opt);
             const name = try view.getProperty("IdentifiedObject.name");
 
             // Switch.open and Switch.retained are SSH attributes — EQ does not carry open state.
@@ -362,7 +362,7 @@ fn convert_load_type(
         const node = placement.node;
 
         const mrid = try eq_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(load.id);
-        const view = CimMergedView.init(eq_view, mrid, ssh_opt);
+        const view = CimMergedView.init(eq_view, mrid, null, ssh_opt);
         const name = try view.getProperty("IdentifiedObject.name");
 
         // alias: CGMES.Terminal1 = terminal mRID
@@ -473,7 +473,7 @@ pub fn convert_shunts(
         const node = placement.node;
 
         const mrid = try eq_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(shunt.id);
-        const view = CimMergedView.init(eq_view, mrid, ssh_opt);
+        const view = CimMergedView.init(eq_view, mrid, null, ssh_opt);
         const name = try view.getProperty("IdentifiedObject.name");
 
         // ShuntCompensator.sections (current in-service sections) is an SSH attribute.
@@ -575,7 +575,7 @@ pub fn convert_static_var_compensators(
         const node = placement.node;
 
         const mrid = try eq_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(static_var_compensator.id);
-        const view = CimMergedView.init(eq_view, mrid, ssh_opt);
+        const view = CimMergedView.init(eq_view, mrid, null, ssh_opt);
         const name = try view.getProperty("IdentifiedObject.name");
 
         const b_min_str = try view.getProperty("StaticVarCompensator.bMin") orelse "0.0";
@@ -660,7 +660,7 @@ pub fn convert_generators(
         // All subsequent attribute reads go through view — SSH values shadow EQ values.
         const eq_view = model.view(machine);
         const mrid = try eq_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(machine.id);
-        const view = CimMergedView.init(eq_view, mrid, ssh_opt);
+        const view = CimMergedView.init(eq_view, mrid, null, ssh_opt);
 
         const name = try view.getProperty("IdentifiedObject.name");
 

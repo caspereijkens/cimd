@@ -21,81 +21,89 @@ So, using cimd today does imply participating in the development process to some
 <!-- FEATURES_START -->
 ## Features
 ```
-$ cimd eq --help
+$ cimd --help
 
-Usage: cimd eq <subcommand> <file> [options]
+Usage: cimd <command> [options]
 
-Operate on a CGMES EQ (Equipment) profile.
+A high-performance CGMES file parser and analysis tool.
 
-Subcommands:
-  convert    Convert EQ profile to JIIDM JSON
-  browse     Interactively browse equipment objects
-  get        Fetch a single object by mRID (JSON output)
-  types      List all CIM types present in the file
+Commands:
+  convert    Convert an EQ profile to JIIDM JSON
+  browse     Interactively browse CIM objects (EQ/EQBD/TP/SSH merged view)
+  get        Fetch a single object or list by type from any CIM file
+  types      List CIM types present in a CIM file
   diff       Semantic diff between two EQ profiles
+  version    Print version information
 
-Use 'cimd eq <subcommand> --help' for more information.
+Use 'cimd <command> --help' for more information about a command.
 ```
 
 ### Convert
 ```
-$ cimd eq convert --help
+$ cimd convert --help
 
-Usage: cimd eq convert <file> [options]
+Usage: cimd convert <file> [options]
 
 Convert a CGMES EQ profile to JIIDM JSON format.
 Output is written to stdout unless --output is given.
 
 Arguments:
-  <file>                 EQ profile (XML or ZIP)
+  <file>                  EQ profile (XML or ZIP)
 
 Options:
-  -b, --eqbd <file>     EQBD boundary profile (XML or ZIP)
-  -s, --ssh <file>      SSH steady-state hypothesis profile (XML or ZIP)
-  -o, --output <file>   Write output to file instead of stdout
+  -b, --boundary <file>   EQBD boundary profile (XML or ZIP)
+  -t, --topology <file>   TP topology profile (XML or ZIP)
+  -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
+  -o, --output <file>     Write output to file instead of stdout
 
 Examples:
-  cimd eq convert data/eq.zip
-  cimd eq convert data/eq.zip -b eqbd.zip
-  cimd eq convert data/eq.zip -b eqbd.zip -s ssh.zip
-  cimd eq convert data/eq.zip -o network.json
+  cimd convert data/eq.zip
+  cimd convert data/eq.zip -b eqbd.zip
+  cimd convert data/eq.zip -b eqbd.zip -s ssh.zip
+  cimd convert data/eq.zip -o network.json
 ```
 
 ### Browse
 ```
-$ cimd eq browse --help
+$ cimd browse --help
 
-Usage: cimd eq browse <file> <mrid> [options]
+Usage: cimd browse <file> <mrid> [options]
 
-Interactively browse equipment objects by following rdf:resource references.
+Interactively browse CIM objects by following rdf:resource references.
+When --topology or --ssh is passed, patches from those profiles are shown
+inline alongside the primary object, and new objects from TP (e.g.
+TopologicalNodes) become navigable by mRID.
 
 Arguments:
-  <file>    EQ profile (XML or ZIP)
+  <file>    Primary CIM file (typically EQ; XML or ZIP)
   <mrid>    mRID of the object to start browsing from
 
 Options:
-  -b, --eqbd <file>     EQBD boundary profile (XML or ZIP)
+  -b, --boundary <file>       EQBD boundary profile (XML or ZIP)
+  -t, --topology <file>       TP topology profile (XML or ZIP)
+  -s, --ssh <file>            SSH steady-state hypothesis profile (XML or ZIP)
 
 Examples:
-  cimd eq browse data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
+  cimd browse data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
+  cimd browse data/eq.zip _abc -t tp.zip -s ssh.zip
 ```
 
 ### Get
 ```
-$ cimd eq get --help
+$ cimd get --help
 
-Usage: cimd eq get <file> [<mrid>] [options]
+Usage: cimd get <file> [<mrid>] [options]
 
 Fetch a CIM object by mRID, or list all objects of a given type.
+Works on any CGMES file (EQ, EQBD, TP, SSH, ...).
 At least one of <mrid> or --type must be provided.
 Exits 0 on success, 1 if the mRID is not found.
 
 Arguments:
-  <file>    EQ profile (XML or ZIP)
+  <file>    CGMES file (XML or ZIP)
   <mrid>    mRID of the object to fetch (optional if --type is given)
 
 Options:
-  -b, --eqbd <file>          EQBD boundary profile (XML or ZIP)
   -t, --type <type>          Filter by CIM type (e.g. PowerTransformer)
                              Without <mrid>: list all objects of this type
                              With <mrid>: verify the object is of this type
@@ -105,39 +113,40 @@ Options:
   -j, --json                 Output as JSON
 
 Examples:
-  cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
-  cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -j
-  cimd eq get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -t PowerTransformer
-  cimd eq get data/eq.zip -t PowerTransformer -j
-  cimd eq get data/eq.zip -t PowerTransformer -c
-  cimd eq get data/eq.zip -t VoltageLevel -f IdentifiedObject.name,VoltageLevel.nominalVoltage
+  cimd get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
+  cimd get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -j
+  cimd get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -t PowerTransformer
+  cimd get data/eq.zip -t PowerTransformer -j
+  cimd get data/eq.zip -t PowerTransformer -c
+  cimd get data/eq.zip -t VoltageLevel -f IdentifiedObject.name,VoltageLevel.nominalVoltage
+  cimd get data/tp.zip -t TopologicalNode -c
 ```
 
 ### Types
 ```
-$ cimd eq types --help
+$ cimd types --help
 
-Usage: cimd eq types <file> [options]
+Usage: cimd types <file> [options]
 
-List all CIM types present in the EQ profile with object counts.
+List all CIM types present in a CGMES file with object counts.
+Works on any CGMES file (EQ, EQBD, TP, SSH, ...).
 
 Arguments:
-  <file>                 EQ profile (XML or ZIP)
+  <file>                  CGMES file (XML or ZIP)
 
 Options:
-  -b, --eqbd <file>     EQBD boundary profile (XML or ZIP)
-  -j, --json            Output as JSON array of {type, count} objects
+  -j, --json              Output as JSON array of {type, count} objects
 
 Examples:
-  cimd eq types data/eq.zip
-  cimd eq types data/eq.zip -j
+  cimd types data/eq.zip
+  cimd types data/tp.zip -j
 ```
 
 ### Diff
 ```
-$ cimd eq diff --help
+$ cimd diff --help
 
-Usage: cimd eq diff <file1> <file2> [options]
+Usage: cimd diff <file1> <file2> [options]
 
 Compare two CGMES EQ profiles semantically. Objects are matched by mRID
 across both files; properties are compared field-by-field. XML attribute
@@ -153,19 +162,19 @@ Arguments:
   <file2>    Second EQ profile (XML or ZIP)
 
 Options:
-  -b, --eqbd <file>   EQBD boundary profile (applied to both models)
-  -i, --mrid <id>     Diff a single object by mRID
-  -t, --type <name>   Restrict diff to a specific CIM type
-                      With --mrid: verify the object is of this type
-  -s, --summary       Print only per-type counts (added/removed/changed)
-  -j, --json          Output as NDJSON (one object per change)
+  -b, --boundary <file>   EQBD boundary profile (applied to both models)
+  -i, --mrid <id>         Diff a single object by mRID
+  -t, --type <name>       Restrict diff to a specific CIM type
+                          With --mrid: verify the object is of this type
+  -s, --summary           Print only per-type counts (added/removed/changed)
+  -j, --json              Output as NDJSON (one object per change)
 
 Examples:
-  cimd eq diff eq_v1.zip eq_v2.zip
-  cimd eq diff eq_v1.zip eq_v2.zip -i _abc123
-  cimd eq diff eq_v1.zip eq_v2.zip -i _abc123 -t PowerTransformer
-  cimd eq diff eq_v1.zip eq_v2.zip -t PowerTransformer
-  cimd eq diff eq_v1.zip eq_v2.zip -j | jq .
-  cimd eq diff eq_v1.zip eq_v2.zip -s
+  cimd diff eq_v1.zip eq_v2.zip
+  cimd diff eq_v1.zip eq_v2.zip -i _abc123
+  cimd diff eq_v1.zip eq_v2.zip -i _abc123 -t PowerTransformer
+  cimd diff eq_v1.zip eq_v2.zip -t PowerTransformer
+  cimd diff eq_v1.zip eq_v2.zip -j | jq .
+  cimd diff eq_v1.zip eq_v2.zip -s
 ```
 <!-- FEATURES_END -->

@@ -1,6 +1,8 @@
 const std = @import("std");
 const tag_index = @import("tag_index.zig");
 const utils = @import("utils.zig");
+const CimTp = @import("cim_tp.zig").CimTp;
+const TpPatch = @import("cim_tp.zig").TpPatch;
 
 const assert = std.debug.assert;
 
@@ -147,12 +149,13 @@ pub const CimSsh = struct {
     }
 };
 
-/// A merged view of an EQ object and its SSH patch (if any).
-/// SSH properties and references shadow EQ values — SSH is checked first,
-/// EQ is the fallback. Create once per object (find_patch runs at init),
-/// then call getProperty/getReference freely without repeated SSH lookups.
+/// A merged view of an EQ object with optional TP and SSH overlays.
+/// Priority for getProperty / getReference: SSH > TP > EQ — SSH shadows everything,
+/// TP shadows EQ, EQ is the fallback. `init` runs one find_patch per overlay and
+/// caches the result, so getProperty / getReference are free of repeated lookups.
 pub const CimMergedView = struct {
     eq: tag_index.CimObjectView,
+    tp: ?TpContext,
     ssh: ?SshContext,
 
     const SshContext = struct {
@@ -161,20 +164,35 @@ pub const CimMergedView = struct {
         patch: SshPatch,
     };
 
-    pub fn init(eq: tag_index.CimObjectView, mrid: []const u8, ssh_opt: ?CimSsh) CimMergedView {
+    const TpContext = struct {
+        xml: []const u8,
+        boundaries: []const tag_index.TagBoundary,
+        patch: TpPatch,
+    };
+
+    pub fn init(
+        eq: tag_index.CimObjectView,
+        mrid: []const u8,
+        tp_opt: ?CimTp,
+        ssh_opt: ?CimSsh,
+    ) CimMergedView {
         assert(mrid.len > 0);
-        if (ssh_opt) |ssh| {
-            if (ssh.find_patch(mrid)) |patch| {
-                return .{
-                    .eq = eq,
-                    .ssh = .{ .xml = ssh.xml, .boundaries = ssh.boundaries, .patch = patch },
-                };
+        var tp: ?TpContext = null;
+        if (tp_opt) |t| {
+            if (t.find_patch(mrid)) |patch| {
+                tp = .{ .xml = t.xml, .boundaries = t.boundaries, .patch = patch };
             }
         }
-        return .{ .eq = eq, .ssh = null };
+        var ssh: ?SshContext = null;
+        if (ssh_opt) |s| {
+            if (s.find_patch(mrid)) |patch| {
+                ssh = .{ .xml = s.xml, .boundaries = s.boundaries, .patch = patch };
+            }
+        }
+        return .{ .eq = eq, .tp = tp, .ssh = ssh };
     }
 
-    /// Get a text property. SSH value takes priority over EQ value.
+    /// Get a text property. SSH value takes priority, then TP, then EQ.
     pub fn getProperty(self: CimMergedView, name: []const u8) !?[]const u8 {
         if (self.ssh) |s| {
             if (try tag_index.get_property_from_indices(
@@ -185,10 +203,19 @@ pub const CimMergedView = struct {
                 name,
             )) |v| return v;
         }
+        if (self.tp) |t| {
+            if (try tag_index.get_property_from_indices(
+                t.xml,
+                t.boundaries,
+                t.patch.patch_tag_idx,
+                t.patch.closing_tag_idx,
+                name,
+            )) |v| return v;
+        }
         return self.eq.getProperty(name);
     }
 
-    /// Get an rdf:resource reference. SSH value takes priority over EQ value.
+    /// Get an rdf:resource reference. SSH value takes priority, then TP, then EQ.
     pub fn getReference(self: CimMergedView, name: []const u8) !?[]const u8 {
         if (self.ssh) |s| {
             if (try tag_index.get_reference_from_indices(
@@ -196,6 +223,15 @@ pub const CimMergedView = struct {
                 s.boundaries,
                 s.patch.patch_tag_idx,
                 s.patch.closing_tag_idx,
+                name,
+            )) |v| return v;
+        }
+        if (self.tp) |t| {
+            if (try tag_index.get_reference_from_indices(
+                t.xml,
+                t.boundaries,
+                t.patch.patch_tag_idx,
+                t.patch.closing_tag_idx,
                 name,
             )) |v| return v;
         }

@@ -7,6 +7,7 @@ comptime {
     _ = @import("test_conversion.zig");
     _ = @import("cim_index.zig");
     _ = @import("cim_ssh.zig");
+    _ = @import("cim_tp.zig");
     _ = @import("converter.zig");
     _ = @import("convert/transformer.zig");
     _ = @import("convert/placement.zig");
