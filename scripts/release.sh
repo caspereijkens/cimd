@@ -9,7 +9,7 @@ fi
 TAG="$1"
 
 # Extract version from build.zig.zon
-ZON_VERSION=$(grep -oP '(?<=\.version = ")[^"]+' build.zig.zon)
+ZON_VERSION=$(sed -nE 's/.*\.version = "([^"]+)".*/\1/p' build.zig.zon)
 
 if [[ -z "$ZON_VERSION" ]]; then
     echo "error: could not parse .version from build.zig.zon" >&2
