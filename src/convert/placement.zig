@@ -4,6 +4,8 @@ const cim_index = @import("../cim_index.zig");
 const cim_model = @import("../cim_model.zig");
 const utils = @import("../utils.zig");
 const connection = @import("connection.zig");
+const bus_conv = @import("bus.zig");
+const CimTp = @import("../cim_tp.zig").CimTp;
 
 const strip_underscore = utils.strip_underscore;
 const strip_hash = utils.strip_hash;
@@ -12,9 +14,15 @@ const assert = std.debug.assert;
 const CimIndex = cim_index.CimIndex;
 
 pub const Placement = struct {
+    /// Raw rdf:ID of the containing VoltageLevel (merge-resolved in node-breaker,
+    /// direct container in bus-branch). Matches voltage_level_map / substation_map keys.
     repr_voltage_level_id: []const u8,
     voltage_level: *iidm.VoltageLevel,
+    /// Node number in node-breaker; 0 in bus-branch (ignored when bus is set).
     node: u32,
+    /// Bus mRID in bus-branch; null in node-breaker. When set, IIDM serializer
+    /// emits bus/connectableBus instead of node.
+    bus: ?[]const u8 = null,
 };
 
 /// Resolve VoltageLevel and node for a terminal.
@@ -36,6 +44,53 @@ pub fn resolve_terminal_placement(
     const node = node_map.get(terminal_id) orelse return null;
     return .{ .repr_voltage_level_id = repr_voltage_level_id, .voltage_level = voltage_level, .node = node };
 }
+
+/// Unified placement resolver for equipment terminals.
+/// node-breaker mode: resolves via EQ CN → VL + NodeMap-assigned node.
+/// bus-branch mode: resolves via TP Terminal.TopologicalNode patch → BusPlacement.
+pub const TerminalPlacer = struct {
+    mode: Mode,
+    index: *const CimIndex,
+    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
+
+    pub const Mode = union(enum) {
+        node_breaker: *const connection.NodeMap,
+        bus_branch: BusBranch,
+    };
+
+    pub const BusBranch = struct {
+        tp: CimTp,
+        bus_map: *const bus_conv.BusMap,
+    };
+
+    pub fn resolve_terminal(self: TerminalPlacer, terminal_id: []const u8, conn_node_id: ?[]const u8) !?Placement {
+        assert(terminal_id.len > 0);
+        switch (self.mode) {
+            .node_breaker => |node_map| {
+                const cn = conn_node_id orelse return null;
+                return resolve_terminal_placement(terminal_id, cn, self.index, self.voltage_level_map, node_map);
+            },
+            .bus_branch => |bb| {
+                const terminal_mrid = strip_underscore(terminal_id);
+                const bp = try bus_conv.resolve_terminal_bus(bb.tp, bb.bus_map, terminal_mrid) orelse return null;
+                return Placement{
+                    .repr_voltage_level_id = bp.raw_voltage_level_id,
+                    .voltage_level = bp.voltage_level,
+                    .node = 0,
+                    .bus = bp.bus_id,
+                };
+            },
+        }
+    }
+
+    pub fn resolve_equipment(self: TerminalPlacer, equipment_id: []const u8) !?Placement {
+        assert(equipment_id.len > 0);
+        const terminals = self.index.equipment_terminals.get(equipment_id) orelse return null;
+        if (terminals.items.len == 0) return null;
+        const term = terminals.items[0];
+        return self.resolve_terminal(term.id, term.conn_node_id);
+    }
+};
 
 /// Build OperationalLimitsGroup list for one terminal from the CimIndex.
 /// Caller owns the returned list and must deinit it.

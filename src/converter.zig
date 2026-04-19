@@ -10,6 +10,8 @@ const connection_conv = @import("convert/connection.zig");
 const equipment_conv = @import("convert/equipment.zig");
 const transformer_conv = @import("convert/transformer.zig");
 const line_conv = @import("convert/line.zig");
+const bus_conv = @import("convert/bus.zig");
+const placement_conv = @import("convert/placement.zig");
 const CimSsh = @import("cim_ssh.zig").CimSsh;
 const CimTp = @import("cim_tp.zig").CimTp;
 
@@ -204,7 +206,6 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSs
 /// TopologicalNodes (bus-branch mode) instead of EQ ConnectivityNodes + Switches.
 pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, tp_opt: ?CimTp, ssh_opt: ?CimSsh) !iidm.Network {
     assert(model.get_objects_by_type("Substation").len > 0);
-    if (tp_opt != null) return error.BusBranchNotImplemented;
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
     var index = try cim_index.CimIndex.build(gpa, model, boundary_ids);
@@ -263,20 +264,47 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, tp_opt: ?CimTp, s
     var voltage_level_map = try voltage_level_conv.build_voltage_level_map(gpa, model, &index, &network, &sub_id_map, &substation_map);
     defer voltage_level_map.deinit(gpa);
 
-    var nm_result = try connection_conv.build_node_map(gpa, model, &index, &voltage_level_map, ssh_opt);
-    defer nm_result.deinit(gpa);
-    const node_map = &nm_result.node_map;
+    // Branch on topology mode. Bus-branch derives placement from TP's
+    // TopologicalNodes; node-breaker builds a NodeMap from EQ CNs + switches.
+    if (tp_opt) |tp| {
+        var bus_map = try bus_conv.convert_buses(gpa, tp, &voltage_level_map);
+        defer bus_map.deinit(gpa);
 
-    try equipment_conv.pre_allocate_equipment(gpa, model, &index, &voltage_level_map);
-    try equipment_conv.convert_busbar_sections(gpa, model, &index, &voltage_level_map, node_map);
-    try equipment_conv.convert_switches(gpa, model, &index, &voltage_level_map, node_map, ssh_opt);
-    try equipment_conv.convert_fictitious_switches(gpa, model, &index, &voltage_level_map, node_map, &nm_result.cn_has_switch, &nm_result.cn_other_count, ssh_opt);
-    try equipment_conv.convert_loads(gpa, model, &index, &voltage_level_map, node_map, ssh_opt);
-    try equipment_conv.convert_shunts(gpa, model, &index, &voltage_level_map, node_map, ssh_opt);
-    try equipment_conv.convert_static_var_compensators(model, &index, &voltage_level_map, node_map, ssh_opt);
-    try equipment_conv.convert_generators(gpa, model, &index, &voltage_level_map, node_map, ssh_opt);
-    try transformer_conv.convert_transformers(gpa, model, &index, &substation_map, &voltage_level_map, node_map);
-    try line_conv.convert_lines(gpa, model, &index, &network, &voltage_level_map, node_map, ssh_opt);
+        const placer = placement_conv.TerminalPlacer{
+            .mode = .{ .bus_branch = .{ .tp = tp, .bus_map = &bus_map } },
+            .index = &index,
+            .voltage_level_map = &voltage_level_map,
+        };
+
+        try equipment_conv.pre_allocate_equipment(gpa, model, placer);
+        try equipment_conv.convert_loads(gpa, model, placer, ssh_opt);
+        try equipment_conv.convert_shunts(gpa, model, placer, ssh_opt);
+        try equipment_conv.convert_static_var_compensators(model, placer, ssh_opt);
+        try equipment_conv.convert_generators(gpa, model, placer, ssh_opt);
+        try transformer_conv.convert_transformers(gpa, model, &substation_map, placer);
+        try line_conv.convert_lines(gpa, model, &network, placer, ssh_opt);
+    } else {
+        var nm_result = try connection_conv.build_node_map(gpa, model, &index, &voltage_level_map, ssh_opt);
+        defer nm_result.deinit(gpa);
+        const node_map = &nm_result.node_map;
+
+        const placer = placement_conv.TerminalPlacer{
+            .mode = .{ .node_breaker = node_map },
+            .index = &index,
+            .voltage_level_map = &voltage_level_map,
+        };
+
+        try equipment_conv.pre_allocate_equipment(gpa, model, placer);
+        try equipment_conv.convert_busbar_sections(gpa, model, placer);
+        try equipment_conv.convert_switches(gpa, model, placer, ssh_opt);
+        try equipment_conv.convert_fictitious_switches(gpa, model, placer, &nm_result.cn_has_switch, &nm_result.cn_other_count, ssh_opt);
+        try equipment_conv.convert_loads(gpa, model, placer, ssh_opt);
+        try equipment_conv.convert_shunts(gpa, model, placer, ssh_opt);
+        try equipment_conv.convert_static_var_compensators(model, placer, ssh_opt);
+        try equipment_conv.convert_generators(gpa, model, placer, ssh_opt);
+        try transformer_conv.convert_transformers(gpa, model, &substation_map, placer);
+        try line_conv.convert_lines(gpa, model, &network, placer, ssh_opt);
+    }
     try convert_areas(gpa, model, ssh_opt, &network);
 
     // -------------------------------------------------------------------------
@@ -289,7 +317,7 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, tp_opt: ?CimTp, s
     // cgmesTapChangers: one extension per transformer that has a RatioTapChanger
     // or PhaseTapChangerTabular. The extension ID is the PowerTransformer mRID.
     // step = TapChanger.normalStep.
-    {
+    if (tp_opt == null) {
         // Build a map: transformer_mrid -> list of TapChangerInfo
         var xfmr_tap_changer_map: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(iidm.TapChangerInfo)) = .empty;
         defer {
@@ -479,7 +507,10 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, tp_opt: ?CimTp, s
             .id = network.id,
             .cgmes_metadata_models = if (metadata_models.items.len > 0) .{ .models = metadata_models } else null,
             .base_voltage_mapping = if (base_voltage_list.items.len > 0) .{ .base_voltages = base_voltage_list } else null,
-            .cim_characteristics = .{ .topology_kind = "NODE_BREAKER", .cim_version = 100 },
+            .cim_characteristics = .{
+                .topology_kind = if (tp_opt != null) "BUS_BRANCH" else "NODE_BREAKER",
+                .cim_version = 100,
+            },
         });
         metadata_models = .empty; // ownership transferred
         base_voltage_list = .empty; // ownership transferred

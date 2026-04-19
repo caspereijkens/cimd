@@ -18,6 +18,7 @@ const connection_mod = @import("connection.zig");
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 const Placement = placement_mod.Placement;
+const TerminalPlacer = placement_mod.TerminalPlacer;
 const resolve_terminal_placement = placement_mod.resolve_terminal_placement;
 const NodeMap = connection_mod.NodeMap;
 
@@ -348,25 +349,22 @@ fn read_end_electrical(end: CimObjectView) !?EndElectrical {
 
 fn resolve_end_placement(
     end: CimObjectView,
-    index: *const CimIndex,
-    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const NodeMap,
+    placer: TerminalPlacer,
 ) !?Placement {
     const terminal_ref = try end.getReference("TransformerEnd.Terminal") orelse return null;
     const terminal_id = strip_hash(terminal_ref);
-    const conn_node_id = index.terminal_conn_node.get(terminal_id) orelse return null;
-    return resolve_terminal_placement(terminal_id, conn_node_id, index, voltage_level_map, node_map);
+    // terminal_conn_node may be missing in bus-branch mode (no CN); placer handles that.
+    const conn_node_id = placer.index.terminal_conn_node.get(terminal_id);
+    return placer.resolve_terminal(terminal_id, conn_node_id);
 }
 
 fn pre_allocate_transformers(
     gpa: std.mem.Allocator,
     ends_by_transformer: *const std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObjectView)),
     substation_map: *const std.StringHashMapUnmanaged(*iidm.Substation),
-    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    index: *const CimIndex,
-    node_map: *const NodeMap,
+    placer: TerminalPlacer,
 ) !void {
-    assert(voltage_level_map.count() > 0);
+    assert(placer.voltage_level_map.count() > 0);
 
     var transformer_counts: std.AutoHashMapUnmanaged(usize, struct { two: usize, three: usize }) = .empty;
     defer transformer_counts.deinit(gpa);
@@ -378,7 +376,7 @@ fn pre_allocate_transformers(
         const winding_count = ends.items.len;
         if (winding_count != 2 and winding_count != 3) continue;
 
-        const placement1 = try resolve_end_placement(ends.items[0], index, voltage_level_map, node_map) orelse continue;
+        const placement1 = try resolve_end_placement(ends.items[0], placer) orelse continue;
         const substation = substation_map.get(placement1.repr_voltage_level_id) orelse continue;
 
         const gop = transformer_counts.getOrPutAssumeCapacity(@intFromPtr(substation));
@@ -393,23 +391,21 @@ fn pre_allocate_transformers(
         try substation.three_winding_transformers.ensureTotalCapacity(gpa, entry.value_ptr.three);
     }
 
-    assert(transformer_counts.count() <= voltage_level_map.count());
+    assert(transformer_counts.count() <= placer.voltage_level_map.count());
 }
 
 fn append_two_windings_transformer(
     transformer: CimObjectView,
     ends: []const CimObjectView,
     substation: *iidm.Substation,
-    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const NodeMap,
-    index: *const CimIndex,
+    placer: TerminalPlacer,
     ratio_tap_changer_map: *std.StringHashMapUnmanaged(iidm.RatioTapChanger),
     phase_tap_changer_map: *std.StringHashMapUnmanaged(iidm.PhaseTapChanger),
 ) !void {
     assert(ends.len == 2);
 
-    const p1 = try resolve_end_placement(ends[0], index, voltage_level_map, node_map) orelse return;
-    const p2 = try resolve_end_placement(ends[1], index, voltage_level_map, node_map) orelse return;
+    const p1 = try resolve_end_placement(ends[0], placer) orelse return;
+    const p2 = try resolve_end_placement(ends[1], placer) orelse return;
     const e1 = try read_end_electrical(ends[0]) orelse return;
     const e2 = try read_end_electrical(ends[1]) orelse return;
 
@@ -437,8 +433,12 @@ fn append_two_windings_transformer(
         .rated_s = e1.rated_s,
         .voltage_level_id1 = p1.voltage_level.id,
         .node1 = p1.node,
+        .bus1 = p1.bus,
+        .connectable_bus1 = p1.bus,
         .voltage_level_id2 = p2.voltage_level.id,
         .node2 = p2.node,
+        .bus2 = p2.bus,
+        .connectable_bus2 = p2.bus,
         .ratio_tap_changer = if (ratio_tc) |kv| kv.value else null,
         .phase_tap_changer = if (phase_tc) |kv| kv.value else null,
         .selected_op_lims_group1_id = null,
@@ -453,16 +453,14 @@ fn append_three_windings_transformer(
     transformer: CimObjectView,
     ends: []const CimObjectView,
     substation: *iidm.Substation,
-    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const NodeMap,
-    index: *const CimIndex,
+    placer: TerminalPlacer,
     ratio_tap_changer_map: *std.StringHashMapUnmanaged(iidm.RatioTapChanger),
 ) !void {
     assert(ends.len == 3);
 
-    const p1 = try resolve_end_placement(ends[0], index, voltage_level_map, node_map) orelse return;
-    const p2 = try resolve_end_placement(ends[1], index, voltage_level_map, node_map) orelse return;
-    const p3 = try resolve_end_placement(ends[2], index, voltage_level_map, node_map) orelse return;
+    const p1 = try resolve_end_placement(ends[0], placer) orelse return;
+    const p2 = try resolve_end_placement(ends[1], placer) orelse return;
+    const p3 = try resolve_end_placement(ends[2], placer) orelse return;
     const e1 = try read_end_electrical(ends[0]) orelse return;
     const e2 = try read_end_electrical(ends[1]) orelse return;
     const e3 = try read_end_electrical(ends[2]) orelse return;
@@ -481,10 +479,16 @@ fn append_three_windings_transformer(
         .rated_u0 = e1.rated_u, // star point voltage = HV (end1) rated voltage
         .voltage_level_id1 = p1.voltage_level.id,
         .node1 = p1.node,
+        .bus1 = p1.bus,
+        .connectable_bus1 = p1.bus,
         .voltage_level_id2 = p2.voltage_level.id,
         .node2 = p2.node,
+        .bus2 = p2.bus,
+        .connectable_bus2 = p2.bus,
         .voltage_level_id3 = p3.voltage_level.id,
         .node3 = p3.node,
+        .bus3 = p3.bus,
+        .connectable_bus3 = p3.bus,
         .r1 = e1.r,
         .x1 = e1.x,
         .g1 = e1.g,
@@ -519,10 +523,8 @@ fn append_three_windings_transformer(
 pub fn convert_transformers(
     gpa: std.mem.Allocator,
     model: *const CimModel,
-    index: *const CimIndex,
     substation_map: *const std.StringHashMapUnmanaged(*iidm.Substation),
-    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const NodeMap,
+    placer: TerminalPlacer,
 ) !void {
     var ends_by_transformer: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObjectView)) = try build_ends_by_transformer(gpa, model);
     defer {
@@ -545,19 +547,19 @@ pub fn convert_transformers(
         phase_tap_changer_map.deinit(gpa);
     }
 
-    try pre_allocate_transformers(gpa, &ends_by_transformer, substation_map, voltage_level_map, index, node_map);
+    try pre_allocate_transformers(gpa, &ends_by_transformer, substation_map, placer);
 
     const transformers = model.get_objects_by_type("PowerTransformer");
     for (transformers) |transformer| {
         const transformer_view = model.view(transformer);
         const ends = ends_by_transformer.get(transformer.id) orelse continue;
         const end1 = ends.items[0];
-        const placement = try resolve_end_placement(end1, index, voltage_level_map, node_map) orelse continue;
+        const placement = try resolve_end_placement(end1, placer) orelse continue;
         const substation = substation_map.get(placement.repr_voltage_level_id) orelse continue;
 
         switch (ends.items.len) {
-            2 => try append_two_windings_transformer(transformer_view, ends.items, substation, voltage_level_map, node_map, index, &ratio_tap_changer_map, &phase_tap_changer_map),
-            3 => try append_three_windings_transformer(transformer_view, ends.items, substation, voltage_level_map, node_map, index, &ratio_tap_changer_map),
+            2 => try append_two_windings_transformer(transformer_view, ends.items, substation, placer, &ratio_tap_changer_map, &phase_tap_changer_map),
+            3 => try append_three_windings_transformer(transformer_view, ends.items, substation, placer, &ratio_tap_changer_map),
             else => continue,
         }
     }

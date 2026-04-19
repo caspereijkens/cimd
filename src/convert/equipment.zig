@@ -19,6 +19,7 @@ const CimIndex = cim_index.CimIndex;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 const Placement = placement_mod.Placement;
+const TerminalPlacer = placement_mod.TerminalPlacer;
 const resolve_terminal_placement = placement_mod.resolve_terminal_placement;
 const NodeMap = connection_mod.NodeMap;
 
@@ -31,46 +32,19 @@ const VoltageLevelEquipmentCounts = struct {
     static_var_compensators: usize = 0,
 };
 
-/// Resolve the representative VoltageLevel raw ID for a given equipment object.
-/// Returns null if the equipment has no terminals, no CN, or no container.
-/// Used only by count_equipment_for_type, which doesn't have the voltage_level_map.
-fn resolve_repr_voltage_level_id(
-    index: *const CimIndex,
-    equipment_id: []const u8,
-) ?[]const u8 {
-    const terminals = index.equipment_terminals.get(equipment_id) orelse return null;
-    const conn_node_id = terminals.items[0].conn_node_id orelse return null;
-    const container_id = index.conn_node_container.get(conn_node_id) orelse return null;
-    return cim_index.find_voltage_level(&index.voltage_level_merge, container_id);
-}
-
-/// Resolve VoltageLevel and node for a single-terminal equipment object.
-/// Returns null if any step in the chain fails.
-fn resolve_equipment_placement(
-    index: *const CimIndex,
-    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const NodeMap,
-    equipment_id: []const u8,
-) ?Placement {
-    const terminals = index.equipment_terminals.get(equipment_id) orelse return null;
-    const term = terminals.items[0];
-    const conn_node_id = term.conn_node_id orelse return null;
-    return resolve_terminal_placement(term.id, conn_node_id, index, voltage_level_map, node_map);
-}
-
 /// Count all objects of a given CIM type and increment the named field in the
 /// per-VL counts map. Uses comptime field name so the compiler resolves the
 /// field access at compile time with no runtime overhead.
 fn count_equipment_for_type(
     model: *const CimModel,
-    index: *const CimIndex,
+    placer: TerminalPlacer,
     comptime cim_type: []const u8,
     comptime field_name: []const u8,
     equipment_counts: *std.StringHashMapUnmanaged(VoltageLevelEquipmentCounts),
-) void {
+) !void {
     for (model.get_objects_by_type(cim_type)) |obj| {
-        const repr_voltage_level_id = resolve_repr_voltage_level_id(index, obj.id) orelse continue;
-        const gop = equipment_counts.getOrPutAssumeCapacity(repr_voltage_level_id);
+        const placement = try placer.resolve_equipment(obj.id) orelse continue;
+        const gop = equipment_counts.getOrPutAssumeCapacity(placement.repr_voltage_level_id);
         if (!gop.found_existing) gop.value_ptr.* = .{};
         @field(gop.value_ptr.*, field_name) += 1;
     }
@@ -78,32 +52,33 @@ fn count_equipment_for_type(
 
 /// Count all equipment per VoltageLevel in one pass, then pre-allocate all
 /// equipment arrays. Call this before any convertX function.
+/// In bus-branch mode the busbar_sections/switches counts remain zero (those
+/// converters are node-breaker only).
 pub fn pre_allocate_equipment(
     gpa: std.mem.Allocator,
     model: *const CimModel,
-    index: *const CimIndex,
-    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
+    placer: TerminalPlacer,
 ) !void {
-    assert(voltage_level_map.count() > 0);
+    assert(placer.voltage_level_map.count() > 0);
 
     var equipment_counts: std.StringHashMapUnmanaged(VoltageLevelEquipmentCounts) = .empty;
     defer equipment_counts.deinit(gpa);
-    try equipment_counts.ensureTotalCapacity(gpa, @intCast(voltage_level_map.count()));
+    try equipment_counts.ensureTotalCapacity(gpa, @intCast(placer.voltage_level_map.count()));
 
-    count_equipment_for_type(model, index, "BusbarSection", "busbar_sections", &equipment_counts);
-    count_equipment_for_type(model, index, "Breaker", "switches", &equipment_counts);
-    count_equipment_for_type(model, index, "Disconnector", "switches", &equipment_counts);
-    count_equipment_for_type(model, index, "LoadBreakSwitch", "switches", &equipment_counts);
-    count_equipment_for_type(model, index, "EnergyConsumer", "loads", &equipment_counts);
-    count_equipment_for_type(model, index, "ConformLoad", "loads", &equipment_counts);
-    count_equipment_for_type(model, index, "NonConformLoad", "loads", &equipment_counts);
-    count_equipment_for_type(model, index, "LinearShuntCompensator", "shunts", &equipment_counts);
-    count_equipment_for_type(model, index, "StaticVarCompensator", "static_var_compensators", &equipment_counts);
-    count_equipment_for_type(model, index, "SynchronousMachine", "generators", &equipment_counts);
+    try count_equipment_for_type(model, placer, "BusbarSection", "busbar_sections", &equipment_counts);
+    try count_equipment_for_type(model, placer, "Breaker", "switches", &equipment_counts);
+    try count_equipment_for_type(model, placer, "Disconnector", "switches", &equipment_counts);
+    try count_equipment_for_type(model, placer, "LoadBreakSwitch", "switches", &equipment_counts);
+    try count_equipment_for_type(model, placer, "EnergyConsumer", "loads", &equipment_counts);
+    try count_equipment_for_type(model, placer, "ConformLoad", "loads", &equipment_counts);
+    try count_equipment_for_type(model, placer, "NonConformLoad", "loads", &equipment_counts);
+    try count_equipment_for_type(model, placer, "LinearShuntCompensator", "shunts", &equipment_counts);
+    try count_equipment_for_type(model, placer, "StaticVarCompensator", "static_var_compensators", &equipment_counts);
+    try count_equipment_for_type(model, placer, "SynchronousMachine", "generators", &equipment_counts);
 
     var it = equipment_counts.iterator();
     while (it.next()) |entry| {
-        const voltage_level = voltage_level_map.get(entry.key_ptr.*) orelse continue;
+        const voltage_level = placer.voltage_level_map.get(entry.key_ptr.*) orelse continue;
         const counts = entry.value_ptr.*;
         try voltage_level.node_breaker_topology.busbar_sections.ensureTotalCapacity(gpa, counts.busbar_sections);
         try voltage_level.node_breaker_topology.switches.ensureTotalCapacity(gpa, counts.switches);
@@ -113,20 +88,19 @@ pub fn pre_allocate_equipment(
         try voltage_level.static_var_compensators.ensureTotalCapacity(gpa, counts.static_var_compensators);
     }
 
-    assert(equipment_counts.count() <= voltage_level_map.count());
+    assert(equipment_counts.count() <= placer.voltage_level_map.count());
 }
 
 pub fn convert_busbar_sections(
     gpa: std.mem.Allocator,
     model: *const CimModel,
-    index: *const CimIndex,
-    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const NodeMap,
+    placer: TerminalPlacer,
 ) !void {
+    const index = placer.index;
     const busbar_sections = model.get_objects_by_type("BusbarSection");
 
     for (busbar_sections) |busbar_section| {
-        const placement = resolve_equipment_placement(index, voltage_level_map, node_map, busbar_section.id) orelse continue;
+        const placement = try placer.resolve_equipment(busbar_section.id) orelse continue;
         const voltage_level = placement.voltage_level;
         const node = placement.node;
 
@@ -159,11 +133,15 @@ pub fn convert_busbar_sections(
 pub fn convert_switches(
     gpa: std.mem.Allocator,
     model: *const CimModel,
-    index: *const CimIndex,
-    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const NodeMap,
+    placer: TerminalPlacer,
     ssh_opt: ?CimSsh,
 ) !void {
+    const index = placer.index;
+    const voltage_level_map = placer.voltage_level_map;
+    const node_map = switch (placer.mode) {
+        .node_breaker => |nm| nm,
+        .bus_branch => unreachable, // switches are node-breaker only
+    };
     const switch_slices = get_switch_slices(model);
 
     for (switch_slices) |switch_slice| {
@@ -246,13 +224,17 @@ pub fn convert_switches(
 pub fn convert_fictitious_switches(
     gpa: std.mem.Allocator,
     model: *const CimModel,
-    index: *const CimIndex,
-    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const connection_mod.NodeMap,
+    placer: TerminalPlacer,
     cn_has_switch: *const std.StringHashMapUnmanaged(void),
     cn_other_count: *const std.StringHashMapUnmanaged(u32),
     ssh_opt: ?CimSsh,
 ) !void {
+    const index = placer.index;
+    const voltage_level_map = placer.voltage_level_map;
+    const node_map = switch (placer.mode) {
+        .node_breaker => |nm| nm,
+        .bus_branch => unreachable, // fictitious switches are node-breaker only
+    };
     assert(voltage_level_map.count() > 0);
 
     // PyPowSyBl creates fictitious switches for:
@@ -330,34 +312,31 @@ pub fn convert_fictitious_switches(
 pub fn convert_loads(
     gpa: std.mem.Allocator,
     model: *const CimModel,
-    index: *const CimIndex,
-    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const NodeMap,
+    placer: TerminalPlacer,
     ssh_opt: ?CimSsh,
 ) !void {
     const energy_consumers = model.get_objects_by_type("EnergyConsumer");
     const conform_loads = model.get_objects_by_type("ConformLoad");
     const non_conform_loads = model.get_objects_by_type("NonConformLoad");
 
-    try convert_load_type(gpa, model, index, voltage_level_map, node_map, ssh_opt, energy_consumers, false);
-    try convert_load_type(gpa, model, index, voltage_level_map, node_map, ssh_opt, conform_loads, false);
+    try convert_load_type(gpa, model, placer, ssh_opt, energy_consumers, false);
+    try convert_load_type(gpa, model, placer, ssh_opt, conform_loads, false);
     // NonConformLoad: all power is fixed by definition — p0/q0 go into fixed, variable = 0.
-    try convert_load_type(gpa, model, index, voltage_level_map, node_map, ssh_opt, non_conform_loads, true);
+    try convert_load_type(gpa, model, placer, ssh_opt, non_conform_loads, true);
 }
 
 fn convert_load_type(
     gpa: std.mem.Allocator,
     model: *const CimModel,
-    index: *const CimIndex,
-    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const NodeMap,
+    placer: TerminalPlacer,
     ssh_opt: ?CimSsh,
     loads: []const CimObject,
     non_conform: bool,
 ) !void {
+    const index = placer.index;
     for (loads) |load| {
         const eq_view = model.view(load);
-        const placement = resolve_equipment_placement(index, voltage_level_map, node_map, load.id) orelse continue;
+        const placement = try placer.resolve_equipment(load.id) orelse continue;
         const voltage_level = placement.voltage_level;
         const node = placement.node;
 
@@ -445,6 +424,8 @@ fn convert_load_type(
             .fixed_active_power = fixed_active_power,
             .fixed_reactive_power = fixed_reactive_power,
             .node = node,
+            .bus = placement.bus,
+            .connectable_bus = placement.bus,
             .exponential_model = exp_model,
             .zip_model = zip_model,
             .aliases = aliases,
@@ -458,17 +439,16 @@ fn convert_load_type(
 pub fn convert_shunts(
     gpa: std.mem.Allocator,
     model: *const CimModel,
-    index: *const CimIndex,
-    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const NodeMap,
+    placer: TerminalPlacer,
     ssh_opt: ?CimSsh,
 ) !void {
+    const index = placer.index;
     const shunts = model.get_objects_by_type("LinearShuntCompensator");
-    assert(shunts.len == 0 or voltage_level_map.count() > 0);
+    assert(shunts.len == 0 or placer.voltage_level_map.count() > 0);
 
     for (shunts) |shunt| {
         const eq_view = model.view(shunt);
-        const placement = resolve_equipment_placement(index, voltage_level_map, node_map, shunt.id) orelse continue;
+        const placement = try placer.resolve_equipment(shunt.id) orelse continue;
         const voltage_level = placement.voltage_level;
         const node = placement.node;
 
@@ -504,13 +484,16 @@ pub fn convert_shunts(
                 rc_mrid = try rc_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(rc_id);
                 // Resolve regulatingTerminal: RC.Terminal → CN → reachable BBS mRID.
                 // Skip if RC terminal is on the shunt itself (local regulation → null).
-                if (try rc_view.getReference("RegulatingControl.Terminal")) |rt_ref| {
-                    const rt_id = strip_hash(rt_ref);
-                    const rt_equipment = index.terminal_equipment.get(rt_id) orelse "";
-                    const is_local = std.mem.eql(u8, rt_equipment, shunt.id);
-                    if (!is_local) {
-                        if (index.terminal_conn_node.get(rt_id)) |conn_node_id| {
-                            regulating_terminal = index.conn_node_reachable_busbar_section.get(conn_node_id);
+                // Bus-branch mode has no busbarSections, so the BBS ref would dangle.
+                if (placer.mode == .node_breaker) {
+                    if (try rc_view.getReference("RegulatingControl.Terminal")) |rt_ref| {
+                        const rt_id = strip_hash(rt_ref);
+                        const rt_equipment = index.terminal_equipment.get(rt_id) orelse "";
+                        const is_local = std.mem.eql(u8, rt_equipment, shunt.id);
+                        if (!is_local) {
+                            if (index.terminal_conn_node.get(rt_id)) |conn_node_id| {
+                                regulating_terminal = index.conn_node_reachable_busbar_section.get(conn_node_id);
+                            }
                         }
                     }
                 }
@@ -547,6 +530,8 @@ pub fn convert_shunts(
             .target_deadband = target_deadband,
             .regulating_terminal = regulating_terminal,
             .node = node,
+            .bus = placement.bus,
+            .connectable_bus = placement.bus,
             .shunt_linear_model = .{
                 .b_per_section = b_per_section,
                 .g_per_section = g_per_section,
@@ -560,17 +545,15 @@ pub fn convert_shunts(
 
 pub fn convert_static_var_compensators(
     model: *const CimModel,
-    index: *const CimIndex,
-    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const NodeMap,
+    placer: TerminalPlacer,
     ssh_opt: ?CimSsh,
 ) !void {
     const static_var_compensators = model.get_objects_by_type("StaticVarCompensator");
-    assert(static_var_compensators.len == 0 or voltage_level_map.count() > 0);
+    assert(static_var_compensators.len == 0 or placer.voltage_level_map.count() > 0);
 
     for (static_var_compensators) |static_var_compensator| {
         const eq_view = model.view(static_var_compensator);
-        const placement = resolve_equipment_placement(index, voltage_level_map, node_map, static_var_compensator.id) orelse continue;
+        const placement = try placer.resolve_equipment(static_var_compensator.id) orelse continue;
         const voltage_level = placement.voltage_level;
         const node = placement.node;
 
@@ -604,6 +587,8 @@ pub fn convert_static_var_compensators(
             .regulation_mode = regulation_mode,
             .regulating = regulating,
             .node = node,
+            .bus = placement.bus,
+            .connectable_bus = placement.bus,
             .aliases = .empty,
             .properties = .empty,
         });
@@ -622,13 +607,12 @@ fn energy_source_from_cim_type(type_name: []const u8) iidm.EnergySource {
 pub fn convert_generators(
     gpa: std.mem.Allocator,
     model: *const CimModel,
-    index: *const CimIndex,
-    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const NodeMap,
+    placer: TerminalPlacer,
     ssh_opt: ?CimSsh,
 ) !void {
+    const index = placer.index;
     const machines = model.get_objects_by_type("SynchronousMachine");
-    assert(machines.len == 0 or voltage_level_map.count() > 0);
+    assert(machines.len == 0 or placer.voltage_level_map.count() > 0);
 
     // Build ThermalGeneratingUnit ID → fuel type fragment map from FossilFuel objects.
     // FossilFuel.ThermalGeneratingUnit → unit raw ID; FossilFuel.fossilFuelType → enum URL.
@@ -652,7 +636,7 @@ pub fn convert_generators(
     }
 
     for (machines) |machine| {
-        const placement = resolve_equipment_placement(index, voltage_level_map, node_map, machine.id) orelse continue;
+        const placement = try placer.resolve_equipment(machine.id) orelse continue;
         const voltage_level = placement.voltage_level;
         const node = placement.node;
 
@@ -772,14 +756,17 @@ pub fn convert_generators(
                     rc_mode_lower = try gpa.alloc(u8, mode_ref.len);
                     _ = std.ascii.lowerString(rc_mode_lower.?, mode_ref);
                 }
-                if (try rc.getReference("RegulatingControl.Terminal")) |rt_ref| {
-                    const rt_id = strip_hash(rt_ref);
-                    const rt_eq = index.terminal_equipment.get(rt_id) orelse "";
-                    // If RC terminal is on this machine → local regulation (null).
-                    if (!std.mem.eql(u8, rt_eq, machine.id)) {
-                        const rt_conn_node = index.terminal_conn_node.get(rt_id);
-                        if (rt_conn_node) |conn_node_id| {
-                            regulating_terminal = index.conn_node_reachable_busbar_section.get(conn_node_id);
+                // Bus-branch mode has no busbarSections, so the BBS ref would dangle.
+                if (placer.mode == .node_breaker) {
+                    if (try rc.getReference("RegulatingControl.Terminal")) |rt_ref| {
+                        const rt_id = strip_hash(rt_ref);
+                        const rt_eq = index.terminal_equipment.get(rt_id) orelse "";
+                        // If RC terminal is on this machine → local regulation (null).
+                        if (!std.mem.eql(u8, rt_eq, machine.id)) {
+                            const rt_conn_node = index.terminal_conn_node.get(rt_id);
+                            if (rt_conn_node) |conn_node_id| {
+                                regulating_terminal = index.conn_node_reachable_busbar_section.get(conn_node_id);
+                            }
                         }
                     }
                 }
@@ -840,6 +827,8 @@ pub fn convert_generators(
             .voltage_regulator_on = voltage_regulator_on,
             .target_v = target_v,
             .node = node,
+            .bus = placement.bus,
+            .connectable_bus = placement.bus,
             .reactive_capability_curve_points = curve_points,
             .min_max_reactive_limits = min_max_reactive_limits,
             .regulating_terminal = regulating_terminal,

@@ -13,35 +13,39 @@ const CimIndex = cim_index.CimIndex;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 const NodeMap = connection_mod.NodeMap;
+const TerminalPlacer = placement_mod.TerminalPlacer;
 
-/// VoltageLevel id and node for a single line terminal.
+/// Resolved placement for one line terminal.
 const LinePlacement = struct {
     voltage_level_id: []const u8,
     node: u32,
+    bus: ?[]const u8 = null,
 };
 
 /// Resolves placement for one line terminal.
-/// Regular terminals: looks up voltage_level_map and node_map.
-/// Boundary terminals: looks up terminal_node_map for the assigned node.
+/// Regular terminals: delegates to TerminalPlacer.
+/// Boundary terminals (node-breaker only): looks up terminal_node_map for the assigned node.
 /// Returns null if the terminal cannot be placed (line should be skipped).
 fn resolve_line_terminal(
     terminal: cim_index.TerminalInfo,
-    index: *const CimIndex,
-    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const NodeMap,
+    placer: TerminalPlacer,
     boundary_conn_node_voltage_level_map: *const std.StringHashMapUnmanaged(u32),
     terminal_node_map: *const std.StringHashMapUnmanaged(u32),
     network: *const iidm.Network,
-) ?LinePlacement {
+) !?LinePlacement {
     assert(terminal.id.len > 0);
-    const conn_node_id = terminal.conn_node_id orelse return null;
 
-    // Regular placement via VoltageLevel map.
-    if (placement_mod.resolve_terminal_placement(terminal.id, conn_node_id, index, voltage_level_map, node_map)) |placement| {
-        return .{ .voltage_level_id = placement.voltage_level.id, .node = placement.node };
+    // Regular placement via placer.
+    if (try placer.resolve_terminal(terminal.id, terminal.conn_node_id)) |placement| {
+        return .{
+            .voltage_level_id = placement.voltage_level.id,
+            .node = placement.node,
+            .bus = placement.bus,
+        };
     }
 
-    // Boundary placement: unique node per terminal, pre-assigned in terminal_node_map.
+    // Boundary placement (node-breaker only): unique node per terminal, pre-assigned.
+    const conn_node_id = terminal.conn_node_id orelse return null;
     const fictitious_voltage_level_index = boundary_conn_node_voltage_level_map.get(conn_node_id) orelse return null;
     const node = terminal_node_map.get(terminal.id) orelse return null;
     return .{
@@ -53,12 +57,12 @@ fn resolve_line_terminal(
 pub fn convert_lines(
     gpa: std.mem.Allocator,
     model: *const CimModel,
-    index: *const CimIndex,
     network: *iidm.Network,
-    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const NodeMap,
+    placer: TerminalPlacer,
     ssh_opt: ?@import("../cim_ssh.zig").CimSsh,
 ) !void {
+    const index = placer.index;
+    const voltage_level_map = placer.voltage_level_map;
     const lines = model.get_objects_by_type("ACLineSegment");
     const series_compensators = model.get_objects_by_type("SeriesCompensator");
     assert(lines.len == 0 or index.equipment_terminals.count() > 0);
@@ -271,20 +275,16 @@ pub fn convert_lines(
         const terminals = index.equipment_terminals.get(line.id) orelse continue;
         if (terminals.items.len != 2) continue;
 
-        const placement_1 = resolve_line_terminal(
+        const placement_1 = try resolve_line_terminal(
             terminals.items[0],
-            index,
-            voltage_level_map,
-            node_map,
+            placer,
             &boundary_conn_node_voltage_level_map,
             &terminal_node_map,
             network,
         ) orelse continue;
-        const placement_2 = resolve_line_terminal(
+        const placement_2 = try resolve_line_terminal(
             terminals.items[1],
-            index,
-            voltage_level_map,
-            node_map,
+            placer,
             &boundary_conn_node_voltage_level_map,
             &terminal_node_map,
             network,
@@ -329,8 +329,12 @@ pub fn convert_lines(
             .b2 = charging_susceptance / 2.0,
             .voltage_level1_id = placement_1.voltage_level_id,
             .node1 = placement_1.node,
+            .bus1 = placement_1.bus,
+            .connectable_bus1 = placement_1.bus,
             .voltage_level2_id = placement_2.voltage_level_id,
             .node2 = placement_2.node,
+            .bus2 = placement_2.bus,
+            .connectable_bus2 = placement_2.bus,
             .selected_op_lims_group1_id = selected_op_lims_group_id_1,
             .selected_op_lims_group2_id = selected_op_lims_group_id_2,
             .aliases = aliases,
@@ -357,20 +361,16 @@ pub fn convert_lines(
         const terminals = index.equipment_terminals.get(series_compensator.id) orelse continue;
         if (terminals.items.len != 2) continue;
 
-        const placement_1 = resolve_line_terminal(
+        const placement_1 = try resolve_line_terminal(
             terminals.items[0],
-            index,
-            voltage_level_map,
-            node_map,
+            placer,
             &boundary_conn_node_voltage_level_map,
             &terminal_node_map,
             network,
         ) orelse continue;
-        const placement_2 = resolve_line_terminal(
+        const placement_2 = try resolve_line_terminal(
             terminals.items[1],
-            index,
-            voltage_level_map,
-            node_map,
+            placer,
             &boundary_conn_node_voltage_level_map,
             &terminal_node_map,
             network,
@@ -415,8 +415,12 @@ pub fn convert_lines(
             .b2 = 0.0,
             .voltage_level1_id = placement_1.voltage_level_id,
             .node1 = placement_1.node,
+            .bus1 = placement_1.bus,
+            .connectable_bus1 = placement_1.bus,
             .voltage_level2_id = placement_2.voltage_level_id,
             .node2 = placement_2.node,
+            .bus2 = placement_2.bus,
+            .connectable_bus2 = placement_2.bus,
             .selected_op_lims_group1_id = selected_op_lims_group_id_1,
             .selected_op_lims_group2_id = selected_op_lims_group_id_2,
             .aliases = aliases,
