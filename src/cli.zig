@@ -47,12 +47,16 @@ const help_convert =
     \\  -t, --topology <file>   TP topology profile (XML or ZIP)
     \\  -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
     \\  -o, --output <file>     Write output to file instead of stdout
+    \\      --bus-branch        Emit bus-branch JIIDM (one bus per TopologicalNode).
+    \\                          Requires --topology. Default is node-breaker even
+    \\                          when TP is given (matches pypowsybl).
     \\
     \\Examples:
     \\  cimd convert data/eq.zip
     \\  cimd convert data/eq.zip -b eqbd.zip
     \\  cimd convert data/eq.zip -b eqbd.zip -s ssh.zip
     \\  cimd convert data/eq.zip -o network.json
+    \\  cimd convert data/eq.zip -t tp.zip --bus-branch
     \\
 ;
 
@@ -194,6 +198,9 @@ pub const Command = union(enum) {
         tp_path: ?[]const u8,
         ssh_path: ?[]const u8,
         output_path: ?[]const u8,
+        /// Emit bus-branch JIIDM (one bus per TopologicalNode). Requires --topology.
+        /// Default: node-breaker JIIDM even when TP is given (matches pypowsybl).
+        bus_branch: bool,
     };
 
     pub const Browse = struct {
@@ -271,6 +278,7 @@ fn parse_convert(io: std.Io, args: *std.process.Args.Iterator) !Command {
     var tp_path: ?[]const u8 = null;
     var ssh_path: ?[]const u8 = null;
     var output_path: ?[]const u8 = null;
+    var bus_branch: bool = false;
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
@@ -286,6 +294,8 @@ fn parse_convert(io: std.Io, args: *std.process.Args.Iterator) !Command {
         } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
             output_path = args.next() orelse
                 print.stderr(io, context ++ ": --output requires a file path", .{});
+        } else if (std.mem.eql(u8, arg, "--bus-branch")) {
+            bus_branch = true;
         } else if (is_flag(arg)) {
             print.stderr(io, context ++ ": unknown option '{s}'", .{arg});
         } else {
@@ -297,6 +307,8 @@ fn parse_convert(io: std.Io, args: *std.process.Args.Iterator) !Command {
     }
 
     if (eq_path == null) print.stderr(io, context ++ ": <file> is required", .{});
+    if (bus_branch and tp_path == null)
+        print.stderr(io, context ++ ": --bus-branch requires --topology", .{});
 
     return .{ .convert = .{
         .eq_path = eq_path.?,
@@ -304,6 +316,7 @@ fn parse_convert(io: std.Io, args: *std.process.Args.Iterator) !Command {
         .tp_path = tp_path,
         .ssh_path = ssh_path,
         .output_path = output_path,
+        .bus_branch = bus_branch,
     } };
 }
 

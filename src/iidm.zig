@@ -1505,6 +1505,25 @@ fn free_properties(allocator: std.mem.Allocator, properties: *std.ArrayListUnman
     properties.deinit(allocator);
 }
 
+test "Property: jsonStringify emits only name and value" {
+    const gpa = std.testing.allocator;
+    const prop = Property{ .name = "CGMES.normalSections", .value = "1", .owned_value = true };
+    const json = try std.json.Stringify.valueAlloc(gpa, prop, .{});
+    defer gpa.free(json);
+    try std.testing.expectEqualStrings("{\"name\":\"CGMES.normalSections\",\"value\":\"1\"}", json);
+}
+
+test "CimCharacteristics: topologyKind BUS_BRANCH for bus-branch conversions" {
+    const gpa = std.testing.allocator;
+    const ch = CimCharacteristics{ .topology_kind = "BUS_BRANCH", .cim_version = 100 };
+    const json = try std.json.Stringify.valueAlloc(gpa, ch, .{});
+    defer gpa.free(json);
+    try std.testing.expectEqualStrings(
+        "{\"topologyKind\":\"BUS_BRANCH\",\"cimVersion\":100}",
+        json,
+    );
+}
+
 pub const Substation = struct {
     id: []const u8,
     name: ?[]const u8,

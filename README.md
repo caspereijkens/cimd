@@ -55,12 +55,16 @@ Options:
   -t, --topology <file>   TP topology profile (XML or ZIP)
   -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
   -o, --output <file>     Write output to file instead of stdout
+      --bus-branch        Emit bus-branch JIIDM (one bus per TopologicalNode).
+                          Requires --topology. Default is node-breaker even
+                          when TP is given (matches pypowsybl).
 
 Examples:
   cimd convert data/eq.zip
   cimd convert data/eq.zip -b eqbd.zip
   cimd convert data/eq.zip -b eqbd.zip -s ssh.zip
   cimd convert data/eq.zip -o network.json
+  cimd convert data/eq.zip -t tp.zip --bus-branch
 ```
 
 ### Browse

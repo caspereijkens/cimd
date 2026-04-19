@@ -87,7 +87,7 @@ fn command_convert(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Convert) !
         }
     }
 
-    var network = try converter.convert(gpa, &model, tp_opt, ssh_opt);
+    var network = try converter.convert(gpa, &model, tp_opt, ssh_opt, c.bus_branch);
     defer network.deinit(gpa);
 
     var total_voltage_levels: usize = 0;

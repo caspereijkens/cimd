@@ -202,10 +202,19 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSs
 
 /// Convert a CimModel into an IIDM Network.
 /// Caller owns the returned network and must call network.deinit(gpa).
-/// When `tp_opt` is provided, topology is derived from the TP profile's
-/// TopologicalNodes (bus-branch mode) instead of EQ ConnectivityNodes + Switches.
-pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, tp_opt: ?CimTp, ssh_opt: ?CimSsh) !iidm.Network {
+/// Default JIIDM output is node-breaker (matches pypowsybl). When `bus_branch`
+/// is true, TP TopologicalNodes drive equipment placement onto buses and
+/// voltageLevels are emitted in bus-breaker shape. `bus_branch` requires
+/// `tp_opt` to be non-null (CLI enforces this).
+pub fn convert(
+    gpa: std.mem.Allocator,
+    model: *const CimModel,
+    tp_opt: ?CimTp,
+    ssh_opt: ?CimSsh,
+    bus_branch: bool,
+) !iidm.Network {
     assert(model.get_objects_by_type("Substation").len > 0);
+    assert(!bus_branch or tp_opt != null);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
     var index = try cim_index.CimIndex.build(gpa, model, boundary_ids);
@@ -264,9 +273,12 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, tp_opt: ?CimTp, s
     var voltage_level_map = try voltage_level_conv.build_voltage_level_map(gpa, model, &index, &network, &sub_id_map, &substation_map);
     defer voltage_level_map.deinit(gpa);
 
-    // Branch on topology mode. Bus-branch derives placement from TP's
+    // Branch on output shape. Bus-branch derives placement from TP's
     // TopologicalNodes; node-breaker builds a NodeMap from EQ CNs + switches.
-    if (tp_opt) |tp| {
+    // Node-breaker is the default even when TP is loaded (matches pypowsybl);
+    // bus-branch is an opt-in alternative output mode (CLI flag).
+    if (bus_branch) {
+        const tp = tp_opt.?; // guaranteed by assert above
         var bus_map = try bus_conv.convert_buses(gpa, tp, &voltage_level_map);
         defer bus_map.deinit(gpa);
 
@@ -317,7 +329,8 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, tp_opt: ?CimTp, s
     // cgmesTapChangers: one extension per transformer that has a RatioTapChanger
     // or PhaseTapChangerTabular. The extension ID is the PowerTransformer mRID.
     // step = TapChanger.normalStep.
-    if (tp_opt == null) {
+    // Emitted for node-breaker JIIDM only; bus-branch output skips it.
+    if (!bus_branch) {
         // Build a map: transformer_mrid -> list of TapChangerInfo
         var xfmr_tap_changer_map: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(iidm.TapChangerInfo)) = .empty;
         defer {
@@ -508,7 +521,10 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, tp_opt: ?CimTp, s
             .cgmes_metadata_models = if (metadata_models.items.len > 0) .{ .models = metadata_models } else null,
             .base_voltage_mapping = if (base_voltage_list.items.len > 0) .{ .base_voltages = base_voltage_list } else null,
             .cim_characteristics = .{
-                .topology_kind = if (tp_opt != null) "BUS_BRANCH" else "NODE_BREAKER",
+                // cimCharacteristics.topologyKind reflects the source CGMES shape,
+                // not the IIDM output shape. EQ with ConnectivityNodes = NODE_BREAKER
+                // even when TP is provided; matches pypowsybl.
+                .topology_kind = "NODE_BREAKER",
                 .cim_version = 100,
             },
         });
