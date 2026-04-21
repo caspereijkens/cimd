@@ -28,8 +28,18 @@ pub const LimitTypeInfo = struct {
 };
 
 pub const VoltageLimitInfo = struct {
+    // Most-restrictive values (high = min, low = max) used for IIDM
+    // VoltageLevel.highVoltageLimit / lowVoltageLimit.
     high_value: ?f64,
     low_value: ?f64,
+    // Raw strings for the most-restrictive values, preserved so JIIDM
+    // properties match the CGMES source byte-for-byte (e.g. "121.0", "11.025").
+    high_value_str: ?[]const u8,
+    low_value_str: ?[]const u8,
+    // All VoltageLimit mRIDs contributing to this VL, in XML parse order, per side.
+    // Emitted as semicolon-joined CGMES.OperationalLimit_highVoltageLimit / lowVoltageLimit properties.
+    high_mrids: std.ArrayListUnmanaged([]const u8),
+    low_mrids: std.ArrayListUnmanaged([]const u8),
 };
 
 pub const BusbarSectionEntry = struct {
@@ -149,7 +159,14 @@ pub const CimIndex = struct {
             self.current_limits_by_set.deinit(gpa);
         }
 
-        self.voltage_level_limits.deinit(gpa);
+        {
+            var it = self.voltage_level_limits.valueIterator();
+            while (it.next()) |info| {
+                info.high_mrids.deinit(gpa);
+                info.low_mrids.deinit(gpa);
+            }
+            self.voltage_level_limits.deinit(gpa);
+        }
 
         {
             var it = self.curve_points.valueIterator();
@@ -804,17 +821,31 @@ fn build_voltage_limits(gpa: std.mem.Allocator, model: *const cim_model.CimModel
         const value = try std.fmt.parseFloat(f64, value_str);
 
         const gop = index.voltage_level_limits.getOrPutAssumeCapacity(container_id);
-        if (!gop.found_existing) gop.value_ptr.* = .{ .high_value = null, .low_value = null };
+        if (!gop.found_existing) gop.value_ptr.* = .{
+            .high_value = null,
+            .low_value = null,
+            .high_value_str = null,
+            .low_value_str = null,
+            .high_mrids = .empty,
+            .low_mrids = .empty,
+        };
+
+        const voltage_limit_mrid = try voltage_limit_view.getProperty("IdentifiedObject.mRID") orelse
+            utils.strip_underscore(voltage_limit_view.id);
 
         if (std.mem.endsWith(u8, direction, "high")) {
+            try gop.value_ptr.high_mrids.append(gpa, voltage_limit_mrid);
             // Most restrictive high limit is the minimum.
             if (gop.value_ptr.high_value == null or value < gop.value_ptr.high_value.?) {
                 gop.value_ptr.high_value = value;
+                gop.value_ptr.high_value_str = value_str;
             }
         } else {
+            try gop.value_ptr.low_mrids.append(gpa, voltage_limit_mrid);
             // Most restrictive low limit is the maximum.
             if (gop.value_ptr.low_value == null or value > gop.value_ptr.low_value.?) {
                 gop.value_ptr.low_value = value;
+                gop.value_ptr.low_value_str = value_str;
             }
         }
     }

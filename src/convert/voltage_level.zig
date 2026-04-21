@@ -53,6 +53,8 @@ fn append_voltage_level(
         }
     }
 
+    const properties = try build_voltage_limit_properties(gpa, limits);
+
     const substation_ref = try voltage_level.getReference("VoltageLevel.Substation") orelse return;
     const substation_idx = substation_id_map.get(strip_hash(substation_ref)) orelse return;
     network.substations.items[substation_idx].voltage_levels.appendAssumeCapacity(.{
@@ -62,7 +64,7 @@ fn append_voltage_level(
         .low_voltage_limit = if (limits) |lim| lim.low_value else null,
         .high_voltage_limit = if (limits) |lim| lim.high_value else null,
         .aliases = aliases,
-        .properties = .empty,
+        .properties = properties,
         .node_breaker_topology = .{ .busbar_sections = .empty, .switches = .empty, .internal_connections = .empty },
         .generators = .empty,
         .loads = .empty,
@@ -71,6 +73,63 @@ fn append_voltage_level(
         .vs_converter_stations = .empty,
         .lcc_converter_stations = .empty,
     });
+}
+
+// Build the CGMES voltage-limit properties for one VoltageLevel.
+// pypowsybl emits the two NaN placeholder keys on every VL unconditionally, plus
+// normalValue and OperationalLimit (semicolon-joined mRIDs) for each side that has a limit.
+// Property values for normalValue/OperationalLimit are heap-allocated and flagged owned.
+fn build_voltage_limit_properties(
+    gpa: std.mem.Allocator,
+    limits_opt: ?cim_index.VoltageLimitInfo,
+) !std.ArrayListUnmanaged(iidm.Property) {
+    var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
+
+    const has_high = if (limits_opt) |lim| lim.high_mrids.items.len > 0 else false;
+    const has_low = if (limits_opt) |lim| lim.low_mrids.items.len > 0 else false;
+
+    const max_entries: usize = 2 + // two NaN placeholders
+        @as(usize, if (has_high) 2 else 0) +
+        @as(usize, if (has_low) 2 else 0);
+    try properties.ensureTotalCapacity(gpa, max_entries);
+
+    if (has_high) {
+        const limits = limits_opt.?;
+        const value_str = limits.high_value_str orelse unreachable;
+        const normal_value = try iidm.format_float_str(gpa, value_str);
+        properties.appendAssumeCapacity(.{
+            .name = "CGMES.normalValue_highVoltageLimit",
+            .value = normal_value,
+            .owned_value = true,
+        });
+        const joined = try std.mem.join(gpa, ";", limits.high_mrids.items);
+        properties.appendAssumeCapacity(.{
+            .name = "CGMES.OperationalLimit_highVoltageLimit",
+            .value = joined,
+            .owned_value = true,
+        });
+    }
+    if (has_low) {
+        const limits = limits_opt.?;
+        const value_str = limits.low_value_str orelse unreachable;
+        const normal_value = try iidm.format_float_str(gpa, value_str);
+        properties.appendAssumeCapacity(.{
+            .name = "CGMES.normalValue_lowVoltageLimit",
+            .value = normal_value,
+            .owned_value = true,
+        });
+        const joined = try std.mem.join(gpa, ";", limits.low_mrids.items);
+        properties.appendAssumeCapacity(.{
+            .name = "CGMES.OperationalLimit_lowVoltageLimit",
+            .value = joined,
+            .owned_value = true,
+        });
+    }
+    // NaN placeholders emitted unconditionally on every VL. Matches pypowsybl's behaviour.
+    properties.appendAssumeCapacity(.{ .name = "CGMES.highVoltageLimit", .value = "NaN" });
+    properties.appendAssumeCapacity(.{ .name = "CGMES.lowVoltageLimit", .value = "NaN" });
+
+    return properties;
 }
 
 pub fn convert_voltage_levels(

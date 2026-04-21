@@ -520,6 +520,17 @@ pub fn convert_shunts(
             if (normal_sections_str) |ns| props.appendAssumeCapacity(.{ .name = "CGMES.normalSections", .value = ns });
         }
 
+        // alias: CGMES.Terminal1 = terminal mRID
+        var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
+        errdefer aliases.deinit(gpa);
+        if (index.equipment_terminals.get(shunt.id)) |terminals| {
+            if (terminals.items.len > 0) {
+                const t_mrid = strip_underscore(terminals.items[0].id);
+                try aliases.ensureTotalCapacity(gpa, 1);
+                aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal1" }, .content = t_mrid });
+            }
+        }
+
         assert(mrid.len > 0);
         voltage_level.shunts.appendAssumeCapacity(.{
             .id = mrid,
@@ -537,7 +548,7 @@ pub fn convert_shunts(
                 .g_per_section = g_per_section,
                 .max_section_count = max_section_count,
             },
-            .aliases = .empty,
+            .aliases = aliases,
             .properties = props,
         });
     }
