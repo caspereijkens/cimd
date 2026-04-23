@@ -389,26 +389,25 @@ fn convert_load_type(
         }
 
         // SSH EnergyConsumer.p/q are in load convention (positive = consuming) — matches IIDM p0/q0.
-        const p0: f64 = if (try view.getProperty("EnergyConsumer.p")) |v|
-            std.fmt.parseFloat(f64, v) catch 0.0
-        else
-            0.0;
-        const q0: f64 = if (try view.getProperty("EnergyConsumer.q")) |v|
-            std.fmt.parseFloat(f64, v) catch 0.0
-        else
-            0.0;
+        // When SSH is not provided, leave p0/q0 null so the fields are omitted from output.
+        const p0: ?f64 = if (try view.getProperty("EnergyConsumer.p")) |v|
+            (std.fmt.parseFloat(f64, v) catch 0.0)
+        else if (ssh_opt != null) 0.0 else null;
+        const q0: ?f64 = if (try view.getProperty("EnergyConsumer.q")) |v|
+            (std.fmt.parseFloat(f64, v) catch 0.0)
+        else if (ssh_opt != null) 0.0 else null;
 
         // detail extension fixed/variable split:
         // NonConformLoad — all power is fixed by definition (does not vary with load group).
         // ConformLoad / EnergyConsumer — fixed = pfixed (EQ), variable = p0 - pfixed.
         const fixed_active_power: f64 = if (non_conform)
-            p0
+            (p0 orelse 0.0)
         else if (try view.getProperty("EnergyConsumer.pfixed")) |v|
             std.fmt.parseFloat(f64, v) catch 0.0
         else
             0.0;
         const fixed_reactive_power: f64 = if (non_conform)
-            q0
+            (q0 orelse 0.0)
         else if (try view.getProperty("EnergyConsumer.qfixed")) |v|
             std.fmt.parseFloat(f64, v) catch 0.0
         else
@@ -507,6 +506,7 @@ pub fn convert_shunts(
                 }
             }
         }
+        if (ssh_opt != null and target_deadband == null) target_deadband = 0.0;
 
         // normalSections: EQ attribute, emitted as CGMES.normalSections property.
         const normal_sections_str = try eq_view.getProperty("ShuntCompensator.normalSections");

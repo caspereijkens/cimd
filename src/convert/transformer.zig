@@ -54,6 +54,24 @@ fn build_ends_by_transformer(
 
 const TapChangerCommon = struct { low_step: i32, normal_step: i32, ltc_flag: bool };
 
+fn read_tap_changer_regulating(
+    model: *const CimModel,
+    tap_changer: CimObjectView,
+    ssh_opt: ?@import("../cim_ssh.zig").CimSsh,
+) !?bool {
+    const control_ref = try tap_changer.getReference("TapChanger.TapChangerControl") orelse return null;
+    if (ssh_opt) |ssh| {
+        const control_id = strip_hash(control_ref);
+        const control_mrid = if (model.getObjectById(control_id)) |control_view|
+            (try control_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(control_id))
+        else
+            strip_underscore(control_id);
+        const enabled = try ssh.getProperty(control_mrid, "RegulatingCondEq.controlEnabled") orelse "false";
+        return std.mem.eql(u8, enabled, "true");
+    }
+    return false;
+}
+
 fn read_tap_changer_common(tap_changer: CimObjectView) !?TapChangerCommon {
     const low_step_str = try tap_changer.getProperty("TapChanger.lowStep") orelse return null;
     const low_step = try std.fmt.parseInt(i32, low_step_str, 10);
@@ -162,6 +180,7 @@ const PhaseTapChangerEntry = struct {
 fn build_ratio_tap_changer_map(
     gpa: std.mem.Allocator,
     model: *const CimModel,
+    ssh_opt: ?@import("../cim_ssh.zig").CimSsh,
 ) !std.StringHashMapUnmanaged(RatioTapChangerEntry) {
     var points_by_table = try build_ratio_table_points(gpa, model);
     defer {
@@ -178,6 +197,7 @@ fn build_ratio_tap_changer_map(
         const tap_changer_view = model.view(tap_changer);
         const end_ref = try tap_changer_view.getReference("RatioTapChanger.TransformerEnd") orelse continue;
         const common = try read_tap_changer_common(tap_changer_view) orelse continue;
+        const regulating = try read_tap_changer_regulating(model, tap_changer_view, ssh_opt);
 
         const owned_steps = if (try tap_changer_view.getReference("RatioTapChanger.RatioTapChangerTable")) |table_ref| blk: {
             const ordered = points_by_table.get(strip_hash(table_ref)) orelse continue;
@@ -196,7 +216,7 @@ fn build_ratio_tap_changer_map(
                 .low_tap_position = common.low_step,
                 .tap_position = common.normal_step,
                 .load_tap_changing_capabilities = common.ltc_flag,
-                .regulating = null,
+                .regulating = if (common.ltc_flag) (regulating orelse false) else null,
                 .regulation_mode = null,
                 .terminal_ref = null,
                 .steps = owned_steps,
@@ -217,6 +237,7 @@ const OrderedPhaseStep = struct {
 fn build_phase_tap_changer_map(
     gpa: std.mem.Allocator,
     model: *const CimModel,
+    ssh_opt: ?@import("../cim_ssh.zig").CimSsh,
 ) !std.StringHashMapUnmanaged(PhaseTapChangerEntry) {
     var points_by_table: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(OrderedPhaseStep)) = .empty;
     defer {
@@ -271,6 +292,7 @@ fn build_phase_tap_changer_map(
         const tap_changer_view = model.view(tap_changer);
         const end_ref = try tap_changer_view.getReference("PhaseTapChanger.TransformerEnd") orelse continue;
         const end_id = strip_hash(end_ref);
+        const regulating = try read_tap_changer_regulating(model, tap_changer_view, ssh_opt);
 
         const common = try read_tap_changer_common(tap_changer_view) orelse continue;
 
@@ -317,7 +339,7 @@ fn build_phase_tap_changer_map(
                 .low_tap_position = common.low_step,
                 .tap_position = common.normal_step,
                 .load_tap_changing_capabilities = common.ltc_flag,
-                .regulating = null,
+                .regulating = if (common.ltc_flag) (regulating orelse false) else null,
                 .regulation_mode = "CURRENT_LIMITER",
                 .steps = owned_steps,
             },
@@ -714,6 +736,7 @@ pub fn convert_transformers(
     model: *const CimModel,
     substation_map: *const std.StringHashMapUnmanaged(*iidm.Substation),
     placer: TerminalPlacer,
+    ssh_opt: ?@import("../cim_ssh.zig").CimSsh,
 ) !void {
     var ends_by_transformer: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObjectView)) = try build_ends_by_transformer(gpa, model);
     defer {
@@ -722,14 +745,14 @@ pub fn convert_transformers(
         ends_by_transformer.deinit(gpa);
     }
 
-    var ratio_tap_changer_map = try build_ratio_tap_changer_map(gpa, model);
+    var ratio_tap_changer_map = try build_ratio_tap_changer_map(gpa, model, ssh_opt);
     defer {
         var it = ratio_tap_changer_map.valueIterator();
         while (it.next()) |value| value.deinit(gpa);
         ratio_tap_changer_map.deinit(gpa);
     }
 
-    var phase_tap_changer_map = try build_phase_tap_changer_map(gpa, model);
+    var phase_tap_changer_map = try build_phase_tap_changer_map(gpa, model, ssh_opt);
     defer {
         var it = phase_tap_changer_map.valueIterator();
         while (it.next()) |value| value.deinit(gpa);

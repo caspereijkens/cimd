@@ -606,6 +606,12 @@ const SSH_XML =
     \\</rdf:RDF>
 ;
 
+fn append_before_rdf_close(gpa: std.mem.Allocator, base: []const u8, extra: []const u8) ![]u8 {
+    const close_tag = "</rdf:RDF>";
+    const close_idx = std.mem.lastIndexOf(u8, base, close_tag) orelse return error.TestFailed;
+    return std.mem.concat(gpa, u8, &.{ base[0..close_idx], extra, close_tag });
+}
+
 /// Find a generator by mRID across all VLs in all substations.
 fn find_generator(network: anytype, mrid: []const u8) ?@TypeOf(network.substations.items[0].voltage_levels.items[0].generators.items[0]) {
     for (network.substations.items) |substation| {
@@ -998,6 +1004,34 @@ test "shunt: CGMES.Terminal1 alias present with terminal mRID" {
     try std.testing.expectEqualStrings("T_SHUNT1", alias.content);
 }
 
+test "shunt: targetDeadband defaults to 0.0 when SSH provided but no RegulatingControl reference" {
+    // SHUNT1 has controlEnabled but no RegulatingCondEq.RegulatingControl reference.
+    // With SSH present, pypowsybl emits targetDeadband: 0.0 on every shunt regardless of RC.
+    // Without SSH, the field is omitted entirely.
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
+    defer ssh.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, ssh, false);
+    defer network.deinit(gpa);
+
+    const shunt = find_shunt(network, "SHUNT1") orelse return error.TestFailed;
+    try std.testing.expect(shunt.target_deadband != null);
+    try std.testing.expectEqual(@as(f64, 0.0), shunt.target_deadband.?);
+}
+
+test "shunt: targetDeadband is null when no SSH provided" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const shunt = find_shunt(network, "SHUNT1") orelse return error.TestFailed;
+    try std.testing.expect(shunt.target_deadband == null);
+}
+
 // ── Transformer aliases ───────────────────────────────────────────────────────
 
 test "two winding transformer: CGMES.Terminal1 and CGMES.Terminal2 aliases" {
@@ -1309,6 +1343,35 @@ test "three winding transformer: ratioTapChanger1 from tabular RatioTapChangerTa
     try std.testing.expectEqual(@as(f64, 4.5), rtc.steps.items[1].x);
 }
 
+test "two winding transformer: ratioTapChanger regulating defaults to false when ltcFlag is true and no TapChangerControl" {
+    // RTC_TWT1 has ltcFlag=true with no TapChanger.TapChangerControl reference.
+    // pypowsybl emits regulating: false in that case (matching its CGMES importer).
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const twt = find_two_windings_transformer(network, "TWT1") orelse return error.TestFailed;
+    const rtc = twt.ratio_tap_changer orelse return error.TestFailed;
+    try std.testing.expect(rtc.regulating != null);
+    try std.testing.expectEqual(false, rtc.regulating.?);
+}
+
+test "three winding transformer: ratioTapChanger1 regulating defaults to false when ltcFlag is true and no TapChangerControl" {
+    // RTC_TWT2 sits on end 1 of TWT2 with ltcFlag=true and no TapChanger.TapChangerControl reference.
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const twt = find_three_windings_transformer(network, "TWT2") orelse return error.TestFailed;
+    const rtc = twt.ratio_tap_changer1 orelse return error.TestFailed;
+    try std.testing.expect(rtc.regulating != null);
+    try std.testing.expectEqual(false, rtc.regulating.?);
+}
+
 // ── Line aliases ───────────────────────────────────────────────────────────────
 
 test "line: both terminal aliases present with correct types and content" {
@@ -1503,8 +1566,8 @@ test "SSH: load p0 and q0 read from EnergyConsumer.p and .q in SSH" {
     defer network.deinit(gpa);
 
     const load = find_load(network, "LOAD1") orelse return error.TestFailed;
-    try std.testing.expectEqual(@as(f64, 100.0), load.p0);
-    try std.testing.expectEqual(@as(f64, 50.0), load.q0);
+    try std.testing.expectEqual(@as(f64, 100.0), load.p0.?);
+    try std.testing.expectEqual(@as(f64, 50.0), load.q0.?);
 }
 
 // ── SSH overlay: disconnected terminal → fictitious switch ───────────────────
@@ -1572,7 +1635,7 @@ test "SSH: forecastDistance computed from SSH times, not EQ" {
 
 // ── SSH FullModel: cgmesMetadataModels ────────────────────────────────────────
 
-test "SSH: FullModel appears as MetadataModel with subset SSH after EQ entry" {
+test "SSH: FullModel appears as MetadataModel with long-form subset after EQ entry" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
@@ -1590,13 +1653,25 @@ test "SSH: FullModel appears as MetadataModel with subset SSH after EQ entry" {
     // SSH FullModel is last (it depends on EQ, so EQ comes before it).
     const ssh_entry = meta.models.items[meta.models.items.len - 1];
     try std.testing.expectEqualStrings("urn:uuid:SSH_FM1", ssh_entry.id);
-    try std.testing.expectEqualStrings("SSH", ssh_entry.subset);
+    try std.testing.expectEqualStrings("STEADY_STATE_HYPOTHESIS", ssh_entry.subset);
     try std.testing.expectEqual(@as(u32, 1), ssh_entry.version);
     try std.testing.expectEqual(@as(usize, 1), ssh_entry.profiles.items.len);
     try std.testing.expectEqualStrings(
         "http://iec.ch/TC57/ns/CIM/SteadyStateHypothesis-EU/3.0",
         ssh_entry.profiles.items[0].content,
     );
+}
+
+test "SSH: minimumValidationLevel follows SSH presence" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
+    defer ssh.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, ssh, false);
+    defer network.deinit(gpa);
+
+    try std.testing.expectEqualStrings("STEADY_STATE_HYPOTHESIS", network.minimum_validation_level);
 }
 
 // ── CGMES provenance properties on substations ────────────────────────────────

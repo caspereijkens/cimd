@@ -203,8 +203,8 @@ pub const Load = struct {
     id: []const u8,
     name: ?[]const u8,
     load_type: LoadType,
-    p0: f64 = 0.0,
-    q0: f64 = 0.0,
+    p0: ?f64 = null,
+    q0: ?f64 = null,
     fixed_active_power: f64 = 0.0,
     fixed_reactive_power: f64 = 0.0,
     node: u32,
@@ -223,10 +223,14 @@ pub const Load = struct {
         try jws.write(self.name);
         try jws.objectField("loadType");
         try jws.write(self.load_type);
-        try jws.objectField("p0");
-        try writeFloat(jws, self.p0);
-        try jws.objectField("q0");
-        try writeFloat(jws, self.q0);
+        if (self.p0) |v| {
+            try jws.objectField("p0");
+            try writeFloat(jws, v);
+        }
+        if (self.q0) |v| {
+            try jws.objectField("q0");
+            try writeFloat(jws, v);
+        }
         try write_terminal(jws, "node", "bus", "connectableBus", self.node, self.bus, self.connectable_bus);
         if (self.aliases.items.len > 0) {
             try jws.objectField("aliases");
@@ -2068,6 +2072,7 @@ pub const Network = struct {
     id: []const u8, // taken from FullModel rdf:about
     case_date: ?[]const u8, // taken from FullModel -> Model.scenarioTime
     forecast_distance: u32 = 0, // minutes between Model.created and Model.scenarioTime
+    minimum_validation_level: []const u8 = "EQUIPMENT",
     substations: std.ArrayListUnmanaged(Substation),
     fictitious_voltage_levels: std.ArrayListUnmanaged(FictitiousVoltageLevel) = .empty,
     lines: std.ArrayListUnmanaged(Line),
@@ -2093,7 +2098,7 @@ pub const Network = struct {
         try jws.objectField("sourceFormat");
         try jws.write("CGMES");
         try jws.objectField("minimumValidationLevel");
-        try jws.write("EQUIPMENT");
+        try jws.write(self.minimum_validation_level);
         try jws.objectField("substations");
         try jws.beginArray();
         for (self.substations.items) |substation| {

@@ -88,8 +88,13 @@ fn parse_iso8601_seconds(s: []const u8) ?i64 {
 fn profile_to_subset(profile_url: []const u8) []const u8 {
     assert(profile_url.len > 0);
     if (std.mem.indexOf(u8, profile_url, "CoreEquipment") != null) return "EQUIPMENT";
-    if (std.mem.indexOf(u8, profile_url, "SteadyStateHypothesis") != null) return "SSH";
+    if (std.mem.indexOf(u8, profile_url, "SteadyStateHypothesis") != null) return "STEADY_STATE_HYPOTHESIS";
     return "UNKNOWN";
+}
+
+fn extension_version(extension_name: []const u8) []const u8 {
+    if (std.mem.eql(u8, extension_name, "activePowerControl")) return "1.2";
+    return "1.0";
 }
 
 /// Append one MetadataModel entry derived from a FullModel CimObjectView.
@@ -255,6 +260,7 @@ pub fn convert(
         .id = network_id,
         .case_date = scenario_time,
         .forecast_distance = forecast_distance,
+        .minimum_validation_level = if (ssh_opt != null) "STEADY_STATE_HYPOTHESIS" else "EQUIPMENT",
         .substations = .empty,
         .lines = .empty,
         .hvdc_lines = .empty,
@@ -293,7 +299,7 @@ pub fn convert(
         try equipment_conv.convert_shunts(gpa, model, placer, ssh_opt);
         try equipment_conv.convert_static_var_compensators(model, placer, ssh_opt);
         try equipment_conv.convert_generators(gpa, model, placer, ssh_opt);
-        try transformer_conv.convert_transformers(gpa, model, &substation_map, placer);
+        try transformer_conv.convert_transformers(gpa, model, &substation_map, placer, ssh_opt);
         try line_conv.convert_lines(gpa, model, &network, placer, ssh_opt);
     } else {
         var nm_result = try connection_conv.build_node_map(gpa, model, &index, &voltage_level_map, ssh_opt);
@@ -314,7 +320,7 @@ pub fn convert(
         try equipment_conv.convert_shunts(gpa, model, placer, ssh_opt);
         try equipment_conv.convert_static_var_compensators(model, placer, ssh_opt);
         try equipment_conv.convert_generators(gpa, model, placer, ssh_opt);
-        try transformer_conv.convert_transformers(gpa, model, &substation_map, placer);
+        try transformer_conv.convert_transformers(gpa, model, &substation_map, placer, ssh_opt);
         try line_conv.convert_lines(gpa, model, &network, placer, ssh_opt);
     }
     try convert_areas(gpa, model, ssh_opt, &network);
@@ -379,7 +385,7 @@ pub fn convert(
                 });
                 entry.value_ptr.* = .empty; // ownership transferred
             }
-            try network.extension_versions.append(gpa, .{ .extension_name = "cgmesTapChangers" });
+            try network.extension_versions.append(gpa, .{ .extension_name = "cgmesTapChangers", .version = extension_version("cgmesTapChangers") });
         }
     }
 
@@ -402,15 +408,15 @@ pub fn convert(
                         .detail = .{
                             .fixed_active_power = load.fixed_active_power,
                             .fixed_reactive_power = load.fixed_reactive_power,
-                            .variable_active_power = load.p0 - load.fixed_active_power,
-                            .variable_reactive_power = load.q0 - load.fixed_reactive_power,
+                            .variable_active_power = (load.p0 orelse load.fixed_active_power) - load.fixed_active_power,
+                            .variable_reactive_power = (load.q0 orelse load.fixed_reactive_power) - load.fixed_reactive_power,
                         },
                     });
                 }
             }
         }
         if (load_count > 0) {
-            try network.extension_versions.append(gpa, .{ .extension_name = "detail" });
+            try network.extension_versions.append(gpa, .{ .extension_name = "detail", .version = extension_version("detail") });
         }
     }
 
@@ -454,8 +460,8 @@ pub fn convert(
                     }
                 }
             }
-            if (has_crc) try network.extension_versions.append(gpa, .{ .extension_name = "coordinatedReactiveControl" });
-            if (has_apc) try network.extension_versions.append(gpa, .{ .extension_name = "activePowerControl" });
+            if (has_crc) try network.extension_versions.append(gpa, .{ .extension_name = "coordinatedReactiveControl", .version = extension_version("coordinatedReactiveControl") });
+            if (has_apc) try network.extension_versions.append(gpa, .{ .extension_name = "activePowerControl", .version = extension_version("activePowerControl") });
         }
     }
 
@@ -531,9 +537,9 @@ pub fn convert(
         metadata_models = .empty; // ownership transferred
         base_voltage_list = .empty; // ownership transferred
 
-        if (expected_model_count > 0) try network.extension_versions.append(gpa, .{ .extension_name = "cgmesMetadataModels" });
-        if (base_voltages.len > 0) try network.extension_versions.append(gpa, .{ .extension_name = "baseVoltageMapping" });
-        try network.extension_versions.append(gpa, .{ .extension_name = "cimCharacteristics" });
+        if (expected_model_count > 0) try network.extension_versions.append(gpa, .{ .extension_name = "cgmesMetadataModels", .version = extension_version("cgmesMetadataModels") });
+        if (base_voltages.len > 0) try network.extension_versions.append(gpa, .{ .extension_name = "baseVoltageMapping", .version = extension_version("baseVoltageMapping") });
+        try network.extension_versions.append(gpa, .{ .extension_name = "cimCharacteristics", .version = extension_version("cimCharacteristics") });
     }
 
     assert(network.substations.items.len > 0);
@@ -573,9 +579,9 @@ test "profile_to_subset: CoreEquipment URL → EQUIPMENT" {
     );
 }
 
-test "profile_to_subset: SteadyStateHypothesis URL → SSH" {
+test "profile_to_subset: SteadyStateHypothesis URL → STEADY_STATE_HYPOTHESIS" {
     try std.testing.expectEqualStrings(
-        "SSH",
+        "STEADY_STATE_HYPOTHESIS",
         profile_to_subset("http://iec.ch/TC57/ns/CIM/SteadyStateHypothesis-EU/3.0"),
     );
 }
@@ -585,6 +591,20 @@ test "profile_to_subset: unknown URL → UNKNOWN" {
         "UNKNOWN",
         profile_to_subset("http://example.com/SomeOtherProfile/1.0"),
     );
+}
+
+// ── extension_version ─────────────────────────────────────────────────────────
+
+test "extension_version: activePowerControl → 1.2" {
+    try std.testing.expectEqualStrings("1.2", extension_version("activePowerControl"));
+}
+
+test "extension_version: cgmesMetadataModels → 1.0" {
+    try std.testing.expectEqualStrings("1.0", extension_version("cgmesMetadataModels"));
+}
+
+test "extension_version: unknown name → 1.0" {
+    try std.testing.expectEqualStrings("1.0", extension_version("somethingElse"));
 }
 
 // ── append_metadata_model ─────────────────────────────────────────────────────
@@ -634,7 +654,7 @@ test "append_metadata_model: reads id/version/subset/profiles/DependentOn" {
     try std.testing.expectEqual(@as(usize, 1), metadata_models.items.len);
     const m = metadata_models.items[0];
     try std.testing.expectEqualStrings("urn:uuid:test-fm-1", m.id);
-    try std.testing.expectEqualStrings("SSH", m.subset);
+    try std.testing.expectEqualStrings("STEADY_STATE_HYPOTHESIS", m.subset);
     try std.testing.expectEqual(@as(u32, 3), m.version);
     try std.testing.expectEqualStrings("http://example.com/mas", m.modeling_authority_set);
     try std.testing.expectEqual(@as(usize, 1), m.profiles.items.len);
