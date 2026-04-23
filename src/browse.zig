@@ -2,28 +2,35 @@ const std = @import("std");
 const assert = std.debug.assert;
 const cli = @import("cli.zig");
 const cim_model = @import("cim_model.zig");
+const CimTp = @import("cim_tp.zig").CimTp;
+const CimSsh = @import("cim_ssh.zig").CimSsh;
+const tag_index = @import("tag_index.zig");
 const print = @import("print.zig");
-const extract_rdf_resource = @import("tag_index.zig").extract_rdf_resource;
-const extract_rdf_id = @import("tag_index.zig").extract_rdf_id;
+const extract_rdf_resource = tag_index.extract_rdf_resource;
+const extract_rdf_id = tag_index.extract_rdf_id;
 const strip_hash = @import("utils.zig").strip_hash;
+const strip_underscore = @import("utils.zig").strip_underscore;
 
 const Nav = union(enum) { stay, back, quit, follow: []const u8 };
 
 /// Interactively browse CIM objects by following rdf:resource references.
-/// `xml` must be the same backing slice used to build `model`.
-/// `mrid` is the mRID of the first object to display.
+/// `model` is the primary CIM file (typically EQ, possibly with concatenated EQBD).
+/// `tp_opt` / `ssh_opt`, when present, overlay their patches inline below the
+/// primary object and contribute references to the navigation list. TP also
+/// contributes new first-class objects (e.g. TopologicalNodes) that become
+/// navigable by mRID.
 pub fn browse(
     io: std.Io,
     gpa: std.mem.Allocator,
     model: *const cim_model.CimModel,
-    xml: []const u8,
+    tp_opt: ?CimTp,
+    ssh_opt: ?CimSsh,
     mrid: []const u8,
 ) !void {
     var trace_ids: std.ArrayList([]const u8) = .empty;
     defer trace_ids.deinit(gpa);
     var trace_types: std.ArrayList([]const u8) = .empty;
     defer trace_types.deinit(gpa);
-    // Both reused across iterations — backing memory is retained, no per-iteration allocation.
     var screen: std.Io.Writer.Allocating = .init(gpa);
     defer screen.deinit();
     var ref_list: std.ArrayList([]const u8) = .empty;
@@ -33,14 +40,38 @@ pub fn browse(
     while (true) blk: {
         assert(trace_ids.items.len == trace_types.items.len);
 
-        const object = model.getObjectById(id) orelse print.not_found(io, "{s}", .{id});
-        const object_xml = xml[object.boundaries[object.object_tag_idx].start .. object.boundaries[object.closing_tag_idx].end + 1];
+        const object = resolve_object(model, tp_opt, id) orelse
+            print.not_found(io, "{s}", .{id});
 
         screen.clearRetainingCapacity();
         ref_list.clearRetainingCapacity();
 
         const writer = &screen.writer;
-        const counter = try render_object_xml(writer, gpa, object_xml, &ref_list);
+        var counter: u32 = 1;
+
+        // Primary object XML (EQ, EQBD, or TP new-object).
+        counter = try render_fragment(writer, gpa, tag_slice(object.xml, object.boundaries, object.object_tag_idx, object.closing_tag_idx), counter, &ref_list);
+
+        // TP patch, if any — adds Terminal.TopologicalNode and similar references.
+        if (tp_opt) |tp| {
+            const stripped = strip_underscore(object.id);
+            if (tp.find_patch(stripped)) |patch| {
+                try writer.writeAll("\n\n--- TP ---");
+                const patch_xml = tag_slice(tp.xml, tp.boundaries, patch.patch_tag_idx, patch.closing_tag_idx);
+                counter = try render_fragment(writer, gpa, patch_xml, counter, &ref_list);
+            }
+        }
+
+        // SSH patch, if any.
+        if (ssh_opt) |ssh| {
+            const stripped = strip_underscore(object.id);
+            if (ssh.find_patch(stripped)) |patch| {
+                try writer.writeAll("\n\n--- SSH ---");
+                const patch_xml = tag_slice(ssh.xml, ssh.boundaries, patch.patch_tag_idx, patch.closing_tag_idx);
+                counter = try render_fragment(writer, gpa, patch_xml, counter, &ref_list);
+            }
+        }
+
         try render_footer(writer, trace_types.items, object.type_name, counter, trace_ids.items.len > 0);
         try std.Io.File.stdout().writeStreamingAll(io, screen.written());
 
@@ -66,18 +97,57 @@ pub fn browse(
     }
 }
 
-/// Iterates XML lines, renders each row into `writer`, populates `ref_list`.
-/// Returns the number of navigable references found (1-based counter after last ref).
-fn render_object_xml(
+/// Look up an object by id in the primary model first, then in TP's new objects.
+/// TP and primary are already collision-checked at the command layer.
+fn resolve_object(
+    model: *const cim_model.CimModel,
+    tp_opt: ?CimTp,
+    id: []const u8,
+) ?tag_index.CimObjectView {
+    if (model.getObjectById(id)) |view| return view;
+    if (tp_opt) |tp| {
+        if (tp.get_object_by_id(id)) |view| return view;
+    }
+    return null;
+}
+
+/// Slice out the XML fragment spanning an opening tag through its closing tag,
+/// extended backwards to the start of the line so original indentation is preserved.
+/// Used for primary objects (EQ/EQBD/TP new) and for TP/SSH patches.
+fn tag_slice(
+    xml: []const u8,
+    boundaries: []const tag_index.TagBoundary,
+    open_idx: u32,
+    close_idx: u32,
+) []const u8 {
+    const tag_start = boundaries[open_idx].start;
+    const close = boundaries[close_idx].end + 1;
+    const line_start = if (std.mem.lastIndexOfScalar(u8, xml[0..tag_start], '\n')) |nl| nl + 1 else 0;
+    assert(close > line_start);
+    return xml[line_start..close];
+}
+
+/// Render one XML fragment into `writer`, continuing reference numbering from `start_counter`.
+/// Returns the new counter value (1-based, pointing past the last rendered reference).
+fn render_fragment(
     writer: *std.Io.Writer,
     gpa: std.mem.Allocator,
-    object_xml: []const u8,
+    fragment_xml: []const u8,
+    start_counter: u32,
     ref_list: *std.ArrayList([]const u8),
 ) !u32 {
-    assert(object_xml.len > 0);
-    var it = std.mem.splitScalar(u8, object_xml, '\n');
-    var counter: u32 = 1;
+    assert(fragment_xml.len > 0);
+    assert(start_counter >= 1);
+
+    var it = std.mem.splitScalar(u8, fragment_xml, '\n');
+    var counter = start_counter;
     while (it.next()) |line| {
+        // Text-content continuation lines (from elements with embedded newlines) carry no tag;
+        // print verbatim so the XML stays readable instead of tripping tag extraction.
+        if (std.mem.indexOfScalar(u8, line, '<') == null) {
+            try writer.print("\n|     |  {s}", .{line});
+            continue;
+        }
         if (extract_rdf_id(line, 0) catch null != null) {
             try writer.writeAll("\n|     |  ");
             try append_colored_id_line(writer, line);

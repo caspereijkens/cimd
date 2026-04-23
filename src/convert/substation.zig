@@ -14,23 +14,39 @@ const CimIndex = cim_index.CimIndex;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
+// Resolved CGMES region ancestry for a Substation.
+const RegionChain = struct {
+    sub_region: ?CimObjectView = null,
+    region: ?CimObjectView = null,
+};
+
+fn resolve_region_chain(model: *const CimModel, substation: CimObjectView) error{MalformedTag}!RegionChain {
+    const sub_region_ref = try substation.getReference("Substation.Region") orelse return .{};
+    const sub_region = model.getObjectById(strip_hash(sub_region_ref)) orelse return .{};
+
+    const region_ref = try sub_region.getReference("SubGeographicalRegion.Region") orelse
+        return .{ .sub_region = sub_region };
+    const region = model.getObjectById(strip_hash(region_ref));
+    return .{ .sub_region = sub_region, .region = region };
+}
+
 // Resolve the region name for a Substation.
 // Substation.Region -> SubGeographicalRegion.IdentifiedObject.name.
-fn resolve_geo_tag(model: *const CimModel, substation: CimObjectView) error{MalformedTag}!?[]const u8 {
-    const region_ref = try substation.getReference("Substation.Region") orelse return null;
-    const region = model.getObjectById(strip_hash(region_ref)) orelse return null;
+fn resolve_geo_tag(sub_region: ?CimObjectView) error{MalformedTag}!?[]const u8 {
+    const region = sub_region orelse return null;
     return try region.getProperty("IdentifiedObject.name");
 }
 
 // Resolve the country code for a Substation.
 // Substation.Region -> SubGeographicalRegion.Region -> GeographicalRegion.IdentifiedObject.name.
-fn resolve_country(model: *const CimModel, substation: CimObjectView) error{MalformedTag}!?[]const u8 {
-    const region_ref = try substation.getReference("Substation.Region") orelse return null;
-    const region = model.getObjectById(strip_hash(region_ref)) orelse return null;
-
-    const geo_region_ref = try region.getReference("SubGeographicalRegion.Region") orelse return null;
-    const geo_region = model.getObjectById(strip_hash(geo_region_ref)) orelse return null;
+fn resolve_country(region: ?CimObjectView) error{MalformedTag}!?[]const u8 {
+    const geo_region = region orelse return null;
     return try geo_region.getProperty("IdentifiedObject.name");
+}
+
+// mRID (if present) or rdf:ID with leading underscore stripped.
+fn resolve_mrid(object: CimObjectView) error{MalformedTag}![]const u8 {
+    return try object.getProperty("IdentifiedObject.mRID") orelse strip_underscore(object.id);
 }
 
 // Append one IIDM Substation to the Network. Assumes capacity has been pre-allocated.
@@ -45,16 +61,34 @@ fn append_substation(
 ) !void {
     assert(std.mem.eql(u8, substation.type_name, "Substation"));
 
-    const mrid = try substation.getProperty("IdentifiedObject.mRID") orelse strip_underscore(substation.id);
+    const mrid = try resolve_mrid(substation);
     assert(mrid.len > 0);
     const name = try substation.getProperty("IdentifiedObject.name");
-    const country = try resolve_country(model, substation);
-    const geo_tag = try resolve_geo_tag(model, substation);
+    const region_chain = try resolve_region_chain(model, substation);
+    const country = try resolve_country(region_chain.region);
+    const geo_tag = try resolve_geo_tag(region_chain.sub_region);
 
     var geo_tags: std.ArrayListUnmanaged([]const u8) = .empty;
     if (geo_tag) |tag| {
         try geo_tags.ensureTotalCapacity(gpa, 1);
         geo_tags.appendAssumeCapacity(tag);
+    }
+
+    // CGMES provenance: regionName + regionId + subRegionId. Emitted in pypowsybl's
+    // field order so the JIIDM byte stream matches.
+    var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
+    if (region_chain.region) |region| {
+        const region_mrid = try resolve_mrid(region);
+        const region_name = try region.getProperty("IdentifiedObject.name");
+        try properties.ensureTotalCapacity(gpa, 3);
+        if (region_name) |rn| {
+            properties.appendAssumeCapacity(.{ .name = "CGMES.regionName", .value = rn });
+        }
+        if (region_chain.sub_region) |sr| {
+            const sub_region_mrid = try resolve_mrid(sr);
+            properties.appendAssumeCapacity(.{ .name = "CGMES.subRegionId", .value = sub_region_mrid });
+        }
+        properties.appendAssumeCapacity(.{ .name = "CGMES.regionId", .value = region_mrid });
     }
 
     // Build MergedSubstation aliases for any stub substations merged into this one.
@@ -75,7 +109,7 @@ fn append_substation(
         .country = country,
         .geo_tags = geo_tags,
         .aliases = aliases,
-        .properties = .empty,
+        .properties = properties,
         .voltage_levels = .empty,
         .two_winding_transformers = .empty,
         .three_winding_transformers = .empty,

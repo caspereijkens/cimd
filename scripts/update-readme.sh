@@ -23,9 +23,9 @@ new_block() {
   echo "## Features"
 
   echo '```'
-  echo "$ cimd eq --help"
+  echo "$ cimd --help"
   echo ""
-  "$CIMD" eq --help
+  "$CIMD" --help
   echo '```'
 
   for sub in convert browse get types diff; do
@@ -34,9 +34,9 @@ new_block() {
     echo ""
     echo "### $heading"
     echo '```'
-    echo "$ cimd eq $sub --help"
+    echo "$ cimd $sub --help"
     echo ""
-    "$CIMD" eq "$sub" --help
+    "$CIMD" "$sub" --help
     echo '```'
   done
 

@@ -3,6 +3,7 @@ const cli = @import("cli.zig");
 const print = @import("print.zig");
 const builtin = @import("builtin");
 const CimSsh = @import("cim_ssh.zig").CimSsh;
+const CimTp = @import("cim_tp.zig").CimTp;
 const zip = @import("zip.zig");
 const cim_model = @import("cim_model.zig");
 const browse = @import("browse.zig");
@@ -22,13 +23,11 @@ pub fn main(init: std.process.Init) !void {
     const command = try cli.parse_args(io, &args);
 
     switch (command) {
-        .eq => |eq| switch (eq) {
-            .convert => |c| try command_eq_convert(io, gpa, c.eq_path, c.eqbd_path, c.ssh_path, c.output_path),
-            .browse => |c| try command_eq_browse(io, gpa, c.eq_path, c.eqbd_path, c.mrid),
-            .get => |c| try command_eq_get(io, gpa, c.eq_path, c.eqbd_path, c.mrid, c.type_filter, c.fields, c.count, c.json),
-            .types => |c| try command_eq_types(io, gpa, c.eq_path, c.eqbd_path, c.json),
-            .diff => |c| try command_eq_diff(io, gpa, c),
-        },
+        .convert => |c| try command_convert(io, gpa, c),
+        .browse => |c| try command_browse(io, gpa, c),
+        .get => |c| try command_get(io, gpa, c),
+        .types => |c| try command_types(io, gpa, c),
+        .diff => |c| try command_diff(io, gpa, c),
         .version => |v| try command_version(io, v.verbose, v.json),
     }
 }
@@ -68,17 +67,31 @@ fn command_version(io: std.Io, verbose: bool, json: bool) !void {
     }
 }
 
-fn command_eq_convert(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, ssh_path: ?[]const u8, output_path: ?[]const u8) !void {
-    var model = try load_model(io, gpa, eq_path, eqbd_path);
+fn command_convert(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Convert) !void {
+    var model = try load_model(io, gpa, c.eq_path, c.eqbd_path);
     defer model.deinit(gpa);
 
-    var ssh_opt: ?CimSsh = if (ssh_path) |path| try load_ssh(io, gpa, path) else null;
+    var tp_opt: ?CimTp = if (c.tp_path) |path| try load_tp(io, gpa, path) else null;
+    defer if (tp_opt) |*tp| tp.deinit(gpa);
+
+    var ssh_opt: ?CimSsh = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
     defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
 
-    var network = try converter.convert(gpa, &model, ssh_opt);
+    if (tp_opt) |tp| {
+        for (tp.new_objects) |obj| {
+            if (model.getObjectById(obj.id) != null) print.stderr(
+                io,
+                "convert: mRID collision: '{s}' is defined in both the primary file and the TP profile",
+                .{obj.id},
+            );
+        }
+    }
+
+    var network = try converter.convert(gpa, &model, tp_opt, ssh_opt, c.bus_branch);
     defer network.deinit(gpa);
 
     var total_voltage_levels: usize = 0;
+    var total_buses: usize = 0;
     var total_busbar_sections: usize = 0;
     var total_switches: usize = 0;
     var total_loads: usize = 0;
@@ -92,6 +105,7 @@ fn command_eq_convert(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, e
         total_2w += substation.two_winding_transformers.items.len;
         total_3w += substation.three_winding_transformers.items.len;
         for (substation.voltage_levels.items) |voltage_level| {
+            total_buses += voltage_level.bus_breaker_topology.buses.items.len;
             total_busbar_sections += voltage_level.node_breaker_topology.busbar_sections.items.len;
             total_switches += voltage_level.node_breaker_topology.switches.items.len;
             total_loads += voltage_level.loads.items.len;
@@ -102,6 +116,7 @@ fn command_eq_convert(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, e
     }
     try print.stderr_info(io, "Substations: {d}\n", .{network.substations.items.len});
     try print.stderr_info(io, "VoltageLevels: {d}\n", .{total_voltage_levels});
+    if (tp_opt != null) try print.stderr_info(io, "Buses: {d}\n", .{total_buses});
     try print.stderr_info(io, "BusbarSections: {d}\n", .{total_busbar_sections});
     try print.stderr_info(io, "Switches: {d}\n", .{total_switches});
     try print.stderr_info(io, "Loads: {d}\n", .{total_loads});
@@ -113,11 +128,11 @@ fn command_eq_convert(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, e
     try print.stderr_info(io, "Lines: {d}\n", .{network.lines.items.len});
 
     const cwd = std.Io.Dir.cwd();
-    const output_file = if (output_path) |path|
+    const output_file = if (c.output_path) |path|
         try cwd.createFile(io, path, .{})
     else
         std.Io.File.stdout();
-    defer if (output_path != null) output_file.close(io);
+    defer if (c.output_path != null) output_file.close(io);
 
     var write_buffer: [4096]u8 = undefined;
     var file_writer = std.Io.File.Writer.init(output_file, io, &write_buffer);
@@ -126,32 +141,52 @@ fn command_eq_convert(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, e
     try file_writer.interface.flush();
 }
 
-fn command_eq_browse(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, mrid: []const u8) !void {
-    var model = try load_model(io, gpa, eq_path, eqbd_path);
+fn command_browse(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Browse) !void {
+    var model = try load_model(io, gpa, c.file_path, c.eqbd_path);
     defer model.deinit(gpa);
 
-    try browse.browse(io, gpa, &model, model.xml, mrid);
+    var tp_opt: ?CimTp = if (c.tp_path) |path| try load_tp(io, gpa, path) else null;
+    defer if (tp_opt) |*tp| tp.deinit(gpa);
+
+    var ssh_opt: ?CimSsh = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
+    defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
+
+    // Safety check: TP's new objects must not collide with primary model IDs.
+    // Silent shadowing would make it impossible to tell which file an object
+    // came from during navigation; fail loud instead.
+    if (tp_opt) |tp| {
+        for (tp.new_objects) |obj| {
+            if (model.getObjectById(obj.id) != null) print.stderr(
+                io,
+                "browse: mRID collision: '{s}' is defined in both the primary file and the TP profile",
+                .{obj.id},
+            );
+        }
+    }
+
+    try browse.browse(io, gpa, &model, tp_opt, ssh_opt, c.mrid);
 }
 
-fn command_eq_get(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, mrid: ?[]const u8, type_filter: ?[]const u8, fields_str: ?[]const u8, count: bool, json: bool) !void {
-    assert(mrid != null or type_filter != null);
-    if (mrid != null and count) print.stderr(io, "eq get: --count requires --type without <mrid>", .{});
-    if (mrid != null and fields_str != null) print.stderr(io, "eq get: --fields requires --type without <mrid>", .{});
+fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
+    assert(c.mrid != null or c.type_filter != null);
+    if (c.mrid != null and c.count) print.stderr(io, "get: --count requires --type without <mrid>", .{});
+    if (c.mrid != null and c.fields != null) print.stderr(io, "get: --fields requires --type without <mrid>", .{});
 
-    var model = try load_model(io, gpa, eq_path, eqbd_path);
+    const xml = try read_path(io, gpa, c.file_path);
+    var model = try cim_model.CimModel.init(gpa, xml);
     defer model.deinit(gpa);
 
     // Single-object mode
-    if (mrid) |mrid_val| {
+    if (c.mrid) |mrid_val| {
         const object = model.getObjectById(mrid_val) orelse
             print.not_found(io, "No object found with id '{s}'", .{mrid_val});
 
-        if (type_filter) |type_name| {
+        if (c.type_filter) |type_name| {
             if (!std.mem.eql(u8, type_name, object.type_name))
                 print.not_found(io, "Object '{s}' is of type '{s}', not '{s}'", .{ mrid_val, object.type_name, type_name });
         }
 
-        if (json) {
+        if (c.json) {
             try print.display_object_json(io, gpa, object);
         } else {
             try print.display_object(io, gpa, object);
@@ -160,13 +195,13 @@ fn command_eq_get(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_
     }
 
     // List mode
-    const type_name = type_filter.?;
+    const type_name = c.type_filter.?;
     const objects = model.get_objects_by_type(type_name);
     if (objects.len == 0)
-        print.not_found(io, "No objects of type '{s}' found. Run 'cimd eq types' to see available types.", .{type_name});
+        print.not_found(io, "No objects of type '{s}' found. Run 'cimd types' to see available types.", .{type_name});
 
-    if (count) {
-        if (json) {
+    if (c.count) {
+        if (c.json) {
             try print.stdout(io, "{{\"type\":\"{s}\",\"count\":{d}}}\n", .{ type_name, objects.len });
         } else {
             try print.stdout(io, "{d}\n", .{objects.len});
@@ -177,17 +212,17 @@ fn command_eq_get(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_
     // Parse --fields into a stack-allocated slice of names.
     var fields_buf: [32][]const u8 = undefined;
     var n_fields: usize = 0;
-    if (fields_str) |fs| {
+    if (c.fields) |fs| {
         var it = std.mem.splitScalar(u8, fs, ',');
         while (it.next()) |f| {
-            if (n_fields == fields_buf.len) print.stderr(io, "eq get: --fields: too many fields (max 32)", .{});
+            if (n_fields == fields_buf.len) print.stderr(io, "get: --fields: too many fields (max 32)", .{});
             fields_buf[n_fields] = std.mem.trim(u8, f, " ");
             n_fields += 1;
         }
     }
     const fields = fields_buf[0..n_fields];
 
-    if (json) {
+    if (c.json) {
         try print.display_object_list_json(io, &model, objects, fields);
     } else {
         for (objects) |obj| {
@@ -207,23 +242,24 @@ fn command_eq_get(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_
     }
 }
 
-fn command_eq_types(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8, json: bool) !void {
-    var model = try load_model(io, gpa, eq_path, eqbd_path);
+fn command_types(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Types) !void {
+    const xml = try read_path(io, gpa, c.file_path);
+    var model = try cim_model.CimModel.init(gpa, xml);
     defer model.deinit(gpa);
 
-    if (json) {
+    if (c.json) {
         try print.display_object_inventory_json(io, gpa, model);
     } else {
         try print.display_object_inventory(io, gpa, model);
     }
 }
 
-fn command_eq_diff(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Eq.Diff) !void {
+fn command_diff(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Diff) !void {
     // Load both models independently. Each holds its own XML backing.
-    var model1 = try load_model(io, gpa, c.eq_path1, c.eqbd_path);
+    var model1 = try load_model(io, gpa, c.file_path1, c.eqbd_path);
     defer model1.deinit(gpa);
 
-    var model2 = try load_model(io, gpa, c.eq_path2, c.eqbd_path);
+    var model2 = try load_model(io, gpa, c.file_path2, c.eqbd_path);
     defer model2.deinit(gpa);
 
     const options = diff.DiffOptions{
@@ -242,8 +278,8 @@ fn command_eq_diff(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Eq.Diff) !
             &model1,
             &model2,
             mrid,
-            c.eq_path1,
-            c.eq_path2,
+            c.file_path1,
+            c.file_path2,
             options,
             &writer.interface,
         );
@@ -251,7 +287,7 @@ fn command_eq_diff(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Eq.Diff) !
             .not_found => print.not_found(io, "No object found with mRID '{s}' in either file", .{mrid}),
             .type_mismatch => |actual| print.stderr(
                 io,
-                "eq diff: object '{s}' is of type '{s}', not '{s}'",
+                "diff: object '{s}' is of type '{s}', not '{s}'",
                 .{ mrid, actual, c.type_filter.? },
             ),
             .diff => |d| d,
@@ -260,8 +296,8 @@ fn command_eq_diff(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Eq.Diff) !
         gpa,
         &model1,
         &model2,
-        c.eq_path1,
-        c.eq_path2,
+        c.file_path1,
+        c.file_path2,
         options,
         &writer.interface,
     );
@@ -287,6 +323,10 @@ fn load_model(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path
 
 fn load_ssh(io: std.Io, gpa: std.mem.Allocator, ssh_path: []const u8) !CimSsh {
     return CimSsh.init(gpa, try read_path(io, gpa, ssh_path));
+}
+
+fn load_tp(io: std.Io, gpa: std.mem.Allocator, tp_path: []const u8) !CimTp {
+    return CimTp.init(gpa, try read_path(io, gpa, tp_path));
 }
 
 fn read_path(io: std.Io, gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {

@@ -10,7 +10,10 @@ const connection_conv = @import("convert/connection.zig");
 const equipment_conv = @import("convert/equipment.zig");
 const transformer_conv = @import("convert/transformer.zig");
 const line_conv = @import("convert/line.zig");
+const bus_conv = @import("convert/bus.zig");
+const placement_conv = @import("convert/placement.zig");
 const CimSsh = @import("cim_ssh.zig").CimSsh;
+const CimTp = @import("cim_tp.zig").CimTp;
 
 const assert = std.debug.assert;
 const CimModel = cim_model.CimModel;
@@ -85,8 +88,13 @@ fn parse_iso8601_seconds(s: []const u8) ?i64 {
 fn profile_to_subset(profile_url: []const u8) []const u8 {
     assert(profile_url.len > 0);
     if (std.mem.indexOf(u8, profile_url, "CoreEquipment") != null) return "EQUIPMENT";
-    if (std.mem.indexOf(u8, profile_url, "SteadyStateHypothesis") != null) return "SSH";
+    if (std.mem.indexOf(u8, profile_url, "SteadyStateHypothesis") != null) return "STEADY_STATE_HYPOTHESIS";
     return "UNKNOWN";
+}
+
+fn extension_version(extension_name: []const u8) []const u8 {
+    if (std.mem.eql(u8, extension_name, "activePowerControl")) return "1.2";
+    return "1.0";
 }
 
 /// Append one MetadataModel entry derived from a FullModel CimObjectView.
@@ -199,8 +207,19 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSs
 
 /// Convert a CimModel into an IIDM Network.
 /// Caller owns the returned network and must call network.deinit(gpa).
-pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh) !iidm.Network {
+/// Default JIIDM output is node-breaker (matches pypowsybl). When `bus_branch`
+/// is true, TP TopologicalNodes drive equipment placement onto buses and
+/// voltageLevels are emitted in bus-breaker shape. `bus_branch` requires
+/// `tp_opt` to be non-null (CLI enforces this).
+pub fn convert(
+    gpa: std.mem.Allocator,
+    model: *const CimModel,
+    tp_opt: ?CimTp,
+    ssh_opt: ?CimSsh,
+    bus_branch: bool,
+) !iidm.Network {
     assert(model.get_objects_by_type("Substation").len > 0);
+    assert(!bus_branch or tp_opt != null);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
     var index = try cim_index.CimIndex.build(gpa, model, boundary_ids);
@@ -241,6 +260,7 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh)
         .id = network_id,
         .case_date = scenario_time,
         .forecast_distance = forecast_distance,
+        .minimum_validation_level = if (ssh_opt != null) "STEADY_STATE_HYPOTHESIS" else "EQUIPMENT",
         .substations = .empty,
         .lines = .empty,
         .hvdc_lines = .empty,
@@ -259,20 +279,50 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh)
     var voltage_level_map = try voltage_level_conv.build_voltage_level_map(gpa, model, &index, &network, &sub_id_map, &substation_map);
     defer voltage_level_map.deinit(gpa);
 
-    var nm_result = try connection_conv.build_node_map(gpa, model, &index, &voltage_level_map, ssh_opt);
-    defer nm_result.deinit(gpa);
-    const node_map = &nm_result.node_map;
+    // Branch on output shape. Bus-branch derives placement from TP's
+    // TopologicalNodes; node-breaker builds a NodeMap from EQ CNs + switches.
+    // Node-breaker is the default even when TP is loaded (matches pypowsybl);
+    // bus-branch is an opt-in alternative output mode (CLI flag).
+    if (bus_branch) {
+        const tp = tp_opt.?; // guaranteed by assert above
+        var bus_map = try bus_conv.convert_buses(gpa, tp, &voltage_level_map);
+        defer bus_map.deinit(gpa);
 
-    try equipment_conv.pre_allocate_equipment(gpa, model, &index, &voltage_level_map);
-    try equipment_conv.convert_busbar_sections(gpa, model, &index, &voltage_level_map, node_map);
-    try equipment_conv.convert_switches(gpa, model, &index, &voltage_level_map, node_map, ssh_opt);
-    try equipment_conv.convert_fictitious_switches(gpa, model, &index, &voltage_level_map, node_map, &nm_result.cn_has_switch, &nm_result.cn_other_count, ssh_opt);
-    try equipment_conv.convert_loads(gpa, model, &index, &voltage_level_map, node_map, ssh_opt);
-    try equipment_conv.convert_shunts(gpa, model, &index, &voltage_level_map, node_map, ssh_opt);
-    try equipment_conv.convert_static_var_compensators(model, &index, &voltage_level_map, node_map, ssh_opt);
-    try equipment_conv.convert_generators(gpa, model, &index, &voltage_level_map, node_map, ssh_opt);
-    try transformer_conv.convert_transformers(gpa, model, &index, &substation_map, &voltage_level_map, node_map);
-    try line_conv.convert_lines(gpa, model, &index, &network, &voltage_level_map, node_map, ssh_opt);
+        const placer = placement_conv.TerminalPlacer{
+            .mode = .{ .bus_branch = .{ .tp = tp, .bus_map = &bus_map } },
+            .index = &index,
+            .voltage_level_map = &voltage_level_map,
+        };
+
+        try equipment_conv.pre_allocate_equipment(gpa, model, placer);
+        try equipment_conv.convert_loads(gpa, model, placer, ssh_opt);
+        try equipment_conv.convert_shunts(gpa, model, placer, ssh_opt);
+        try equipment_conv.convert_static_var_compensators(model, placer, ssh_opt);
+        try equipment_conv.convert_generators(gpa, model, placer, ssh_opt);
+        try transformer_conv.convert_transformers(gpa, model, &substation_map, placer, ssh_opt);
+        try line_conv.convert_lines(gpa, model, &network, placer, ssh_opt);
+    } else {
+        var nm_result = try connection_conv.build_node_map(gpa, model, &index, &voltage_level_map, ssh_opt);
+        defer nm_result.deinit(gpa);
+        const node_map = &nm_result.node_map;
+
+        const placer = placement_conv.TerminalPlacer{
+            .mode = .{ .node_breaker = node_map },
+            .index = &index,
+            .voltage_level_map = &voltage_level_map,
+        };
+
+        try equipment_conv.pre_allocate_equipment(gpa, model, placer);
+        try equipment_conv.convert_busbar_sections(gpa, model, placer);
+        try equipment_conv.convert_switches(gpa, model, placer, ssh_opt);
+        try equipment_conv.convert_fictitious_switches(gpa, model, placer, &nm_result.cn_has_switch, &nm_result.cn_other_count, ssh_opt);
+        try equipment_conv.convert_loads(gpa, model, placer, ssh_opt);
+        try equipment_conv.convert_shunts(gpa, model, placer, ssh_opt);
+        try equipment_conv.convert_static_var_compensators(model, placer, ssh_opt);
+        try equipment_conv.convert_generators(gpa, model, placer, ssh_opt);
+        try transformer_conv.convert_transformers(gpa, model, &substation_map, placer, ssh_opt);
+        try line_conv.convert_lines(gpa, model, &network, placer, ssh_opt);
+    }
     try convert_areas(gpa, model, ssh_opt, &network);
 
     // -------------------------------------------------------------------------
@@ -285,7 +335,8 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh)
     // cgmesTapChangers: one extension per transformer that has a RatioTapChanger
     // or PhaseTapChangerTabular. The extension ID is the PowerTransformer mRID.
     // step = TapChanger.normalStep.
-    {
+    // Emitted for node-breaker JIIDM only; bus-branch output skips it.
+    if (!bus_branch) {
         // Build a map: transformer_mrid -> list of TapChangerInfo
         var xfmr_tap_changer_map: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(iidm.TapChangerInfo)) = .empty;
         defer {
@@ -334,7 +385,7 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh)
                 });
                 entry.value_ptr.* = .empty; // ownership transferred
             }
-            try network.extension_versions.append(gpa, .{ .extension_name = "cgmesTapChangers" });
+            try network.extension_versions.append(gpa, .{ .extension_name = "cgmesTapChangers", .version = extension_version("cgmesTapChangers") });
         }
     }
 
@@ -357,15 +408,15 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh)
                         .detail = .{
                             .fixed_active_power = load.fixed_active_power,
                             .fixed_reactive_power = load.fixed_reactive_power,
-                            .variable_active_power = load.p0 - load.fixed_active_power,
-                            .variable_reactive_power = load.q0 - load.fixed_reactive_power,
+                            .variable_active_power = (load.p0 orelse load.fixed_active_power) - load.fixed_active_power,
+                            .variable_reactive_power = (load.q0 orelse load.fixed_reactive_power) - load.fixed_reactive_power,
                         },
                     });
                 }
             }
         }
         if (load_count > 0) {
-            try network.extension_versions.append(gpa, .{ .extension_name = "detail" });
+            try network.extension_versions.append(gpa, .{ .extension_name = "detail", .version = extension_version("detail") });
         }
     }
 
@@ -409,8 +460,8 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh)
                     }
                 }
             }
-            if (has_crc) try network.extension_versions.append(gpa, .{ .extension_name = "coordinatedReactiveControl" });
-            if (has_apc) try network.extension_versions.append(gpa, .{ .extension_name = "activePowerControl" });
+            if (has_crc) try network.extension_versions.append(gpa, .{ .extension_name = "coordinatedReactiveControl", .version = extension_version("coordinatedReactiveControl") });
+            if (has_apc) try network.extension_versions.append(gpa, .{ .extension_name = "activePowerControl", .version = extension_version("activePowerControl") });
         }
     }
 
@@ -475,14 +526,20 @@ pub fn convert(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh)
             .id = network.id,
             .cgmes_metadata_models = if (metadata_models.items.len > 0) .{ .models = metadata_models } else null,
             .base_voltage_mapping = if (base_voltage_list.items.len > 0) .{ .base_voltages = base_voltage_list } else null,
-            .cim_characteristics = .{ .topology_kind = "NODE_BREAKER", .cim_version = 100 },
+            .cim_characteristics = .{
+                // cimCharacteristics.topologyKind reflects the source CGMES shape,
+                // not the IIDM output shape. EQ with ConnectivityNodes = NODE_BREAKER
+                // even when TP is provided; matches pypowsybl.
+                .topology_kind = "NODE_BREAKER",
+                .cim_version = 100,
+            },
         });
         metadata_models = .empty; // ownership transferred
         base_voltage_list = .empty; // ownership transferred
 
-        if (expected_model_count > 0) try network.extension_versions.append(gpa, .{ .extension_name = "cgmesMetadataModels" });
-        if (base_voltages.len > 0) try network.extension_versions.append(gpa, .{ .extension_name = "baseVoltageMapping" });
-        try network.extension_versions.append(gpa, .{ .extension_name = "cimCharacteristics" });
+        if (expected_model_count > 0) try network.extension_versions.append(gpa, .{ .extension_name = "cgmesMetadataModels", .version = extension_version("cgmesMetadataModels") });
+        if (base_voltages.len > 0) try network.extension_versions.append(gpa, .{ .extension_name = "baseVoltageMapping", .version = extension_version("baseVoltageMapping") });
+        try network.extension_versions.append(gpa, .{ .extension_name = "cimCharacteristics", .version = extension_version("cimCharacteristics") });
     }
 
     assert(network.substations.items.len > 0);
@@ -522,9 +579,9 @@ test "profile_to_subset: CoreEquipment URL → EQUIPMENT" {
     );
 }
 
-test "profile_to_subset: SteadyStateHypothesis URL → SSH" {
+test "profile_to_subset: SteadyStateHypothesis URL → STEADY_STATE_HYPOTHESIS" {
     try std.testing.expectEqualStrings(
-        "SSH",
+        "STEADY_STATE_HYPOTHESIS",
         profile_to_subset("http://iec.ch/TC57/ns/CIM/SteadyStateHypothesis-EU/3.0"),
     );
 }
@@ -534,6 +591,20 @@ test "profile_to_subset: unknown URL → UNKNOWN" {
         "UNKNOWN",
         profile_to_subset("http://example.com/SomeOtherProfile/1.0"),
     );
+}
+
+// ── extension_version ─────────────────────────────────────────────────────────
+
+test "extension_version: activePowerControl → 1.2" {
+    try std.testing.expectEqualStrings("1.2", extension_version("activePowerControl"));
+}
+
+test "extension_version: cgmesMetadataModels → 1.0" {
+    try std.testing.expectEqualStrings("1.0", extension_version("cgmesMetadataModels"));
+}
+
+test "extension_version: unknown name → 1.0" {
+    try std.testing.expectEqualStrings("1.0", extension_version("somethingElse"));
 }
 
 // ── append_metadata_model ─────────────────────────────────────────────────────
@@ -583,7 +654,7 @@ test "append_metadata_model: reads id/version/subset/profiles/DependentOn" {
     try std.testing.expectEqual(@as(usize, 1), metadata_models.items.len);
     const m = metadata_models.items[0];
     try std.testing.expectEqualStrings("urn:uuid:test-fm-1", m.id);
-    try std.testing.expectEqualStrings("SSH", m.subset);
+    try std.testing.expectEqualStrings("STEADY_STATE_HYPOTHESIS", m.subset);
     try std.testing.expectEqual(@as(u32, 3), m.version);
     try std.testing.expectEqualStrings("http://example.com/mas", m.modeling_authority_set);
     try std.testing.expectEqual(@as(usize, 1), m.profiles.items.len);

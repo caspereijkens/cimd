@@ -60,6 +60,30 @@ fn write_optional_float_field(jws: anytype, field_name: []const u8, value: ?f64)
     }
 }
 
+/// Write a terminal connection: either `<node_field>: N` (node-breaker) or
+/// `<bus_field>: id` + `<cbus_field>: id` (bus-breaker). Picked based on `bus`.
+fn write_terminal(
+    jws: anytype,
+    node_field: []const u8,
+    bus_field: []const u8,
+    cbus_field: []const u8,
+    node: u32,
+    bus: ?[]const u8,
+    cbus: ?[]const u8,
+) !void {
+    if (bus) |b| {
+        try jws.objectField(bus_field);
+        try jws.write(b);
+        if (cbus) |cb| {
+            try jws.objectField(cbus_field);
+            try jws.write(cb);
+        }
+    } else {
+        try jws.objectField(node_field);
+        try jws.write(node);
+    }
+}
+
 /// Write an operational limits group array if non-empty
 fn write_op_lims_groups(jws: anytype, field_name: []const u8, groups: std.ArrayListUnmanaged(OperationalLimitsGroup)) !void {
     if (groups.items.len > 0) {
@@ -179,11 +203,13 @@ pub const Load = struct {
     id: []const u8,
     name: ?[]const u8,
     load_type: LoadType,
-    p0: f64 = 0.0,
-    q0: f64 = 0.0,
+    p0: ?f64 = null,
+    q0: ?f64 = null,
     fixed_active_power: f64 = 0.0,
     fixed_reactive_power: f64 = 0.0,
     node: u32,
+    bus: ?[]const u8 = null,
+    connectable_bus: ?[]const u8 = null,
     exponential_model: ?ExponentialModel = null,
     zip_model: ?ZipModel = null,
     aliases: std.ArrayListUnmanaged(Alias),
@@ -197,12 +223,15 @@ pub const Load = struct {
         try jws.write(self.name);
         try jws.objectField("loadType");
         try jws.write(self.load_type);
-        try jws.objectField("p0");
-        try writeFloat(jws, self.p0);
-        try jws.objectField("q0");
-        try writeFloat(jws, self.q0);
-        try jws.objectField("node");
-        try jws.write(self.node);
+        if (self.p0) |v| {
+            try jws.objectField("p0");
+            try writeFloat(jws, v);
+        }
+        if (self.q0) |v| {
+            try jws.objectField("q0");
+            try writeFloat(jws, v);
+        }
+        try write_terminal(jws, "node", "bus", "connectableBus", self.node, self.bus, self.connectable_bus);
         if (self.aliases.items.len > 0) {
             try jws.objectField("aliases");
             try jws.write(self.aliases.items);
@@ -254,6 +283,8 @@ pub const Shunt = struct {
     target_deadband: ?f64 = null,
     regulating_terminal: ?[]const u8 = null,
     node: u32,
+    bus: ?[]const u8 = null,
+    connectable_bus: ?[]const u8 = null,
     shunt_linear_model: ShuntLinearModel,
     aliases: std.ArrayListUnmanaged(Alias),
     properties: std.ArrayListUnmanaged(Property),
@@ -276,8 +307,7 @@ pub const Shunt = struct {
             try jws.objectField("targetDeadband");
             try writeFloat(jws, td);
         }
-        try jws.objectField("node");
-        try jws.write(self.node);
+        try write_terminal(jws, "node", "bus", "connectableBus", self.node, self.bus, self.connectable_bus);
         if (self.aliases.items.len > 0) {
             try jws.objectField("aliases");
             try jws.write(self.aliases.items);
@@ -311,6 +341,8 @@ pub const VsConverterStation = struct {
     loss_factor: f64,
     reactive_power_setpoint: f64,
     node: u32,
+    bus: ?[]const u8 = null,
+    connectable_bus: ?[]const u8 = null,
     reactive_capability_curve_points: std.ArrayListUnmanaged(ReactiveCapabilityCurvePoint),
     min_max_reactive_limits: ?MinMaxReactiveLimits = null,
     aliases: std.ArrayListUnmanaged(Alias),
@@ -328,8 +360,7 @@ pub const VsConverterStation = struct {
         try writeFloat(jws, self.loss_factor);
         try jws.objectField("reactivePowerSetpoint");
         try writeFloat(jws, self.reactive_power_setpoint);
-        try jws.objectField("node");
-        try jws.write(self.node);
+        try write_terminal(jws, "node", "bus", "connectableBus", self.node, self.bus, self.connectable_bus);
         if (self.aliases.items.len > 0) {
             try jws.objectField("aliases");
             try jws.write(self.aliases.items);
@@ -364,6 +395,8 @@ pub const LccConverterStation = struct {
     loss_factor: f64,
     power_factor: f64,
     node: u32,
+    bus: ?[]const u8 = null,
+    connectable_bus: ?[]const u8 = null,
     aliases: std.ArrayListUnmanaged(Alias),
 
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
@@ -376,8 +409,7 @@ pub const LccConverterStation = struct {
         try writeFloat(jws, self.loss_factor);
         try jws.objectField("powerFactor");
         try writeFloat(jws, self.power_factor);
-        try jws.objectField("node");
-        try jws.write(self.node);
+        try write_terminal(jws, "node", "bus", "connectableBus", self.node, self.bus, self.connectable_bus);
         if (self.aliases.items.len > 0) {
             try jws.objectField("aliases");
             try jws.write(self.aliases.items);
@@ -412,6 +444,8 @@ pub const StaticVarCompensator = struct {
     regulation_mode: SvcRegulationMode,
     regulating: bool,
     node: u32,
+    bus: ?[]const u8 = null,
+    connectable_bus: ?[]const u8 = null,
     aliases: std.ArrayListUnmanaged(Alias),
     properties: std.ArrayListUnmanaged(Property),
 
@@ -429,8 +463,7 @@ pub const StaticVarCompensator = struct {
         try self.regulation_mode.jsonStringify(jws);
         try jws.objectField("regulating");
         try jws.write(self.regulating);
-        try jws.objectField("node");
-        try jws.write(self.node);
+        try write_terminal(jws, "node", "bus", "connectableBus", self.node, self.bus, self.connectable_bus);
         if (self.aliases.items.len > 0) {
             try jws.objectField("aliases");
             try jws.write(self.aliases.items);
@@ -538,6 +571,8 @@ pub const Generator = struct {
     participation_factor: ?f64 = null,
     q_percent: ?f64 = null,
     node: u32,
+    bus: ?[]const u8 = null,
+    connectable_bus: ?[]const u8 = null,
     reactive_capability_curve_points: std.ArrayListUnmanaged(ReactiveCapabilityCurvePoint),
     min_max_reactive_limits: ?MinMaxReactiveLimits = null,
     aliases: std.ArrayListUnmanaged(Alias),
@@ -575,8 +610,7 @@ pub const Generator = struct {
             try jws.objectField("isCondenser");
             try jws.write(true);
         }
-        try jws.objectField("node");
-        try jws.write(self.node);
+        try write_terminal(jws, "node", "bus", "connectableBus", self.node, self.bus, self.connectable_bus);
         if (self.regulating_terminal) |rt| {
             try jws.objectField("regulatingTerminal");
             try jws.beginObject();
@@ -763,6 +797,51 @@ pub const InternalConnection = struct {
     }
 };
 
+pub const TopologyKind = enum {
+    node_breaker,
+    bus_breaker,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.write(switch (self) {
+            .node_breaker => "NODE_BREAKER",
+            .bus_breaker => "BUS_BREAKER",
+        });
+    }
+};
+
+pub const Bus = struct {
+    id: []const u8,
+    name: ?[]const u8 = null,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("id");
+        try jws.write(self.id);
+        if (self.name) |n| {
+            try jws.objectField("name");
+            try jws.write(n);
+        }
+        try jws.endObject();
+    }
+};
+
+pub const BusBreakerTopology = struct {
+    buses: std.ArrayListUnmanaged(Bus) = .empty,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        if (self.buses.items.len > 0) {
+            try jws.objectField("buses");
+            try jws.write(self.buses.items);
+        }
+        try jws.endObject();
+    }
+
+    pub fn deinit(self: *BusBreakerTopology, allocator: std.mem.Allocator) void {
+        self.buses.deinit(allocator);
+    }
+};
+
 pub const NodeBreakerTopology = struct {
     busbar_sections: std.ArrayListUnmanaged(BusbarSection),
     switches: std.ArrayListUnmanaged(Switch),
@@ -804,7 +883,9 @@ pub const VoltageLevel = struct {
     high_voltage_limit: ?f64,
     aliases: std.ArrayListUnmanaged(Alias),
     properties: std.ArrayListUnmanaged(Property),
+    topology_kind: TopologyKind = .node_breaker,
     node_breaker_topology: NodeBreakerTopology,
+    bus_breaker_topology: BusBreakerTopology = .{},
     generators: std.ArrayListUnmanaged(Generator),
     loads: std.ArrayListUnmanaged(Load),
     shunts: std.ArrayListUnmanaged(Shunt),
@@ -822,7 +903,7 @@ pub const VoltageLevel = struct {
         try write_optional_float_field(jws, "lowVoltageLimit", self.low_voltage_limit);
         try write_optional_float_field(jws, "highVoltageLimit", self.high_voltage_limit);
         try jws.objectField("topologyKind");
-        try jws.write("NODE_BREAKER");
+        try jws.write(self.topology_kind);
         if (self.aliases.items.len > 0) {
             try jws.objectField("aliases");
             try jws.write(self.aliases.items);
@@ -831,8 +912,16 @@ pub const VoltageLevel = struct {
             try jws.objectField("properties");
             try jws.write(self.properties.items);
         }
-        try jws.objectField("nodeBreakerTopology");
-        try jws.write(self.node_breaker_topology);
+        switch (self.topology_kind) {
+            .node_breaker => {
+                try jws.objectField("nodeBreakerTopology");
+                try jws.write(self.node_breaker_topology);
+            },
+            .bus_breaker => {
+                try jws.objectField("busBreakerTopology");
+                try jws.write(self.bus_breaker_topology);
+            },
+        }
         if (self.generators.items.len > 0) {
             try jws.objectField("generators");
             try jws.write(self.generators.items);
@@ -880,6 +969,7 @@ pub const VoltageLevel = struct {
             lcc.deinit(allocator);
         }
         self.node_breaker_topology.deinit(allocator);
+        self.bus_breaker_topology.deinit(allocator);
         self.generators.deinit(allocator);
         self.loads.deinit(allocator);
         self.shunts.deinit(allocator);
@@ -1156,8 +1246,12 @@ pub const TwoWindingsTransformer = struct {
     rated_s: ?f64,
     voltage_level_id1: []const u8,
     node1: u32,
+    bus1: ?[]const u8 = null,
+    connectable_bus1: ?[]const u8 = null,
     voltage_level_id2: []const u8,
     node2: u32,
+    bus2: ?[]const u8 = null,
+    connectable_bus2: ?[]const u8 = null,
     ratio_tap_changer: ?RatioTapChanger,
     phase_tap_changer: ?PhaseTapChanger,
     selected_op_lims_group1_id: ?[]const u8,
@@ -1190,12 +1284,10 @@ pub const TwoWindingsTransformer = struct {
         }
         try jws.objectField("voltageLevelId1");
         try jws.write(self.voltage_level_id1);
-        try jws.objectField("node1");
-        try jws.write(self.node1);
+        try write_terminal(jws, "node1", "bus1", "connectableBus1", self.node1, self.bus1, self.connectable_bus1);
         try jws.objectField("voltageLevelId2");
         try jws.write(self.voltage_level_id2);
-        try jws.objectField("node2");
-        try jws.write(self.node2);
+        try write_terminal(jws, "node2", "bus2", "connectableBus2", self.node2, self.bus2, self.connectable_bus2);
         if (self.selected_op_lims_group1_id) |id| {
             try jws.objectField("selectedOperationalLimitsGroupId1");
             try jws.write(id);
@@ -1246,10 +1338,16 @@ pub const ThreeWindingsTransformer = struct {
     rated_u0: f64,
     voltage_level_id1: []const u8,
     node1: u32,
+    bus1: ?[]const u8 = null,
+    connectable_bus1: ?[]const u8 = null,
     voltage_level_id2: []const u8,
     node2: u32,
+    bus2: ?[]const u8 = null,
+    connectable_bus2: ?[]const u8 = null,
     voltage_level_id3: []const u8,
     node3: u32,
+    bus3: ?[]const u8 = null,
+    connectable_bus3: ?[]const u8 = null,
     r1: f64,
     x1: f64,
     g1: f64,
@@ -1332,16 +1430,13 @@ pub const ThreeWindingsTransformer = struct {
         try writeFloat(jws, self.rated_u0);
         try jws.objectField("voltageLevelId1");
         try jws.write(self.voltage_level_id1);
-        try jws.objectField("node1");
-        try jws.write(self.node1);
+        try write_terminal(jws, "node1", "bus1", "connectableBus1", self.node1, self.bus1, self.connectable_bus1);
         try jws.objectField("voltageLevelId2");
         try jws.write(self.voltage_level_id2);
-        try jws.objectField("node2");
-        try jws.write(self.node2);
+        try write_terminal(jws, "node2", "bus2", "connectableBus2", self.node2, self.bus2, self.connectable_bus2);
         try jws.objectField("voltageLevelId3");
         try jws.write(self.voltage_level_id3);
-        try jws.objectField("node3");
-        try jws.write(self.node3);
+        try write_terminal(jws, "node3", "bus3", "connectableBus3", self.node3, self.bus3, self.connectable_bus3);
         if (self.selected_op_lims_group_id1) |sid| {
             try jws.objectField("selectedOperationalLimitsGroupId1");
             try jws.write(sid);
@@ -1398,11 +1493,39 @@ pub const Property = struct {
     /// True when `value` was heap-allocated and must be freed on deinit.
     /// False (default) for string literals and slices into the XML backing.
     owned_value: bool = false,
+
+    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("name");
+        try jws.write(self.name);
+        try jws.objectField("value");
+        try jws.write(self.value);
+        try jws.endObject();
+    }
 };
 
 fn free_properties(allocator: std.mem.Allocator, properties: *std.ArrayListUnmanaged(Property)) void {
     for (properties.items) |prop| if (prop.owned_value) allocator.free(prop.value);
     properties.deinit(allocator);
+}
+
+test "Property: jsonStringify emits only name and value" {
+    const gpa = std.testing.allocator;
+    const prop = Property{ .name = "CGMES.normalSections", .value = "1", .owned_value = true };
+    const json = try std.json.Stringify.valueAlloc(gpa, prop, .{});
+    defer gpa.free(json);
+    try std.testing.expectEqualStrings("{\"name\":\"CGMES.normalSections\",\"value\":\"1\"}", json);
+}
+
+test "CimCharacteristics: topologyKind BUS_BRANCH for bus-branch conversions" {
+    const gpa = std.testing.allocator;
+    const ch = CimCharacteristics{ .topology_kind = "BUS_BRANCH", .cim_version = 100 };
+    const json = try std.json.Stringify.valueAlloc(gpa, ch, .{});
+    defer gpa.free(json);
+    try std.testing.expectEqualStrings(
+        "{\"topologyKind\":\"BUS_BRANCH\",\"cimVersion\":100}",
+        json,
+    );
 }
 
 pub const Substation = struct {
@@ -1474,8 +1597,12 @@ pub const Line = struct {
     name: ?[]const u8,
     voltage_level1_id: []const u8,
     node1: u32,
+    bus1: ?[]const u8 = null,
+    connectable_bus1: ?[]const u8 = null,
     voltage_level2_id: []const u8,
     node2: u32,
+    bus2: ?[]const u8 = null,
+    connectable_bus2: ?[]const u8 = null,
     r: f64,
     x: f64,
     g1: f64,
@@ -1509,12 +1636,10 @@ pub const Line = struct {
         try writeFloat(jws, self.b2);
         try jws.objectField("voltageLevelId1");
         try jws.write(self.voltage_level1_id);
-        try jws.objectField("node1");
-        try jws.write(self.node1);
+        try write_terminal(jws, "node1", "bus1", "connectableBus1", self.node1, self.bus1, self.connectable_bus1);
         try jws.objectField("voltageLevelId2");
         try jws.write(self.voltage_level2_id);
-        try jws.objectField("node2");
-        try jws.write(self.node2);
+        try write_terminal(jws, "node2", "bus2", "connectableBus2", self.node2, self.bus2, self.connectable_bus2);
         if (self.selected_op_lims_group1_id) |id| {
             try jws.objectField("selectedOperationalLimitsGroupId1");
             try jws.write(id);
@@ -1947,6 +2072,7 @@ pub const Network = struct {
     id: []const u8, // taken from FullModel rdf:about
     case_date: ?[]const u8, // taken from FullModel -> Model.scenarioTime
     forecast_distance: u32 = 0, // minutes between Model.created and Model.scenarioTime
+    minimum_validation_level: []const u8 = "EQUIPMENT",
     substations: std.ArrayListUnmanaged(Substation),
     fictitious_voltage_levels: std.ArrayListUnmanaged(FictitiousVoltageLevel) = .empty,
     lines: std.ArrayListUnmanaged(Line),
@@ -1972,7 +2098,7 @@ pub const Network = struct {
         try jws.objectField("sourceFormat");
         try jws.write("CGMES");
         try jws.objectField("minimumValidationLevel");
-        try jws.write("EQUIPMENT");
+        try jws.write(self.minimum_validation_level);
         try jws.objectField("substations");
         try jws.beginArray();
         for (self.substations.items) |substation| {

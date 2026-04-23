@@ -28,6 +28,8 @@ const CimSsh = @import("cim_ssh.zig").CimSsh;
 ///   LINE1            — normal line between VL1 and VL2; gch=4, bch=6
 ///   LINE_BNDRY       — line from VL1 to CN_BNDRY → creates fictitious VL
 ///   CA1+TF1          — ControlArea with one TieFlow boundary
+///   TWT1             — 2-winding PowerTransformer in SS1 (aliases CGMES.Terminal1/2)
+///   TWT2             — 3-winding PowerTransformer in SS1 (aliases CGMES.Terminal1/2/3)
 const EQ_XML =
     \\<rdf:RDF>
     \\  <!-- Main EQ FullModel (index 0). scenarioTime 8h after created → forecastDistance = 480 min. -->
@@ -312,6 +314,264 @@ const EQ_XML =
     \\    <cim:TieFlow.ControlArea rdf:resource="#_CA1"/>
     \\    <cim:TieFlow.Terminal rdf:resource="#_T_LINE1_1"/>
     \\  </cim:TieFlow>
+    \\
+    \\  <!-- VoltageLimits on VL1 via the BusbarSection1 terminal.
+    \\       Two high limits (121.0 and 125.0) and two low limits (99.0 and 95.0).
+    \\       Most-restrictive high=121.0 (min), most-restrictive low=99.0 (max). -->
+    \\  <cim:OperationalLimitType rdf:ID="_OLT_HI_V">
+    \\    <cim:IdentifiedObject.mRID>OLT_HI_V</cim:IdentifiedObject.mRID>
+    \\    <cim:OperationalLimitType.direction rdf:resource="http://iec.ch/TC57/CIM100#OperationalLimitDirectionKind.high"/>
+    \\    <cim:OperationalLimitType.kind rdf:resource="http://iec.ch/TC57/CIM100-European#LimitKind.highVoltage"/>
+    \\    <cim:OperationalLimitType.isInfiniteDuration>true</cim:OperationalLimitType.isInfiniteDuration>
+    \\  </cim:OperationalLimitType>
+    \\  <cim:OperationalLimitType rdf:ID="_OLT_LO_V">
+    \\    <cim:IdentifiedObject.mRID>OLT_LO_V</cim:IdentifiedObject.mRID>
+    \\    <cim:OperationalLimitType.direction rdf:resource="http://iec.ch/TC57/CIM100#OperationalLimitDirectionKind.low"/>
+    \\    <cim:OperationalLimitType.kind rdf:resource="http://iec.ch/TC57/CIM100-European#LimitKind.lowVoltage"/>
+    \\    <cim:OperationalLimitType.isInfiniteDuration>true</cim:OperationalLimitType.isInfiniteDuration>
+    \\  </cim:OperationalLimitType>
+    \\  <cim:OperationalLimitSet rdf:ID="_OLS_VL1">
+    \\    <cim:IdentifiedObject.mRID>OLS_VL1</cim:IdentifiedObject.mRID>
+    \\    <cim:OperationalLimitSet.Terminal rdf:resource="#_T_BusbarSection1"/>
+    \\  </cim:OperationalLimitSet>
+    \\  <cim:VoltageLimit rdf:ID="_VL_HI_1">
+    \\    <cim:IdentifiedObject.mRID>VL_HI_1</cim:IdentifiedObject.mRID>
+    \\    <cim:VoltageLimit.normalValue>121.0</cim:VoltageLimit.normalValue>
+    \\    <cim:OperationalLimit.OperationalLimitSet rdf:resource="#_OLS_VL1"/>
+    \\    <cim:OperationalLimit.OperationalLimitType rdf:resource="#_OLT_HI_V"/>
+    \\  </cim:VoltageLimit>
+    \\  <cim:VoltageLimit rdf:ID="_VL_HI_2">
+    \\    <cim:IdentifiedObject.mRID>VL_HI_2</cim:IdentifiedObject.mRID>
+    \\    <cim:VoltageLimit.normalValue>125.0</cim:VoltageLimit.normalValue>
+    \\    <cim:OperationalLimit.OperationalLimitSet rdf:resource="#_OLS_VL1"/>
+    \\    <cim:OperationalLimit.OperationalLimitType rdf:resource="#_OLT_HI_V"/>
+    \\  </cim:VoltageLimit>
+    \\  <cim:VoltageLimit rdf:ID="_VL_LO_1">
+    \\    <cim:IdentifiedObject.mRID>VL_LO_1</cim:IdentifiedObject.mRID>
+    \\    <cim:VoltageLimit.normalValue>99.0</cim:VoltageLimit.normalValue>
+    \\    <cim:OperationalLimit.OperationalLimitSet rdf:resource="#_OLS_VL1"/>
+    \\    <cim:OperationalLimit.OperationalLimitType rdf:resource="#_OLT_LO_V"/>
+    \\  </cim:VoltageLimit>
+    \\  <cim:VoltageLimit rdf:ID="_VL_LO_2">
+    \\    <cim:IdentifiedObject.mRID>VL_LO_2</cim:IdentifiedObject.mRID>
+    \\    <cim:VoltageLimit.normalValue>95.0</cim:VoltageLimit.normalValue>
+    \\    <cim:OperationalLimit.OperationalLimitSet rdf:resource="#_OLS_VL1"/>
+    \\    <cim:OperationalLimit.OperationalLimitType rdf:resource="#_OLT_LO_V"/>
+    \\  </cim:VoltageLimit>
+    \\
+    \\  <!-- 2-winding transformer TWT1 (both ends in VL1, SS1) -->
+    \\  <cim:ConnectivityNode rdf:ID="_CN_TWT1_1">
+    \\    <cim:IdentifiedObject.mRID>CN_TWT1_1</cim:IdentifiedObject.mRID>
+    \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#_VL1"/>
+    \\  </cim:ConnectivityNode>
+    \\  <cim:ConnectivityNode rdf:ID="_CN_TWT1_2">
+    \\    <cim:IdentifiedObject.mRID>CN_TWT1_2</cim:IdentifiedObject.mRID>
+    \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#_VL1"/>
+    \\  </cim:ConnectivityNode>
+    \\  <cim:PowerTransformer rdf:ID="_TWT1">
+    \\    <cim:IdentifiedObject.mRID>TWT1</cim:IdentifiedObject.mRID>
+    \\  </cim:PowerTransformer>
+    \\  <cim:PowerTransformerEnd rdf:ID="_TWT1_E1">
+    \\    <cim:IdentifiedObject.mRID>TWT1_E1</cim:IdentifiedObject.mRID>
+    \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_TWT1"/>
+    \\    <cim:TransformerEnd.Terminal rdf:resource="#_T_TWT1_1"/>
+    \\    <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
+    \\    <cim:PowerTransformerEnd.ratedU>220</cim:PowerTransformerEnd.ratedU>
+    \\    <cim:PowerTransformerEnd.ratedS>100</cim:PowerTransformerEnd.ratedS>
+    \\    <cim:PowerTransformerEnd.r>0.1</cim:PowerTransformerEnd.r>
+    \\    <cim:PowerTransformerEnd.x>1.0</cim:PowerTransformerEnd.x>
+    \\    <cim:PowerTransformerEnd.g>0.01</cim:PowerTransformerEnd.g>
+    \\    <cim:PowerTransformerEnd.b>0.02</cim:PowerTransformerEnd.b>
+    \\  </cim:PowerTransformerEnd>
+    \\  <cim:PowerTransformerEnd rdf:ID="_TWT1_E2">
+    \\    <cim:IdentifiedObject.mRID>TWT1_E2</cim:IdentifiedObject.mRID>
+    \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_TWT1"/>
+    \\    <cim:TransformerEnd.Terminal rdf:resource="#_T_TWT1_2"/>
+    \\    <cim:TransformerEnd.endNumber>2</cim:TransformerEnd.endNumber>
+    \\    <cim:PowerTransformerEnd.ratedU>110</cim:PowerTransformerEnd.ratedU>
+    \\    <cim:PowerTransformerEnd.ratedS>100</cim:PowerTransformerEnd.ratedS>
+    \\    <cim:PowerTransformerEnd.r>0.0</cim:PowerTransformerEnd.r>
+    \\    <cim:PowerTransformerEnd.x>0.0</cim:PowerTransformerEnd.x>
+    \\  </cim:PowerTransformerEnd>
+    \\  <cim:Terminal rdf:ID="_T_TWT1_1">
+    \\    <cim:IdentifiedObject.mRID>T_TWT1_1</cim:IdentifiedObject.mRID>
+    \\    <cim:Terminal.ConductingEquipment rdf:resource="#_TWT1"/>
+    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN_TWT1_1"/>
+    \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+    \\  </cim:Terminal>
+    \\  <cim:Terminal rdf:ID="_T_TWT1_2">
+    \\    <cim:IdentifiedObject.mRID>T_TWT1_2</cim:IdentifiedObject.mRID>
+    \\    <cim:Terminal.ConductingEquipment rdf:resource="#_TWT1"/>
+    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN_TWT1_2"/>
+    \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+    \\  </cim:Terminal>
+    \\
+    \\  <!-- 3-winding transformer TWT2 (all ends in VL1, SS1) -->
+    \\  <cim:ConnectivityNode rdf:ID="_CN_TWT2_1">
+    \\    <cim:IdentifiedObject.mRID>CN_TWT2_1</cim:IdentifiedObject.mRID>
+    \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#_VL1"/>
+    \\  </cim:ConnectivityNode>
+    \\  <cim:ConnectivityNode rdf:ID="_CN_TWT2_2">
+    \\    <cim:IdentifiedObject.mRID>CN_TWT2_2</cim:IdentifiedObject.mRID>
+    \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#_VL1"/>
+    \\  </cim:ConnectivityNode>
+    \\  <cim:ConnectivityNode rdf:ID="_CN_TWT2_3">
+    \\    <cim:IdentifiedObject.mRID>CN_TWT2_3</cim:IdentifiedObject.mRID>
+    \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#_VL1"/>
+    \\  </cim:ConnectivityNode>
+    \\  <cim:PowerTransformer rdf:ID="_TWT2">
+    \\    <cim:IdentifiedObject.mRID>TWT2</cim:IdentifiedObject.mRID>
+    \\  </cim:PowerTransformer>
+    \\  <cim:PowerTransformerEnd rdf:ID="_TWT2_E1">
+    \\    <cim:IdentifiedObject.mRID>TWT2_E1</cim:IdentifiedObject.mRID>
+    \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_TWT2"/>
+    \\    <cim:TransformerEnd.Terminal rdf:resource="#_T_TWT2_1"/>
+    \\    <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
+    \\    <cim:PowerTransformerEnd.ratedU>220</cim:PowerTransformerEnd.ratedU>
+    \\    <cim:PowerTransformerEnd.ratedS>100</cim:PowerTransformerEnd.ratedS>
+    \\    <cim:PowerTransformerEnd.r>0.0</cim:PowerTransformerEnd.r>
+    \\    <cim:PowerTransformerEnd.x>0.0</cim:PowerTransformerEnd.x>
+    \\  </cim:PowerTransformerEnd>
+    \\  <cim:PowerTransformerEnd rdf:ID="_TWT2_E2">
+    \\    <cim:IdentifiedObject.mRID>TWT2_E2</cim:IdentifiedObject.mRID>
+    \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_TWT2"/>
+    \\    <cim:TransformerEnd.Terminal rdf:resource="#_T_TWT2_2"/>
+    \\    <cim:TransformerEnd.endNumber>2</cim:TransformerEnd.endNumber>
+    \\    <cim:PowerTransformerEnd.ratedU>110</cim:PowerTransformerEnd.ratedU>
+    \\    <cim:PowerTransformerEnd.ratedS>100</cim:PowerTransformerEnd.ratedS>
+    \\    <cim:PowerTransformerEnd.r>1.0</cim:PowerTransformerEnd.r>
+    \\    <cim:PowerTransformerEnd.x>2.0</cim:PowerTransformerEnd.x>
+    \\  </cim:PowerTransformerEnd>
+    \\  <cim:PowerTransformerEnd rdf:ID="_TWT2_E3">
+    \\    <cim:IdentifiedObject.mRID>TWT2_E3</cim:IdentifiedObject.mRID>
+    \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_TWT2"/>
+    \\    <cim:TransformerEnd.Terminal rdf:resource="#_T_TWT2_3"/>
+    \\    <cim:TransformerEnd.endNumber>3</cim:TransformerEnd.endNumber>
+    \\    <cim:PowerTransformerEnd.ratedU>33</cim:PowerTransformerEnd.ratedU>
+    \\    <cim:PowerTransformerEnd.ratedS>100</cim:PowerTransformerEnd.ratedS>
+    \\    <cim:PowerTransformerEnd.r>0.5</cim:PowerTransformerEnd.r>
+    \\    <cim:PowerTransformerEnd.x>1.5</cim:PowerTransformerEnd.x>
+    \\  </cim:PowerTransformerEnd>
+    \\  <cim:Terminal rdf:ID="_T_TWT2_1">
+    \\    <cim:IdentifiedObject.mRID>T_TWT2_1</cim:IdentifiedObject.mRID>
+    \\    <cim:Terminal.ConductingEquipment rdf:resource="#_TWT2"/>
+    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN_TWT2_1"/>
+    \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+    \\  </cim:Terminal>
+    \\  <cim:Terminal rdf:ID="_T_TWT2_2">
+    \\    <cim:IdentifiedObject.mRID>T_TWT2_2</cim:IdentifiedObject.mRID>
+    \\    <cim:Terminal.ConductingEquipment rdf:resource="#_TWT2"/>
+    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN_TWT2_2"/>
+    \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+    \\  </cim:Terminal>
+    \\  <cim:Terminal rdf:ID="_T_TWT2_3">
+    \\    <cim:IdentifiedObject.mRID>T_TWT2_3</cim:IdentifiedObject.mRID>
+    \\    <cim:Terminal.ConductingEquipment rdf:resource="#_TWT2"/>
+    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN_TWT2_3"/>
+    \\    <cim:ACDCTerminal.sequenceNumber>3</cim:ACDCTerminal.sequenceNumber>
+    \\  </cim:Terminal>
+    \\
+    \\  <!-- Current-limit PATL on TWT1 terminal 1 and TWT2 terminal 2 (exercise op_lims_groups on transformers) -->
+    \\  <cim:OperationalLimitType rdf:ID="_OLT_CL_PATL">
+    \\    <cim:IdentifiedObject.mRID>OLT_CL_PATL</cim:IdentifiedObject.mRID>
+    \\    <cim:OperationalLimitType.isInfiniteDuration>true</cim:OperationalLimitType.isInfiniteDuration>
+    \\  </cim:OperationalLimitType>
+    \\  <cim:OperationalLimitSet rdf:ID="_OLS_TWT1_E1">
+    \\    <cim:IdentifiedObject.mRID>OLS_TWT1_E1</cim:IdentifiedObject.mRID>
+    \\    <cim:IdentifiedObject.name>LimSet_TWT1_E1</cim:IdentifiedObject.name>
+    \\    <cim:OperationalLimitSet.Terminal rdf:resource="#_T_TWT1_1"/>
+    \\  </cim:OperationalLimitSet>
+    \\  <cim:CurrentLimit rdf:ID="_CL_TWT1_E1">
+    \\    <cim:IdentifiedObject.mRID>CL_TWT1_E1</cim:IdentifiedObject.mRID>
+    \\    <cim:CurrentLimit.normalValue>500.0</cim:CurrentLimit.normalValue>
+    \\    <cim:OperationalLimit.OperationalLimitSet rdf:resource="#_OLS_TWT1_E1"/>
+    \\    <cim:OperationalLimit.OperationalLimitType rdf:resource="#_OLT_CL_PATL"/>
+    \\  </cim:CurrentLimit>
+    \\  <cim:OperationalLimitSet rdf:ID="_OLS_TWT2_E2">
+    \\    <cim:IdentifiedObject.mRID>OLS_TWT2_E2</cim:IdentifiedObject.mRID>
+    \\    <cim:IdentifiedObject.name>LimSet_TWT2_E2</cim:IdentifiedObject.name>
+    \\    <cim:OperationalLimitSet.Terminal rdf:resource="#_T_TWT2_2"/>
+    \\  </cim:OperationalLimitSet>
+    \\  <cim:CurrentLimit rdf:ID="_CL_TWT2_E2">
+    \\    <cim:IdentifiedObject.mRID>CL_TWT2_E2</cim:IdentifiedObject.mRID>
+    \\    <cim:CurrentLimit.normalValue>750.0</cim:CurrentLimit.normalValue>
+    \\    <cim:OperationalLimit.OperationalLimitSet rdf:resource="#_OLS_TWT2_E2"/>
+    \\    <cim:OperationalLimit.OperationalLimitType rdf:resource="#_OLT_CL_PATL"/>
+    \\  </cim:CurrentLimit>
+    \\
+    \\  <!-- Ratio tap changer (linear) on TWT1 end 1 — exercises CGMES.RatioTapChanger1 alias -->
+    \\  <cim:RatioTapChanger rdf:ID="_RTC_TWT1">
+    \\    <cim:IdentifiedObject.mRID>RTC_TWT1</cim:IdentifiedObject.mRID>
+    \\    <cim:RatioTapChanger.TransformerEnd rdf:resource="#_TWT1_E1"/>
+    \\    <cim:TapChanger.lowStep>1</cim:TapChanger.lowStep>
+    \\    <cim:TapChanger.highStep>3</cim:TapChanger.highStep>
+    \\    <cim:TapChanger.normalStep>2</cim:TapChanger.normalStep>
+    \\    <cim:TapChanger.neutralStep>2</cim:TapChanger.neutralStep>
+    \\    <cim:TapChanger.ltcFlag>true</cim:TapChanger.ltcFlag>
+    \\    <cim:RatioTapChanger.stepVoltageIncrement>1.0</cim:RatioTapChanger.stepVoltageIncrement>
+    \\  </cim:RatioTapChanger>
+    \\
+    \\  <!-- Phase tap changer (tabular) on TWT1 end 1 — 2 table points -->
+    \\  <cim:PhaseTapChangerTable rdf:ID="_PTT_TWT1">
+    \\    <cim:IdentifiedObject.mRID>PTT_TWT1</cim:IdentifiedObject.mRID>
+    \\  </cim:PhaseTapChangerTable>
+    \\  <cim:PhaseTapChangerTabular rdf:ID="_PTC_TWT1">
+    \\    <cim:IdentifiedObject.mRID>PTC_TWT1</cim:IdentifiedObject.mRID>
+    \\    <cim:PhaseTapChanger.TransformerEnd rdf:resource="#_TWT1_E1"/>
+    \\    <cim:PhaseTapChangerTabular.PhaseTapChangerTable rdf:resource="#_PTT_TWT1"/>
+    \\    <cim:TapChanger.lowStep>1</cim:TapChanger.lowStep>
+    \\    <cim:TapChanger.highStep>2</cim:TapChanger.highStep>
+    \\    <cim:TapChanger.normalStep>1</cim:TapChanger.normalStep>
+    \\    <cim:TapChanger.neutralStep>1</cim:TapChanger.neutralStep>
+    \\    <cim:TapChanger.ltcFlag>true</cim:TapChanger.ltcFlag>
+    \\  </cim:PhaseTapChangerTabular>
+    \\  <!-- Step 2 placed before step 1 in XML order to force sort-by-step in converter. -->
+    \\  <cim:PhaseTapChangerTablePoint rdf:ID="_PTP_TWT1_2">
+    \\    <cim:PhaseTapChangerTablePoint.PhaseTapChangerTable rdf:resource="#_PTT_TWT1"/>
+    \\    <cim:TapChangerTablePoint.step>2</cim:TapChangerTablePoint.step>
+    \\    <cim:TapChangerTablePoint.ratio>1.05</cim:TapChangerTablePoint.ratio>
+    \\    <cim:PhaseTapChangerTablePoint.angle>2.5</cim:PhaseTapChangerTablePoint.angle>
+    \\    <cim:TapChangerTablePoint.r>0.0</cim:TapChangerTablePoint.r>
+    \\    <cim:TapChangerTablePoint.x>0.0</cim:TapChangerTablePoint.x>
+    \\  </cim:PhaseTapChangerTablePoint>
+    \\  <cim:PhaseTapChangerTablePoint rdf:ID="_PTP_TWT1_1">
+    \\    <cim:PhaseTapChangerTablePoint.PhaseTapChangerTable rdf:resource="#_PTT_TWT1"/>
+    \\    <cim:TapChangerTablePoint.step>1</cim:TapChangerTablePoint.step>
+    \\    <cim:TapChangerTablePoint.ratio>1.0</cim:TapChangerTablePoint.ratio>
+    \\    <cim:PhaseTapChangerTablePoint.angle>0.0</cim:PhaseTapChangerTablePoint.angle>
+    \\    <cim:TapChangerTablePoint.r>0.0</cim:TapChangerTablePoint.r>
+    \\    <cim:TapChangerTablePoint.x>0.0</cim:TapChangerTablePoint.x>
+    \\  </cim:PhaseTapChangerTablePoint>
+    \\
+    \\  <!-- Ratio tap changer (tabular) on TWT2 end 1 — exercises sort-by-step and rho inversion. -->
+    \\  <cim:RatioTapChangerTable rdf:ID="_RTT_TWT2">
+    \\    <cim:IdentifiedObject.mRID>RTT_TWT2</cim:IdentifiedObject.mRID>
+    \\  </cim:RatioTapChangerTable>
+    \\  <cim:RatioTapChanger rdf:ID="_RTC_TWT2">
+    \\    <cim:IdentifiedObject.mRID>RTC_TWT2</cim:IdentifiedObject.mRID>
+    \\    <cim:RatioTapChanger.TransformerEnd rdf:resource="#_TWT2_E1"/>
+    \\    <cim:RatioTapChanger.RatioTapChangerTable rdf:resource="#_RTT_TWT2"/>
+    \\    <cim:TapChanger.lowStep>1</cim:TapChanger.lowStep>
+    \\    <cim:TapChanger.highStep>2</cim:TapChanger.highStep>
+    \\    <cim:TapChanger.normalStep>1</cim:TapChanger.normalStep>
+    \\    <cim:TapChanger.neutralStep>1</cim:TapChanger.neutralStep>
+    \\    <cim:TapChanger.ltcFlag>true</cim:TapChanger.ltcFlag>
+    \\  </cim:RatioTapChanger>
+    \\  <!-- Step 2 placed before step 1 in XML order to force sort-by-step in converter. -->
+    \\  <cim:RatioTapChangerTablePoint rdf:ID="_RTP_TWT2_2">
+    \\    <cim:RatioTapChangerTablePoint.RatioTapChangerTable rdf:resource="#_RTT_TWT2"/>
+    \\    <cim:TapChangerTablePoint.step>2</cim:TapChangerTablePoint.step>
+    \\    <cim:TapChangerTablePoint.ratio>1.25</cim:TapChangerTablePoint.ratio>
+    \\    <cim:TapChangerTablePoint.r>3.5</cim:TapChangerTablePoint.r>
+    \\    <cim:TapChangerTablePoint.x>4.5</cim:TapChangerTablePoint.x>
+    \\  </cim:RatioTapChangerTablePoint>
+    \\  <cim:RatioTapChangerTablePoint rdf:ID="_RTP_TWT2_1">
+    \\    <cim:RatioTapChangerTablePoint.RatioTapChangerTable rdf:resource="#_RTT_TWT2"/>
+    \\    <cim:TapChangerTablePoint.step>1</cim:TapChangerTablePoint.step>
+    \\    <cim:TapChangerTablePoint.ratio>1.0</cim:TapChangerTablePoint.ratio>
+    \\    <cim:TapChangerTablePoint.r>0.0</cim:TapChangerTablePoint.r>
+    \\    <cim:TapChangerTablePoint.x>0.0</cim:TapChangerTablePoint.x>
+    \\  </cim:RatioTapChangerTablePoint>
     \\</rdf:RDF>
 ;
 
@@ -345,6 +605,12 @@ const SSH_XML =
     \\  </cim:EnergyConsumer>
     \\</rdf:RDF>
 ;
+
+fn append_before_rdf_close(gpa: std.mem.Allocator, base: []const u8, extra: []const u8) ![]u8 {
+    const close_tag = "</rdf:RDF>";
+    const close_idx = std.mem.lastIndexOf(u8, base, close_tag) orelse return error.TestFailed;
+    return std.mem.concat(gpa, u8, &.{ base[0..close_idx], extra, close_tag });
+}
 
 /// Find a generator by mRID across all VLs in all substations.
 fn find_generator(network: anytype, mrid: []const u8) ?@TypeOf(network.substations.items[0].voltage_levels.items[0].generators.items[0]) {
@@ -398,6 +664,38 @@ fn find_switch(network: anytype, id: []const u8) ?@TypeOf(network.substations.it
     return null;
 }
 
+/// Find a Shunt by mRID across all VLs in all substations.
+fn find_shunt(network: anytype, mrid: []const u8) ?@TypeOf(network.substations.items[0].voltage_levels.items[0].shunts.items[0]) {
+    for (network.substations.items) |substation| {
+        for (substation.voltage_levels.items) |vl| {
+            for (vl.shunts.items) |shunt| {
+                if (std.mem.eql(u8, shunt.id, mrid)) return shunt;
+            }
+        }
+    }
+    return null;
+}
+
+/// Find a 2-winding transformer by mRID across all substations.
+fn find_two_windings_transformer(network: anytype, mrid: []const u8) ?@TypeOf(network.substations.items[0].two_winding_transformers.items[0]) {
+    for (network.substations.items) |substation| {
+        for (substation.two_winding_transformers.items) |twt| {
+            if (std.mem.eql(u8, twt.id, mrid)) return twt;
+        }
+    }
+    return null;
+}
+
+/// Find a 3-winding transformer by mRID across all substations.
+fn find_three_windings_transformer(network: anytype, mrid: []const u8) ?@TypeOf(network.substations.items[0].three_winding_transformers.items[0]) {
+    for (network.substations.items) |substation| {
+        for (substation.three_winding_transformers.items) |twt| {
+            if (std.mem.eql(u8, twt.id, mrid)) return twt;
+        }
+    }
+    return null;
+}
+
 /// Find a Load by mRID across all VLs in all substations.
 fn find_load(network: anytype, mrid: []const u8) ?@TypeOf(network.substations.items[0].voltage_levels.items[0].loads.items[0]) {
     for (network.substations.items) |substation| {
@@ -410,13 +708,39 @@ fn find_load(network: anytype, mrid: []const u8) ?@TypeOf(network.substations.it
     return null;
 }
 
+/// Find a Substation by mRID.
+fn find_substation(network: anytype, mrid: []const u8) ?@TypeOf(network.substations.items[0]) {
+    for (network.substations.items) |s| {
+        if (std.mem.eql(u8, s.id, mrid)) return s;
+    }
+    return null;
+}
+
+/// Find a VoltageLevel by mRID across all substations.
+fn find_voltage_level(network: anytype, mrid: []const u8) ?@TypeOf(network.substations.items[0].voltage_levels.items[0]) {
+    for (network.substations.items) |s| {
+        for (s.voltage_levels.items) |vl| {
+            if (std.mem.eql(u8, vl.id, mrid)) return vl;
+        }
+    }
+    return null;
+}
+
+/// Find a Property by name within a list of Properties.
+fn find_property(properties: anytype, name: []const u8) ?@TypeOf(properties[0]) {
+    for (properties) |p| {
+        if (std.mem.eql(u8, p.name, name)) return p;
+    }
+    return null;
+}
+
 // ── forecastDistance ─────────────────────────────────────────────────────────
 
 test "forecastDistance: scenarioTime 8h after created → 480 minutes" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     // 2026-01-01T09:00Z − 2026-01-01T01:00Z = 8h = 480 min
@@ -429,7 +753,7 @@ test "line: gch and bch split equally across both sides" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     const line = find_line(network, "LINE1") orelse return error.TestFailed;
@@ -448,7 +772,7 @@ test "boundary line: creates a fictitious VL and LINE_BNDRY lands in it" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     // Exactly one boundary CN → exactly one fictitious VL.
@@ -473,7 +797,7 @@ test "generator: energy_source derived from GeneratingUnit CIM type" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     const gen_th = find_generator(network, "GEN_TH") orelse return error.TestFailed;
@@ -487,7 +811,7 @@ test "generator: min_p and max_p read from GeneratingUnit" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     const gen = find_generator(network, "GEN_TH") orelse return error.TestFailed;
@@ -501,7 +825,7 @@ test "generator: is_condenser true when SynchronousMachine.type contains condens
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     const condenser = find_generator(network, "GEN_CO") orelse return error.TestFailed;
@@ -518,7 +842,7 @@ test "generator: reactive capability curve takes precedence over minQ/maxQ" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     const gen_cu = find_generator(network, "GEN_CU") orelse return error.TestFailed;
@@ -535,7 +859,7 @@ test "generator: minQ/maxQ used as fallback when no curve" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     const gen_th = find_generator(network, "GEN_TH") orelse return error.TestFailed;
@@ -552,7 +876,7 @@ test "SVC: regulationMode voltage fragment → .voltage" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     for (network.substations.items) |substation| {
@@ -575,7 +899,7 @@ test "detail extension: every load gets fixedActivePower etc. all zero" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     const ext = find_extension(network, "LOAD1") orelse return error.TestFailed;
@@ -602,7 +926,7 @@ test "coordinatedReactiveControl: generator with qPercent gets extension" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     const ext = find_extension(network, "GEN_CO") orelse return error.TestFailed;
@@ -621,7 +945,7 @@ test "areas: ControlArea produces one area with TieFlow boundary" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     try std.testing.expectEqual(@as(usize, 1), network.areas.items.len);
@@ -640,7 +964,7 @@ test "shunt: section count, bPerSection, voltage_regulator_on parsed correctly" 
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     for (network.substations.items) |substation| {
@@ -660,13 +984,401 @@ test "shunt: section count, bPerSection, voltage_regulator_on parsed correctly" 
     return error.TestFailed;
 }
 
+// ── Shunt aliases ─────────────────────────────────────────────────────────────
+
+test "shunt: CGMES.Terminal1 alias present with terminal mRID" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const shunt = find_shunt(network, "SHUNT1") orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(usize, 1), shunt.aliases.items.len);
+    const alias = shunt.aliases.items[0];
+    const type_str = switch (alias.type_info) {
+        .static_string => |s| s,
+        else => return error.TestFailed,
+    };
+    try std.testing.expectEqualStrings("CGMES.Terminal1", type_str);
+    try std.testing.expectEqualStrings("T_SHUNT1", alias.content);
+}
+
+test "shunt: targetDeadband defaults to 0.0 when SSH provided but no RegulatingControl reference" {
+    // SHUNT1 has controlEnabled but no RegulatingCondEq.RegulatingControl reference.
+    // With SSH present, pypowsybl emits targetDeadband: 0.0 on every shunt regardless of RC.
+    // Without SSH, the field is omitted entirely.
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
+    defer ssh.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, ssh, false);
+    defer network.deinit(gpa);
+
+    const shunt = find_shunt(network, "SHUNT1") orelse return error.TestFailed;
+    try std.testing.expect(shunt.target_deadband != null);
+    try std.testing.expectEqual(@as(f64, 0.0), shunt.target_deadband.?);
+}
+
+test "shunt: targetDeadband is null when no SSH provided" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const shunt = find_shunt(network, "SHUNT1") orelse return error.TestFailed;
+    try std.testing.expect(shunt.target_deadband == null);
+}
+
+// ── Transformer aliases ───────────────────────────────────────────────────────
+
+test "two winding transformer: CGMES.Terminal1 and CGMES.Terminal2 aliases" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const twt = find_two_windings_transformer(network, "TWT1") orelse return error.TestFailed;
+
+    var found_t1 = false;
+    var found_t2 = false;
+    for (twt.aliases.items) |alias| {
+        const type_str = switch (alias.type_info) {
+            .static_string => |s| s,
+            else => continue,
+        };
+        if (std.mem.eql(u8, type_str, "CGMES.Terminal1")) {
+            try std.testing.expectEqualStrings("T_TWT1_1", alias.content);
+            found_t1 = true;
+        }
+        if (std.mem.eql(u8, type_str, "CGMES.Terminal2")) {
+            try std.testing.expectEqualStrings("T_TWT1_2", alias.content);
+            found_t2 = true;
+        }
+    }
+    try std.testing.expect(found_t1);
+    try std.testing.expect(found_t2);
+}
+
+test "two winding transformer: CGMES.TransformerEnd1 and CGMES.TransformerEnd2 aliases" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const twt = find_two_windings_transformer(network, "TWT1") orelse return error.TestFailed;
+
+    var found_e1 = false;
+    var found_e2 = false;
+    for (twt.aliases.items) |alias| {
+        const type_str = switch (alias.type_info) {
+            .static_string => |s| s,
+            else => continue,
+        };
+        if (std.mem.eql(u8, type_str, "CGMES.TransformerEnd1")) {
+            try std.testing.expectEqualStrings("TWT1_E1", alias.content);
+            found_e1 = true;
+        }
+        if (std.mem.eql(u8, type_str, "CGMES.TransformerEnd2")) {
+            try std.testing.expectEqualStrings("TWT1_E2", alias.content);
+            found_e2 = true;
+        }
+    }
+    try std.testing.expect(found_e1);
+    try std.testing.expect(found_e2);
+}
+
+test "three winding transformer: CGMES.Terminal1/2/3 aliases" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const twt = find_three_windings_transformer(network, "TWT2") orelse return error.TestFailed;
+
+    var found = [_]bool{ false, false, false };
+    const expected_content = [_][]const u8{ "T_TWT2_1", "T_TWT2_2", "T_TWT2_3" };
+    const expected_type = [_][]const u8{ "CGMES.Terminal1", "CGMES.Terminal2", "CGMES.Terminal3" };
+    for (twt.aliases.items) |alias| {
+        const type_str = switch (alias.type_info) {
+            .static_string => |s| s,
+            else => continue,
+        };
+        inline for (0..3) |i| {
+            if (std.mem.eql(u8, type_str, expected_type[i])) {
+                try std.testing.expectEqualStrings(expected_content[i], alias.content);
+                found[i] = true;
+            }
+        }
+    }
+    try std.testing.expect(found[0] and found[1] and found[2]);
+}
+
+test "three winding transformer: CGMES.TransformerEnd1/2/3 aliases" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const twt = find_three_windings_transformer(network, "TWT2") orelse return error.TestFailed;
+
+    var found = [_]bool{ false, false, false };
+    const expected_content = [_][]const u8{ "TWT2_E1", "TWT2_E2", "TWT2_E3" };
+    const expected_type = [_][]const u8{ "CGMES.TransformerEnd1", "CGMES.TransformerEnd2", "CGMES.TransformerEnd3" };
+    for (twt.aliases.items) |alias| {
+        const type_str = switch (alias.type_info) {
+            .static_string => |s| s,
+            else => continue,
+        };
+        inline for (0..3) |i| {
+            if (std.mem.eql(u8, type_str, expected_type[i])) {
+                try std.testing.expectEqualStrings(expected_content[i], alias.content);
+                found[i] = true;
+            }
+        }
+    }
+    try std.testing.expect(found[0] and found[1] and found[2]);
+}
+
+// ── Transformer operationalLimitsGroups ───────────────────────────────────────
+
+test "two winding transformer: operationalLimitsGroups1 populated from CurrentLimit on terminal 1" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const twt = find_two_windings_transformer(network, "TWT1") orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(usize, 1), twt.op_lims_groups1.items.len);
+    try std.testing.expectEqual(@as(usize, 0), twt.op_lims_groups2.items.len);
+
+    const group = twt.op_lims_groups1.items[0];
+    try std.testing.expectEqualStrings("OLS_TWT1_E1", group.id);
+    try std.testing.expectEqualStrings("OLS_TWT1_E1", twt.selected_op_lims_group1_id.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), twt.selected_op_lims_group2_id);
+    try std.testing.expectEqual(@as(f64, 500.0), group.current_limits.?.permanent_limit);
+}
+
+test "three winding transformer: operationalLimitsGroups2 populated from CurrentLimit on terminal 2" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const twt = find_three_windings_transformer(network, "TWT2") orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(usize, 0), twt.op_lims_groups1.items.len);
+    try std.testing.expectEqual(@as(usize, 1), twt.op_lims_groups2.items.len);
+    try std.testing.expectEqual(@as(usize, 0), twt.op_lims_groups3.items.len);
+
+    const group = twt.op_lims_groups2.items[0];
+    try std.testing.expectEqualStrings("OLS_TWT2_E2", group.id);
+    try std.testing.expectEqualStrings("OLS_TWT2_E2", twt.selected_op_lims_group_id2.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), twt.selected_op_lims_group_id1);
+    try std.testing.expectEqual(@as(?[]const u8, null), twt.selected_op_lims_group_id3);
+    try std.testing.expectEqual(@as(f64, 750.0), group.current_limits.?.permanent_limit);
+}
+
+// ── Transformer phaseTapChanger ───────────────────────────────────────────────
+
+test "two winding transformer: CGMES.RatioTapChanger1 and CGMES.PhaseTapChanger1 aliases" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const twt = find_two_windings_transformer(network, "TWT1") orelse return error.TestFailed;
+
+    var rtc1_content: ?[]const u8 = null;
+    var ptc1_content: ?[]const u8 = null;
+    for (twt.aliases.items) |alias| {
+        const type_str = switch (alias.type_info) {
+            .static_string => |s| s,
+            else => continue,
+        };
+        if (std.mem.eql(u8, type_str, "CGMES.RatioTapChanger1")) rtc1_content = alias.content;
+        if (std.mem.eql(u8, type_str, "CGMES.PhaseTapChanger1")) ptc1_content = alias.content;
+    }
+    try std.testing.expectEqualStrings("RTC_TWT1", rtc1_content.?);
+    try std.testing.expectEqualStrings("PTC_TWT1", ptc1_content.?);
+}
+
+test "two winding transformer: phaseTapChanger populated from PhaseTapChangerTabular on end 1" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const twt = find_two_windings_transformer(network, "TWT1") orelse return error.TestFailed;
+    const ptc = twt.phase_tap_changer orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(i32, 1), ptc.low_tap_position);
+    try std.testing.expectEqual(@as(i32, 1), ptc.tap_position);
+    try std.testing.expectEqual(true, ptc.load_tap_changing_capabilities);
+    try std.testing.expectEqual(@as(usize, 2), ptc.steps.items.len);
+    // Steps must be emitted sorted by TapChangerTablePoint.step (1 then 2).
+    // TWT1 PTC on end 1 → pypow moves to end 2, negating alpha: cgmes 2.5 → iidm -2.5.
+    try std.testing.expectEqual(@as(f64, 0.0), ptc.steps.items[0].alpha);
+    try std.testing.expectEqual(@as(f64, -2.5), ptc.steps.items[1].alpha);
+    // PhaseTapChangerTabular always maps to regulationMode CURRENT_LIMITER.
+    try std.testing.expectEqualStrings("CURRENT_LIMITER", ptc.regulation_mode.?);
+}
+
+test "two winding transformer: phaseTapChanger on end 1 inverts rho and negates alpha" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const twt = find_two_windings_transformer(network, "TWT1") orelse return error.TestFailed;
+    const ptc = twt.phase_tap_changer orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(usize, 2), ptc.steps.items.len);
+    // TWT1 PTC is on end 1 → pypowsybl moves it to end 2, inverting rho and negating alpha.
+    // Fixture: step 1 ratio=1.0, angle=0 → rho=1.0, alpha=0; step 2 ratio=1.05, angle=2.5 → rho=1/1.05, alpha=-2.5.
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), ptc.steps.items[0].rho, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), ptc.steps.items[0].alpha, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0 / 1.05), ptc.steps.items[1].rho, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, -2.5), ptc.steps.items[1].alpha, 1e-12);
+}
+
+test "two winding transformer: phaseTapChanger on end 1 passes r/x/g/b through unchanged" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const twt = find_two_windings_transformer(network, "TWT1") orelse return error.TestFailed;
+    const ptc = twt.phase_tap_changer orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(usize, 2), ptc.steps.items.len);
+    // TWT1 PTC sits on end 1 → pypowsybl moves it to end 2 by inverting rho and negating alpha.
+    // For this movement, r/x/g/b pass through the CGMES step values unchanged.
+    // Fixture step r=x=g=b=0 for both steps, so expect zeros regardless of step ratio.
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), ptc.steps.items[0].r, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), ptc.steps.items[0].x, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), ptc.steps.items[0].g, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), ptc.steps.items[0].b, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), ptc.steps.items[1].r, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), ptc.steps.items[1].x, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), ptc.steps.items[1].g, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), ptc.steps.items[1].b, 1e-12);
+}
+
+test "two winding transformer: ratioTapChanger linear rho uses inverted-per-step formula" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const twt = find_two_windings_transformer(network, "TWT1") orelse return error.TestFailed;
+    const rtc = twt.ratio_tap_changer orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(i32, 1), rtc.low_tap_position);
+    try std.testing.expectEqual(@as(i32, 2), rtc.tap_position);
+    try std.testing.expectEqual(@as(usize, 3), rtc.steps.items.len);
+    // Linear formula: pypowsybl emits rho = 1 / (1 + (step - neutral) * inc / 100).
+    // lowStep=1, highStep=3, neutralStep=2, stepVoltageIncrement=1.0:
+    //   step 1: rho = 1 / 0.99
+    //   step 2: rho = 1.0
+    //   step 3: rho = 1 / 1.01
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0 / 0.99), rtc.steps.items[0].rho, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), rtc.steps.items[1].rho, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0 / 1.01), rtc.steps.items[2].rho, 1e-12);
+}
+
+test "three winding transformer: r/x referred from each end to star-point voltage (= ratedU1)" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const twt = find_three_windings_transformer(network, "TWT2") orelse return error.TestFailed;
+    // TWT2 fixture: ratedU1=220, ratedU2=110, ratedU3=33. rated_u0 = ratedU1.
+    // Per-end r/x referred to u0 using ratio = u1/uN:
+    //   r_N = r_cgmes_N * (u1/uN)²
+    // End 1: u1/u1 = 1 → passthrough (fixture r=x=0).
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), twt.r1, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), twt.x1, 1e-12);
+    // End 2: (220/110)² = 4. cgmes r=1.0 x=2.0 → iidm r=4.0 x=8.0.
+    try std.testing.expectApproxEqAbs(@as(f64, 4.0), twt.r2, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 8.0), twt.x2, 1e-9);
+    // End 3: (220/33)² ≈ 44.444. cgmes r=0.5 x=1.5 → iidm r≈22.222 x≈66.666.
+    const ratio3_sq = (220.0 / 33.0) * (220.0 / 33.0);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.5 * ratio3_sq), twt.r3, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.5 * ratio3_sq), twt.x3, 1e-9);
+    // rated_u0 must equal rated_u1.
+    try std.testing.expectEqual(@as(f64, 220.0), twt.rated_u0);
+    try std.testing.expectEqual(@as(f64, 220.0), twt.rated_u1);
+}
+
+test "three winding transformer: ratioTapChanger1 from tabular RatioTapChangerTable, sorted by step" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const twt = find_three_windings_transformer(network, "TWT2") orelse return error.TestFailed;
+    const rtc = twt.ratio_tap_changer1 orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(i32, 1), rtc.low_tap_position);
+    try std.testing.expectEqual(@as(i32, 1), rtc.tap_position);
+    try std.testing.expectEqual(@as(usize, 2), rtc.steps.items.len);
+    // Steps emitted sorted by TapChangerTablePoint.step (1 then 2), not XML order.
+    // CGMES ratio 1.0 → rho = 1/1.0 = 1.0; ratio 1.25 → rho = 1/1.25 = 0.8.
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), rtc.steps.items[0].rho, 1e-12);
+    try std.testing.expectEqual(@as(f64, 0.0), rtc.steps.items[0].r);
+    try std.testing.expectEqual(@as(f64, 0.0), rtc.steps.items[0].x);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.8), rtc.steps.items[1].rho, 1e-12);
+    try std.testing.expectEqual(@as(f64, 3.5), rtc.steps.items[1].r);
+    try std.testing.expectEqual(@as(f64, 4.5), rtc.steps.items[1].x);
+}
+
+test "two winding transformer: ratioTapChanger regulating defaults to false when ltcFlag is true and no TapChangerControl" {
+    // RTC_TWT1 has ltcFlag=true with no TapChanger.TapChangerControl reference.
+    // pypowsybl emits regulating: false in that case (matching its CGMES importer).
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const twt = find_two_windings_transformer(network, "TWT1") orelse return error.TestFailed;
+    const rtc = twt.ratio_tap_changer orelse return error.TestFailed;
+    try std.testing.expect(rtc.regulating != null);
+    try std.testing.expectEqual(false, rtc.regulating.?);
+}
+
+test "three winding transformer: ratioTapChanger1 regulating defaults to false when ltcFlag is true and no TapChangerControl" {
+    // RTC_TWT2 sits on end 1 of TWT2 with ltcFlag=true and no TapChanger.TapChangerControl reference.
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const twt = find_three_windings_transformer(network, "TWT2") orelse return error.TestFailed;
+    const rtc = twt.ratio_tap_changer1 orelse return error.TestFailed;
+    try std.testing.expect(rtc.regulating != null);
+    try std.testing.expectEqual(false, rtc.regulating.?);
+}
+
 // ── Line aliases ───────────────────────────────────────────────────────────────
 
 test "line: both terminal aliases present with correct types and content" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     const line = find_line(network, "LINE1") orelse return error.TestFailed;
@@ -675,7 +1387,10 @@ test "line: both terminal aliases present with correct types and content" {
     var found_t1 = false;
     var found_t2 = false;
     for (line.aliases.items) |alias| {
-        const type_str = switch (alias.type_info) { .static_string => |s| s, else => continue };
+        const type_str = switch (alias.type_info) {
+            .static_string => |s| s,
+            else => continue,
+        };
         if (std.mem.eql(u8, type_str, "CGMES.Terminal1")) {
             try std.testing.expectEqualStrings("T_LINE1_1", alias.content);
             found_t1 = true;
@@ -693,7 +1408,7 @@ test "line: CGMES.originalClass property is ACLineSegment" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     const line = find_line(network, "LINE1") orelse return error.TestFailed;
@@ -708,7 +1423,7 @@ test "busbar section: CGMES.Terminal1 alias contains terminal mRID" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     const bbs = find_busbar_section(network, "BusbarSection1") orelse return error.TestFailed;
@@ -724,7 +1439,7 @@ test "switch: CGMES.Terminal1 and CGMES.Terminal2 aliases contain terminal mRIDs
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     const sw = find_switch(network, "BRK1") orelse return error.TestFailed;
@@ -733,7 +1448,10 @@ test "switch: CGMES.Terminal1 and CGMES.Terminal2 aliases contain terminal mRIDs
     var found_t1 = false;
     var found_t2 = false;
     for (sw.aliases.items) |alias| {
-        const type_str = switch (alias.type_info) { .static_string => |s| s, else => continue };
+        const type_str = switch (alias.type_info) {
+            .static_string => |s| s,
+            else => continue,
+        };
         if (std.mem.eql(u8, type_str, "CGMES.Terminal1")) {
             // seq=1 terminal is T_BRK1_1 (strip_underscore fallback)
             try std.testing.expectEqualStrings("T_BRK1_1", alias.content);
@@ -752,7 +1470,7 @@ test "switch: CGMES.originalClass and CGMES.normalOpen properties" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     const sw = find_switch(network, "BRK1") orelse return error.TestFailed;
@@ -783,7 +1501,7 @@ test "fictitious switch: created for structurally isolated SynchronousMachine" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     // Fictitious switch id = "<terminal_mRID>_SW_fict"
@@ -809,7 +1527,7 @@ test "fictitious switch: not created for EnergyConsumer without SSH" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var network = try converter.convert(gpa, &model, null);
+    var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
     // LOAD1's terminal mRID is T_LOAD1; fictitious switch would be T_LOAD1_SW_fict.
@@ -826,7 +1544,7 @@ test "SSH: switch open and retained state come from SSH overlay" {
     defer model.deinit(gpa);
     var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
-    var network = try converter.convert(gpa, &model, ssh);
+    var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
 
     const sw = find_switch(network, "BRK1") orelse return error.TestFailed;
@@ -844,12 +1562,12 @@ test "SSH: load p0 and q0 read from EnergyConsumer.p and .q in SSH" {
     defer model.deinit(gpa);
     var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
-    var network = try converter.convert(gpa, &model, ssh);
+    var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
 
     const load = find_load(network, "LOAD1") orelse return error.TestFailed;
-    try std.testing.expectEqual(@as(f64, 100.0), load.p0);
-    try std.testing.expectEqual(@as(f64, 50.0), load.q0);
+    try std.testing.expectEqual(@as(f64, 100.0), load.p0.?);
+    try std.testing.expectEqual(@as(f64, 50.0), load.q0.?);
 }
 
 // ── SSH overlay: disconnected terminal → fictitious switch ───────────────────
@@ -863,7 +1581,7 @@ test "SSH: disconnected terminal creates fictitious switch for any equipment typ
     defer model.deinit(gpa);
     var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
-    var network = try converter.convert(gpa, &model, ssh);
+    var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
 
     const sw = find_switch(network, "T_LOAD1_SW_fict") orelse return error.TestFailed;
@@ -890,7 +1608,7 @@ test "SSH: case_date comes from SSH scenarioTime, not EQ" {
     defer model.deinit(gpa);
     var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
-    var network = try converter.convert(gpa, &model, ssh);
+    var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
 
     // SSH scenarioTime is 2026-01-02T15:00:00Z; EQ has 2026-01-01T09:00:00Z.
@@ -907,7 +1625,7 @@ test "SSH: forecastDistance computed from SSH times, not EQ" {
     defer model.deinit(gpa);
     var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
-    var network = try converter.convert(gpa, &model, ssh);
+    var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
 
     // SSH: 2026-01-02T15:00Z − 2026-01-02T12:00Z = 3 h = 180 min.
@@ -917,13 +1635,13 @@ test "SSH: forecastDistance computed from SSH times, not EQ" {
 
 // ── SSH FullModel: cgmesMetadataModels ────────────────────────────────────────
 
-test "SSH: FullModel appears as MetadataModel with subset SSH after EQ entry" {
+test "SSH: FullModel appears as MetadataModel with long-form subset after EQ entry" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
-    var network = try converter.convert(gpa, &model, ssh);
+    var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
 
     const ext = find_extension(network, network.id) orelse return error.TestFailed;
@@ -935,11 +1653,104 @@ test "SSH: FullModel appears as MetadataModel with subset SSH after EQ entry" {
     // SSH FullModel is last (it depends on EQ, so EQ comes before it).
     const ssh_entry = meta.models.items[meta.models.items.len - 1];
     try std.testing.expectEqualStrings("urn:uuid:SSH_FM1", ssh_entry.id);
-    try std.testing.expectEqualStrings("SSH", ssh_entry.subset);
+    try std.testing.expectEqualStrings("STEADY_STATE_HYPOTHESIS", ssh_entry.subset);
     try std.testing.expectEqual(@as(u32, 1), ssh_entry.version);
     try std.testing.expectEqual(@as(usize, 1), ssh_entry.profiles.items.len);
     try std.testing.expectEqualStrings(
         "http://iec.ch/TC57/ns/CIM/SteadyStateHypothesis-EU/3.0",
         ssh_entry.profiles.items[0].content,
     );
+}
+
+test "SSH: minimumValidationLevel follows SSH presence" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
+    defer ssh.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, ssh, false);
+    defer network.deinit(gpa);
+
+    try std.testing.expectEqualStrings("STEADY_STATE_HYPOTHESIS", network.minimum_validation_level);
+}
+
+// ── CGMES provenance properties on substations ────────────────────────────────
+
+test "substation: emits CGMES.regionName, CGMES.regionId, CGMES.subRegionId" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const sub = find_substation(network, "SS1") orelse return error.TestFailed;
+
+    const region_name = find_property(sub.properties.items, "CGMES.regionName") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("TestRegion", region_name.value);
+
+    const region_id = find_property(sub.properties.items, "CGMES.regionId") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("GR1", region_id.value);
+
+    const sub_region_id = find_property(sub.properties.items, "CGMES.subRegionId") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("SGR1", sub_region_id.value);
+}
+
+// ── CGMES voltage-limit properties on VLs ─────────────────────────────────────
+
+test "voltage level: most-restrictive low/high limits resolved from VoltageLimits" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const vl = find_voltage_level(network, "VL1") orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(?f64, 121.0), vl.high_voltage_limit);
+    try std.testing.expectEqual(@as(?f64, 99.0), vl.low_voltage_limit);
+}
+
+test "voltage level: emits CGMES.normalValue_* and OperationalLimit_* properties" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const vl = find_voltage_level(network, "VL1") orelse return error.TestFailed;
+
+    const normal_hi = find_property(vl.properties.items, "CGMES.normalValue_highVoltageLimit") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("121.0", normal_hi.value);
+
+    const normal_lo = find_property(vl.properties.items, "CGMES.normalValue_lowVoltageLimit") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("99.0", normal_lo.value);
+
+    // Multiple VoltageLimits on one side → mRIDs joined by ';' in parse order.
+    const op_hi = find_property(vl.properties.items, "CGMES.OperationalLimit_highVoltageLimit") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("VL_HI_1;VL_HI_2", op_hi.value);
+
+    const op_lo = find_property(vl.properties.items, "CGMES.OperationalLimit_lowVoltageLimit") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("VL_LO_1;VL_LO_2", op_lo.value);
+
+    // NaN placeholders emitted whenever any voltage limit applies to the VL.
+    const nan_hi = find_property(vl.properties.items, "CGMES.highVoltageLimit") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("NaN", nan_hi.value);
+
+    const nan_lo = find_property(vl.properties.items, "CGMES.lowVoltageLimit") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("NaN", nan_lo.value);
+}
+
+test "voltage level: only NaN placeholders emitted when no voltage limits apply" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const vl = find_voltage_level(network, "VL2") orelse return error.TestFailed;
+    // pypowsybl always emits the two NaN placeholders on every VL.
+    try std.testing.expectEqual(@as(usize, 2), vl.properties.items.len);
+    const nan_hi = find_property(vl.properties.items, "CGMES.highVoltageLimit") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("NaN", nan_hi.value);
+    const nan_lo = find_property(vl.properties.items, "CGMES.lowVoltageLimit") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("NaN", nan_lo.value);
 }
