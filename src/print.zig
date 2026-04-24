@@ -36,56 +36,26 @@ pub fn stdout(io: std.Io, comptime fmt_str: []const u8, args: anytype) !void {
 }
 
 pub fn display_object_inventory_json(io: std.Io, gpa: std.mem.Allocator, model: cim_model.CimModel) !void {
-    var counts = try model.getTypeCounts(gpa);
-    defer counts.deinit();
-
-    var type_names: std.ArrayList([]const u8) = .empty;
-    defer type_names.deinit(gpa);
-
-    var it = counts.iterator();
-    while (it.next()) |entry| try type_names.append(gpa, entry.key_ptr.*);
-
-    std.mem.sort([]const u8, type_names.items, {}, struct {
-        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.order(u8, a, b) == .lt;
-        }
-    }.lessThan);
+    const counts = try model.sorted_type_counts(gpa);
+    defer gpa.free(counts);
 
     try stdout(io, "[", .{});
-    for (type_names.items, 0..) |type_name, i| {
-        const count = counts.get(type_name).?;
+    for (counts, 0..) |entry, i| {
         if (i > 0) try stdout(io, ",", .{});
-        try stdout(io, "{{\"type\":\"{s}\",\"count\":{d}}}", .{ type_name, count });
+        try stdout(io, "{{\"type\":\"{s}\",\"count\":{d}}}", .{ entry.type_name, entry.count });
     }
     try stdout(io, "]\n", .{});
 }
 
 pub fn display_object_inventory(io: std.Io, gpa: std.mem.Allocator, model: cim_model.CimModel) !void {
-    var counts = try model.getTypeCounts(gpa);
-    defer counts.deinit();
-
-    // Sort type names alphabetically for consistent output
-    var type_names: std.ArrayList([]const u8) = .empty;
-    defer type_names.deinit(gpa);
-
-    var it = counts.iterator();
-    while (it.next()) |entry| {
-        try type_names.append(gpa, entry.key_ptr.*);
-    }
-
-    // Sort alphabetically
-    std.mem.sort([]const u8, type_names.items, {}, struct {
-        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.order(u8, a, b) == .lt;
-        }
-    }.lessThan);
+    const counts = try model.sorted_type_counts(gpa);
+    defer gpa.free(counts);
 
     // Display each type and count
     var total: usize = 0;
-    for (type_names.items) |type_name| {
-        const count = counts.get(type_name).?;
-        try stdout(io, "{s}: {d} objects\n", .{ type_name, count });
-        total += count;
+    for (counts) |entry| {
+        try stdout(io, "{s}: {d} objects\n", .{ entry.type_name, entry.count });
+        total += entry.count;
     }
 
     try stdout(io, "Total: {d} objects\n\n", .{total});

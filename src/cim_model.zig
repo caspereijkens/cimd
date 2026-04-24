@@ -14,6 +14,10 @@ pub const CimModel = struct {
     boundaries: []TagBoundary,
 
     const TypeRange = struct { start: u32, len: u32 };
+    pub const TypeCount = struct {
+        type_name: []const u8,
+        count: u32,
+    };
 
     pub fn init(gpa: std.mem.Allocator, xml: []const u8) !CimModel {
         assert(xml.len > 0);
@@ -142,5 +146,32 @@ pub const CimModel = struct {
             try result.put(type_name, count);
         }
         return result;
+    }
+
+    /// Return a heap-allocated, alphabetically sorted type-count list.
+    /// Caller owns the returned slice and must free it with gpa.free().
+    pub fn sorted_type_counts(self: CimModel, gpa: std.mem.Allocator) ![]TypeCount {
+        const n = self.type_index.count();
+        const out = try gpa.alloc(TypeCount, n);
+        errdefer gpa.free(out);
+
+        var i: usize = 0;
+        var it = self.type_index.iterator();
+        while (it.next()) |entry| {
+            out[i] = .{
+                .type_name = entry.key_ptr.*,
+                .count = entry.value_ptr.*.len,
+            };
+            i += 1;
+        }
+        assert(i == n);
+
+        std.mem.sort(TypeCount, out, {}, struct {
+            fn lessThan(_: void, a: TypeCount, b: TypeCount) bool {
+                return std.mem.order(u8, a.type_name, b.type_name) == .lt;
+            }
+        }.lessThan);
+
+        return out;
     }
 };

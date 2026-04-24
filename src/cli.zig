@@ -198,8 +198,6 @@ pub const Command = union(enum) {
         tp_path: ?[]const u8,
         ssh_path: ?[]const u8,
         output_path: ?[]const u8,
-        /// Emit bus-branch JIIDM (one bus per TopologicalNode). Requires --topology.
-        /// Default: node-breaker JIIDM even when TP is given (matches pypowsybl).
         bus_branch: bool,
     };
 
