@@ -154,9 +154,10 @@ fn extract_entry_to_memory(
             return error.ZipBadDirectorySize;
 
         // Directories have no data
+        const data = try gpa.alloc(u8, 0);
         return .{
             .filename = filename,
-            .data = &[_]u8{},
+            .data = data,
         };
     }
 
@@ -236,6 +237,39 @@ pub fn extract_to_memory(
     }
 
     return result;
+}
+
+pub const FirstFileOptions = struct {
+    extract: std.zip.ExtractOptions = .{},
+    /// Maximum uncompressed size allowed for the selected archive entry.
+    max_uncompressed_bytes: u64 = std.math.maxInt(u32),
+};
+
+/// Extract the first regular file (skipping directory entries) from a ZIP archive.
+/// Returns error.ZipArchiveHasNoFiles when the archive has no file entries.
+pub fn extract_first_file_to_memory(
+    gpa: std.mem.Allocator,
+    stream: *std.Io.File.Reader,
+    options: FirstFileOptions,
+) !ExtractedFile {
+    var iter = try std.zip.Iterator.init(stream);
+
+    while (try iter.next()) |entry| {
+        if (entry.uncompressed_size > options.max_uncompressed_bytes) {
+            return error.FileTooLarge;
+        }
+
+        const extracted = try extract_entry_to_memory(entry, gpa, stream, options.extract);
+        const is_directory = extracted.filename[extracted.filename.len - 1] == '/';
+        if (is_directory) {
+            extracted.deinit(gpa);
+            continue;
+        }
+
+        return extracted;
+    }
+
+    return error.ZipArchiveHasNoFiles;
 }
 
 test "is_zip_file" {

@@ -13,6 +13,7 @@ const converter = @import("converter.zig");
 const assert = std.debug.assert;
 
 const build_options = @import("build_options");
+const max_in_memory_input_bytes = std.math.maxInt(u32);
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -29,41 +30,6 @@ pub fn main(init: std.process.Init) !void {
         .types => |c| try command_types(io, gpa, c),
         .diff => |c| try command_diff(io, gpa, c),
         .version => |v| try command_version(io, v.verbose, v.json),
-    }
-}
-
-fn command_version(io: std.Io, verbose: bool, json: bool) !void {
-    const version_string = build_options.version;
-
-    if (json) {
-        if (verbose) {
-            try print.stdout(io,
-                \\{{"version":"{s}","zig":"{s}","target":"{s}-{s}","optimize":"{s}"}}
-                \\
-            , .{
-                version_string,
-                builtin.zig_version_string,
-                @tagName(builtin.cpu.arch),
-                @tagName(builtin.os.tag),
-                @tagName(builtin.mode),
-            });
-        } else {
-            try print.stdout(io, "{{\"version\":\"{s}\"}}\n", .{version_string});
-        }
-        return;
-    }
-
-    try print.stdout(io, "cimd {s}\n", .{version_string});
-
-    if (verbose) {
-        try print.stdout(io, "\nBuild Information:\n", .{});
-        try print.stdout(io, "  Version:       {s}\n", .{version_string});
-        try print.stdout(io, "  Zig Version:   {s}\n", .{builtin.zig_version_string});
-        try print.stdout(io, "  Target:        {s}-{s}\n", .{
-            @tagName(builtin.cpu.arch),
-            @tagName(builtin.os.tag),
-        });
-        try print.stdout(io, "  Optimize:      {s}\n", .{@tagName(builtin.mode)});
     }
 }
 
@@ -308,6 +274,41 @@ fn command_diff(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Diff) !void {
     if (had_diffs) std.process.exit(1);
 }
 
+fn command_version(io: std.Io, verbose: bool, json: bool) !void {
+    const version_string = build_options.version;
+
+    if (json) {
+        if (verbose) {
+            try print.stdout(io,
+                \\{{"version":"{s}","zig":"{s}","target":"{s}-{s}","optimize":"{s}"}}
+                \\
+            , .{
+                version_string,
+                builtin.zig_version_string,
+                @tagName(builtin.cpu.arch),
+                @tagName(builtin.os.tag),
+                @tagName(builtin.mode),
+            });
+        } else {
+            try print.stdout(io, "{{\"version\":\"{s}\"}}\n", .{version_string});
+        }
+        return;
+    }
+
+    try print.stdout(io, "cimd {s}\n", .{version_string});
+
+    if (verbose) {
+        try print.stdout(io, "\nBuild Information:\n", .{});
+        try print.stdout(io, "  Version:       {s}\n", .{version_string});
+        try print.stdout(io, "  Zig Version:   {s}\n", .{builtin.zig_version_string});
+        try print.stdout(io, "  Target:        {s}-{s}\n", .{
+            @tagName(builtin.cpu.arch),
+            @tagName(builtin.os.tag),
+        });
+        try print.stdout(io, "  Optimize:      {s}\n", .{@tagName(builtin.mode)});
+    }
+}
+
 fn load_model(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8) !cim_model.CimModel {
     var xml = try read_path(io, gpa, eq_path);
     if (eqbd_path) |path| {
@@ -337,11 +338,12 @@ fn read_path(io: std.Io, gpa: std.mem.Allocator, file_path: []const u8) ![]const
     if (try zip.is_zip_file(io, file)) {
         var zip_buffer: [8192]u8 = undefined;
         var file_reader = file.reader(io, &zip_buffer);
-        var extracted_files = try zip.extract_to_memory(gpa, &file_reader, .{});
-        const data = extracted_files.items[0].data;
-        gpa.free(extracted_files.items[0].filename);
-        for (extracted_files.items[1..]) |f| f.deinit(gpa);
-        extracted_files.deinit(gpa);
+        const extracted = try zip.extract_first_file_to_memory(gpa, &file_reader, .{
+            .extract = .{},
+            .max_uncompressed_bytes = max_in_memory_input_bytes,
+        });
+        const data = extracted.data;
+        gpa.free(extracted.filename);
         return data;
     } else {
         return try read_file_to_memory(io, gpa, file);
@@ -350,7 +352,7 @@ fn read_path(io: std.Io, gpa: std.mem.Allocator, file_path: []const u8) ![]const
 
 fn read_file_to_memory(io: std.Io, gpa: std.mem.Allocator, file: std.Io.File) ![]u8 {
     const file_size = try file.length(io);
-    if (file_size > std.math.maxInt(u32)) return error.FileTooLarge;
+    if (file_size > max_in_memory_input_bytes) return error.FileTooLarge;
 
     var file_reader = file.reader(io, &.{});
     return try file_reader.interface.allocRemaining(gpa, .limited(file_size));

@@ -448,8 +448,10 @@ pub fn build_closing_index(
             // Bound the type search to within this tag to prevent cross-tag colon matches.
             const tag_xml = xml[tag.start .. tag.end + 1];
             const type_name = extract_tag_type(tag_xml, 1) catch continue;
-            assert(stack.items.len > 0);
-            assert(std.mem.eql(u8, stack.items[stack.items.len - 1].type_name, type_name));
+            if (stack.items.len == 0) return error.MalformedXML;
+            if (!std.mem.eql(u8, stack.items[stack.items.len - 1].type_name, type_name)) {
+                return error.MalformedXML;
+            }
             const opener = stack.pop().?;
             closing_for[opener.idx] = @intCast(i);
         } else {
@@ -464,7 +466,7 @@ pub fn build_closing_index(
     }
 
     // Every opener must have been matched; a non-empty stack means unclosed tags.
-    assert(stack.items.len == 0);
+    if (stack.items.len != 0) return error.MalformedXML;
 
     return closing_for;
 }
