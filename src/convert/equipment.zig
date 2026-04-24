@@ -4,6 +4,7 @@ const cim_model = @import("../cim_model.zig");
 const cim_index = @import("../cim_index.zig");
 const tag_index = @import("../tag_index.zig");
 const utils = @import("../utils.zig");
+const topology = @import("../topology.zig");
 
 const placement_mod = @import("placement.zig");
 const connection_mod = @import("connection.zig");
@@ -156,7 +157,7 @@ pub fn convert_switches(
             const conn_node0_id = terminals.items[0].conn_node_id orelse continue;
             const container0_id = index.conn_node_container.get(conn_node0_id) orelse continue;
 
-            const repr_voltage_level_id = cim_index.find_voltage_level(&index.voltage_level_merge, container0_id);
+            const repr_voltage_level_id = topology.find_voltage_level(&index.voltage_level_merge, container0_id);
             const voltage_level = voltage_level_map.get(repr_voltage_level_id) orelse continue;
 
             const eq_view = model.view(sw);
@@ -273,7 +274,7 @@ pub fn convert_fictitious_switches(
 
                 // Resolve to a representative VL.
                 const container_id = index.conn_node_container.get(cn_id) orelse continue;
-                const repr_id = cim_index.find_voltage_level(&index.voltage_level_merge, container_id);
+                const repr_id = topology.find_voltage_level(&index.voltage_level_merge, container_id);
                 const voltage_level = voltage_level_map.get(repr_id) orelse continue;
 
                 // Get terminal mRID for the switch id/name.

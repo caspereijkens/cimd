@@ -5,6 +5,7 @@ const cim_index = @import("../cim_index.zig");
 const utils = @import("../utils.zig");
 const placement_mod = @import("placement.zig");
 const connection_mod = @import("connection.zig");
+const topology = @import("../topology.zig");
 
 const assert = std.debug.assert;
 
@@ -105,7 +106,7 @@ pub fn convert_lines(
             for (terminals.items) |terminal| {
                 const conn_node_id = terminal.conn_node_id orelse continue;
                 const container_id = index.conn_node_container.get(conn_node_id) orelse continue;
-                const representative_id = cim_index.find_voltage_level(&index.voltage_level_merge, container_id);
+                const representative_id = topology.find_voltage_level(&index.voltage_level_merge, container_id);
                 if (voltage_level_map.contains(representative_id)) continue;
                 // Boundary ConnectivityNode: container is not a VoltageLevel.
 

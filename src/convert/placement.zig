@@ -6,6 +6,7 @@ const utils = @import("../utils.zig");
 const connection = @import("connection.zig");
 const bus_conv = @import("bus.zig");
 const CimTp = @import("../cim_tp.zig").CimTp;
+const topology = @import("../topology.zig");
 
 const strip_underscore = utils.strip_underscore;
 const strip_hash = utils.strip_hash;
@@ -39,7 +40,7 @@ pub fn resolve_terminal_placement(
     assert(terminal_id.len > 0);
     assert(conn_node_id.len > 0);
     const container_id = index.conn_node_container.get(conn_node_id) orelse return null;
-    const repr_voltage_level_id = cim_index.find_voltage_level(&index.voltage_level_merge, container_id);
+    const repr_voltage_level_id = topology.find_voltage_level(&index.voltage_level_merge, container_id);
     const voltage_level = voltage_level_map.get(repr_voltage_level_id) orelse return null;
     const node = node_map.get(terminal_id) orelse return null;
     return .{ .repr_voltage_level_id = repr_voltage_level_id, .voltage_level = voltage_level, .node = node };

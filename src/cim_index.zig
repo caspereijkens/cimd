@@ -3,6 +3,7 @@ const iidm = @import("iidm.zig");
 const tag_index = @import("tag_index.zig");
 const utils = @import("utils.zig");
 const cim_model = @import("cim_model.zig");
+const topology = @import("topology.zig");
 
 const assert = std.debug.assert;
 
@@ -385,155 +386,6 @@ fn build_curve_points(gpa: std.mem.Allocator, model: *const cim_model.CimModel, 
     assert(curve_datas.len == 0 or index.curve_points.count() > 0);
 }
 
-pub fn find_voltage_level(parent: *const std.StringHashMapUnmanaged([]const u8), id: []const u8) []const u8 {
-    var current = id;
-    while (true) {
-        const p = parent.get(current) orelse return current;
-        current = p;
-    }
-}
-
-test "find_voltage_level: id not in map returns itself" {
-    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
-    defer parent.deinit(std.testing.allocator);
-
-    try std.testing.expectEqualStrings("unknown", find_voltage_level(&parent, "unknown"));
-}
-
-test "find_voltage_level: one level deep" {
-    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
-    defer parent.deinit(std.testing.allocator);
-    try parent.put(std.testing.allocator, "stub", "rep");
-
-    try std.testing.expectEqualStrings("rep", find_voltage_level(&parent, "stub"));
-    try std.testing.expectEqualStrings("rep", find_voltage_level(&parent, "rep"));
-}
-
-test "find_voltage_level: two levels deep" {
-    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
-    defer parent.deinit(std.testing.allocator);
-    try parent.put(std.testing.allocator, "a", "b");
-    try parent.put(std.testing.allocator, "b", "c");
-
-    try std.testing.expectEqualStrings("c", find_voltage_level(&parent, "a"));
-    try std.testing.expectEqualStrings("c", find_voltage_level(&parent, "b"));
-    try std.testing.expectEqualStrings("c", find_voltage_level(&parent, "c"));
-}
-
-test "find_voltage_level: chain of four" {
-    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
-    defer parent.deinit(std.testing.allocator);
-    try parent.put(std.testing.allocator, "a", "b");
-    try parent.put(std.testing.allocator, "b", "c");
-    try parent.put(std.testing.allocator, "c", "d");
-
-    try std.testing.expectEqualStrings("d", find_voltage_level(&parent, "a"));
-    try std.testing.expectEqualStrings("d", find_voltage_level(&parent, "b"));
-    try std.testing.expectEqualStrings("d", find_voltage_level(&parent, "c"));
-    try std.testing.expectEqualStrings("d", find_voltage_level(&parent, "d"));
-}
-
-test "find_voltage_level: two independent components" {
-    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
-    defer parent.deinit(std.testing.allocator);
-    try parent.put(std.testing.allocator, "a", "b");
-    try parent.put(std.testing.allocator, "x", "y");
-
-    try std.testing.expectEqualStrings("b", find_voltage_level(&parent, "a"));
-    try std.testing.expectEqualStrings("y", find_voltage_level(&parent, "x"));
-}
-
-fn union_voltage_levels(
-    model: *const cim_model.CimModel,
-    parent: *std.StringHashMapUnmanaged([]const u8),
-    id_a: []const u8,
-    id_b: []const u8,
-) !void {
-    const root_a = find_voltage_level(parent, id_a);
-    const root_b = find_voltage_level(parent, id_b);
-    if (std.mem.eql(u8, root_a, root_b)) return;
-
-    const voltage_level_a = model.getObjectById(root_a) orelse return;
-    const voltage_level_b = model.getObjectById(root_b) orelse return;
-    const mrid_a = try voltage_level_a.getProperty("IdentifiedObject.mRID") orelse
-        strip_underscore(root_a);
-    const mrid_b = try voltage_level_b.getProperty("IdentifiedObject.mRID") orelse
-        strip_underscore(root_b);
-
-    // stub points to representative; representative has the smaller mRID
-    if (std.mem.lessThan(u8, mrid_a, mrid_b)) {
-        parent.putAssumeCapacity(root_b, root_a);
-    } else {
-        parent.putAssumeCapacity(root_a, root_b);
-    }
-}
-
-fn union_conn_nodes(
-    parent: *std.StringHashMapUnmanaged([]const u8),
-    id_a: []const u8,
-    id_b: []const u8,
-) void {
-    const root_a = find_voltage_level(parent, id_a);
-    const root_b = find_voltage_level(parent, id_b);
-    if (std.mem.eql(u8, root_a, root_b)) return;
-    parent.putAssumeCapacity(root_a, root_b);
-}
-
-test "union_conn_nodes: two nodes share root after union" {
-    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
-    defer parent.deinit(std.testing.allocator);
-    try parent.ensureTotalCapacity(std.testing.allocator, 1);
-
-    union_conn_nodes(&parent, "conn_node1", "conn_node2");
-
-    try std.testing.expectEqualStrings(
-        find_voltage_level(&parent, "conn_node1"),
-        find_voltage_level(&parent, "conn_node2"),
-    );
-}
-
-test "union_conn_nodes: idempotent when already same component" {
-    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
-    defer parent.deinit(std.testing.allocator);
-    try parent.ensureTotalCapacity(std.testing.allocator, 2);
-
-    union_conn_nodes(&parent, "conn_node1", "conn_node2");
-    const count = parent.count();
-    union_conn_nodes(&parent, "conn_node1", "conn_node2");
-
-    try std.testing.expectEqual(count, parent.count());
-}
-
-test "union_conn_nodes: transitive — three nodes share root" {
-    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
-    defer parent.deinit(std.testing.allocator);
-    try parent.ensureTotalCapacity(std.testing.allocator, 2);
-
-    union_conn_nodes(&parent, "a", "b");
-    union_conn_nodes(&parent, "b", "c");
-
-    const root_a = find_voltage_level(&parent, "a");
-    const root_b = find_voltage_level(&parent, "b");
-    const root_c = find_voltage_level(&parent, "c");
-    try std.testing.expectEqualStrings(root_a, root_b);
-    try std.testing.expectEqualStrings(root_b, root_c);
-}
-
-test "union_conn_nodes: independent clusters do not interfere" {
-    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
-    defer parent.deinit(std.testing.allocator);
-    try parent.ensureTotalCapacity(std.testing.allocator, 2);
-
-    union_conn_nodes(&parent, "a", "b");
-    union_conn_nodes(&parent, "x", "y");
-
-    const root_ab = find_voltage_level(&parent, "a");
-    const root_xy = find_voltage_level(&parent, "x");
-    try std.testing.expectEqualStrings(root_ab, find_voltage_level(&parent, "b"));
-    try std.testing.expectEqualStrings(root_xy, find_voltage_level(&parent, "y"));
-    try std.testing.expect(!std.mem.eql(u8, root_ab, root_xy));
-}
-
 pub fn get_switch_slices(model: *const CimModel) [switch_types.len][]const CimObject {
     var slices: [switch_types.len][]const CimObject = undefined;
     for (switch_types, 0..) |t, i| slices[i] = model.get_objects_by_type(t);
@@ -593,7 +445,7 @@ fn process_switch_type(
         if (!std.mem.eql(u8, obj0.type_name, "VoltageLevel")) continue;
         if (!std.mem.eql(u8, obj1.type_name, "VoltageLevel")) continue;
 
-        try union_voltage_levels(model, parent, container0, container1);
+        try topology.union_voltage_levels(model, parent, container0, container1);
     }
 }
 
@@ -612,7 +464,7 @@ fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const cim_model.Cim
     // flatten: stubs → representatives
     try index.voltage_level_merge.ensureTotalCapacity(gpa, @intCast(voltage_levels.len));
     for (voltage_levels) |voltage_level| {
-        const root = find_voltage_level(&parent, voltage_level.id);
+        const root = topology.find_voltage_level(&parent, voltage_level.id);
         if (!std.mem.eql(u8, root, voltage_level.id)) {
             index.voltage_level_merge.putAssumeCapacity(voltage_level.id, root);
         }
@@ -623,34 +475,6 @@ fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const cim_model.Cim
     var it = index.voltage_level_merge.iterator();
     while (it.next()) |entry| {
         assert(index.voltage_level_merge.get(entry.value_ptr.*) == null);
-    }
-}
-
-/// Union-Find path compression (iterative).
-fn find(parent: *const std.StringHashMapUnmanaged([]const u8), x: []const u8) []const u8 {
-    var cur = x;
-    while (true) {
-        const p = parent.get(cur) orelse return cur;
-        if (std.mem.eql(u8, p, cur)) return cur;
-        cur = p;
-    }
-}
-
-/// Union two substation raw IDs. The one with the smaller stripped mRID becomes the root.
-fn union_substations(
-    gpa: std.mem.Allocator,
-    parent: *std.StringHashMapUnmanaged([]const u8),
-    id_a: []const u8,
-    id_b: []const u8,
-) !void {
-    const root_a = find(parent, id_a);
-    const root_b = find(parent, id_b);
-    if (std.mem.eql(u8, root_a, root_b)) return;
-    // Keep the substation with the smaller mRID as the root (representative).
-    if (std.mem.lessThan(u8, strip_underscore(root_a), strip_underscore(root_b))) {
-        try parent.put(gpa, root_b, root_a);
-    } else {
-        try parent.put(gpa, root_a, root_b);
     }
 }
 
@@ -689,7 +513,7 @@ fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.CimMod
         const stub_substation_id = strip_hash(stub_substation_ref);
         const repr_substation_id = strip_hash(repr_substation_ref);
         if (!std.mem.eql(u8, stub_substation_id, repr_substation_id)) {
-            try union_substations(gpa, &parent, stub_substation_id, repr_substation_id);
+            try topology.union_substations(gpa, &parent, stub_substation_id, repr_substation_id);
         }
     }
 
@@ -705,7 +529,7 @@ fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.CimMod
             const substation_id = strip_hash(substation_ref);
             if (first_substation_id) |first| {
                 if (!std.mem.eql(u8, first, substation_id)) {
-                    try union_substations(gpa, &parent, first, substation_id);
+                    try topology.union_substations(gpa, &parent, first, substation_id);
                 }
             } else {
                 first_substation_id = substation_id;
@@ -716,7 +540,7 @@ fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.CimMod
     // Flatten Union-Find: for each non-root substation, add it to its canonical's list.
     try index.substation_merge.ensureTotalCapacity(gpa, @intCast(substations.len));
     for (substations) |substation| {
-        const canonical = find(&parent, substation.id);
+        const canonical = topology.find(&parent, substation.id);
         if (std.mem.eql(u8, canonical, substation.id)) continue; // sub is already a root
         const gop = index.substation_merge.getOrPutAssumeCapacity(canonical);
         if (!gop.found_existing) gop.value_ptr.* = .empty;
@@ -757,7 +581,7 @@ fn build_branch_first_search_pre_computation(gpa: std.mem.Allocator, model: *con
             if (terminals.items.len != 2) continue;
             const conn_node0 = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
             const conn_node1 = index.terminal_conn_node.get(terminals.items[1].id) orelse continue;
-            union_conn_nodes(&parent, conn_node0, conn_node1);
+            topology.union_conn_nodes(&parent, conn_node0, conn_node1);
         }
     }
 
@@ -766,7 +590,7 @@ fn build_branch_first_search_pre_computation(gpa: std.mem.Allocator, model: *con
     defer cluster_to_busbar_section.deinit(gpa);
 
     for (index.busbar_section_in_parse_order.items) |entry| {
-        const root = find_voltage_level(&parent, entry.conn_node_id);
+        const root = topology.find_voltage_level(&parent, entry.conn_node_id);
         if (!cluster_to_busbar_section.contains(root)) {
             cluster_to_busbar_section.putAssumeCapacity(root, entry.mrid);
         }
@@ -776,7 +600,7 @@ fn build_branch_first_search_pre_computation(gpa: std.mem.Allocator, model: *con
 
     var it = parent.keyIterator();
     while (it.next()) |conn_node_id| {
-        const root = find_voltage_level(&parent, conn_node_id.*);
+        const root = topology.find_voltage_level(&parent, conn_node_id.*);
         const busbar_section_mrid = cluster_to_busbar_section.get(root) orelse continue;
         index.conn_node_reachable_busbar_section.putAssumeCapacity(conn_node_id.*, busbar_section_mrid);
     }
@@ -808,7 +632,7 @@ fn build_voltage_limits(gpa: std.mem.Allocator, model: *const cim_model.CimModel
             break :blk strip_hash(ec_ref);
         };
         // Apply VL merge so limits are keyed by the representative VL.
-        const container_id = find_voltage_level(&index.voltage_level_merge, raw_container_id);
+        const container_id = topology.find_voltage_level(&index.voltage_level_merge, raw_container_id);
         const container = model.getObjectById(container_id) orelse continue;
 
         if (!std.mem.eql(u8, container.type_name, "VoltageLevel")) continue;

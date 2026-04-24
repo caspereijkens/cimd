@@ -4,6 +4,7 @@ const cim_model = @import("../cim_model.zig");
 const cim_index = @import("../cim_index.zig");
 const utils = @import("../utils.zig");
 const CimSsh = @import("../cim_ssh.zig").CimSsh;
+const topology = @import("../topology.zig");
 
 const assert = std.debug.assert;
 
@@ -128,7 +129,7 @@ pub fn build_node_map(
 
     for (conn_nodes) |conn_node| {
         const container_id = index.conn_node_container.get(conn_node.id) orelse continue;
-        const repr_voltage_level_id = cim_index.find_voltage_level(&index.voltage_level_merge, container_id);
+        const repr_voltage_level_id = topology.find_voltage_level(&index.voltage_level_merge, container_id);
         if (voltage_level_map.get(repr_voltage_level_id) == null) continue;
 
         conn_node_repr_voltage_level.putAssumeCapacity(conn_node.id, repr_voltage_level_id);
