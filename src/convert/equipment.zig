@@ -4,7 +4,7 @@ const cim_model = @import("../cim_model.zig");
 const cim_index = @import("../cim_index.zig");
 const tag_index = @import("../tag_index.zig");
 const utils = @import("../utils.zig");
-const topology = @import("../topology.zig");
+const topology_mod = @import("../topology.zig");
 
 const placement_mod = @import("placement.zig");
 
@@ -20,7 +20,8 @@ const strip_underscore = utils.strip_underscore;
 const Placement = placement_mod.Placement;
 const TerminalPlacer = placement_mod.TerminalPlacer;
 const resolve_terminal_placement = placement_mod.resolve_terminal_placement;
-const NodeMap = topology.NodeMap;
+const NodeMap = topology_mod.NodeMap;
+const Topology = topology_mod.Topology;
 
 const VoltageLevelEquipmentCounts = struct {
     busbar_sections: usize = 0,
@@ -141,7 +142,7 @@ pub fn convert_switches(
         .node_breaker => |nm| nm,
         .bus_branch => unreachable, // switches are node-breaker only
     };
-    const switch_slices = topology.get_switch_type_slices(model);
+    const switch_slices = topology_mod.get_switch_type_slices(model);
 
     for (switch_slices) |switch_slice| {
         for (switch_slice) |sw| {
@@ -155,7 +156,7 @@ pub fn convert_switches(
             const conn_node0_id = terminals.items[0].conn_node_id orelse continue;
             const container0_id = index.conn_node_container.get(conn_node0_id) orelse continue;
 
-            const repr_voltage_level_id = topology.find_voltage_level(&index.voltage_level_merge, container0_id);
+            const repr_voltage_level_id = topology_mod.find_voltage_level(&placer.topology.voltage_level_merge, container0_id);
             const voltage_level = voltage_level_map.get(repr_voltage_level_id) orelse continue;
 
             const eq_view = model.view(sw);
@@ -240,10 +241,10 @@ pub fn convert_fictitious_switches(
     // 1. SSH-disconnected terminals (any equipment type — ACDCTerminal.connected=false in SSH).
     // 2. Structurally isolated injection terminals (SM/LSC/SVC on a CN with no switch and
     //    exactly one non-BBS/non-switch terminal) — these represent equipment not connected
-    //    via any switch in the node-breaker topology.
+    //    via any switch in the node-breaker topology_mod.
     //
     // Loads (EnergyConsumer, ConformLoad, NonConformLoad) never receive fictitious switches.
-    for (topology.phase2_equipment_types) |eq_type| {
+    for (topology_mod.phase2_equipment_types) |eq_type| {
         const is_injection = std.mem.eql(u8, eq_type, "SynchronousMachine") or
             std.mem.eql(u8, eq_type, "LinearShuntCompensator") or
             std.mem.eql(u8, eq_type, "StaticVarCompensator");
@@ -253,7 +254,7 @@ pub fn convert_fictitious_switches(
             for (terminals.items) |t| {
                 const cn_id = t.conn_node_id orelse continue;
 
-                const ssh_disconnected = topology.is_ssh_terminal_disconnected(ssh_opt, t.id);
+                const ssh_disconnected = topology_mod.is_ssh_terminal_disconnected(ssh_opt, t.id);
                 if (ssh_disconnected) {
                     // SSH-disconnected: always create fictitious regardless of type or CN topology.
                     // No-switch check is skipped — pypow creates fictitious even when the
@@ -272,7 +273,7 @@ pub fn convert_fictitious_switches(
 
                 // Resolve to a representative VL.
                 const container_id = index.conn_node_container.get(cn_id) orelse continue;
-                const repr_id = topology.find_voltage_level(&index.voltage_level_merge, container_id);
+                const repr_id = topology_mod.find_voltage_level(&placer.topology.voltage_level_merge, container_id);
                 const voltage_level = voltage_level_map.get(repr_id) orelse continue;
 
                 // Get terminal mRID for the switch id/name.
@@ -490,7 +491,7 @@ pub fn convert_shunts(
                         const is_local = std.mem.eql(u8, rt_equipment, shunt.id);
                         if (!is_local) {
                             if (index.terminal_conn_node.get(rt_id)) |conn_node_id| {
-                                regulating_terminal = index.conn_node_reachable_busbar_section.get(conn_node_id);
+                                regulating_terminal = placer.topology.conn_node_reachable_busbar_section.get(conn_node_id);
                             }
                         }
                     }
@@ -775,7 +776,7 @@ pub fn convert_generators(
                         if (!std.mem.eql(u8, rt_eq, machine.id)) {
                             const rt_conn_node = index.terminal_conn_node.get(rt_id);
                             if (rt_conn_node) |conn_node_id| {
-                                regulating_terminal = index.conn_node_reachable_busbar_section.get(conn_node_id);
+                                regulating_terminal = placer.topology.conn_node_reachable_busbar_section.get(conn_node_id);
                             }
                         }
                     }

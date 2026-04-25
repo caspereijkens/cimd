@@ -18,6 +18,37 @@ const CimObject = tag_index.CimObject;
 
 pub const switch_types = [_][]const u8{ "Breaker", "Disconnector", "LoadBreakSwitch" };
 
+pub const Topology = struct {
+    voltage_level_merge: std.StringHashMapUnmanaged([]const u8),
+    substation_merge: std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)),
+    conn_node_reachable_busbar_section: std.StringHashMapUnmanaged([]const u8),
+
+    pub fn build(gpa: std.mem.Allocator, model: *const CimModel, index: *const CimIndex) !Topology {
+        var topology = Topology{
+            .conn_node_reachable_busbar_section = .empty,
+            .voltage_level_merge = .empty,
+            .substation_merge = .empty,
+        };
+        errdefer topology.deinit(gpa);
+
+        try build_voltage_level_merge(gpa, model, index, &topology);
+        try build_substation_merge(gpa, model, index, &topology);
+        try build_branch_first_search_pre_computation(gpa, model, index, &topology);
+
+        return topology;
+    }
+
+    pub fn deinit(self: *Topology, gpa: std.mem.Allocator) void {
+        self.voltage_level_merge.deinit(gpa);
+        var it = self.substation_merge.valueIterator();
+        while (it.next()) |list| {
+            list.deinit(gpa);
+        }
+        self.substation_merge.deinit(gpa);
+        self.conn_node_reachable_busbar_section.deinit(gpa);
+    }
+};
+
 /// Maps terminal raw ID → IIDM node number within its VoltageLevel.
 /// All equipment (busbar sections, switches, generators, loads, etc.) looks up its
 /// terminal here to find its node number. BusbarSection and switch terminals map
@@ -118,8 +149,8 @@ pub fn find(parent: *const std.StringHashMapUnmanaged([]const u8), x: []const u8
 // A switch with terminals in two different CIM VoltageLevels means those
 // VLs are electrically one region. PyPowSyBl collapses them; this map
 // records each stub VL's representative so callers can normalize VL refs.
-pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
-    assert(index.voltage_level_merge.count() == 0);
+pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *const CimIndex, topology: *Topology) !void {
+    assert(topology.voltage_level_merge.count() == 0);
 
     const voltage_levels = model.get_objects_by_type("VoltageLevel");
     const switch_slices = get_switch_type_slices(model);
@@ -130,26 +161,26 @@ pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const cim_model
 
     for (switch_slices) |slice| try cim_index.process_switch_type(model, index, slice, &parent);
 
-    try index.voltage_level_merge.ensureTotalCapacity(gpa, @intCast(voltage_levels.len));
+    try topology.voltage_level_merge.ensureTotalCapacity(gpa, @intCast(voltage_levels.len));
     for (voltage_levels) |voltage_level| {
         const root = find_voltage_level(&parent, voltage_level.id);
         if (!std.mem.eql(u8, root, voltage_level.id)) {
-            index.voltage_level_merge.putAssumeCapacity(voltage_level.id, root);
+            topology.voltage_level_merge.putAssumeCapacity(voltage_level.id, root);
         }
     }
 
-    assert(index.voltage_level_merge.count() <= voltage_levels.len);
+    assert(topology.voltage_level_merge.count() <= voltage_levels.len);
     // idempotency: no representative is itself a stub
-    var it = index.voltage_level_merge.iterator();
+    var it = topology.voltage_level_merge.iterator();
     while (it.next()) |entry| {
-        assert(index.voltage_level_merge.get(entry.value_ptr.*) == null);
+        assert(topology.voltage_level_merge.get(entry.value_ptr.*) == null);
     }
 }
 
 // Substations merge transitively: when their VLs merge (cross-VL switches),
 // or when a PowerTransformer spans two substations. Mirrors PyPowSyBl.
-pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
-    assert(index.substation_merge.count() == 0);
+pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *const CimIndex, topology: *Topology) !void {
+    assert(topology.substation_merge.count() == 0);
     assert(index.conn_node_container.count() > 0);
 
     const substations = model.get_objects_by_type("Substation");
@@ -160,7 +191,7 @@ pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.Ci
     for (substations) |substation| parent.putAssumeCapacity(substation.id, substation.id);
 
     // Pass 1: merged VLs drag their substations together.
-    var voltage_level_it = index.voltage_level_merge.iterator();
+    var voltage_level_it = topology.voltage_level_merge.iterator();
     while (voltage_level_it.next()) |entry| {
         const stub_voltage_level = model.getObjectById(entry.key_ptr.*) orelse continue;
         const repr_voltage_level = model.getObjectById(entry.value_ptr.*) orelse continue;
@@ -193,11 +224,11 @@ pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.Ci
         }
     }
 
-    try index.substation_merge.ensureTotalCapacity(gpa, @intCast(substations.len));
+    try topology.substation_merge.ensureTotalCapacity(gpa, @intCast(substations.len));
     for (substations) |substation| {
         const canonical = find(&parent, substation.id);
         if (std.mem.eql(u8, canonical, substation.id)) continue;
-        const gop = index.substation_merge.getOrPutAssumeCapacity(canonical);
+        const gop = topology.substation_merge.getOrPutAssumeCapacity(canonical);
         if (!gop.found_existing) gop.value_ptr.* = .empty;
         // Multiple VL-level connections between the same two subs would
         // otherwise add the same stub twice.
@@ -211,7 +242,7 @@ pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.Ci
         if (!already_present) try gop.value_ptr.append(gpa, substation.id);
     }
 
-    assert(index.substation_merge.count() <= substations.len);
+    assert(topology.substation_merge.count() <= substations.len);
 }
 
 fn conn_node_to_voltage_level(model: *const cim_model.CimModel, index: *const CimIndex, conn_node_id: []const u8) ?CimObjectView {
@@ -223,8 +254,8 @@ fn conn_node_to_voltage_level(model: *const cim_model.CimModel, index: *const Ci
 
 /// RegulatingControl resolution needs to find a BBS reachable through closed switches,
 /// and doing the BFS at query time would be quadratic. We pre-compute once.
-pub fn build_branch_first_search_pre_computation(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
-    assert(index.conn_node_reachable_busbar_section.count() == 0);
+pub fn build_branch_first_search_pre_computation(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *const CimIndex, topology: *Topology) !void {
+    assert(topology.conn_node_reachable_busbar_section.count() == 0);
     assert(index.conn_node_container.count() > 0);
 
     const conn_nodes = model.get_objects_by_type("ConnectivityNode");
@@ -255,16 +286,16 @@ pub fn build_branch_first_search_pre_computation(gpa: std.mem.Allocator, model: 
         }
     }
 
-    try index.conn_node_reachable_busbar_section.ensureTotalCapacity(gpa, @intCast(conn_nodes.len));
+    try topology.conn_node_reachable_busbar_section.ensureTotalCapacity(gpa, @intCast(conn_nodes.len));
 
     var it = parent.keyIterator();
     while (it.next()) |conn_node_id| {
         const root = find_voltage_level(&parent, conn_node_id.*);
         const busbar_section_mrid = cluster_to_busbar_section.get(root) orelse continue;
-        index.conn_node_reachable_busbar_section.putAssumeCapacity(conn_node_id.*, busbar_section_mrid);
+        topology.conn_node_reachable_busbar_section.putAssumeCapacity(conn_node_id.*, busbar_section_mrid);
     }
 
-    assert(index.conn_node_reachable_busbar_section.count() <= conn_nodes.len);
+    assert(topology.conn_node_reachable_busbar_section.count() <= conn_nodes.len);
 }
 
 /// Result of build_node_map. Bundles the node map with auxiliary maps consumed by
@@ -320,6 +351,7 @@ pub fn build_node_map(
     gpa: std.mem.Allocator,
     model: *const CimModel,
     index: *const CimIndex,
+    topology: *const Topology,
     voltage_levels: *const std.StringHashMapUnmanaged(void),
     ssh_opt: ?CimSsh,
 ) !NodeMapResult {
@@ -359,7 +391,7 @@ pub fn build_node_map(
     // Base node assignment: sequential counter per representative VL, CN XML parse order.
     for (conn_nodes) |conn_node| {
         const container_id = index.conn_node_container.get(conn_node.id) orelse continue;
-        const repr_voltage_level_id = find_voltage_level(&index.voltage_level_merge, container_id);
+        const repr_voltage_level_id = find_voltage_level(&topology.voltage_level_merge, container_id);
         if (!voltage_levels.contains(repr_voltage_level_id)) continue;
 
         conn_node_repr_voltage_level.putAssumeCapacity(conn_node.id, repr_voltage_level_id);

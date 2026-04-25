@@ -226,6 +226,11 @@ pub fn convert(
     var index = try cim_index.CimIndex.build(gpa, model, boundary_ids);
     defer index.deinit(gpa);
 
+    var topology_data = try topology.Topology.build(gpa, model, &index);
+    defer topology_data.deinit(gpa);
+
+    try cim_index.build_voltage_limits(gpa, model, &index, &topology_data);
+
     // ---- FullModel metadata: id, caseDate, forecastDistance ----
     const full_models = model.get_objects_by_type("FullModel");
     const eq_full_model: ?tag_index.CimObjectView = if (full_models.len > 0) model.view(full_models[0]) else null;
@@ -271,13 +276,13 @@ pub fn convert(
 
     var sub_id_map: std.StringHashMapUnmanaged(usize) = .empty;
     defer sub_id_map.deinit(gpa);
-    try substation_conv.convert_substations(gpa, model, &index, &network, &sub_id_map);
+    try substation_conv.convert_substations(gpa, model, &topology_data, &network, &sub_id_map);
 
-    try voltage_level_conv.convert_voltage_levels(gpa, model, &index, &network, &sub_id_map);
+    try voltage_level_conv.convert_voltage_levels(gpa, model, &index, &topology_data, &network, &sub_id_map);
 
     var substation_map: std.StringHashMapUnmanaged(*iidm.Substation) = .empty;
     defer substation_map.deinit(gpa);
-    var voltage_level_map = try voltage_level_conv.build_voltage_level_map(gpa, model, &index, &network, &sub_id_map, &substation_map);
+    var voltage_level_map = try voltage_level_conv.build_voltage_level_map(gpa, model, &topology_data, &network, &sub_id_map, &substation_map);
     defer voltage_level_map.deinit(gpa);
 
     // Branch on output shape. Bus-branch derives placement from TP's
@@ -292,6 +297,7 @@ pub fn convert(
         const placer = placement_conv.TerminalPlacer{
             .mode = .{ .bus_branch = .{ .tp = tp, .bus_map = &bus_map } },
             .index = &index,
+            .topology = &topology_data,
             .voltage_level_map = &voltage_level_map,
         };
 
@@ -309,14 +315,15 @@ pub fn convert(
         var voltage_level_id_it = voltage_level_map.keyIterator();
         while (voltage_level_id_it.next()) |k| voltage_level_id_set.putAssumeCapacity(k.*, {});
 
-        var nm_result = try topology.build_node_map(gpa, model, &index, &voltage_level_id_set, ssh_opt);
+        var nm_result = try topology.build_node_map(gpa, model, &index, &topology_data, &voltage_level_id_set, ssh_opt);
         defer nm_result.deinit(gpa);
-        try populate_internal_connections(gpa, model, &index, &voltage_level_map, ssh_opt, &nm_result);
+        try populate_internal_connections(gpa, model, &index, &topology_data, &voltage_level_map, ssh_opt, &nm_result);
         const node_map = &nm_result.node_map;
 
         const placer = placement_conv.TerminalPlacer{
             .mode = .{ .node_breaker = node_map },
             .index = &index,
+            .topology = &topology_data,
             .voltage_level_map = &voltage_level_map,
         };
 

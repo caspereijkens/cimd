@@ -4,8 +4,10 @@ const cim_model = @import("../cim_model.zig");
 const cim_index = @import("../cim_index.zig");
 const tag_index = @import("../tag_index.zig");
 const utils = @import("../utils.zig");
+const topology_mod = @import("../topology.zig");
 
 const assert = std.debug.assert;
+const Topology = topology_mod.Topology;
 
 const CimModel = cim_model.CimModel;
 const CimObject = tag_index.CimObject;
@@ -136,6 +138,7 @@ pub fn convert_voltage_levels(
     gpa: std.mem.Allocator,
     model: *const CimModel,
     index: *const CimIndex,
+    topology: *const Topology,
     network: *iidm.Network,
     substation_id_map: *std.StringHashMapUnmanaged(usize),
 ) !void {
@@ -149,7 +152,7 @@ pub fn convert_voltage_levels(
     @memset(voltage_level_counts, 0);
 
     for (voltage_levels) |voltage_level| {
-        if (index.voltage_level_merge.contains(voltage_level.id)) continue;
+        if (topology.voltage_level_merge.contains(voltage_level.id)) continue;
         const substation_ref = try model.view(voltage_level).getReference("VoltageLevel.Substation") orelse continue;
         const substation_idx = substation_id_map.get(strip_hash(substation_ref)) orelse continue;
         voltage_level_counts[substation_idx] += 1;
@@ -167,7 +170,7 @@ pub fn convert_voltage_levels(
         repr_to_stub_mrids.deinit(gpa);
     }
     {
-        var it = index.voltage_level_merge.iterator();
+        var it = topology.voltage_level_merge.iterator();
         while (it.next()) |entry| {
             const stub_id = entry.key_ptr.*;
             const repr_id = entry.value_ptr.*;
@@ -181,11 +184,11 @@ pub fn convert_voltage_levels(
 
     // Second, create VoltageLevel objects.
     for (voltage_levels) |voltage_level| {
-        if (index.voltage_level_merge.contains(voltage_level.id)) continue;
+        if (topology.voltage_level_merge.contains(voltage_level.id)) continue;
         try append_voltage_level(gpa, model, index, model.view(voltage_level), network, substation_id_map, &repr_to_stub_mrids);
     }
 
-    assert(voltage_levels.len - index.voltage_level_merge.count() == blk: {
+    assert(voltage_levels.len - topology.voltage_level_merge.count() == blk: {
         var total: usize = 0;
         for (network.substations.items) |substation| total += substation.voltage_levels.items.len;
         break :blk total;
@@ -195,7 +198,7 @@ pub fn convert_voltage_levels(
 pub fn build_voltage_level_map(
     gpa: std.mem.Allocator,
     model: *const CimModel,
-    index: *const CimIndex,
+    topology: *const Topology,
     network: *iidm.Network,
     substation_id_map: *const std.StringHashMapUnmanaged(usize),
     substation_map: *std.StringHashMapUnmanaged(*iidm.Substation),
@@ -203,7 +206,7 @@ pub fn build_voltage_level_map(
     assert(network.substations.items.len > 0);
 
     const voltage_levels = model.get_objects_by_type("VoltageLevel");
-    const representative_count = voltage_levels.len - index.voltage_level_merge.count();
+    const representative_count = voltage_levels.len - topology.voltage_level_merge.count();
 
     var voltage_level_map: std.StringHashMapUnmanaged(*iidm.VoltageLevel) = .empty;
     try voltage_level_map.ensureTotalCapacity(gpa, @intCast(representative_count));
@@ -215,7 +218,7 @@ pub fn build_voltage_level_map(
     @memset(voltage_level_counters, 0);
 
     for (voltage_levels) |voltage_level| {
-        if (index.voltage_level_merge.contains(voltage_level.id)) continue;
+        if (topology.voltage_level_merge.contains(voltage_level.id)) continue;
         const substation_ref = try model.view(voltage_level).getReference("VoltageLevel.Substation") orelse continue;
         const substation_idx = substation_id_map.get(strip_hash(substation_ref)) orelse continue;
         substation_map.putAssumeCapacity(voltage_level.id, &network.substations.items[substation_idx]);

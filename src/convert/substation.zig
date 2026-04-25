@@ -4,8 +4,10 @@ const cim_model = @import("../cim_model.zig");
 const cim_index = @import("../cim_index.zig");
 const tag_index = @import("../tag_index.zig");
 const utils = @import("../utils.zig");
+const topology_mod = @import("../topology.zig");
 
 const assert = std.debug.assert;
+const Topology = topology_mod.Topology;
 
 const CimModel = cim_model.CimModel;
 const CimObject = tag_index.CimObject;
@@ -54,7 +56,7 @@ fn resolve_mrid(object: CimObjectView) error{MalformedTag}![]const u8 {
 fn append_substation(
     gpa: std.mem.Allocator,
     model: *const CimModel,
-    index: *const CimIndex,
+    topology: *const Topology,
     substation: CimObjectView,
     network: *iidm.Network,
     sub_id_map: *std.StringHashMapUnmanaged(usize),
@@ -93,7 +95,7 @@ fn append_substation(
 
     // Build MergedSubstation aliases for any stub substations merged into this one.
     var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
-    if (index.substation_merge.get(substation.id)) |stubs| {
+    if (topology.substation_merge.get(substation.id)) |stubs| {
         assert(stubs.items.len > 0);
         try aliases.ensureTotalCapacity(gpa, stubs.items.len);
         for (stubs.items, 1..) |stub_id, n| {
@@ -117,7 +119,7 @@ fn append_substation(
 
     const idx = network.substations.items.len - 1;
     sub_id_map.putAssumeCapacity(substation.id, idx);
-    if (index.substation_merge.get(substation.id)) |stubs| {
+    if (topology.substation_merge.get(substation.id)) |stubs| {
         for (stubs.items) |stub_id| sub_id_map.putAssumeCapacity(stub_id, idx);
     }
 }
@@ -125,7 +127,7 @@ fn append_substation(
 pub fn convert_substations(
     gpa: std.mem.Allocator,
     model: *const CimModel,
-    index: *const CimIndex,
+    topology: *const Topology,
     network: *iidm.Network,
     substation_id_map: *std.StringHashMapUnmanaged(usize),
 ) !void {
@@ -136,7 +138,7 @@ pub fn convert_substations(
     // Collect all stub IDs for O(1) skip checks.
     var stub_count: usize = 0;
     {
-        var it = index.substation_merge.valueIterator();
+        var it = topology.substation_merge.valueIterator();
         while (it.next()) |list| stub_count += list.items.len;
     }
 
@@ -144,7 +146,7 @@ pub fn convert_substations(
     defer stub_ids.deinit(gpa);
     try stub_ids.ensureTotalCapacity(gpa, @intCast(stub_count));
     {
-        var it = index.substation_merge.valueIterator();
+        var it = topology.substation_merge.valueIterator();
         while (it.next()) |list| {
             for (list.items) |stub_id| {
                 stub_ids.putAssumeCapacity(stub_id, {});
@@ -157,7 +159,7 @@ pub fn convert_substations(
     try substation_id_map.ensureTotalCapacity(gpa, @intCast(substations.len));
     for (substations) |substation| {
         if (stub_ids.contains(substation.id)) continue;
-        try append_substation(gpa, model, index, model.view(substation), network, substation_id_map);
+        try append_substation(gpa, model, topology, model.view(substation), network, substation_id_map);
     }
 
     assert(network.substations.items.len == substations.len - stub_count);

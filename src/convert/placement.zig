@@ -5,13 +5,14 @@ const cim_model = @import("../cim_model.zig");
 const utils = @import("../utils.zig");
 const bus_conv = @import("bus.zig");
 const CimTp = @import("../cim_tp.zig").CimTp;
-const topology = @import("../topology.zig");
+const topology_mod = @import("../topology.zig");
 
 const strip_underscore = utils.strip_underscore;
 const strip_hash = utils.strip_hash;
 
 const assert = std.debug.assert;
 const CimIndex = cim_index.CimIndex;
+const Topology = topology_mod.Topology;
 
 pub const Placement = struct {
     /// Raw rdf:ID of the containing VoltageLevel (merge-resolved in node-breaker,
@@ -33,13 +34,14 @@ pub fn resolve_terminal_placement(
     terminal_id: []const u8,
     conn_node_id: []const u8,
     index: *const CimIndex,
+    topology: *const Topology,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const topology.NodeMap,
+    node_map: *const topology_mod.NodeMap,
 ) ?Placement {
     assert(terminal_id.len > 0);
     assert(conn_node_id.len > 0);
     const container_id = index.conn_node_container.get(conn_node_id) orelse return null;
-    const repr_voltage_level_id = topology.find_voltage_level(&index.voltage_level_merge, container_id);
+    const repr_voltage_level_id = topology_mod.find_voltage_level(&topology.voltage_level_merge, container_id);
     const voltage_level = voltage_level_map.get(repr_voltage_level_id) orelse return null;
     const node = node_map.get(terminal_id) orelse return null;
     return .{ .repr_voltage_level_id = repr_voltage_level_id, .voltage_level = voltage_level, .node = node };
@@ -51,10 +53,11 @@ pub fn resolve_terminal_placement(
 pub const TerminalPlacer = struct {
     mode: Mode,
     index: *const CimIndex,
+    topology: *const Topology,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
 
     pub const Mode = union(enum) {
-        node_breaker: *const topology.NodeMap,
+        node_breaker: *const topology_mod.NodeMap,
         bus_branch: BusBranch,
     };
 
@@ -68,7 +71,7 @@ pub const TerminalPlacer = struct {
         switch (self.mode) {
             .node_breaker => |node_map| {
                 const cn = conn_node_id orelse return null;
-                return resolve_terminal_placement(terminal_id, cn, self.index, self.voltage_level_map, node_map);
+                return resolve_terminal_placement(terminal_id, cn, self.index, self.topology, self.voltage_level_map, node_map);
             },
             .bus_branch => |bb| {
                 const terminal_mrid = strip_underscore(terminal_id);

@@ -3,7 +3,8 @@ const iidm = @import("iidm.zig");
 const tag_index = @import("tag_index.zig");
 const utils = @import("utils.zig");
 const cim_model = @import("cim_model.zig");
-const topology = @import("topology.zig");
+const topology_mod = @import("topology.zig");
+const Topology = topology_mod.Topology;
 
 const assert = std.debug.assert;
 
@@ -61,17 +62,8 @@ pub const CimIndex = struct {
     // ConnectivityNode → BusbarSection mRID (only populated for ConnectivityNodes that have a BusbarSection directly attached)
     conn_node_to_busbar_section: std.StringHashMapUnmanaged([]const u8),
 
-    // ConnectivityNode → nearest BusbarSection mRID reachable via switches (pre-computed BFS, covers all switch-adjacent ConnectivityNodes)
-    conn_node_reachable_busbar_section: std.StringHashMapUnmanaged([]const u8),
-
     // BusbarSection entries in ConnectivityNode XML parse order (used during BFS pre-computation)
     busbar_section_in_parse_order: std.ArrayListUnmanaged(BusbarSectionEntry),
-
-    // VoltageLevel merge: stub VoltageLevel raw ID → representative VoltageLevel raw ID
-    voltage_level_merge: std.StringHashMapUnmanaged([]const u8),
-
-    // Substation merge: representative sub raw ID → list of merged-in sub raw IDs
-    substation_merge: std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)),
 
     // Operational limit types: type raw ID → info
     limit_types: std.StringHashMapUnmanaged(LimitTypeInfo),
@@ -105,10 +97,6 @@ pub const CimIndex = struct {
         try build_operational_limits(gpa, model, &index);
 
         try build_curve_points(gpa, model, &index);
-        try topology.build_voltage_level_merge(gpa, model, &index);
-        try topology.build_substation_merge(gpa, model, &index);
-        try topology.build_branch_first_search_pre_computation(gpa, model, &index);
-        try build_voltage_limits(gpa, model, &index);
         index.boundary_base_voltage_ids = boundary_base_voltage_ids;
         return index;
     }
@@ -128,17 +116,7 @@ pub const CimIndex = struct {
 
         self.conn_node_container.deinit(gpa);
         self.conn_node_to_busbar_section.deinit(gpa);
-        self.conn_node_reachable_busbar_section.deinit(gpa);
         self.busbar_section_in_parse_order.deinit(gpa);
-        self.voltage_level_merge.deinit(gpa);
-
-        {
-            var it = self.substation_merge.valueIterator();
-            while (it.next()) |list| {
-                list.deinit(gpa);
-            }
-            self.substation_merge.deinit(gpa);
-        }
 
         self.limit_types.deinit(gpa);
 
@@ -187,10 +165,7 @@ fn create_empty_cim_index() CimIndex {
         .equipment_terminals = .empty,
         .conn_node_container = .empty,
         .conn_node_to_busbar_section = .empty,
-        .conn_node_reachable_busbar_section = .empty,
         .busbar_section_in_parse_order = .empty,
-        .voltage_level_merge = .empty,
-        .substation_merge = .empty,
         .limit_types = .empty,
         .terminal_limit_sets = .empty,
         .current_limits_by_set = .empty,
@@ -411,11 +386,11 @@ pub fn process_switch_type(
         if (!std.mem.eql(u8, obj0.type_name, "VoltageLevel")) continue;
         if (!std.mem.eql(u8, obj1.type_name, "VoltageLevel")) continue;
 
-        try topology.union_voltage_levels(model, parent, container0, container1);
+        try topology_mod.union_voltage_levels(model, parent, container0, container1);
     }
 }
 
-fn build_voltage_limits(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
+pub fn build_voltage_limits(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex, topology: *const Topology) !void {
     assert(index.voltage_level_limits.count() == 0);
 
     const voltage_limits = model.get_objects_by_type("VoltageLimit");
@@ -439,7 +414,7 @@ fn build_voltage_limits(gpa: std.mem.Allocator, model: *const cim_model.CimModel
             break :blk strip_hash(ec_ref);
         };
         // Apply VL merge so limits are keyed by the representative VL.
-        const container_id = topology.find_voltage_level(&index.voltage_level_merge, raw_container_id);
+        const container_id = topology_mod.find_voltage_level(&topology.voltage_level_merge, raw_container_id);
         const container = model.getObjectById(container_id) orelse continue;
 
         if (!std.mem.eql(u8, container.type_name, "VoltageLevel")) continue;

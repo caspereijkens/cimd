@@ -7,6 +7,7 @@ const CimIndex = cim_index.CimIndex;
 const cim_ssh = @import("../cim_ssh.zig");
 const CimSsh = cim_ssh.CimSsh;
 const topology = @import("../topology.zig");
+const Topology = topology.Topology;
 
 /// Populate per-VoltageLevel internalConnections arrays from a built node map.
 ///
@@ -20,6 +21,7 @@ pub fn populate_internal_connections(
     gpa: std.mem.Allocator,
     model: *const CimModel,
     index: *const CimIndex,
+    topology_data: *const Topology,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     ssh_opt: ?CimSsh,
     nm_result: *const topology.NodeMapResult,
@@ -48,7 +50,7 @@ pub fn populate_internal_connections(
 
     for (model.get_objects_by_type("ConnectivityNode")) |conn_node| {
         const container_id = index.conn_node_container.get(conn_node.id) orelse continue;
-        const repr_voltage_level_id = topology.find_voltage_level(&index.voltage_level_merge, container_id);
+        const repr_voltage_level_id = topology.find_voltage_level(&topology_data.voltage_level_merge, container_id);
         if (voltage_level_map.get(repr_voltage_level_id) == null) continue;
 
         const other_count = conn_node_other_count.get(conn_node.id) orelse 0;
@@ -78,7 +80,7 @@ pub fn populate_internal_connections(
                 if (topology.is_ssh_terminal_disconnected(ssh_opt, t.id)) continue;
 
                 const container_id = index.conn_node_container.get(conn_node_id) orelse continue;
-                const repr_voltage_level_id = topology.find_voltage_level(&index.voltage_level_merge, container_id);
+                const repr_voltage_level_id = topology.find_voltage_level(&topology_data.voltage_level_merge, container_id);
                 const voltage_level = voltage_level_map.get(repr_voltage_level_id) orelse continue;
                 voltage_level.node_breaker_topology.internal_connections.appendAssumeCapacity(.{
                     .node1 = base_node,
