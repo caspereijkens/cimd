@@ -14,6 +14,7 @@ const bus_conv = @import("convert/bus.zig");
 const placement_conv = @import("convert/placement.zig");
 const CimSsh = @import("cim_ssh.zig").CimSsh;
 const CimTp = @import("cim_tp.zig").CimTp;
+const populate_internal_connections = @import("convert/internal_connections.zig").populate_internal_connections;
 
 const assert = std.debug.assert;
 const CimModel = cim_model.CimModel;
@@ -302,9 +303,15 @@ pub fn convert(
         try transformer_conv.convert_transformers(gpa, model, &substation_map, placer, ssh_opt);
         try line_conv.convert_lines(gpa, model, &network, placer, ssh_opt);
     } else {
-        var nm_result = try topology.build_node_map(gpa, model, &index, &voltage_level_map, ssh_opt);
+        var voltage_level_id_set: std.StringHashMapUnmanaged(void) = .empty;
+        defer voltage_level_id_set.deinit(gpa);
+        try voltage_level_id_set.ensureTotalCapacity(gpa, @intCast(voltage_level_map.count()));
+        var voltage_level_id_it = voltage_level_map.keyIterator();
+        while (voltage_level_id_it.next()) |k| voltage_level_id_set.putAssumeCapacity(k.*, {});
+
+        var nm_result = try topology.build_node_map(gpa, model, &index, &voltage_level_id_set, ssh_opt);
         defer nm_result.deinit(gpa);
-        try topology.populate_internal_connections(gpa, model, &index, &voltage_level_map, ssh_opt, &nm_result);
+        try populate_internal_connections(gpa, model, &index, &voltage_level_map, ssh_opt, &nm_result);
         const node_map = &nm_result.node_map;
 
         const placer = placement_conv.TerminalPlacer{

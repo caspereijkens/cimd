@@ -3,7 +3,6 @@ const utils = @import("utils.zig");
 const cim_model = @import("cim_model.zig");
 const cim_index = @import("cim_index.zig");
 const tag_index = @import("tag_index.zig");
-const iidm = @import("iidm.zig");
 const cim_ssh = @import("cim_ssh.zig");
 
 const assert = std.debug.assert;
@@ -26,7 +25,7 @@ pub const switch_types = [_][]const u8{ "Breaker", "Disconnector", "LoadBreakSwi
 /// node with an internal connection back to the CN node.
 pub const NodeMap = std.StringHashMapUnmanaged(u32);
 
-fn is_switch_type(type_name: []const u8) bool {
+pub fn is_switch_type(type_name: []const u8) bool {
     for (switch_types) |switch_type| {
         if (std.mem.eql(u8, type_name, switch_type)) return true;
     }
@@ -321,7 +320,7 @@ pub fn build_node_map(
     gpa: std.mem.Allocator,
     model: *const CimModel,
     index: *const CimIndex,
-    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
+    voltage_levels: *const std.StringHashMapUnmanaged(void),
     ssh_opt: ?CimSsh,
 ) !NodeMapResult {
     assert(index.conn_node_container.count() > 0);
@@ -355,13 +354,13 @@ pub fn build_node_map(
 
     var voltage_level_counters: std.StringHashMapUnmanaged(u32) = .empty;
     defer voltage_level_counters.deinit(gpa);
-    try voltage_level_counters.ensureTotalCapacity(gpa, @intCast(voltage_level_map.count()));
+    try voltage_level_counters.ensureTotalCapacity(gpa, @intCast(voltage_levels.count()));
 
     // Base node assignment: sequential counter per representative VL, CN XML parse order.
     for (conn_nodes) |conn_node| {
         const container_id = index.conn_node_container.get(conn_node.id) orelse continue;
         const repr_voltage_level_id = find_voltage_level(&index.voltage_level_merge, container_id);
-        if (voltage_level_map.get(repr_voltage_level_id) == null) continue;
+        if (!voltage_levels.contains(repr_voltage_level_id)) continue;
 
         conn_node_repr_voltage_level.putAssumeCapacity(conn_node.id, repr_voltage_level_id);
 
@@ -460,87 +459,6 @@ pub fn build_node_map(
         .cn_other_count = cn_other_count,
         .conn_node_base_nodes = conn_node_base_nodes,
     };
-}
-
-/// Populate per-VoltageLevel internalConnections arrays from a built node map.
-///
-/// An IC is emitted iff a Phase 2 terminal landed on a dedicated node (terminal_node
-/// != CN base_node) AND the terminal is not SSH-disconnected. SSH-disconnected
-/// dedicated terminals are handled by convert_fictitious_switches instead.
-///
-/// Iteration order matches build_node_map's Phase 2, so insertion order into each
-/// VL's internalConnections array is byte-identical to PyPowSyBl.
-pub fn populate_internal_connections(
-    gpa: std.mem.Allocator,
-    model: *const CimModel,
-    index: *const CimIndex,
-    voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    ssh_opt: ?CimSsh,
-    nm_result: *const NodeMapResult,
-) !void {
-    // Per-CN Phase 2 terminal count — same prediction the original code used to
-    // pre-allocate IC capacity. Over-approximates by SSH-disconnected count, which
-    // is fine for ensureTotalCapacity.
-    var conn_node_other_count: std.StringHashMapUnmanaged(u32) = .empty;
-    defer conn_node_other_count.deinit(gpa);
-    try conn_node_other_count.ensureTotalCapacity(gpa, @intCast(index.conn_node_container.count()));
-
-    for (model.get_objects_by_type("Terminal")) |terminal| {
-        const conn_node_id = index.terminal_conn_node.get(terminal.id) orelse continue;
-        const equipment_id = index.terminal_equipment.get(terminal.id) orelse continue;
-        const equipment = model.getObjectById(equipment_id) orelse continue;
-        if (is_switch_type(equipment.type_name)) continue;
-        if (std.mem.eql(u8, equipment.type_name, "BusbarSection")) continue;
-        const gop = conn_node_other_count.getOrPutAssumeCapacity(conn_node_id);
-        if (!gop.found_existing) gop.value_ptr.* = 0;
-        gop.value_ptr.* += 1;
-    }
-
-    var ic_counts: std.StringHashMapUnmanaged(usize) = .empty;
-    defer ic_counts.deinit(gpa);
-    try ic_counts.ensureTotalCapacity(gpa, @intCast(voltage_level_map.count()));
-
-    for (model.get_objects_by_type("ConnectivityNode")) |conn_node| {
-        const container_id = index.conn_node_container.get(conn_node.id) orelse continue;
-        const repr_voltage_level_id = find_voltage_level(&index.voltage_level_merge, container_id);
-        if (voltage_level_map.get(repr_voltage_level_id) == null) continue;
-
-        const other_count = conn_node_other_count.get(conn_node.id) orelse 0;
-        const has_busbar_section = index.conn_node_to_busbar_section.contains(conn_node.id);
-        const ic_for_cn: usize = if (has_busbar_section or other_count >= 3) other_count else if (other_count > 0) other_count - 1 else 0;
-        if (ic_for_cn > 0) {
-            const gop = ic_counts.getOrPutAssumeCapacity(repr_voltage_level_id);
-            if (!gop.found_existing) gop.value_ptr.* = 0;
-            gop.value_ptr.* += ic_for_cn;
-        }
-    }
-
-    var ic_it = ic_counts.iterator();
-    while (ic_it.next()) |entry| {
-        const voltage_level = voltage_level_map.get(entry.key_ptr.*) orelse continue;
-        try voltage_level.node_breaker_topology.internal_connections.ensureTotalCapacity(gpa, entry.value_ptr.*);
-    }
-
-    for (phase2_equipment_types) |equipment_type| {
-        for (model.get_objects_by_type(equipment_type)) |equip| {
-            const terminals = index.equipment_terminals.get(equip.id) orelse continue;
-            for (terminals.items) |t| {
-                const conn_node_id = t.conn_node_id orelse continue;
-                const base_node = nm_result.conn_node_base_nodes.get(conn_node_id) orelse continue;
-                const terminal_node = nm_result.node_map.get(t.id) orelse continue;
-                if (terminal_node == base_node) continue;
-                if (is_ssh_terminal_disconnected(ssh_opt, t.id)) continue;
-
-                const container_id = index.conn_node_container.get(conn_node_id) orelse continue;
-                const repr_voltage_level_id = find_voltage_level(&index.voltage_level_merge, container_id);
-                const voltage_level = voltage_level_map.get(repr_voltage_level_id) orelse continue;
-                voltage_level.node_breaker_topology.internal_connections.appendAssumeCapacity(.{
-                    .node1 = base_node,
-                    .node2 = terminal_node,
-                });
-            }
-        }
-    }
 }
 
 /// Returns true if the terminal is marked as disconnected in SSH
