@@ -304,6 +304,7 @@ pub fn convert(
     } else {
         var nm_result = try connection_conv.build_node_map(gpa, model, &index, &voltage_level_map, ssh_opt);
         defer nm_result.deinit(gpa);
+        try connection_conv.populate_internal_connections(gpa, model, &index, &voltage_level_map, ssh_opt, &nm_result);
         const node_map = &nm_result.node_map;
 
         const placer = placement_conv.TerminalPlacer{
