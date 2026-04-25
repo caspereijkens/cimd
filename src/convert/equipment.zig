@@ -7,7 +7,6 @@ const utils = @import("../utils.zig");
 const topology = @import("../topology.zig");
 
 const placement_mod = @import("placement.zig");
-const connection_mod = @import("connection.zig");
 
 const assert = std.debug.assert;
 
@@ -21,7 +20,7 @@ const strip_underscore = utils.strip_underscore;
 const Placement = placement_mod.Placement;
 const TerminalPlacer = placement_mod.TerminalPlacer;
 const resolve_terminal_placement = placement_mod.resolve_terminal_placement;
-const NodeMap = connection_mod.NodeMap;
+const NodeMap = topology.NodeMap;
 
 const VoltageLevelEquipmentCounts = struct {
     busbar_sections: usize = 0,
@@ -244,7 +243,7 @@ pub fn convert_fictitious_switches(
     //    via any switch in the node-breaker topology.
     //
     // Loads (EnergyConsumer, ConformLoad, NonConformLoad) never receive fictitious switches.
-    for (connection_mod.phase2_equipment_types) |eq_type| {
+    for (topology.phase2_equipment_types) |eq_type| {
         const is_injection = std.mem.eql(u8, eq_type, "SynchronousMachine") or
             std.mem.eql(u8, eq_type, "LinearShuntCompensator") or
             std.mem.eql(u8, eq_type, "StaticVarCompensator");
@@ -254,7 +253,7 @@ pub fn convert_fictitious_switches(
             for (terminals.items) |t| {
                 const cn_id = t.conn_node_id orelse continue;
 
-                const ssh_disconnected = connection_mod.is_ssh_terminal_disconnected(ssh_opt, t.id);
+                const ssh_disconnected = topology.is_ssh_terminal_disconnected(ssh_opt, t.id);
                 if (ssh_disconnected) {
                     // SSH-disconnected: always create fictitious regardless of type or CN topology.
                     // No-switch check is skipped — pypow creates fictitious even when the

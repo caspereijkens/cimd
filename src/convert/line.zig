@@ -4,7 +4,6 @@ const cim_model = @import("../cim_model.zig");
 const cim_index = @import("../cim_index.zig");
 const utils = @import("../utils.zig");
 const placement_mod = @import("placement.zig");
-const connection_mod = @import("connection.zig");
 const topology = @import("../topology.zig");
 
 const assert = std.debug.assert;
@@ -13,7 +12,7 @@ const CimModel = cim_model.CimModel;
 const CimIndex = cim_index.CimIndex;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
-const NodeMap = connection_mod.NodeMap;
+const NodeMap = topology.NodeMap;
 const TerminalPlacer = placement_mod.TerminalPlacer;
 
 /// Resolved placement for one line terminal.

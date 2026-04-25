@@ -4,6 +4,7 @@ const cim_model = @import("../cim_model.zig");
 const cim_index = @import("../cim_index.zig");
 const tag_index = @import("../tag_index.zig");
 const utils = @import("../utils.zig");
+const topology = @import("../topology.zig");
 
 const assert = std.debug.assert;
 const testing = std.testing;
@@ -13,14 +14,13 @@ const CimObject = tag_index.CimObject;
 const CimObjectView = tag_index.CimObjectView;
 const CimIndex = cim_index.CimIndex;
 const placement_mod = @import("placement.zig");
-const connection_mod = @import("connection.zig");
 
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 const Placement = placement_mod.Placement;
 const TerminalPlacer = placement_mod.TerminalPlacer;
 const resolve_terminal_placement = placement_mod.resolve_terminal_placement;
-const NodeMap = connection_mod.NodeMap;
+const NodeMap = topology.NodeMap;
 
 fn build_ends_by_transformer(
     gpa: std.mem.Allocator,

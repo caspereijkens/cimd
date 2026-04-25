@@ -3,7 +3,6 @@ const iidm = @import("../iidm.zig");
 const cim_index = @import("../cim_index.zig");
 const cim_model = @import("../cim_model.zig");
 const utils = @import("../utils.zig");
-const connection = @import("connection.zig");
 const bus_conv = @import("bus.zig");
 const CimTp = @import("../cim_tp.zig").CimTp;
 const topology = @import("../topology.zig");
@@ -35,7 +34,7 @@ pub fn resolve_terminal_placement(
     conn_node_id: []const u8,
     index: *const CimIndex,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const connection.NodeMap,
+    node_map: *const topology.NodeMap,
 ) ?Placement {
     assert(terminal_id.len > 0);
     assert(conn_node_id.len > 0);
@@ -55,7 +54,7 @@ pub const TerminalPlacer = struct {
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
 
     pub const Mode = union(enum) {
-        node_breaker: *const connection.NodeMap,
+        node_breaker: *const topology.NodeMap,
         bus_branch: BusBranch,
     };
 

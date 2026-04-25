@@ -3,10 +3,10 @@ const iidm = @import("iidm.zig");
 const cim_model = @import("cim_model.zig");
 const cim_index = @import("cim_index.zig");
 const utils = @import("utils.zig");
+const topology = @import("topology.zig");
 const tag_index = @import("tag_index.zig");
 const substation_conv = @import("convert/substation.zig");
 const voltage_level_conv = @import("convert/voltage_level.zig");
-const connection_conv = @import("convert/connection.zig");
 const equipment_conv = @import("convert/equipment.zig");
 const transformer_conv = @import("convert/transformer.zig");
 const line_conv = @import("convert/line.zig");
@@ -302,9 +302,9 @@ pub fn convert(
         try transformer_conv.convert_transformers(gpa, model, &substation_map, placer, ssh_opt);
         try line_conv.convert_lines(gpa, model, &network, placer, ssh_opt);
     } else {
-        var nm_result = try connection_conv.build_node_map(gpa, model, &index, &voltage_level_map, ssh_opt);
+        var nm_result = try topology.build_node_map(gpa, model, &index, &voltage_level_map, ssh_opt);
         defer nm_result.deinit(gpa);
-        try connection_conv.populate_internal_connections(gpa, model, &index, &voltage_level_map, ssh_opt, &nm_result);
+        try topology.populate_internal_connections(gpa, model, &index, &voltage_level_map, ssh_opt, &nm_result);
         const node_map = &nm_result.node_map;
 
         const placer = placement_conv.TerminalPlacer{
