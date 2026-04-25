@@ -109,7 +109,7 @@ pub const CimIndex = struct {
         try build_curve_points(gpa, model, &index);
         try topology.build_voltage_level_merge(gpa, model, &index);
         try topology.build_substation_merge(gpa, model, &index);
-        try build_branch_first_search_pre_computation(gpa, model, &index);
+        try topology.build_branch_first_search_pre_computation(gpa, model, &index);
         try build_voltage_limits(gpa, model, &index);
         index.boundary_base_voltage_ids = boundary_base_voltage_ids;
         return index;
@@ -426,7 +426,7 @@ test "get_switch_count: mixed empty and non-empty" {
 // For each switch object, look up its two Terminals.
 // Then get the ConnectivityNode of both Terminals.
 // Then get the ConnectivityNodeContainer of both ConnectivityNodes.
-// Then if the two CN Containers are different, we union their VoltageLevels. 
+// Then if the two CN Containers are different, we union their VoltageLevels.
 // VoltageLevel union basically puts the VoltageLevel with the lower mRID as the parent.
 pub fn process_switch_type(
     model: *const cim_model.CimModel,
@@ -436,7 +436,7 @@ pub fn process_switch_type(
 ) !void {
     for (switches) |@"switch"| {
         const terminals = index.equipment_terminals.get(@"switch".id) orelse continue;
-        if (terminals.items.len != 2) continue; // TODO log a warning? 
+        if (terminals.items.len != 2) continue; // TODO log a warning?
 
         const conn_node0 = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
         const conn_node1 = index.terminal_conn_node.get(terminals.items[1].id) orelse continue;
@@ -452,57 +452,6 @@ pub fn process_switch_type(
 
         try topology.union_voltage_levels(model, parent, container0, container1);
     }
-}
-
-
-/// Algorithm:
-///   1. Union-find over CNs: for each switch, union its two terminal CNs into one cluster.
-///   2. For each cluster, the representative BusbarSection is the first entry in
-///      `busbar_section_in_parse_order` whose CN belongs to that cluster (parse order
-///      matches PyPowSyBl's tie-breaking behaviour).
-///   3. Every CN in a cluster that has a BusbarSection gets mapped to that BusbarSection mRID.
-fn build_branch_first_search_pre_computation(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
-    assert(index.conn_node_reachable_busbar_section.count() == 0);
-    assert(index.conn_node_container.count() > 0);
-
-    const conn_nodes = model.get_objects_by_type("ConnectivityNode");
-    const switch_slices = get_switch_type_slices(model);
-
-    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
-    try parent.ensureTotalCapacity(gpa, @intCast(get_switch_count(switch_slices) * 2));
-    defer parent.deinit(gpa);
-
-    for (switch_slices) |switches| {
-        for (switches) |@"switch"| {
-            const terminals = index.equipment_terminals.get(@"switch".id) orelse continue;
-            if (terminals.items.len != 2) continue;
-            const conn_node0 = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
-            const conn_node1 = index.terminal_conn_node.get(terminals.items[1].id) orelse continue;
-            topology.union_conn_nodes(&parent, conn_node0, conn_node1);
-        }
-    }
-
-    var cluster_to_busbar_section: std.StringHashMapUnmanaged([]const u8) = .empty;
-    try cluster_to_busbar_section.ensureTotalCapacity(gpa, @intCast(index.busbar_section_in_parse_order.items.len));
-    defer cluster_to_busbar_section.deinit(gpa);
-
-    for (index.busbar_section_in_parse_order.items) |entry| {
-        const root = topology.find_voltage_level(&parent, entry.conn_node_id);
-        if (!cluster_to_busbar_section.contains(root)) {
-            cluster_to_busbar_section.putAssumeCapacity(root, entry.mrid);
-        }
-    }
-
-    try index.conn_node_reachable_busbar_section.ensureTotalCapacity(gpa, @intCast(conn_nodes.len));
-
-    var it = parent.keyIterator();
-    while (it.next()) |conn_node_id| {
-        const root = topology.find_voltage_level(&parent, conn_node_id.*);
-        const busbar_section_mrid = cluster_to_busbar_section.get(root) orelse continue;
-        index.conn_node_reachable_busbar_section.putAssumeCapacity(conn_node_id.*, busbar_section_mrid);
-    }
-
-    assert(index.conn_node_reachable_busbar_section.count() <= conn_nodes.len);
 }
 
 fn build_voltage_limits(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {

@@ -190,3 +190,48 @@ fn conn_node_to_voltage_level(model: *const cim_model.CimModel, index: *const Ci
     return obj;
 }
 
+/// RegulatingControl resolution needs to find a BBS reachable through closed switches,
+/// and doing the BFS at query time would be quadratic. We pre-compute once.
+pub fn build_branch_first_search_pre_computation(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
+    assert(index.conn_node_reachable_busbar_section.count() == 0);
+    assert(index.conn_node_container.count() > 0);
+
+    const conn_nodes = model.get_objects_by_type("ConnectivityNode");
+    const switch_slices = cim_index.get_switch_type_slices(model);
+
+    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
+    try parent.ensureTotalCapacity(gpa, @intCast(cim_index.get_switch_count(switch_slices) * 2));
+    defer parent.deinit(gpa);
+
+    for (switch_slices) |switches| {
+        for (switches) |@"switch"| {
+            const terminals = index.equipment_terminals.get(@"switch".id) orelse continue;
+            if (terminals.items.len != 2) continue;
+            const conn_node0 = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
+            const conn_node1 = index.terminal_conn_node.get(terminals.items[1].id) orelse continue;
+            union_conn_nodes(&parent, conn_node0, conn_node1);
+        }
+    }
+
+    var cluster_to_busbar_section: std.StringHashMapUnmanaged([]const u8) = .empty;
+    try cluster_to_busbar_section.ensureTotalCapacity(gpa, @intCast(index.busbar_section_in_parse_order.items.len));
+    defer cluster_to_busbar_section.deinit(gpa);
+
+    for (index.busbar_section_in_parse_order.items) |entry| {
+        const root = find_voltage_level(&parent, entry.conn_node_id);
+        if (!cluster_to_busbar_section.contains(root)) {
+            cluster_to_busbar_section.putAssumeCapacity(root, entry.mrid);
+        }
+    }
+
+    try index.conn_node_reachable_busbar_section.ensureTotalCapacity(gpa, @intCast(conn_nodes.len));
+
+    var it = parent.keyIterator();
+    while (it.next()) |conn_node_id| {
+        const root = find_voltage_level(&parent, conn_node_id.*);
+        const busbar_section_mrid = cluster_to_busbar_section.get(root) orelse continue;
+        index.conn_node_reachable_busbar_section.putAssumeCapacity(conn_node_id.*, busbar_section_mrid);
+    }
+
+    assert(index.conn_node_reachable_busbar_section.count() <= conn_nodes.len);
+}
