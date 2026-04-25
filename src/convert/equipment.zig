@@ -10,7 +10,7 @@ const placement_mod = @import("placement.zig");
 const connection_mod = @import("connection.zig");
 
 const assert = std.debug.assert;
-const get_switch_slices = cim_index.get_switch_slices;
+const get_switch_type_slices = cim_index.get_switch_type_slices;
 
 const CimModel = cim_model.CimModel;
 const CimObject = tag_index.CimObject;
@@ -143,7 +143,7 @@ pub fn convert_switches(
         .node_breaker => |nm| nm,
         .bus_branch => unreachable, // switches are node-breaker only
     };
-    const switch_slices = get_switch_slices(model);
+    const switch_slices = get_switch_type_slices(model);
 
     for (switch_slices) |switch_slice| {
         for (switch_slice) |sw| {

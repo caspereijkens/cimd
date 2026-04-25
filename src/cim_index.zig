@@ -107,8 +107,8 @@ pub const CimIndex = struct {
         try build_operational_limits(gpa, model, &index);
 
         try build_curve_points(gpa, model, &index);
-        try build_voltage_level_merge(gpa, model, &index);
-        try build_substation_merge(gpa, model, &index);
+        try topology.build_voltage_level_merge(gpa, model, &index);
+        try topology.build_substation_merge(gpa, model, &index);
         try build_branch_first_search_pre_computation(gpa, model, &index);
         try build_voltage_limits(gpa, model, &index);
         index.boundary_base_voltage_ids = boundary_base_voltage_ids;
@@ -386,13 +386,13 @@ fn build_curve_points(gpa: std.mem.Allocator, model: *const cim_model.CimModel, 
     assert(curve_datas.len == 0 or index.curve_points.count() > 0);
 }
 
-pub fn get_switch_slices(model: *const CimModel) [switch_types.len][]const CimObject {
-    var slices: [switch_types.len][]const CimObject = undefined;
-    for (switch_types, 0..) |t, i| slices[i] = model.get_objects_by_type(t);
-    return slices;
+pub fn get_switch_type_slices(model: *const CimModel) [switch_types.len][]const CimObject {
+    var switch_type_slices: [switch_types.len][]const CimObject = undefined;
+    for (switch_types, 0..) |t, i| switch_type_slices[i] = model.get_objects_by_type(t);
+    return switch_type_slices;
 }
 
-fn get_switch_count(slices: [switch_types.len][]const CimObject) usize {
+pub fn get_switch_count(slices: [switch_types.len][]const CimObject) usize {
     var count: usize = 0;
     for (slices) |s| count += s.len;
     return count;
@@ -423,15 +423,20 @@ test "get_switch_count: mixed empty and non-empty" {
     try std.testing.expectEqual(@as(usize, 4), get_switch_count(slices));
 }
 
-fn process_switch_type(
+// For each switch object, look up its two Terminals.
+// Then get the ConnectivityNode of both Terminals.
+// Then get the ConnectivityNodeContainer of both ConnectivityNodes.
+// Then if the two CN Containers are different, we union their VoltageLevels. 
+// VoltageLevel union basically puts the VoltageLevel with the lower mRID as the parent.
+pub fn process_switch_type(
     model: *const cim_model.CimModel,
     index: *const CimIndex,
     switches: []const CimObject,
     parent: *std.StringHashMapUnmanaged([]const u8),
 ) !void {
-    for (switches) |sw| {
-        const terminals = index.equipment_terminals.get(sw.id) orelse continue;
-        if (terminals.items.len != 2) continue;
+    for (switches) |@"switch"| {
+        const terminals = index.equipment_terminals.get(@"switch".id) orelse continue;
+        if (terminals.items.len != 2) continue; // TODO log a warning? 
 
         const conn_node0 = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
         const conn_node1 = index.terminal_conn_node.get(terminals.items[1].id) orelse continue;
@@ -449,114 +454,6 @@ fn process_switch_type(
     }
 }
 
-fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
-    assert(index.voltage_level_merge.count() == 0);
-
-    const voltage_levels = model.get_objects_by_type("VoltageLevel");
-    const switch_slices = get_switch_slices(model);
-
-    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
-    try parent.ensureTotalCapacity(gpa, @intCast(get_switch_count(switch_slices)));
-    defer parent.deinit(gpa);
-
-    for (switch_slices) |slice| try process_switch_type(model, index, slice, &parent);
-
-    // flatten: stubs → representatives
-    try index.voltage_level_merge.ensureTotalCapacity(gpa, @intCast(voltage_levels.len));
-    for (voltage_levels) |voltage_level| {
-        const root = topology.find_voltage_level(&parent, voltage_level.id);
-        if (!std.mem.eql(u8, root, voltage_level.id)) {
-            index.voltage_level_merge.putAssumeCapacity(voltage_level.id, root);
-        }
-    }
-
-    assert(index.voltage_level_merge.count() <= voltage_levels.len);
-    // idempotency: no representative is itself a stub
-    var it = index.voltage_level_merge.iterator();
-    while (it.next()) |entry| {
-        assert(index.voltage_level_merge.get(entry.value_ptr.*) == null);
-    }
-}
-
-/// Helper: given a ConnectivityNode ID, return its VoltageLevel object (or null).
-fn conn_node_to_voltage_level(model: *const cim_model.CimModel, index: *const CimIndex, conn_node_id: []const u8) ?CimObjectView {
-    const container_id = index.conn_node_container.get(conn_node_id) orelse return null;
-    const obj = model.getObjectById(container_id) orelse return null;
-    if (!std.mem.eql(u8, obj.type_name, "VoltageLevel")) return null;
-    return obj;
-}
-
-/// Build substation_merge using Union-Find over substations.
-/// Substations are merged when connected by:
-///   1. Cross-substation switches (detected via voltage_level_merge_map).
-///   2. Cross-substation PowerTransformers (ends in different substations).
-/// The representative substation has the lexicographically smallest mRID.
-fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
-    assert(index.substation_merge.count() == 0);
-    assert(index.conn_node_container.count() > 0);
-
-    const substations = model.get_objects_by_type("Substation");
-
-    // Initialize Union-Find: each substation is its own root.
-    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
-    defer parent.deinit(gpa);
-    try parent.ensureTotalCapacity(gpa, @intCast(substations.len));
-    for (substations) |substation| parent.putAssumeCapacity(substation.id, substation.id);
-
-    // 1. Union substations connected by cross-substation switches (via voltage_level_merge_map).
-    var voltage_level_it = index.voltage_level_merge.iterator();
-    while (voltage_level_it.next()) |entry| {
-        const stub_voltage_level = model.getObjectById(entry.key_ptr.*) orelse continue;
-        const repr_voltage_level = model.getObjectById(entry.value_ptr.*) orelse continue;
-        const stub_substation_ref = try stub_voltage_level.getReference("VoltageLevel.Substation") orelse continue;
-        const repr_substation_ref = try repr_voltage_level.getReference("VoltageLevel.Substation") orelse continue;
-        const stub_substation_id = strip_hash(stub_substation_ref);
-        const repr_substation_id = strip_hash(repr_substation_ref);
-        if (!std.mem.eql(u8, stub_substation_id, repr_substation_id)) {
-            try topology.union_substations(gpa, &parent, stub_substation_id, repr_substation_id);
-        }
-    }
-
-    // 2. Union substations connected by cross-substation PowerTransformers.
-    for (model.get_objects_by_type("PowerTransformer")) |transformer| {
-        const terminals = index.equipment_terminals.get(transformer.id) orelse continue;
-        if (terminals.items.len < 2) continue;
-        var first_substation_id: ?[]const u8 = null;
-        for (terminals.items) |terminal| {
-            const conn_node_id = terminal.conn_node_id orelse continue;
-            const voltage_level_obj = conn_node_to_voltage_level(model, index, conn_node_id) orelse continue;
-            const substation_ref = try voltage_level_obj.getReference("VoltageLevel.Substation") orelse continue;
-            const substation_id = strip_hash(substation_ref);
-            if (first_substation_id) |first| {
-                if (!std.mem.eql(u8, first, substation_id)) {
-                    try topology.union_substations(gpa, &parent, first, substation_id);
-                }
-            } else {
-                first_substation_id = substation_id;
-            }
-        }
-    }
-
-    // Flatten Union-Find: for each non-root substation, add it to its canonical's list.
-    try index.substation_merge.ensureTotalCapacity(gpa, @intCast(substations.len));
-    for (substations) |substation| {
-        const canonical = topology.find(&parent, substation.id);
-        if (std.mem.eql(u8, canonical, substation.id)) continue; // sub is already a root
-        const gop = index.substation_merge.getOrPutAssumeCapacity(canonical);
-        if (!gop.found_existing) gop.value_ptr.* = .empty;
-        // Avoid duplicates (can arise from multiple VL-level connections between same two subs).
-        var already_present = false;
-        for (gop.value_ptr.items) |existing| {
-            if (std.mem.eql(u8, existing, substation.id)) {
-                already_present = true;
-                break;
-            }
-        }
-        if (!already_present) try gop.value_ptr.append(gpa, substation.id);
-    }
-
-    assert(index.substation_merge.count() <= substations.len);
-}
 
 /// Algorithm:
 ///   1. Union-find over CNs: for each switch, union its two terminal CNs into one cluster.
@@ -569,15 +466,15 @@ fn build_branch_first_search_pre_computation(gpa: std.mem.Allocator, model: *con
     assert(index.conn_node_container.count() > 0);
 
     const conn_nodes = model.get_objects_by_type("ConnectivityNode");
-    const switch_slices = get_switch_slices(model);
+    const switch_slices = get_switch_type_slices(model);
 
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
     try parent.ensureTotalCapacity(gpa, @intCast(get_switch_count(switch_slices) * 2));
     defer parent.deinit(gpa);
 
-    for (switch_slices) |slice| {
-        for (slice) |sw| {
-            const terminals = index.equipment_terminals.get(sw.id) orelse continue;
+    for (switch_slices) |switches| {
+        for (switches) |@"switch"| {
+            const terminals = index.equipment_terminals.get(@"switch".id) orelse continue;
             if (terminals.items.len != 2) continue;
             const conn_node0 = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
             const conn_node1 = index.terminal_conn_node.get(terminals.items[1].id) orelse continue;

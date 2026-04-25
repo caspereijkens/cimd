@@ -66,10 +66,10 @@ test "find_voltage_level: id not in map returns itself" {
 test "find_voltage_level: one level deep" {
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer parent.deinit(std.testing.allocator);
-    try parent.put(std.testing.allocator, "stub", "rep");
+    try parent.put(std.testing.allocator, "stub", "repr");
 
-    try std.testing.expectEqualStrings("rep", topology.find_voltage_level(&parent, "stub"));
-    try std.testing.expectEqualStrings("rep", topology.find_voltage_level(&parent, "rep"));
+    try std.testing.expectEqualStrings("repr", topology.find_voltage_level(&parent, "stub"));
+    try std.testing.expectEqualStrings("repr", topology.find_voltage_level(&parent, "repr"));
 }
 
 test "find_voltage_level: two levels deep" {
