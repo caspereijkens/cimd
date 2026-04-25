@@ -10,8 +10,6 @@ const assert = std.debug.assert;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
-const switch_types = [_][]const u8{ "Breaker", "Disconnector", "LoadBreakSwitch" };
-
 const CimObject = tag_index.CimObject;
 const CimObjectView = tag_index.CimObjectView;
 
@@ -384,43 +382,6 @@ fn build_curve_points(gpa: std.mem.Allocator, model: *const cim_model.CimModel, 
         });
     }
     assert(curve_datas.len == 0 or index.curve_points.count() > 0);
-}
-
-pub fn get_switch_type_slices(model: *const CimModel) [switch_types.len][]const CimObject {
-    var switch_type_slices: [switch_types.len][]const CimObject = undefined;
-    for (switch_types, 0..) |t, i| switch_type_slices[i] = model.get_objects_by_type(t);
-    return switch_type_slices;
-}
-
-pub fn get_switch_count(slices: [switch_types.len][]const CimObject) usize {
-    var count: usize = 0;
-    for (slices) |s| count += s.len;
-    return count;
-}
-
-test "get_switch_count: all empty slices returns zero" {
-    const slices = [switch_types.len][]const CimObject{ &.{}, &.{}, &.{} };
-    try std.testing.expectEqual(@as(usize, 0), get_switch_count(slices));
-}
-
-test "get_switch_count: one non-empty slice" {
-    var objs: [3]CimObject = undefined;
-    const slices = [switch_types.len][]const CimObject{ &objs, &.{}, &.{} };
-    try std.testing.expectEqual(@as(usize, 3), get_switch_count(slices));
-}
-
-test "get_switch_count: all non-empty slices summed" {
-    var a: [2]CimObject = undefined;
-    var b: [5]CimObject = undefined;
-    var c: [1]CimObject = undefined;
-    const slices = [switch_types.len][]const CimObject{ &a, &b, &c };
-    try std.testing.expectEqual(@as(usize, 8), get_switch_count(slices));
-}
-
-test "get_switch_count: mixed empty and non-empty" {
-    var objs: [4]CimObject = undefined;
-    const slices = [switch_types.len][]const CimObject{ &.{}, &objs, &.{} };
-    try std.testing.expectEqual(@as(usize, 4), get_switch_count(slices));
 }
 
 // For each switch object, look up its two Terminals.

@@ -1,5 +1,8 @@
 const std = @import("std");
 const topology = @import("topology.zig");
+const tag_index = @import("tag_index.zig");
+
+const CimObject = tag_index.CimObject;
 
 test "union_conn_nodes: two nodes share root after union" {
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
@@ -104,4 +107,29 @@ test "find_voltage_level: two independent components" {
 
     try std.testing.expectEqualStrings("b", topology.find_voltage_level(&parent, "a"));
     try std.testing.expectEqualStrings("y", topology.find_voltage_level(&parent, "x"));
+}
+
+test "topology.get_switch_count: all empty slices returns zero" {
+    const slices = [topology.switch_types.len][]const CimObject{ &.{}, &.{}, &.{} };
+    try std.testing.expectEqual(@as(usize, 0), topology.get_switch_count(slices));
+}
+
+test "topology.get_switch_count: one non-empty slice" {
+    var objs: [3]CimObject = undefined;
+    const slices = [topology.switch_types.len][]const CimObject{ &objs, &.{}, &.{} };
+    try std.testing.expectEqual(@as(usize, 3), topology.get_switch_count(slices));
+}
+
+test "topology.get_switch_count: all non-empty slices summed" {
+    var a: [2]CimObject = undefined;
+    var b: [5]CimObject = undefined;
+    var c: [1]CimObject = undefined;
+    const slices = [topology.switch_types.len][]const CimObject{ &a, &b, &c };
+    try std.testing.expectEqual(@as(usize, 8), topology.get_switch_count(slices));
+}
+
+test "topology.get_switch_count: mixed empty and non-empty" {
+    var objs: [4]CimObject = undefined;
+    const slices = [topology.switch_types.len][]const CimObject{ &.{}, &objs, &.{} };
+    try std.testing.expectEqual(@as(usize, 4), topology.get_switch_count(slices));
 }

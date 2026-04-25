@@ -12,6 +12,21 @@ const strip_underscore = utils.strip_underscore;
 const CimModel = cim_model.CimModel;
 const CimIndex = cim_index.CimIndex;
 const CimObjectView = tag_index.CimObjectView;
+const CimObject = tag_index.CimObject;
+
+pub const switch_types = [_][]const u8{ "Breaker", "Disconnector", "LoadBreakSwitch" };
+
+pub fn get_switch_type_slices(model: *const CimModel) [switch_types.len][]const CimObject {
+    var switch_type_slices: [switch_types.len][]const CimObject = undefined;
+    for (switch_types, 0..) |t, i| switch_type_slices[i] = model.get_objects_by_type(t);
+    return switch_type_slices;
+}
+
+pub fn get_switch_count(slices: [switch_types.len][]const CimObject) usize {
+    var count: usize = 0;
+    for (slices) |s| count += s.len;
+    return count;
+}
 
 pub fn find_voltage_level(parent: *const std.StringHashMapUnmanaged([]const u8), id: []const u8) []const u8 {
     var current = id;
@@ -91,10 +106,10 @@ pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const cim_model
     assert(index.voltage_level_merge.count() == 0);
 
     const voltage_levels = model.get_objects_by_type("VoltageLevel");
-    const switch_slices = cim_index.get_switch_type_slices(model);
+    const switch_slices = get_switch_type_slices(model);
 
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
-    try parent.ensureTotalCapacity(gpa, @intCast(cim_index.get_switch_count(switch_slices)));
+    try parent.ensureTotalCapacity(gpa, @intCast(get_switch_count(switch_slices)));
     defer parent.deinit(gpa);
 
     for (switch_slices) |slice| try cim_index.process_switch_type(model, index, slice, &parent);
@@ -197,10 +212,10 @@ pub fn build_branch_first_search_pre_computation(gpa: std.mem.Allocator, model: 
     assert(index.conn_node_container.count() > 0);
 
     const conn_nodes = model.get_objects_by_type("ConnectivityNode");
-    const switch_slices = cim_index.get_switch_type_slices(model);
+    const switch_slices = get_switch_type_slices(model);
 
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
-    try parent.ensureTotalCapacity(gpa, @intCast(cim_index.get_switch_count(switch_slices) * 2));
+    try parent.ensureTotalCapacity(gpa, @intCast(get_switch_count(switch_slices) * 2));
     defer parent.deinit(gpa);
 
     for (switch_slices) |switches| {
