@@ -330,7 +330,7 @@ pub fn convert(
         try equipment_conv.pre_allocate_equipment(gpa, model, placer);
         try equipment_conv.convert_busbar_sections(gpa, model, placer);
         try equipment_conv.convert_switches(gpa, model, placer, ssh_opt);
-        try equipment_conv.convert_fictitious_switches(gpa, model, placer, &nm_result.cn_has_switch, &nm_result.cn_other_count, ssh_opt);
+        try equipment_conv.convert_fictitious_switches(gpa, model, placer, &nm_result.conn_node_has_switch, &nm_result.conn_node_other_count, ssh_opt);
         try equipment_conv.convert_loads(gpa, model, placer, ssh_opt);
         try equipment_conv.convert_shunts(gpa, model, placer, ssh_opt);
         try equipment_conv.convert_static_var_compensators(model, placer, ssh_opt);

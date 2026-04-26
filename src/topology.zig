@@ -49,6 +49,13 @@ pub const Topology = struct {
     }
 };
 
+pub const TopologicalNode = struct {
+    mrid: []const u8,
+    name: []const u8,
+    base_voltage: []const u8,
+    conn_node_container: []const u8,
+};
+
 /// Maps terminal raw ID → IIDM node number within its VoltageLevel.
 /// All equipment (busbar sections, switches, generators, loads, etc.) looks up its
 /// terminal here to find its node number. BusbarSection and switch terminals map
@@ -304,11 +311,11 @@ pub const NodeMapResult = struct {
     node_map: NodeMap,
     /// Set of ConnectivityNode IDs that have at least one switch terminal attached.
     /// Built as a side effect of Phase 1 (switch terminal iteration).
-    cn_has_switch: std.StringHashMapUnmanaged(void),
+    conn_node_has_switch: std.StringHashMapUnmanaged(void),
     /// Count of non-BusbarSection / non-switch terminals per ConnectivityNode,
     /// restricted to phase2_equipment_types that have a valid VL container.
     /// Built as a side effect of Phase 2 (equipment terminal iteration).
-    cn_other_count: std.StringHashMapUnmanaged(u32),
+    conn_node_other_count: std.StringHashMapUnmanaged(u32),
     /// CN raw ID → CN's base node within its representative VoltageLevel.
     /// Needed by populate_internal_connections to detect which Phase 2 terminals
     /// landed on the CN base node (no IC) vs. a dedicated node (IC unless SSH-disconnected).
@@ -316,8 +323,8 @@ pub const NodeMapResult = struct {
 
     pub fn deinit(self: *NodeMapResult, gpa: std.mem.Allocator) void {
         self.node_map.deinit(gpa);
-        self.cn_has_switch.deinit(gpa);
-        self.cn_other_count.deinit(gpa);
+        self.conn_node_has_switch.deinit(gpa);
+        self.conn_node_other_count.deinit(gpa);
         self.conn_node_base_nodes.deinit(gpa);
     }
 };
@@ -361,9 +368,9 @@ pub fn build_node_map(
 
     // Counts non-BBS, non-switch terminals per CN. Used only to pre-seed
     // conn_node_first_seen for CNs with 3+ Phase 2 terminals.
-    var conn_node_other_count: std.StringHashMapUnmanaged(u32) = .empty;
-    defer conn_node_other_count.deinit(gpa);
-    try conn_node_other_count.ensureTotalCapacity(gpa, @intCast(index.conn_node_container.count()));
+    var conn_node_total_other_count: std.StringHashMapUnmanaged(u32) = .empty;
+    defer conn_node_total_other_count.deinit(gpa);
+    try conn_node_total_other_count.ensureTotalCapacity(gpa, @intCast(index.conn_node_container.count()));
 
     for (model.get_objects_by_type("Terminal")) |terminal| {
         const conn_node_id = index.terminal_conn_node.get(terminal.id) orelse continue;
@@ -371,7 +378,7 @@ pub fn build_node_map(
         const equipment = model.getObjectById(equipment_id) orelse continue;
         if (is_switch_type(equipment.type_name)) continue;
         if (std.mem.eql(u8, equipment.type_name, "BusbarSection")) continue;
-        const gop = conn_node_other_count.getOrPutAssumeCapacity(conn_node_id);
+        const gop = conn_node_total_other_count.getOrPutAssumeCapacity(conn_node_id);
         if (!gop.found_existing) gop.value_ptr.* = 0;
         gop.value_ptr.* += 1;
     }
@@ -403,13 +410,13 @@ pub fn build_node_map(
         conn_node_base_nodes.putAssumeCapacity(conn_node.id, base_node);
     }
 
-    var cn_has_switch: std.StringHashMapUnmanaged(void) = .empty;
-    errdefer cn_has_switch.deinit(gpa);
-    try cn_has_switch.ensureTotalCapacity(gpa, @intCast(index.terminal_conn_node.count()));
+    var conn_node_has_switch: std.StringHashMapUnmanaged(void) = .empty;
+    errdefer conn_node_has_switch.deinit(gpa);
+    try conn_node_has_switch.ensureTotalCapacity(gpa, @intCast(index.terminal_conn_node.count()));
 
-    var cn_other_count: std.StringHashMapUnmanaged(u32) = .empty;
-    errdefer cn_other_count.deinit(gpa);
-    try cn_other_count.ensureTotalCapacity(gpa, @intCast(index.conn_node_container.count()));
+    var conn_node_other_count: std.StringHashMapUnmanaged(u32) = .empty;
+    errdefer conn_node_other_count.deinit(gpa);
+    try conn_node_other_count.ensureTotalCapacity(gpa, @intCast(index.conn_node_container.count()));
 
     var node_map: NodeMap = .empty;
     errdefer node_map.deinit(gpa);
@@ -430,7 +437,7 @@ pub fn build_node_map(
                 const conn_node_id = terminal.conn_node_id orelse continue;
                 const base_node = conn_node_base_nodes.get(conn_node_id) orelse continue;
                 node_map.putAssumeCapacity(terminal.id, base_node);
-                cn_has_switch.putAssumeCapacity(conn_node_id, {});
+                conn_node_has_switch.putAssumeCapacity(conn_node_id, {});
             }
         }
     }
@@ -442,7 +449,7 @@ pub fn build_node_map(
     try conn_node_first_seen.ensureTotalCapacity(gpa, @intCast(index.conn_node_container.count()));
 
     {
-        var it = conn_node_other_count.iterator();
+        var it = conn_node_total_other_count.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.* >= 3) {
                 conn_node_first_seen.putAssumeCapacity(entry.key_ptr.*, {});
@@ -460,7 +467,7 @@ pub fn build_node_map(
                 const conn_node_id = t.conn_node_id orelse continue;
                 const base_node = conn_node_base_nodes.get(conn_node_id) orelse continue;
                 {
-                    const gop = cn_other_count.getOrPutAssumeCapacity(conn_node_id);
+                    const gop = conn_node_other_count.getOrPutAssumeCapacity(conn_node_id);
                     if (!gop.found_existing) gop.value_ptr.* = 0;
                     gop.value_ptr.* += 1;
                 }
@@ -487,8 +494,8 @@ pub fn build_node_map(
 
     return .{
         .node_map = node_map,
-        .cn_has_switch = cn_has_switch,
-        .cn_other_count = cn_other_count,
+        .conn_node_has_switch = conn_node_has_switch,
+        .conn_node_other_count = conn_node_other_count,
         .conn_node_base_nodes = conn_node_base_nodes,
     };
 }
@@ -503,4 +510,108 @@ pub fn is_ssh_terminal_disconnected(ssh_opt: ?CimSsh, terminal_id: []const u8) b
     const connected = ssh.getProperty(mrid, "ACDCTerminal.connected") catch return false;
     const val = connected orelse return false;
     return std.mem.eql(u8, val, "false");
+}
+
+fn is_switch_closed(ssh: *const CimSsh, switch_id: []const u8) !bool {
+    assert(switch_id.len > 0);
+    const patch = ssh.find_patch(switch_id) orelse return true;
+    const open_str = try ssh.getPropertyFromPatch(patch, "Switch.open") orelse "false";
+
+    return std.mem.eql(u8, open_str, "false");
+}
+
+/// Build TopologicalNodes: connected components of ConnectivityNodes joined by
+/// *closed* switches (SSH-aware). Each component becomes one TN, identified by
+/// the smallest CN mRID in the component (PyPowSyBl tie-breaking).
+///
+/// Boundary CNs (container = ACLineSegment, not VoltageLevel) are skipped here
+/// — TP emission for boundary nodes is a separate concern.
+pub fn build_topological_nodes(
+    gpa: std.mem.Allocator,
+    model: *const CimModel,
+    index: *const CimIndex,
+    topology: *const Topology,
+    ssh_opt: ?*const CimSsh,
+) !std.ArrayListUnmanaged(TopologicalNode) {
+    assert(index.conn_node_container.count() > 0);
+
+    const conn_nodes = model.get_objects_by_type("ConnectivityNode");
+
+    // Union-find: each CN starts as its own root.
+    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer parent.deinit(gpa);
+    try parent.ensureTotalCapacity(gpa, @intCast(conn_nodes.len));
+    for (conn_nodes) |conn_node| parent.putAssumeCapacity(conn_node.id, conn_node.id);
+
+    // Closed switches union their two terminal CNs.
+    for (switch_types) |switch_type| {
+        for (model.get_objects_by_type(switch_type)) |@"switch"| {
+            const closed = if (ssh_opt) |s| try is_switch_closed(s, @"switch".id) else true;
+            if (!closed) continue;
+            const terminals = index.equipment_terminals.get(@"switch".id) orelse continue;
+            if (terminals.items.len != 2) continue;
+            const conn_node0 = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
+            const conn_node1 = index.terminal_conn_node.get(terminals.items[1].id) orelse continue;
+            union_conn_nodes(&parent, conn_node0, conn_node1);
+        }
+    }
+
+    // Group by root, tracking the CN whose mRID is smallest in each component.
+    // Storing the CN raw id (not just the mRID slice) lets us re-fetch name later.
+    var root_to_smallest_conn_node: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer root_to_smallest_conn_node.deinit(gpa);
+    try root_to_smallest_conn_node.ensureTotalCapacity(gpa, @intCast(conn_nodes.len));
+    for (conn_nodes) |conn_node| {
+        const root = find(&parent, conn_node.id);
+        const mrid = try model.view(conn_node).getProperty("IdentifiedObject.mRID") orelse
+            strip_underscore(conn_node.id);
+        const gop = root_to_smallest_conn_node.getOrPutAssumeCapacity(root);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = conn_node.id;
+            continue;
+        }
+        const current = model.getObjectById(gop.value_ptr.*) orelse continue;
+        const current_mrid = try current.getProperty("IdentifiedObject.mRID") orelse
+            strip_underscore(gop.value_ptr.*);
+        if (std.mem.lessThan(u8, mrid, current_mrid)) gop.value_ptr.* = conn_node.id;
+    }
+
+    var nodes: std.ArrayListUnmanaged(TopologicalNode) = .empty;
+    errdefer nodes.deinit(gpa);
+    try nodes.ensureTotalCapacity(gpa, root_to_smallest_conn_node.count());
+
+    var it = root_to_smallest_conn_node.valueIterator();
+    while (it.next()) |conn_node_id_ptr| {
+        const conn_node = model.getObjectById(conn_node_id_ptr.*) orelse continue;
+
+        // Boundary CNs (container = ACLineSegment) have no VL — skip for now.
+        const container_id = index.conn_node_container.get(conn_node.id) orelse continue;
+        const repr_voltage_level_id = find_voltage_level(&topology.voltage_level_merge, container_id);
+        const voltage_level = model.getObjectById(repr_voltage_level_id) orelse continue;
+        if (!std.mem.eql(u8, voltage_level.type_name, "VoltageLevel")) continue;
+
+        const mrid = try conn_node.getProperty("IdentifiedObject.mRID") orelse strip_underscore(conn_node.id);
+        const name = try conn_node.getProperty("IdentifiedObject.name") orelse "";
+
+        const base_voltage_ref = try voltage_level.getReference("VoltageLevel.BaseVoltage") orelse "";
+        const base_voltage_id = if (base_voltage_ref.len > 0) strip_hash(base_voltage_ref) else "";
+        const base_voltage_mrid = blk: {
+            if (base_voltage_id.len == 0) break :blk "";
+            const bv = model.getObjectById(base_voltage_id) orelse break :blk "";
+            break :blk try bv.getProperty("IdentifiedObject.mRID") orelse strip_underscore(base_voltage_id);
+        };
+
+        const voltage_level_mrid = try voltage_level.getProperty("IdentifiedObject.mRID") orelse
+            strip_underscore(repr_voltage_level_id);
+
+        nodes.appendAssumeCapacity(.{
+            .mrid = mrid,
+            .name = name,
+            .base_voltage = base_voltage_mrid,
+            .conn_node_container = voltage_level_mrid,
+        });
+    }
+
+    assert(nodes.items.len <= root_to_smallest_conn_node.count());
+    return nodes;
 }
