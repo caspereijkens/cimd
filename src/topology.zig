@@ -578,11 +578,12 @@ pub fn is_ssh_terminal_disconnected(ssh_opt: ?CimSsh, terminal_id: []const u8) b
     return std.mem.eql(u8, val, "false");
 }
 
-fn is_switch_closed(ssh: *const CimSsh, switch_id: []const u8) !bool {
+pub fn is_switch_closed(ssh: *const CimSsh, switch_id: []const u8) !bool {
     assert(switch_id.len > 0);
-    const patch = ssh.find_patch(switch_id) orelse return true;
+    // SSH patches are keyed by mRID; switch_id is the raw rdf:ID with leading underscore.
+    const mrid = strip_underscore(switch_id);
+    const patch = ssh.find_patch(mrid) orelse return true;
     const open_str = try ssh.getPropertyFromPatch(patch, "Switch.open") orelse "false";
-
     return std.mem.eql(u8, open_str, "false");
 }
 

@@ -33,6 +33,7 @@ Commands:
   get        Fetch a single object or list by type from any CIM file
   types      List CIM types present in a CIM file
   diff       Semantic diff between two EQ profiles
+  topology   Generate TopologicalNodes from EQ (+SSH) — TP-equivalent output
   version    Print version information
 
 Use 'cimd <command> --help' for more information about a command.

@@ -27,6 +27,7 @@ const help_main =
     \\  get        Fetch a single object or list by type from any CIM file
     \\  types      List CIM types present in a CIM file
     \\  diff       Semantic diff between two EQ profiles
+    \\  topology   Generate TopologicalNodes from EQ (+SSH) — TP-equivalent output
     \\  version    Print version information
     \\
     \\Use 'cimd <command> --help' for more information about a command.
@@ -167,6 +168,31 @@ const help_diff =
     \\
 ;
 
+const help_topology =
+    \\Usage: cimd topology <file> [options]
+    \\
+    \\Generate TopologicalNodes from an EQ profile (and optional SSH). Each TN is
+    \\a connected component of ConnectivityNodes joined by *closed* switches —
+    \\equivalent to a CGMES TP profile's terminal→TopologicalNode mapping.
+    \\Output is JSON on stdout.
+    \\
+    \\Without --ssh, all switches are treated as closed (electrical-equivalence
+    \\snapshot ignoring switch state).
+    \\
+    \\Arguments:
+    \\  <file>                  EQ profile (XML or ZIP)
+    \\
+    \\Options:
+    \\  -b, --boundary <file>   EQBD boundary profile (XML or ZIP)
+    \\  -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
+    \\  -o, --output <file>     Write output to file instead of stdout
+    \\
+    \\Examples:
+    \\  cimd topology data/eq.zip -s ssh.zip
+    \\  cimd topology data/eq.zip -b eqbd.zip -s ssh.zip -o tn.json
+    \\
+;
+
 const help_version =
     \\Usage: cimd version [options]
     \\
@@ -190,6 +216,7 @@ pub const Command = union(enum) {
     get: Get,
     types: Types,
     diff: Diff,
+    topology: Topology,
     version: Version,
 
     pub const Convert = struct {
@@ -239,6 +266,13 @@ pub const Command = union(enum) {
         json: bool,
     };
 
+    pub const Topology = struct {
+        eq_path: []const u8,
+        eqbd_path: ?[]const u8,
+        ssh_path: ?[]const u8,
+        output_path: ?[]const u8,
+    };
+
     pub const Version = struct {
         verbose: bool,
         json: bool,
@@ -263,6 +297,7 @@ pub fn parse_args(io: std.Io, args: *std.process.Args.Iterator) !Command {
     if (std.mem.eql(u8, command_name, "get")) return parse_get(io, args);
     if (std.mem.eql(u8, command_name, "types")) return parse_types(io, args);
     if (std.mem.eql(u8, command_name, "diff")) return parse_diff(io, args);
+    if (std.mem.eql(u8, command_name, "topology")) return parse_topology(io, args);
     if (std.mem.eql(u8, command_name, "version")) return parse_version(io, args);
 
     print.stderr(io, "unknown command '{s}'\n\n" ++ help_main, .{command_name});
@@ -500,6 +535,46 @@ fn parse_diff(io: std.Io, args: *std.process.Args.Iterator) !Command {
         .type_filter = type_filter,
         .summary = summary,
         .json = json,
+    } };
+}
+
+fn parse_topology(io: std.Io, args: *std.process.Args.Iterator) !Command {
+    const context = "topology";
+
+    var eq_path: ?[]const u8 = null;
+    var eqbd_path: ?[]const u8 = null;
+    var ssh_path: ?[]const u8 = null;
+    var output_path: ?[]const u8 = null;
+
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            try print.stdout(io, help_topology, .{});
+            std.process.exit(0);
+        }
+        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--boundary")) {
+            eqbd_path = take_path_arg(io, args, context, "--boundary");
+        } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--ssh")) {
+            ssh_path = take_path_arg(io, args, context, "--ssh");
+        } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
+            output_path = args.next() orelse
+                print.stderr(io, context ++ ": --output requires a file path", .{});
+        } else if (is_flag(arg)) {
+            print.stderr(io, context ++ ": unknown option '{s}'", .{arg});
+        } else {
+            if (eq_path != null) print.stderr(io, context ++ ": unexpected argument '{s}'", .{arg});
+            validate_path(io, arg, context);
+            validate_cgmes_extension(io, arg, context);
+            eq_path = arg;
+        }
+    }
+
+    if (eq_path == null) print.stderr(io, context ++ ": <file> is required", .{});
+
+    return .{ .topology = .{
+        .eq_path = eq_path.?,
+        .eqbd_path = eqbd_path,
+        .ssh_path = ssh_path,
+        .output_path = output_path,
     } };
 }
 

@@ -9,6 +9,8 @@ const cim_model = @import("cim_model.zig");
 const browse = @import("browse.zig");
 const diff = @import("diff.zig");
 const converter = @import("converter.zig");
+const cim_index = @import("cim_index.zig");
+const topology_mod = @import("topology.zig");
 
 const assert = std.debug.assert;
 
@@ -29,6 +31,7 @@ pub fn main(init: std.process.Init) !void {
         .get => |c| try command_get(io, gpa, c),
         .types => |c| try command_types(io, gpa, c),
         .diff => |c| try command_diff(io, gpa, c),
+        .topology => |c| try command_topology(io, gpa, c),
         .version => |v| try command_version(io, v.verbose, v.json),
     }
 }
@@ -272,6 +275,49 @@ fn command_diff(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Diff) !void {
 
     // Exit 1 when differences exist so callers can branch on the exit code.
     if (had_diffs) std.process.exit(1);
+}
+
+fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology) !void {
+    var model = try load_model(io, gpa, c.eq_path, c.eqbd_path);
+    defer model.deinit(gpa);
+
+    var ssh_opt: ?CimSsh = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
+    defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
+
+    const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
+    var index = try cim_index.CimIndex.build(gpa, &model, boundary_ids);
+    defer index.deinit(gpa);
+
+    var topology = try topology_mod.Topology.build(gpa, &model, &index);
+    defer topology.deinit(gpa);
+
+    const ssh_ptr: ?*const CimSsh = if (ssh_opt) |*s| s else null;
+    var nodes = try topology_mod.build_topological_nodes(gpa, &model, &index, &topology, ssh_ptr);
+    defer nodes.deinit(gpa);
+
+    try print.stderr_info(io, "TopologicalNodes: {d}\n", .{nodes.items.len});
+
+    const cwd = std.Io.Dir.cwd();
+    const output_file = if (c.output_path) |path|
+        try cwd.createFile(io, path, .{})
+    else
+        std.Io.File.stdout();
+    defer if (c.output_path != null) output_file.close(io);
+
+    var write_buffer: [4096]u8 = undefined;
+    var file_writer = std.Io.File.Writer.init(output_file, io, &write_buffer);
+    const w = &file_writer.interface;
+
+    try w.writeAll("{\"topologicalNodes\":[");
+    for (nodes.items, 0..) |tn, i| {
+        if (i > 0) try w.writeByte(',');
+        try w.print(
+            "{{\"mrid\":\"{s}\",\"name\":\"{s}\",\"baseVoltage\":\"{s}\",\"voltageLevel\":\"{s}\"}}",
+            .{ tn.mrid, tn.name, tn.base_voltage, tn.conn_node_container },
+        );
+    }
+    try w.writeAll("]}\n");
+    try w.flush();
 }
 
 fn command_version(io: std.Io, verbose: bool, json: bool) !void {
