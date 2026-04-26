@@ -19,8 +19,11 @@ pub const CimModel = struct {
         count: u32,
     };
 
+    /// Takes ownership of `xml`: on success the model owns it (freed by deinit),
+    /// on error it is freed before returning. Callers never need to clean up `xml`.
     pub fn init(gpa: std.mem.Allocator, xml: []const u8) !CimModel {
-        assert(xml.len > 0);
+        errdefer gpa.free(xml);
+        if (xml.len == 0) return error.EmptyInput;
 
         var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
         errdefer boundaries.deinit(gpa);

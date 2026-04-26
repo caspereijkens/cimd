@@ -141,8 +141,7 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
     if (c.mrid != null and c.count) print.stderr(io, "get: --count requires --type without <mrid>", .{});
     if (c.mrid != null and c.fields != null) print.stderr(io, "get: --fields requires --type without <mrid>", .{});
 
-    const xml = try read_path(io, gpa, c.file_path);
-    var model = try cim_model.CimModel.init(gpa, xml);
+    var model = try cim_model.CimModel.init(gpa, try read_path(io, gpa, c.file_path));
     defer model.deinit(gpa);
 
     // Single-object mode
@@ -212,8 +211,7 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
 }
 
 fn command_types(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Types) !void {
-    const xml = try read_path(io, gpa, c.file_path);
-    var model = try cim_model.CimModel.init(gpa, xml);
+    var model = try cim_model.CimModel.init(gpa, try read_path(io, gpa, c.file_path));
     defer model.deinit(gpa);
 
     if (c.json) {
@@ -356,15 +354,21 @@ fn command_version(io: std.Io, verbose: bool, json: bool) !void {
 }
 
 fn load_model(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8) !cim_model.CimModel {
-    var xml = try read_path(io, gpa, eq_path);
-    if (eqbd_path) |path| {
-        const eqbd_xml = try read_path(io, gpa, path);
-        const combined = try std.mem.concat(gpa, u8, &.{ xml, eqbd_xml });
-        // Free both source buffers immediately: only the concatenated buffer is needed going forward.
-        gpa.free(eqbd_xml);
-        gpa.free(xml);
-        xml = combined;
-    }
+    // errdefer is scoped to the block so it frees only when read/concat fail.
+    // Once we hand `xml` to init, init owns it (frees on its own error path).
+    const xml = blk: {
+        var x = try read_path(io, gpa, eq_path);
+        errdefer gpa.free(x);
+
+        if (eqbd_path) |path| {
+            const eqbd_xml = try read_path(io, gpa, path);
+            defer gpa.free(eqbd_xml);
+            const combined = try std.mem.concat(gpa, u8, &.{ x, eqbd_xml });
+            gpa.free(x);
+            x = combined;
+        }
+        break :blk x;
+    };
     return cim_model.CimModel.init(gpa, xml);
 }
 

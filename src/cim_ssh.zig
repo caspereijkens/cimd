@@ -17,7 +17,10 @@ pub const CimSsh = struct {
     boundaries: []const tag_index.TagBoundary,
     patches: []const SshPatch,
 
+    /// Takes ownership of `xml`: on success the SSH owns it (freed by deinit),
+    /// on error it is freed before returning. Callers never need to clean up `xml`.
     pub fn init(gpa: std.mem.Allocator, xml: []const u8) !CimSsh {
+        errdefer gpa.free(xml);
         assert(xml.len > 0);
 
         var boundaries = try tag_index.find_tag_boundaries(gpa, xml);

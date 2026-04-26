@@ -42,7 +42,10 @@ pub const CimTp = struct {
     /// Maps raw rdf:ID → index into new_objects.
     id_to_object: std.StringHashMap(u32),
 
+    /// Takes ownership of `xml`: on success the TP owns it (freed by deinit),
+    /// on error it is freed before returning. Callers never need to clean up `xml`.
     pub fn init(gpa: std.mem.Allocator, xml: []const u8) !CimTp {
+        errdefer gpa.free(xml);
         assert(xml.len > 0);
 
         var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
