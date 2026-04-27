@@ -105,7 +105,7 @@ pub fn convert_lines(
             for (terminals.items) |terminal| {
                 const conn_node_id = terminal.conn_node_id orelse continue;
                 const container_id = index.conn_node_container.get(conn_node_id) orelse continue;
-                const representative_id = topology_mod.find_voltage_level(&placer.topology.voltage_level_merge, container_id);
+                const representative_id = topology_mod.find_root(&placer.topology.voltage_level_merge, container_id);
                 if (voltage_level_map.contains(representative_id)) continue;
                 // Boundary ConnectivityNode: container is not a VoltageLevel.
 

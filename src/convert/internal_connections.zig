@@ -50,7 +50,7 @@ pub fn populate_internal_connections(
 
     for (model.get_objects_by_type("ConnectivityNode")) |conn_node| {
         const container_id = index.conn_node_container.get(conn_node.id) orelse continue;
-        const repr_voltage_level_id = topology.find_voltage_level(&topology_data.voltage_level_merge, container_id);
+        const repr_voltage_level_id = topology.find_root(&topology_data.voltage_level_merge, container_id);
         if (voltage_level_map.get(repr_voltage_level_id) == null) continue;
 
         const other_count = conn_node_other_count.get(conn_node.id) orelse 0;
@@ -80,7 +80,7 @@ pub fn populate_internal_connections(
                 if (topology.is_ssh_terminal_disconnected(ssh_opt, t.id)) continue;
 
                 const container_id = index.conn_node_container.get(conn_node_id) orelse continue;
-                const repr_voltage_level_id = topology.find_voltage_level(&topology_data.voltage_level_merge, container_id);
+                const repr_voltage_level_id = topology.find_root(&topology_data.voltage_level_merge, container_id);
                 const voltage_level = voltage_level_map.get(repr_voltage_level_id) orelse continue;
                 voltage_level.node_breaker_topology.internal_connections.appendAssumeCapacity(.{
                     .node1 = base_node,

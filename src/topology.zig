@@ -86,9 +86,8 @@ pub fn get_switch_count(slices: [switch_types.len][]const CimObject) usize {
     return count;
 }
 
-/// Walks parent links to the union-find root. Names "find_voltage_level" for
-/// historical reasons — the same routine is used for substation and CN roots.
-pub fn find_voltage_level(parent: *const IdMap, id: []const u8) []const u8 {
+/// Walks parent links to the union-find root. Used for VL, substation, and CN roots.
+pub fn find_root(parent: *const IdMap, id: []const u8) []const u8 {
     var current = id;
     while (true) {
         const p = parent.get(current) orelse return current;
@@ -105,8 +104,8 @@ pub fn union_voltage_levels(
     voltage_level_id_a: []const u8,
     voltage_level_id_b: []const u8,
 ) !void {
-    const root_a = find_voltage_level(parent, voltage_level_id_a);
-    const root_b = find_voltage_level(parent, voltage_level_id_b);
+    const root_a = find_root(parent, voltage_level_id_a);
+    const root_b = find_root(parent, voltage_level_id_b);
     if (std.mem.eql(u8, root_a, root_b)) return;
 
     const voltage_level_a = model.getObjectById(root_a) orelse return;
@@ -123,17 +122,11 @@ pub fn union_voltage_levels(
     }
 }
 
-pub fn union_conn_nodes(parent: *IdMap, id_a: []const u8, id_b: []const u8) void {
-    const root_a = find_voltage_level(parent, id_a);
-    const root_b = find_voltage_level(parent, id_b);
-    if (std.mem.eql(u8, root_a, root_b)) return;
-    parent.putAssumeCapacity(root_a, root_b);
-}
-
-// Smallest mRID wins, same reason as union_voltage_levels.
-pub fn union_substations(parent: *IdMap, id_a: []const u8, id_b: []const u8) void {
-    const root_a = find_voltage_level(parent, id_a);
-    const root_b = find_voltage_level(parent, id_b);
+// Smallest stripped id wins as representative — PyPowSyBl tie-breaking. Used
+// for CN and substation unions, where the mRID is `strip_underscore(rdf:ID)`.
+pub fn union_smallest_id_wins(parent: *IdMap, id_a: []const u8, id_b: []const u8) void {
+    const root_a = find_root(parent, id_a);
+    const root_b = find_root(parent, id_b);
     if (std.mem.eql(u8, root_a, root_b)) return;
     if (std.mem.lessThan(u8, strip_underscore(root_a), strip_underscore(root_b))) {
         parent.putAssumeCapacity(root_b, root_a);
@@ -159,7 +152,7 @@ pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const cim_model
 
     try topology.voltage_level_merge.ensureTotalCapacity(gpa, @intCast(voltage_levels.len));
     for (voltage_levels) |voltage_level| {
-        const root = find_voltage_level(&parent, voltage_level.id);
+        const root = find_root(&parent, voltage_level.id);
         if (!std.mem.eql(u8, root, voltage_level.id)) {
             topology.voltage_level_merge.putAssumeCapacity(voltage_level.id, root);
         }
@@ -196,7 +189,7 @@ pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.Ci
         const stub_substation_id = strip_hash(stub_substation_ref);
         const repr_substation_id = strip_hash(repr_substation_ref);
         if (!std.mem.eql(u8, stub_substation_id, repr_substation_id)) {
-            union_substations(&parent,stub_substation_id, repr_substation_id);
+            union_smallest_id_wins(&parent,stub_substation_id, repr_substation_id);
         }
     }
 
@@ -212,7 +205,7 @@ pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.Ci
             const substation_id = strip_hash(substation_ref);
             if (first_substation_id) |first| {
                 if (!std.mem.eql(u8, first, substation_id)) {
-                    union_substations(&parent,first, substation_id);
+                    union_smallest_id_wins(&parent,first, substation_id);
                 }
             } else {
                 first_substation_id = substation_id;
@@ -222,7 +215,7 @@ pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.Ci
 
     try topology.substation_merge.ensureTotalCapacity(gpa, @intCast(substations.len));
     for (substations) |substation| {
-        const canonical = find_voltage_level(&parent, substation.id);
+        const canonical = find_root(&parent, substation.id);
         if (std.mem.eql(u8, canonical, substation.id)) continue;
         const gop = topology.substation_merge.getOrPutAssumeCapacity(canonical);
         if (!gop.found_existing) gop.value_ptr.* = .empty;
@@ -267,7 +260,7 @@ pub fn build_reachable_busbar_section_index(gpa: std.mem.Allocator, model: *cons
             if (terminals.items.len != 2) continue;
             const conn_node0 = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
             const conn_node1 = index.terminal_conn_node.get(terminals.items[1].id) orelse continue;
-            union_conn_nodes(&parent, conn_node0, conn_node1);
+            union_smallest_id_wins(&parent, conn_node0, conn_node1);
         }
     }
 
@@ -276,7 +269,7 @@ pub fn build_reachable_busbar_section_index(gpa: std.mem.Allocator, model: *cons
     defer cluster_to_busbar_section.deinit(gpa);
 
     for (index.busbar_section_in_parse_order.items) |entry| {
-        const root = find_voltage_level(&parent, entry.conn_node_id);
+        const root = find_root(&parent, entry.conn_node_id);
         if (!cluster_to_busbar_section.contains(root)) {
             cluster_to_busbar_section.putAssumeCapacity(root, entry.mrid);
         }
@@ -286,7 +279,7 @@ pub fn build_reachable_busbar_section_index(gpa: std.mem.Allocator, model: *cons
 
     var it = parent.keyIterator();
     while (it.next()) |conn_node_id| {
-        const root = find_voltage_level(&parent, conn_node_id.*);
+        const root = find_root(&parent, conn_node_id.*);
         const busbar_section_mrid = cluster_to_busbar_section.get(root) orelse continue;
         topology.conn_node_reachable_busbar_section.putAssumeCapacity(conn_node_id.*, busbar_section_mrid);
     }
@@ -376,7 +369,7 @@ fn assign_base_nodes(
     // Base node assignment: sequential counter per representative VL, CN XML parse order.
     for (model.get_objects_by_type("ConnectivityNode")) |conn_node| {
         const container_id = index.conn_node_container.get(conn_node.id) orelse continue;
-        const repr_voltage_level_id = find_voltage_level(&topology.voltage_level_merge, container_id);
+        const repr_voltage_level_id = find_root(&topology.voltage_level_merge, container_id);
         if (!voltage_levels.contains(repr_voltage_level_id)) continue;
 
         conn_node_repr_voltage_level.putAssumeCapacity(conn_node.id, repr_voltage_level_id);
@@ -595,6 +588,7 @@ fn union_closed_switch_conn_nodes(
 ) !void {
     for (switch_types) |switch_type| {
         for (model.get_objects_by_type(switch_type)) |@"switch"| {
+            // default behavior is closed.
             const closed = if (ssh_opt) |s| try is_switch_closed(s, @"switch".id) else true;
             if (!closed) continue;
 
@@ -603,38 +597,9 @@ fn union_closed_switch_conn_nodes(
 
             const conn_node0 = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
             const conn_node1 = index.terminal_conn_node.get(terminals.items[1].id) orelse continue;
-            union_conn_nodes(parent, conn_node0, conn_node1);
+            union_smallest_id_wins(parent, conn_node0, conn_node1);
         }
     }
-}
-
-fn build_component_representatives(
-    gpa: std.mem.Allocator,
-    model: *const CimModel,
-    conn_nodes: []const CimObject,
-    parent: *const IdMap,
-) !IdMap {
-    var root_to_smallest_conn_node: IdMap = .empty;
-    errdefer root_to_smallest_conn_node.deinit(gpa);
-    try root_to_smallest_conn_node.ensureTotalCapacity(gpa, @intCast(conn_nodes.len));
-
-    for (conn_nodes) |conn_node| {
-        const root = find_voltage_level(parent, conn_node.id);
-        const mrid = try model.view(conn_node).getProperty("IdentifiedObject.mRID") orelse
-            strip_underscore(conn_node.id);
-        const gop = root_to_smallest_conn_node.getOrPutAssumeCapacity(root);
-        if (!gop.found_existing) {
-            gop.value_ptr.* = conn_node.id;
-            continue;
-        }
-
-        const current = model.getObjectById(gop.value_ptr.*) orelse continue;
-        const current_mrid = try current.getProperty("IdentifiedObject.mRID") orelse
-            strip_underscore(gop.value_ptr.*);
-        if (std.mem.lessThan(u8, mrid, current_mrid)) gop.value_ptr.* = conn_node.id;
-    }
-
-    return root_to_smallest_conn_node;
 }
 
 fn get_base_voltage_mrid(model: *const CimModel, voltage_level: CimObjectView) ![]const u8 {
@@ -657,8 +622,9 @@ fn append_topological_node(
 
     // Boundary CNs (container = ACLineSegment) have no VL — skip for now.
     const container_id = index.conn_node_container.get(conn_node.id) orelse return;
-    const repr_voltage_level_id = find_voltage_level(&topology.voltage_level_merge, container_id);
+    const repr_voltage_level_id = find_root(&topology.voltage_level_merge, container_id);
     const voltage_level = model.getObjectById(repr_voltage_level_id) orelse return;
+    // Check if container was indeed VoltageLevel.
     if (!std.mem.eql(u8, voltage_level.type_name, "VoltageLevel")) return;
 
     const mrid = try conn_node.getProperty("IdentifiedObject.mRID") orelse strip_underscore(conn_node.id);
@@ -700,20 +666,18 @@ pub fn build_topological_nodes(
 
     try union_closed_switch_conn_nodes(model, index, ssh_opt, &parent);
 
-    // Group by root, tracking the CN whose mRID is smallest in each component.
-    // Storing the CN raw id (not just the mRID slice) lets us re-fetch name later.
-    var root_to_smallest_conn_node = try build_component_representatives(gpa, model, conn_nodes, &parent);
-    defer root_to_smallest_conn_node.deinit(gpa);
-
+    // With smallest-id-wins union, each root IS the representative CN.
+    // After unions, a CN is a root iff parent[id] == id (self-loop).
     var nodes: std.ArrayListUnmanaged(TopologicalNode) = .empty;
     errdefer nodes.deinit(gpa);
-    try nodes.ensureTotalCapacity(gpa, root_to_smallest_conn_node.count());
+    try nodes.ensureTotalCapacity(gpa, conn_nodes.len);
 
-    var it = root_to_smallest_conn_node.valueIterator();
-    while (it.next()) |conn_node_id_ptr| {
-        try append_topological_node(model, index, topology, conn_node_id_ptr.*, &nodes);
+    var it = parent.iterator();
+    while (it.next()) |entry| {
+        if (!std.mem.eql(u8, entry.key_ptr.*, entry.value_ptr.*)) continue;
+        try append_topological_node(model, index, topology, entry.key_ptr.*, &nodes);
     }
 
-    assert(nodes.items.len <= root_to_smallest_conn_node.count());
+    assert(nodes.items.len <= conn_nodes.len);
     return nodes;
 }

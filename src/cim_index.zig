@@ -414,7 +414,7 @@ pub fn build_voltage_limits(gpa: std.mem.Allocator, model: *const cim_model.CimM
             break :blk strip_hash(ec_ref);
         };
         // Apply VL merge so limits are keyed by the representative VL.
-        const container_id = topology_mod.find_voltage_level(&topology.voltage_level_merge, raw_container_id);
+        const container_id = topology_mod.find_root(&topology.voltage_level_merge, raw_container_id);
         const container = model.getObjectById(container_id) orelse continue;
 
         if (!std.mem.eql(u8, container.type_name, "VoltageLevel")) continue;

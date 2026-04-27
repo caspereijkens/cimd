@@ -5,109 +5,109 @@ const CimSsh = @import("cim_ssh.zig").CimSsh;
 
 const CimObject = tag_index.CimObject;
 
-test "union_conn_nodes: two nodes share root after union" {
+test "union_smallest_id_wins: two nodes share root after union" {
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer parent.deinit(std.testing.allocator);
     try parent.ensureTotalCapacity(std.testing.allocator, 1);
 
-    topology.union_conn_nodes(&parent, "conn_node1", "conn_node2");
+    topology.union_smallest_id_wins(&parent, "conn_node1", "conn_node2");
 
     try std.testing.expectEqualStrings(
-        topology.find_voltage_level(&parent, "conn_node1"),
-        topology.find_voltage_level(&parent, "conn_node2"),
+        topology.find_root(&parent, "conn_node1"),
+        topology.find_root(&parent, "conn_node2"),
     );
 }
 
-test "union_conn_nodes: idempotent when already same component" {
+test "union_smallest_id_wins: idempotent when already same component" {
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer parent.deinit(std.testing.allocator);
     try parent.ensureTotalCapacity(std.testing.allocator, 2);
 
-    topology.union_conn_nodes(&parent, "conn_node1", "conn_node2");
+    topology.union_smallest_id_wins(&parent, "conn_node1", "conn_node2");
     const count = parent.count();
-    topology.union_conn_nodes(&parent, "conn_node1", "conn_node2");
+    topology.union_smallest_id_wins(&parent, "conn_node1", "conn_node2");
 
     try std.testing.expectEqual(count, parent.count());
 }
 
-test "union_conn_nodes: transitive — three nodes share root" {
+test "union_smallest_id_wins: transitive — three nodes share root" {
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer parent.deinit(std.testing.allocator);
     try parent.ensureTotalCapacity(std.testing.allocator, 2);
 
-    topology.union_conn_nodes(&parent, "a", "b");
-    topology.union_conn_nodes(&parent, "b", "c");
+    topology.union_smallest_id_wins(&parent, "a", "b");
+    topology.union_smallest_id_wins(&parent, "b", "c");
 
-    const root_a = topology.find_voltage_level(&parent, "a");
-    const root_b = topology.find_voltage_level(&parent, "b");
-    const root_c = topology.find_voltage_level(&parent, "c");
+    const root_a = topology.find_root(&parent, "a");
+    const root_b = topology.find_root(&parent, "b");
+    const root_c = topology.find_root(&parent, "c");
     try std.testing.expectEqualStrings(root_a, root_b);
     try std.testing.expectEqualStrings(root_b, root_c);
 }
 
-test "union_conn_nodes: independent clusters do not interfere" {
+test "union_smallest_id_wins: independent clusters do not interfere" {
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer parent.deinit(std.testing.allocator);
     try parent.ensureTotalCapacity(std.testing.allocator, 2);
 
-    topology.union_conn_nodes(&parent, "a", "b");
-    topology.union_conn_nodes(&parent, "x", "y");
+    topology.union_smallest_id_wins(&parent, "a", "b");
+    topology.union_smallest_id_wins(&parent, "x", "y");
 
-    const root_ab = topology.find_voltage_level(&parent, "a");
-    const root_xy = topology.find_voltage_level(&parent, "x");
-    try std.testing.expectEqualStrings(root_ab, topology.find_voltage_level(&parent, "b"));
-    try std.testing.expectEqualStrings(root_xy, topology.find_voltage_level(&parent, "y"));
+    const root_ab = topology.find_root(&parent, "a");
+    const root_xy = topology.find_root(&parent, "x");
+    try std.testing.expectEqualStrings(root_ab, topology.find_root(&parent, "b"));
+    try std.testing.expectEqualStrings(root_xy, topology.find_root(&parent, "y"));
     try std.testing.expect(!std.mem.eql(u8, root_ab, root_xy));
 }
 
-test "find_voltage_level: id not in map returns itself" {
+test "find_root: id not in map returns itself" {
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer parent.deinit(std.testing.allocator);
 
-    try std.testing.expectEqualStrings("unknown", topology.find_voltage_level(&parent, "unknown"));
+    try std.testing.expectEqualStrings("unknown", topology.find_root(&parent, "unknown"));
 }
 
-test "find_voltage_level: one level deep" {
+test "find_root: one level deep" {
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer parent.deinit(std.testing.allocator);
     try parent.put(std.testing.allocator, "stub", "repr");
 
-    try std.testing.expectEqualStrings("repr", topology.find_voltage_level(&parent, "stub"));
-    try std.testing.expectEqualStrings("repr", topology.find_voltage_level(&parent, "repr"));
+    try std.testing.expectEqualStrings("repr", topology.find_root(&parent, "stub"));
+    try std.testing.expectEqualStrings("repr", topology.find_root(&parent, "repr"));
 }
 
-test "find_voltage_level: two levels deep" {
+test "find_root: two levels deep" {
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer parent.deinit(std.testing.allocator);
     try parent.put(std.testing.allocator, "a", "b");
     try parent.put(std.testing.allocator, "b", "c");
 
-    try std.testing.expectEqualStrings("c", topology.find_voltage_level(&parent, "a"));
-    try std.testing.expectEqualStrings("c", topology.find_voltage_level(&parent, "b"));
-    try std.testing.expectEqualStrings("c", topology.find_voltage_level(&parent, "c"));
+    try std.testing.expectEqualStrings("c", topology.find_root(&parent, "a"));
+    try std.testing.expectEqualStrings("c", topology.find_root(&parent, "b"));
+    try std.testing.expectEqualStrings("c", topology.find_root(&parent, "c"));
 }
 
-test "find_voltage_level: chain of four" {
+test "find_root: chain of four" {
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer parent.deinit(std.testing.allocator);
     try parent.put(std.testing.allocator, "a", "b");
     try parent.put(std.testing.allocator, "b", "c");
     try parent.put(std.testing.allocator, "c", "d");
 
-    try std.testing.expectEqualStrings("d", topology.find_voltage_level(&parent, "a"));
-    try std.testing.expectEqualStrings("d", topology.find_voltage_level(&parent, "b"));
-    try std.testing.expectEqualStrings("d", topology.find_voltage_level(&parent, "c"));
-    try std.testing.expectEqualStrings("d", topology.find_voltage_level(&parent, "d"));
+    try std.testing.expectEqualStrings("d", topology.find_root(&parent, "a"));
+    try std.testing.expectEqualStrings("d", topology.find_root(&parent, "b"));
+    try std.testing.expectEqualStrings("d", topology.find_root(&parent, "c"));
+    try std.testing.expectEqualStrings("d", topology.find_root(&parent, "d"));
 }
 
-test "find_voltage_level: two independent components" {
+test "find_root: two independent components" {
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer parent.deinit(std.testing.allocator);
     try parent.put(std.testing.allocator, "a", "b");
     try parent.put(std.testing.allocator, "x", "y");
 
-    try std.testing.expectEqualStrings("b", topology.find_voltage_level(&parent, "a"));
-    try std.testing.expectEqualStrings("y", topology.find_voltage_level(&parent, "x"));
+    try std.testing.expectEqualStrings("b", topology.find_root(&parent, "a"));
+    try std.testing.expectEqualStrings("y", topology.find_root(&parent, "x"));
 }
 
 test "topology.get_switch_count: all empty slices returns zero" {
