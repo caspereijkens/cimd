@@ -5,6 +5,7 @@ comptime {
     _ = @import("test_cim_model.zig");
     _ = @import("test_utils.zig");
     _ = @import("test_topology.zig");
+    _ = @import("test_validate_topology.zig");
     _ = @import("test_conversion.zig");
     _ = @import("cim_index.zig");
     _ = @import("cim_ssh.zig");

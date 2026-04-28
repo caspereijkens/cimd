@@ -145,8 +145,8 @@ pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const cim_model
     const switch_slices = get_switch_type_slices(model);
 
     var parent: IdMap = .empty;
-    try parent.ensureTotalCapacity(gpa, @intCast(get_switch_count(switch_slices)));
     defer parent.deinit(gpa);
+    try parent.ensureTotalCapacity(gpa, @intCast(get_switch_count(switch_slices)));
 
     for (switch_slices) |slice| try cim_index.process_switch_type(model, index, slice, &parent);
 
@@ -189,7 +189,7 @@ pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.Ci
         const stub_substation_id = strip_hash(stub_substation_ref);
         const repr_substation_id = strip_hash(repr_substation_ref);
         if (!std.mem.eql(u8, stub_substation_id, repr_substation_id)) {
-            union_smallest_id_wins(&parent,stub_substation_id, repr_substation_id);
+            union_smallest_id_wins(&parent, stub_substation_id, repr_substation_id);
         }
     }
 
@@ -205,7 +205,7 @@ pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.Ci
             const substation_id = strip_hash(substation_ref);
             if (first_substation_id) |first| {
                 if (!std.mem.eql(u8, first, substation_id)) {
-                    union_smallest_id_wins(&parent,first, substation_id);
+                    union_smallest_id_wins(&parent, first, substation_id);
                 }
             } else {
                 first_substation_id = substation_id;
@@ -251,8 +251,8 @@ pub fn build_reachable_busbar_section_index(gpa: std.mem.Allocator, model: *cons
     const switch_slices = get_switch_type_slices(model);
 
     var parent: IdMap = .empty;
-    try parent.ensureTotalCapacity(gpa, @intCast(get_switch_count(switch_slices) * 2));
     defer parent.deinit(gpa);
+    try parent.ensureTotalCapacity(gpa, @intCast(get_switch_count(switch_slices) * 2));
 
     for (switch_slices) |switches| {
         for (switches) |@"switch"| {
@@ -265,8 +265,8 @@ pub fn build_reachable_busbar_section_index(gpa: std.mem.Allocator, model: *cons
     }
 
     var cluster_to_busbar_section: IdMap = .empty;
-    try cluster_to_busbar_section.ensureTotalCapacity(gpa, @intCast(index.busbar_section_in_parse_order.items.len));
     defer cluster_to_busbar_section.deinit(gpa);
+    try cluster_to_busbar_section.ensureTotalCapacity(gpa, @intCast(index.busbar_section_in_parse_order.items.len));
 
     for (index.busbar_section_in_parse_order.items) |entry| {
         const root = find_root(&parent, entry.conn_node_id);
@@ -363,7 +363,6 @@ fn assign_base_nodes(
     voltage_levels: *const SetMap,
     conn_node_base_nodes: *CountMap,
     conn_node_repr_voltage_level: *IdMap,
-
     voltage_level_counters: *CountMap,
 ) void {
     // Base node assignment: sequential counter per representative VL, CN XML parse order.
@@ -592,6 +591,11 @@ fn union_closed_switch_conn_nodes(
             const closed = if (ssh_opt) |s| try is_switch_closed(s, @"switch".id) else true;
             if (!closed) continue;
 
+            // Retained closed switches become SwitchBranches in the IIDM bus-branch view —
+            // each end stays its own TopologicalNode, so do not union across them.
+            const retained_str = try model.view(@"switch").getProperty("Switch.retained") orelse "false";
+            if (std.mem.eql(u8, retained_str, "true")) continue;
+
             const terminals = index.equipment_terminals.get(@"switch".id) orelse continue;
             if (terminals.items.len != 2) continue;
 
@@ -608,7 +612,7 @@ fn get_base_voltage_mrid(model: *const CimModel, voltage_level: CimObjectView) !
 
     const base_voltage_id = strip_hash(base_voltage_ref);
     const base_voltage = model.getObjectById(base_voltage_id) orelse return "";
-    // TODO prefix a hash. 
+    // TODO prefix a hash.
     return try base_voltage.getProperty("IdentifiedObject.mRID") orelse strip_underscore(base_voltage_id);
 }
 
@@ -656,29 +660,43 @@ pub fn build_topological_nodes(
     ssh_opt: ?*const CimSsh,
 ) !std.ArrayListUnmanaged(TopologicalNode) {
     assert(index.conn_node_container.count() > 0);
-
-    const conn_nodes = model.get_objects_by_type("ConnectivityNode");
-
-    // Union-find: each CN starts as its own root.
-    var parent: IdMap = .empty;
-    defer parent.deinit(gpa);
-    try parent.ensureTotalCapacity(gpa, @intCast(conn_nodes.len));
-    for (conn_nodes) |conn_node| parent.putAssumeCapacity(conn_node.id, conn_node.id);
-
-    try union_closed_switch_conn_nodes(model, index, ssh_opt, &parent);
+    var conn_node_to_root = try build_conn_node_root_map(gpa, model, index, ssh_opt);
+    defer conn_node_to_root.deinit(gpa);
 
     // With smallest-id-wins union, each root IS the representative CN.
-    // After unions, a CN is a root iff parent[id] == id (self-loop).
+    // After unions, a CN is a root iff conn_node_to_root[id] == id (self-loop).
     var nodes: std.ArrayListUnmanaged(TopologicalNode) = .empty;
     errdefer nodes.deinit(gpa);
-    try nodes.ensureTotalCapacity(gpa, conn_nodes.len);
+    try nodes.ensureTotalCapacity(gpa, conn_node_to_root.size);
 
-    var it = parent.iterator();
+    var it = conn_node_to_root.iterator();
     while (it.next()) |entry| {
         if (!std.mem.eql(u8, entry.key_ptr.*, entry.value_ptr.*)) continue;
         try append_topological_node(model, index, topology, entry.key_ptr.*, &nodes);
     }
 
-    assert(nodes.items.len <= conn_nodes.len);
+    assert(nodes.items.len <= conn_node_to_root.size);
     return nodes;
+}
+
+pub fn build_conn_node_root_map(gpa: std.mem.Allocator, model: *const CimModel, index: *const CimIndex, ssh_opt: ?*const CimSsh) !IdMap {
+    const conn_nodes = model.get_objects_by_type("ConnectivityNode");
+
+    // Union-find: each CN starts as its own root.
+    var conn_node_to_root: IdMap = .empty;
+    errdefer conn_node_to_root.deinit(gpa);
+    try conn_node_to_root.ensureTotalCapacity(gpa, @intCast(conn_nodes.len));
+
+    for (conn_nodes) |conn_node| conn_node_to_root.putAssumeCapacity(conn_node.id, conn_node.id);
+
+    try union_closed_switch_conn_nodes(model, index, ssh_opt, &conn_node_to_root);
+
+    // Path compression: every value is now the true root, so callers can read
+    // value_ptr.* directly instead of walking parent chains.
+    var it = conn_node_to_root.iterator();
+    while (it.next()) |entry| {
+        entry.value_ptr.* = find_root(&conn_node_to_root, entry.key_ptr.*);
+    }
+
+    return conn_node_to_root;
 }

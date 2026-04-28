@@ -28,6 +28,8 @@ const help_main =
     \\  types      List CIM types present in a CIM file
     \\  diff       Semantic diff between two EQ profiles
     \\  topology   Generate TopologicalNodes from EQ (+SSH) — TP-equivalent output
+    \\  validate-topology
+    \\             Validate cimd's topology clustering against a TP profile
     \\  version    Print version information
     \\
     \\Use 'cimd <command> --help' for more information about a command.
@@ -193,6 +195,38 @@ const help_topology =
     \\
 ;
 
+const help_validate_topology =
+    \\Usage: cimd validate-topology <file> <tp-file> [options]
+    \\
+    \\Validate cimd's topology clustering against a TP profile, treating the TP
+    \\file as the source of truth. Reports over-merges (cimd glued distinct TNs
+    \\together) and under-merges (cimd split a single TN).
+    \\
+    \\Without --ssh, all switches are treated as closed (electrical-equivalence
+    \\snapshot ignoring switch state).
+    \\
+    \\Exit codes:
+    \\  0  cimd matches the TP file
+    \\  1  mismatches found
+    \\  2  usage error
+    \\
+    \\Arguments:
+    \\  <file>                  EQ profile (XML or ZIP)
+    \\  <tp-file>               TP profile (XML or ZIP)
+    \\
+    \\Options:
+    \\  -b, --boundary <file>   EQBD boundary profile (XML or ZIP)
+    \\  -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
+    \\      --summary           Print only over-merge / under-merge counts
+    \\  -j, --json              Output as NDJSON (one record per mismatch)
+    \\
+    \\Examples:
+    \\  cimd validate-topology data/eq.zip data/tp.zip -s ssh.zip
+    \\  cimd validate-topology data/eq.zip data/tp.zip -b eqbd.zip -s ssh.zip --summary
+    \\  cimd validate-topology data/eq.zip data/tp.zip -j | jq .
+    \\
+;
+
 const help_version =
     \\Usage: cimd version [options]
     \\
@@ -217,6 +251,7 @@ pub const Command = union(enum) {
     types: Types,
     diff: Diff,
     topology: Topology,
+    validate_topology: ValidateTopology,
     version: Version,
 
     pub const Convert = struct {
@@ -273,6 +308,15 @@ pub const Command = union(enum) {
         output_path: ?[]const u8,
     };
 
+    pub const ValidateTopology = struct {
+        eq_path: []const u8,
+        eqbd_path: ?[]const u8,
+        ssh_path: ?[]const u8,
+        tp_path: []const u8, // required, not optional
+        json: bool,
+        summary: bool,
+    };
+
     pub const Version = struct {
         verbose: bool,
         json: bool,
@@ -298,6 +342,7 @@ pub fn parse_args(io: std.Io, args: *std.process.Args.Iterator) !Command {
     if (std.mem.eql(u8, command_name, "types")) return parse_types(io, args);
     if (std.mem.eql(u8, command_name, "diff")) return parse_diff(io, args);
     if (std.mem.eql(u8, command_name, "topology")) return parse_topology(io, args);
+    if (std.mem.eql(u8, command_name, "validate-topology")) return parse_validate_topology(io, args);
     if (std.mem.eql(u8, command_name, "version")) return parse_version(io, args);
 
     print.stderr(io, "unknown command '{s}'\n\n" ++ help_main, .{command_name});
@@ -575,6 +620,57 @@ fn parse_topology(io: std.Io, args: *std.process.Args.Iterator) !Command {
         .eqbd_path = eqbd_path,
         .ssh_path = ssh_path,
         .output_path = output_path,
+    } };
+}
+
+fn parse_validate_topology(io: std.Io, args: *std.process.Args.Iterator) !Command {
+    const context = "validate-topology";
+
+    var eq_path: ?[]const u8 = null;
+    var eqbd_path: ?[]const u8 = null;
+    var ssh_path: ?[]const u8 = null;
+    var tp_path: ?[]const u8 = null;
+    var summary = false;
+    var json = false;
+
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            try print.stdout(io, help_validate_topology, .{});
+            std.process.exit(0);
+        }
+        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--boundary")) {
+            eqbd_path = take_path_arg(io, args, context, "--boundary");
+        } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--ssh")) {
+            ssh_path = take_path_arg(io, args, context, "--ssh");
+        } else if (std.mem.eql(u8, arg, "--summary")) {
+            summary = true;
+        } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
+            json = true;
+        } else if (is_flag(arg)) {
+            print.stderr(io, context ++ ": unknown option '{s}'", .{arg});
+        } else {
+            validate_path(io, arg, context);
+            validate_cgmes_extension(io, arg, context);
+            if (eq_path == null) {
+                eq_path = arg;
+            } else if (tp_path == null) {
+                tp_path = arg;
+            } else {
+                print.stderr(io, context ++ ": unexpected argument '{s}'", .{arg});
+            }
+        }
+    }
+
+    if (eq_path == null) print.stderr(io, context ++ ": <file> is required", .{});
+    if (tp_path == null) print.stderr(io, context ++ ": <tp-file> is required", .{});
+
+    return .{ .validate_topology = .{
+        .eq_path = eq_path.?,
+        .eqbd_path = eqbd_path,
+        .ssh_path = ssh_path,
+        .tp_path = tp_path.?,
+        .json = json,
+        .summary = summary,
     } };
 }
 

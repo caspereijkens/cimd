@@ -17,8 +17,6 @@ const assert = std.debug.assert;
 const cim_model = @import("cim_model.zig");
 const tag_index = @import("tag_index.zig");
 
-// ── Public types ──────────────────────────────────────────────────────────────
-
 pub const DiffOptions = struct {
     /// When set, only objects of this CIM type are compared.
     type_filter: ?[]const u8 = null,
