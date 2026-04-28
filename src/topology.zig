@@ -608,6 +608,7 @@ fn get_base_voltage_mrid(model: *const CimModel, voltage_level: CimObjectView) !
 
     const base_voltage_id = strip_hash(base_voltage_ref);
     const base_voltage = model.getObjectById(base_voltage_id) orelse return "";
+    // TODO prefix a hash. 
     return try base_voltage.getProperty("IdentifiedObject.mRID") orelse strip_underscore(base_voltage_id);
 }
 
