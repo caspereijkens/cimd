@@ -4,7 +4,7 @@ const eq = @import("../cgmes/eq.zig");
 const cross_ref = @import("../topology/cross_ref.zig");
 const utils = @import("../cgmes/ids.zig");
 const placement_mod = @import("placement.zig");
-const topology_mod = @import("../topology/resolve.zig");
+const resolve = @import("../topology/resolve.zig");
 
 const assert = std.debug.assert;
 
@@ -12,7 +12,7 @@ const EQ = eq.EQ;
 const CrossRef = cross_ref.CrossRef;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
-const NodeMap = topology_mod.NodeMap;
+const NodeMap = resolve.NodeMap;
 const TerminalPlacer = placement_mod.TerminalPlacer;
 
 /// Resolved placement for one line terminal.
@@ -105,7 +105,7 @@ pub fn convert_lines(
             for (terminals.items) |terminal| {
                 const conn_node_id = terminal.conn_node_id orelse continue;
                 const container_id = index.conn_node_container.get(conn_node_id) orelse continue;
-                const representative_id = topology_mod.find_root(&placer.topology.voltage_level_merge, container_id);
+                const representative_id = resolve.find_root(&placer.topology.voltage_level_merge, container_id);
                 if (voltage_level_map.contains(representative_id)) continue;
                 // Boundary ConnectivityNode: container is not a VoltageLevel.
 

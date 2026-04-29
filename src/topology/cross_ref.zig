@@ -3,8 +3,8 @@ const iidm = @import("../iidm/model.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
 const EQ = @import("../cgmes/eq.zig").EQ;
-const topology_mod = @import("resolve.zig");
-const Topology = topology_mod.Topology;
+const resolve = @import("resolve.zig");
+const Topology = resolve.Topology;
 
 const assert = std.debug.assert;
 
@@ -401,7 +401,7 @@ pub fn process_switch_type(
         if (!std.mem.eql(u8, obj0.type_name, "VoltageLevel")) continue;
         if (!std.mem.eql(u8, obj1.type_name, "VoltageLevel")) continue;
 
-        try topology_mod.union_voltage_levels(model, parent, container0, container1);
+        try resolve.union_voltage_levels(model, parent, container0, container1);
     }
 }
 
@@ -429,7 +429,7 @@ pub fn build_voltage_limits(gpa: std.mem.Allocator, model: *const EQ, index: *Cr
             break :blk strip_hash(ec_ref);
         };
         // Apply VL merge so limits are keyed by the representative VL.
-        const container_id = topology_mod.find_root(&topology.voltage_level_merge, raw_container_id);
+        const container_id = resolve.find_root(&topology.voltage_level_merge, raw_container_id);
         const container = model.getObjectById(container_id) orelse continue;
 
         if (!std.mem.eql(u8, container.type_name, "VoltageLevel")) continue;

@@ -10,7 +10,7 @@ const browse = @import("browse.zig");
 const diff = @import("diff.zig");
 const converter = @import("convert/network.zig");
 const cross_ref = @import("topology/cross_ref.zig");
-const topology_mod = @import("topology/resolve.zig");
+const resolve = @import("topology/resolve.zig");
 const validate_topology = @import("topology/validate.zig");
 
 const assert = std.debug.assert;
@@ -288,11 +288,11 @@ fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology)
     var index = try cross_ref.CrossRef.build_for_topology(gpa, &model, boundary_ids);
     defer index.deinit(gpa);
 
-    var topology = try topology_mod.Topology.build_for_topological_nodes(gpa, &model, &index);
+    var topology = try resolve.Topology.build_for_topological_nodes(gpa, &model, &index);
     defer topology.deinit(gpa);
 
     const ssh_ptr: ?*const SSH = if (ssh_opt) |*s| s else null;
-    var nodes = try topology_mod.build_topological_nodes(gpa, &model, &index, &topology, ssh_ptr);
+    var nodes = try resolve.build_topological_nodes(gpa, &model, &index, &topology, ssh_ptr);
     defer nodes.deinit(gpa);
 
     try print.stderr_info(io, "TopologicalNodes: {d}\n", .{nodes.items.len});

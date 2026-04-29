@@ -6,14 +6,14 @@ const EQ = @import("../cgmes/eq.zig").EQ;
 const utils = @import("../cgmes/ids.zig");
 const bus_conv = @import("bus.zig");
 const TP = @import("../cgmes/tp.zig").TP;
-const topology_mod = @import("../topology/resolve.zig");
+const resolve = @import("../topology/resolve.zig");
 
 const strip_underscore = utils.strip_underscore;
 const strip_hash = utils.strip_hash;
 
 const assert = std.debug.assert;
 const CrossRef = cross_ref.CrossRef;
-const Topology = topology_mod.Topology;
+const Topology = resolve.Topology;
 
 pub const Placement = struct {
     /// Raw rdf:ID of the containing VoltageLevel (merge-resolved in node-breaker,
@@ -37,12 +37,12 @@ pub fn resolve_terminal_placement(
     index: *const CrossRef,
     topology: *const Topology,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const topology_mod.NodeMap,
+    node_map: *const resolve.NodeMap,
 ) ?Placement {
     assert(terminal_id.len > 0);
     assert(conn_node_id.len > 0);
     const container_id = index.conn_node_container.get(conn_node_id) orelse return null;
-    const repr_voltage_level_id = topology_mod.find_root(&topology.voltage_level_merge, container_id);
+    const repr_voltage_level_id = resolve.find_root(&topology.voltage_level_merge, container_id);
     const voltage_level = voltage_level_map.get(repr_voltage_level_id) orelse return null;
     const node = node_map.get(terminal_id) orelse return null;
     return .{ .repr_voltage_level_id = repr_voltage_level_id, .voltage_level = voltage_level, .node = node };
@@ -58,7 +58,7 @@ pub const TerminalPlacer = struct {
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
 
     pub const Mode = union(enum) {
-        node_breaker: *const topology_mod.NodeMap,
+        node_breaker: *const resolve.NodeMap,
         bus_branch: BusBranch,
     };
 
