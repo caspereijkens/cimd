@@ -5,7 +5,7 @@
 /// one specific behaviour; re-parsing is cheap for a model this small.
 const std = @import("std");
 const converter = @import("network.zig");
-const CimModel = @import("../cgmes/eq.zig").CimModel;
+const EQ = @import("../cgmes/eq.zig").EQ;
 const SSH = @import("../cgmes/ssh.zig").SSH;
 
 /// Minimal EQ model with enough objects to exercise every edge case.
@@ -738,7 +738,7 @@ fn find_property(properties: anytype, name: []const u8) ?@TypeOf(properties[0]) 
 
 test "forecastDistance: scenarioTime 8h after created → 480 minutes" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -751,7 +751,7 @@ test "forecastDistance: scenarioTime 8h after created → 480 minutes" {
 
 test "line: gch and bch split equally across both sides" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -770,7 +770,7 @@ test "line: gch and bch split equally across both sides" {
 
 test "boundary line: creates a fictitious VL and LINE_BNDRY lands in it" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -795,7 +795,7 @@ test "boundary line: creates a fictitious VL and LINE_BNDRY lands in it" {
 
 test "generator: energy_source derived from GeneratingUnit CIM type" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -809,7 +809,7 @@ test "generator: energy_source derived from GeneratingUnit CIM type" {
 
 test "generator: min_p and max_p read from GeneratingUnit" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -823,7 +823,7 @@ test "generator: min_p and max_p read from GeneratingUnit" {
 
 test "generator: is_condenser true when SynchronousMachine.type contains condenser" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -840,7 +840,7 @@ test "generator: is_condenser true when SynchronousMachine.type contains condens
 
 test "generator: reactive capability curve takes precedence over minQ/maxQ" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -857,7 +857,7 @@ test "generator: reactive capability curve takes precedence over minQ/maxQ" {
 
 test "generator: minQ/maxQ used as fallback when no curve" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -874,7 +874,7 @@ test "generator: minQ/maxQ used as fallback when no curve" {
 
 test "SVC: regulationMode voltage fragment → .voltage" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -897,7 +897,7 @@ test "SVC: regulationMode voltage fragment → .voltage" {
 
 test "detail extension: every load gets fixedActivePower etc. all zero" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -924,7 +924,7 @@ test "detail extension: every load gets fixedActivePower etc. all zero" {
 
 test "coordinatedReactiveControl: generator with qPercent gets extension" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -943,7 +943,7 @@ test "coordinatedReactiveControl: generator with qPercent gets extension" {
 
 test "areas: ControlArea produces one area with TieFlow boundary" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -962,7 +962,7 @@ test "areas: ControlArea produces one area with TieFlow boundary" {
 
 test "shunt: section count, bPerSection, voltage_regulator_on parsed correctly" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -988,7 +988,7 @@ test "shunt: section count, bPerSection, voltage_regulator_on parsed correctly" 
 
 test "shunt: CGMES.Terminal1 alias present with terminal mRID" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1009,7 +1009,7 @@ test "shunt: targetDeadband defaults to 0.0 when SSH provided but no RegulatingC
     // With SSH present, pypowsybl emits targetDeadband: 0.0 on every shunt regardless of RC.
     // Without SSH, the field is omitted entirely.
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
@@ -1023,7 +1023,7 @@ test "shunt: targetDeadband defaults to 0.0 when SSH provided but no RegulatingC
 
 test "shunt: targetDeadband is null when no SSH provided" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1036,7 +1036,7 @@ test "shunt: targetDeadband is null when no SSH provided" {
 
 test "two winding transformer: CGMES.Terminal1 and CGMES.Terminal2 aliases" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1065,7 +1065,7 @@ test "two winding transformer: CGMES.Terminal1 and CGMES.Terminal2 aliases" {
 
 test "two winding transformer: CGMES.TransformerEnd1 and CGMES.TransformerEnd2 aliases" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1094,7 +1094,7 @@ test "two winding transformer: CGMES.TransformerEnd1 and CGMES.TransformerEnd2 a
 
 test "three winding transformer: CGMES.Terminal1/2/3 aliases" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1121,7 +1121,7 @@ test "three winding transformer: CGMES.Terminal1/2/3 aliases" {
 
 test "three winding transformer: CGMES.TransformerEnd1/2/3 aliases" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1150,7 +1150,7 @@ test "three winding transformer: CGMES.TransformerEnd1/2/3 aliases" {
 
 test "two winding transformer: operationalLimitsGroups1 populated from CurrentLimit on terminal 1" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1168,7 +1168,7 @@ test "two winding transformer: operationalLimitsGroups1 populated from CurrentLi
 
 test "three winding transformer: operationalLimitsGroups2 populated from CurrentLimit on terminal 2" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1190,7 +1190,7 @@ test "three winding transformer: operationalLimitsGroups2 populated from Current
 
 test "two winding transformer: CGMES.RatioTapChanger1 and CGMES.PhaseTapChanger1 aliases" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1213,7 +1213,7 @@ test "two winding transformer: CGMES.RatioTapChanger1 and CGMES.PhaseTapChanger1
 
 test "two winding transformer: phaseTapChanger populated from PhaseTapChangerTabular on end 1" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1234,7 +1234,7 @@ test "two winding transformer: phaseTapChanger populated from PhaseTapChangerTab
 
 test "two winding transformer: phaseTapChanger on end 1 inverts rho and negates alpha" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1252,7 +1252,7 @@ test "two winding transformer: phaseTapChanger on end 1 inverts rho and negates 
 
 test "two winding transformer: phaseTapChanger on end 1 passes r/x/g/b through unchanged" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1275,7 +1275,7 @@ test "two winding transformer: phaseTapChanger on end 1 passes r/x/g/b through u
 
 test "two winding transformer: ratioTapChanger linear rho uses inverted-per-step formula" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1297,7 +1297,7 @@ test "two winding transformer: ratioTapChanger linear rho uses inverted-per-step
 
 test "three winding transformer: r/x referred from each end to star-point voltage (= ratedU1)" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1323,7 +1323,7 @@ test "three winding transformer: r/x referred from each end to star-point voltag
 
 test "three winding transformer: ratioTapChanger1 from tabular RatioTapChangerTable, sorted by step" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1347,7 +1347,7 @@ test "two winding transformer: ratioTapChanger regulating defaults to false when
     // RTC_TWT1 has ltcFlag=true with no TapChanger.TapChangerControl reference.
     // pypowsybl emits regulating: false in that case (matching its CGMES importer).
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1361,7 +1361,7 @@ test "two winding transformer: ratioTapChanger regulating defaults to false when
 test "three winding transformer: ratioTapChanger1 regulating defaults to false when ltcFlag is true and no TapChangerControl" {
     // RTC_TWT2 sits on end 1 of TWT2 with ltcFlag=true and no TapChanger.TapChangerControl reference.
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1376,7 +1376,7 @@ test "three winding transformer: ratioTapChanger1 regulating defaults to false w
 
 test "line: both terminal aliases present with correct types and content" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1406,7 +1406,7 @@ test "line: both terminal aliases present with correct types and content" {
 
 test "line: CGMES.originalClass property is ACLineSegment" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1421,7 +1421,7 @@ test "line: CGMES.originalClass property is ACLineSegment" {
 
 test "busbar section: CGMES.Terminal1 alias contains terminal mRID" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1437,7 +1437,7 @@ test "busbar section: CGMES.Terminal1 alias contains terminal mRID" {
 
 test "switch: CGMES.Terminal1 and CGMES.Terminal2 aliases contain terminal mRIDs" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1468,7 +1468,7 @@ test "switch: CGMES.Terminal1 and CGMES.Terminal2 aliases contain terminal mRIDs
 
 test "switch: CGMES.originalClass and CGMES.normalOpen properties" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1499,7 +1499,7 @@ test "fictitious switch: created for structurally isolated SynchronousMachine" {
     // and exactly one non-switch/non-BBS terminal.  PyPowSyBl synthesises a fictitious
     // open Breaker for it so node-breaker topology stays connected.
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1525,7 +1525,7 @@ test "fictitious switch: not created for EnergyConsumer without SSH" {
     // Loads are never given fictitious switches by the structural isolation check —
     // only SynchronousMachine / LinearShuntCompensator / StaticVarCompensator are.
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1540,7 +1540,7 @@ test "SSH: switch open and retained state come from SSH overlay" {
     // BRK1 in EQ has no Switch.open attribute (defaults false).
     // SSH marks it open=true, retained=false.
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
@@ -1558,7 +1558,7 @@ test "SSH: load p0 and q0 read from EnergyConsumer.p and .q in SSH" {
     // Without SSH, LOAD1 has p0=0.0 and q0=0.0 (no EnergyConsumer.p/q in EQ).
     // SSH provides p=100.0 and q=50.0.
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
@@ -1577,7 +1577,7 @@ test "SSH: disconnected terminal creates fictitious switch for any equipment typ
     // isolation check.  Marking its terminal as ACDCTerminal.connected=false in SSH
     // forces creation regardless of equipment type.
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
@@ -1604,7 +1604,7 @@ test "SSH: disconnected terminal creates fictitious switch for any equipment typ
 
 test "SSH: case_date comes from SSH scenarioTime, not EQ" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
@@ -1621,7 +1621,7 @@ test "SSH: case_date comes from SSH scenarioTime, not EQ" {
 
 test "SSH: forecastDistance computed from SSH times, not EQ" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
@@ -1637,7 +1637,7 @@ test "SSH: forecastDistance computed from SSH times, not EQ" {
 
 test "SSH: FullModel appears as MetadataModel with long-form subset after EQ entry" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
@@ -1664,7 +1664,7 @@ test "SSH: FullModel appears as MetadataModel with long-form subset after EQ ent
 
 test "SSH: minimumValidationLevel follows SSH presence" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
@@ -1678,7 +1678,7 @@ test "SSH: minimumValidationLevel follows SSH presence" {
 
 test "substation: emits CGMES.regionName, CGMES.regionId, CGMES.subRegionId" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1699,7 +1699,7 @@ test "substation: emits CGMES.regionName, CGMES.regionId, CGMES.subRegionId" {
 
 test "voltage level: most-restrictive low/high limits resolved from VoltageLimits" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1711,7 +1711,7 @@ test "voltage level: most-restrictive low/high limits resolved from VoltageLimit
 
 test "voltage level: emits CGMES.normalValue_* and OperationalLimit_* properties" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
@@ -1741,7 +1741,7 @@ test "voltage level: emits CGMES.normalValue_* and OperationalLimit_* properties
 
 test "voltage level: only NaN placeholders emitted when no voltage limits apply" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);

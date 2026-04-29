@@ -5,7 +5,7 @@ const TagBoundary = tag_index.TagBoundary;
 
 const assert = std.debug.assert;
 
-pub const CimModel = struct {
+pub const EQ = struct {
     objects: []CimObject,
     id_to_index: std.StringHashMap(u32),
     type_index: std.StringHashMap(TypeRange),
@@ -21,7 +21,7 @@ pub const CimModel = struct {
 
     /// Takes ownership of `xml`: on success the model owns it (freed by deinit),
     /// on error it is freed before returning. Callers never need to clean up `xml`.
-    pub fn init(gpa: std.mem.Allocator, xml: []const u8) !CimModel {
+    pub fn init(gpa: std.mem.Allocator, xml: []const u8) !EQ {
         errdefer gpa.free(xml);
         if (xml.len == 0) return error.EmptyInput;
 
@@ -116,7 +116,7 @@ pub const CimModel = struct {
         };
     }
 
-    pub fn deinit(self: *CimModel, gpa: std.mem.Allocator) void {
+    pub fn deinit(self: *EQ, gpa: std.mem.Allocator) void {
         self.type_index.deinit();
         self.id_to_index.deinit();
         gpa.free(self.objects);
@@ -125,7 +125,7 @@ pub const CimModel = struct {
     }
 
     /// Bind a stored CimObject to this model's XML context for property access.
-    pub fn view(self: CimModel, obj: CimObject) tag_index.CimObjectView {
+    pub fn view(self: EQ, obj: CimObject) tag_index.CimObjectView {
         return .{
             .xml = self.xml,
             .boundaries = self.boundaries,
@@ -136,17 +136,17 @@ pub const CimModel = struct {
         };
     }
 
-    pub fn getObjectById(self: CimModel, id: []const u8) ?tag_index.CimObjectView {
+    pub fn getObjectById(self: EQ, id: []const u8) ?tag_index.CimObjectView {
         const idx = self.id_to_index.get(id) orelse return null;
         return self.view(self.objects[idx]);
     }
 
-    pub fn get_objects_by_type(self: CimModel, type_name: []const u8) []const CimObject {
+    pub fn get_objects_by_type(self: EQ, type_name: []const u8) []const CimObject {
         const range = self.type_index.get(type_name) orelse return &[_]CimObject{};
         return self.objects[range.start .. range.start + range.len];
     }
 
-    pub fn getTypeCounts(self: CimModel, gpa: std.mem.Allocator) !std.StringHashMap(u32) {
+    pub fn getTypeCounts(self: EQ, gpa: std.mem.Allocator) !std.StringHashMap(u32) {
         var result = std.StringHashMap(u32).init(gpa);
         errdefer result.deinit();
         var it = self.type_index.iterator();
@@ -160,7 +160,7 @@ pub const CimModel = struct {
 
     /// Return a heap-allocated, alphabetically sorted type-count list.
     /// Caller owns the returned slice and must free it with gpa.free().
-    pub fn sorted_type_counts(self: CimModel, gpa: std.mem.Allocator) ![]TypeCount {
+    pub fn sorted_type_counts(self: EQ, gpa: std.mem.Allocator) ![]TypeCount {
         const n = self.type_index.count();
         const out = try gpa.alloc(TypeCount, n);
         errdefer gpa.free(out);
@@ -186,7 +186,7 @@ pub const CimModel = struct {
     }
 };
 
-test "CimModel.init rejects duplicate RDF identifiers" {
+test "EQ.init rejects duplicate RDF identifiers" {
     const gpa = std.testing.allocator;
     const xml =
         \\<rdf:RDF>
@@ -199,5 +199,5 @@ test "CimModel.init rejects duplicate RDF identifiers" {
         \\</rdf:RDF>
     ;
 
-    try std.testing.expectError(error.DuplicateId, CimModel.init(gpa, try gpa.dupe(u8, xml)));
+    try std.testing.expectError(error.DuplicateId, EQ.init(gpa, try gpa.dupe(u8, xml)));
 }

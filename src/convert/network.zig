@@ -1,6 +1,6 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const cim_model = @import("../cgmes/eq.zig");
+const eq = @import("../cgmes/eq.zig");
 const cim_index = @import("../topology/cross_ref.zig");
 const utils = @import("../cgmes/ids.zig");
 const topology = @import("../topology/resolve.zig");
@@ -17,7 +17,7 @@ const TP = @import("../cgmes/tp.zig").TP;
 const populate_internal_connections = @import("internal_connections.zig").populate_internal_connections;
 
 const assert = std.debug.assert;
-const CimModel = cim_model.CimModel;
+const EQ = eq.EQ;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
@@ -145,7 +145,7 @@ fn append_metadata_model(
 ///   boundary.id   = ConductingEquipment mRID of the TieFlow.Terminal
 ///   boundary.side = sequenceNumber of the TieFlow.Terminal (1→"ONE", 2→"TWO")
 ///   boundary.ac   = true (always, as all equipment is AC in EQ profiles)
-fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?SSH, network: *iidm.Network) !void {
+fn convert_areas(gpa: std.mem.Allocator, model: *const EQ, ssh_opt: ?SSH, network: *iidm.Network) !void {
     const control_areas = model.get_objects_by_type("ControlArea");
     assert(network.areas.items.len == 0);
     if (control_areas.len == 0) return;
@@ -206,7 +206,7 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?SSH, 
     }
 }
 
-/// Convert a CimModel into an IIDM Network.
+/// Convert a EQ into an IIDM Network.
 /// Caller owns the returned network and must call network.deinit(gpa).
 /// Default JIIDM output is node-breaker (matches pypowsybl). When `bus_branch`
 /// is true, TP TopologicalNodes drive equipment placement onto buses and
@@ -214,7 +214,7 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?SSH, 
 /// `tp_opt` to be non-null (CLI enforces this).
 pub fn convert(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     tp_opt: ?TP,
     ssh_opt: ?SSH,
     bus_branch: bool,

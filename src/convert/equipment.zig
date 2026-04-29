@@ -1,6 +1,6 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const cim_model = @import("../cgmes/eq.zig");
+const eq = @import("../cgmes/eq.zig");
 const cim_index = @import("../topology/cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
@@ -10,7 +10,7 @@ const placement_mod = @import("placement.zig");
 
 const assert = std.debug.assert;
 
-const CimModel = cim_model.CimModel;
+const EQ = eq.EQ;
 const CimObject = tag_index.CimObject;
 const SSH = @import("../cgmes/ssh.zig").SSH;
 const CimMergedView = @import("../cgmes/ssh.zig").CimMergedView;
@@ -36,7 +36,7 @@ const VoltageLevelEquipmentCounts = struct {
 /// per-VL counts map. Uses comptime field name so the compiler resolves the
 /// field access at compile time with no runtime overhead.
 fn count_equipment_for_type(
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
     comptime cim_type: []const u8,
     comptime field_name: []const u8,
@@ -56,7 +56,7 @@ fn count_equipment_for_type(
 /// converters are node-breaker only).
 pub fn pre_allocate_equipment(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
 ) !void {
     assert(placer.voltage_level_map.count() > 0);
@@ -93,7 +93,7 @@ pub fn pre_allocate_equipment(
 
 pub fn convert_busbar_sections(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
 ) !void {
     const index = placer.index;
@@ -132,7 +132,7 @@ pub fn convert_busbar_sections(
 
 pub fn convert_switches(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
     ssh_opt: ?SSH,
 ) !void {
@@ -231,7 +231,7 @@ pub fn convert_switches(
 /// full passes over all terminal data that would otherwise duplicate build_node_map's work.
 pub fn convert_fictitious_switches(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
     cn_has_switch: *const std.StringHashMapUnmanaged(void),
     cn_other_count: *const std.StringHashMapUnmanaged(u32),
@@ -320,7 +320,7 @@ pub fn convert_fictitious_switches(
 
 pub fn convert_loads(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
     ssh_opt: ?SSH,
 ) !void {
@@ -336,7 +336,7 @@ pub fn convert_loads(
 
 fn convert_load_type(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
     ssh_opt: ?SSH,
     loads: []const CimObject,
@@ -467,7 +467,7 @@ fn convert_load_type(
 
 pub fn convert_shunts(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
     ssh_opt: ?SSH,
 ) !void {
@@ -599,7 +599,7 @@ pub fn convert_shunts(
 }
 
 pub fn convert_static_var_compensators(
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
     ssh_opt: ?SSH,
 ) !void {
@@ -670,7 +670,7 @@ fn energy_source_from_cim_type(type_name: []const u8) iidm.EnergySource {
 
 pub fn convert_generators(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
     ssh_opt: ?SSH,
 ) !void {

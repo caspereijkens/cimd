@@ -1,6 +1,6 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const cim_model = @import("../cgmes/eq.zig");
+const eq = @import("../cgmes/eq.zig");
 const cim_index = @import("../topology/cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
@@ -9,7 +9,7 @@ const topology_mod = @import("../topology/resolve.zig");
 const assert = std.debug.assert;
 const Topology = topology_mod.Topology;
 
-const CimModel = cim_model.CimModel;
+const EQ = eq.EQ;
 const CimObject = tag_index.CimObject;
 const CimObjectView = tag_index.CimObjectView;
 const CimIndex = cim_index.CimIndex;
@@ -22,7 +22,7 @@ const RegionChain = struct {
     region: ?CimObjectView = null,
 };
 
-fn resolve_region_chain(model: *const CimModel, substation: CimObjectView) error{MalformedTag}!RegionChain {
+fn resolve_region_chain(model: *const EQ, substation: CimObjectView) error{MalformedTag}!RegionChain {
     const sub_region_ref = try substation.getReference("Substation.Region") orelse return .{};
     const sub_region = model.getObjectById(strip_hash(sub_region_ref)) orelse return .{};
 
@@ -55,7 +55,7 @@ fn resolve_mrid(object: CimObjectView) error{MalformedTag}![]const u8 {
 // Records the substation's index (and all its stub IDs) into sub_id_map.
 fn append_substation(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     topology: *const Topology,
     substation: CimObjectView,
     network: *iidm.Network,
@@ -126,7 +126,7 @@ fn append_substation(
 
 pub fn convert_substations(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     topology: *const Topology,
     network: *iidm.Network,
     substation_id_map: *std.StringHashMapUnmanaged(usize),

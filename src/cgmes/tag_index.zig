@@ -473,7 +473,7 @@ pub fn build_closing_index(
 
 /// Represents a CIM object with lazy property access
 /// Compact CIM object — indices and identity only, no embedded XML context.
-/// Cheap to copy and store. Use CimObjectView (via CimModel.view) to access properties.
+/// Cheap to copy and store. Use CimObjectView (via EQ.view) to access properties.
 pub const CimObject = struct {
     object_tag_idx: u32,
     closing_tag_idx: u32,
@@ -499,7 +499,7 @@ pub const CimObject = struct {
 };
 
 /// Ephemeral view binding a CimObject to its XML context.
-/// Create via CimModel.view(obj). Stack-allocated; do not store in arrays.
+/// Create via EQ.view(obj). Stack-allocated; do not store in arrays.
 pub const CimObjectView = struct {
     xml: []const u8,
     boundaries: []const TagBoundary,

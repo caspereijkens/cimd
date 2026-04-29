@@ -1,5 +1,5 @@
 const std = @import("std");
-const cim_model = @import("../cgmes/eq.zig");
+const eq = @import("../cgmes/eq.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
 
@@ -35,7 +35,7 @@ pub fn stdout(io: std.Io, comptime fmt_str: []const u8, args: anytype) !void {
     try std.Io.File.stdout().writeStreamingAll(io, msg);
 }
 
-pub fn display_object_inventory_json(io: std.Io, gpa: std.mem.Allocator, model: cim_model.CimModel) !void {
+pub fn display_object_inventory_json(io: std.Io, gpa: std.mem.Allocator, model: eq.EQ) !void {
     const counts = try model.sorted_type_counts(gpa);
     defer gpa.free(counts);
 
@@ -54,7 +54,7 @@ pub fn display_object_inventory_json(io: std.Io, gpa: std.mem.Allocator, model: 
     try w.flush();
 }
 
-pub fn display_object_inventory(io: std.Io, gpa: std.mem.Allocator, model: cim_model.CimModel) !void {
+pub fn display_object_inventory(io: std.Io, gpa: std.mem.Allocator, model: eq.EQ) !void {
     const counts = try model.sorted_type_counts(gpa);
     defer gpa.free(counts);
 
@@ -137,7 +137,7 @@ pub fn display_object(io: std.Io, gpa: std.mem.Allocator, obj: tag_index.CimObje
     try stdout(io, "\n", .{});
 }
 
-pub fn display_object_list(io: std.Io, gpa: std.mem.Allocator, model: *const cim_model.CimModel, objects: []const tag_index.CimObject) !void {
+pub fn display_object_list(io: std.Io, gpa: std.mem.Allocator, model: *const eq.EQ, objects: []const tag_index.CimObject) !void {
     for (objects, 1..) |obj, i| {
         try stdout(io, "[{d}] {s}\n", .{ i, obj.id });
         try display_object(gpa, model.view(obj));
@@ -169,7 +169,7 @@ pub fn display_object_json(io: std.Io, gpa: std.mem.Allocator, obj: tag_index.Ci
     try stdout(io, "}}}}\n", .{});
 }
 
-pub fn display_object_list_json(io: std.Io, model: *const cim_model.CimModel, objects: []const tag_index.CimObject, fields: []const []const u8) !void {
+pub fn display_object_list_json(io: std.Io, model: *const eq.EQ, objects: []const tag_index.CimObject, fields: []const []const u8) !void {
     try stdout(io, "[", .{});
     for (objects, 0..) |obj, i| {
         if (i > 0) try stdout(io, ",", .{});

@@ -5,7 +5,7 @@ const CimObject = tag_index.CimObject;
 const CimObjectView = tag_index.CimObjectView;
 
 /// Test helper: extract id from the tag at tag_idx, then build a CimObjectView.
-/// Mirrors the two-step pattern that CimModel.init uses in production.
+/// Mirrors the two-step pattern that EQ.init uses in production.
 fn make_cim_object(
     xml: []const u8,
     boundaries: []const tag_index.TagBoundary,

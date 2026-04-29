@@ -1,6 +1,6 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const cim_model = @import("../cgmes/eq.zig");
+const eq = @import("../cgmes/eq.zig");
 const cim_index = @import("../topology/cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
@@ -9,7 +9,7 @@ const topology = @import("../topology/resolve.zig");
 const assert = std.debug.assert;
 const testing = std.testing;
 
-const CimModel = cim_model.CimModel;
+const EQ = eq.EQ;
 const CimObject = tag_index.CimObject;
 const CimObjectView = tag_index.CimObjectView;
 const CimIndex = cim_index.CimIndex;
@@ -25,7 +25,7 @@ const max_tap_steps = 10_000;
 
 fn build_ends_by_transformer(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
 ) !std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObjectView)) {
     var ends_by_transformer: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObjectView)) = .empty;
 
@@ -56,7 +56,7 @@ fn build_ends_by_transformer(
 const TapChangerCommon = struct { low_step: i32, normal_step: i32, ltc_flag: bool };
 
 fn read_tap_changer_regulating(
-    model: *const CimModel,
+    model: *const EQ,
     tap_changer: CimObjectView,
     ssh_opt: ?@import("../cgmes/ssh.zig").SSH,
 ) !?bool {
@@ -119,7 +119,7 @@ const OrderedRatioStep = struct {
 
 fn build_ratio_table_points(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
 ) !std.StringHashMapUnmanaged(std.ArrayListUnmanaged(OrderedRatioStep)) {
     const tables = model.get_objects_by_type("RatioTapChangerTable");
     const points = model.get_objects_by_type("RatioTapChangerTablePoint");
@@ -198,7 +198,7 @@ const PhaseTapChangerEntry = struct {
 
 fn build_ratio_tap_changer_map(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     ssh_opt: ?@import("../cgmes/ssh.zig").SSH,
 ) !std.StringHashMapUnmanaged(RatioTapChangerEntry) {
     var points_by_table = try build_ratio_table_points(gpa, model);
@@ -255,7 +255,7 @@ const OrderedPhaseStep = struct {
 
 fn build_phase_tap_changer_map(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     ssh_opt: ?@import("../cgmes/ssh.zig").SSH,
 ) !std.StringHashMapUnmanaged(PhaseTapChangerEntry) {
     var points_by_table: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(OrderedPhaseStep)) = .empty;
@@ -377,10 +377,10 @@ fn view_less_than(_: void, a: CimObjectView, b: CimObjectView) bool {
     return end_number0 < end_number1;
 }
 
-const TestEnd = struct { model: cim_model.CimModel, end: CimObjectView };
+const TestEnd = struct { model: eq.EQ, end: CimObjectView };
 
 fn make_end(xml: []const u8) !TestEnd {
-    const model = try cim_model.CimModel.init(testing.allocator, try testing.allocator.dupe(u8, xml));
+    const model = try eq.EQ.init(testing.allocator, try testing.allocator.dupe(u8, xml));
     return .{ .model = model, .end = model.view(model.get_objects_by_type("PowerTransformerEnd")[0]) };
 }
 
@@ -540,7 +540,7 @@ fn pre_allocate_transformers(
 
 fn append_two_windings_transformer(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     transformer: CimObjectView,
     ends: []const CimObjectView,
     substation: *iidm.Substation,
@@ -645,7 +645,7 @@ fn append_two_windings_transformer(
 
 fn append_three_windings_transformer(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     transformer: CimObjectView,
     ends: []const CimObjectView,
     substation: *iidm.Substation,
@@ -760,7 +760,7 @@ fn append_three_windings_transformer(
 
 pub fn convert_transformers(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     substation_map: *const std.StringHashMapUnmanaged(*iidm.Substation),
     placer: TerminalPlacer,
     ssh_opt: ?@import("../cgmes/ssh.zig").SSH,

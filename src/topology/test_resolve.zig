@@ -2,7 +2,7 @@ const std = @import("std");
 const topology = @import("resolve.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const CimIndex = @import("cross_ref.zig").CimIndex;
-const CimModel = @import("../cgmes/eq.zig").CimModel;
+const EQ = @import("../cgmes/eq.zig").EQ;
 const SSH = @import("../cgmes/ssh.zig").SSH;
 
 const CimObject = tag_index.CimObject;
@@ -182,7 +182,7 @@ const EQ_SWITCH_WITH_MISSING_CN =
 
 test "build_conn_node_root_map: ignores switch endpoints that reference missing ConnectivityNodes" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_SWITCH_WITH_MISSING_CN));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_SWITCH_WITH_MISSING_CN));
     defer model.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
@@ -218,7 +218,7 @@ const EQ_DIRECT_BUSBAR =
 
 test "Topology.build: direct busbar ConnectivityNode is reachable from itself" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_DIRECT_BUSBAR));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_DIRECT_BUSBAR));
     defer model.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;

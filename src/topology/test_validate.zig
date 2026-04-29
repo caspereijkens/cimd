@@ -3,7 +3,7 @@
 //! plus the rendered output.
 
 const std = @import("std");
-const CimModel = @import("../cgmes/eq.zig").CimModel;
+const EQ = @import("../cgmes/eq.zig").EQ;
 const SSH = @import("../cgmes/ssh.zig").SSH;
 const TP = @import("../cgmes/tp.zig").TP;
 const CimIndex = @import("cross_ref.zig").CimIndex;
@@ -30,7 +30,7 @@ fn run_validate(
     ssh_xml: ?[]const u8,
     options: validate_topology.ValidateOptions,
 ) !ValidateResult {
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, eq_xml));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, eq_xml));
     defer model.deinit(gpa);
 
     var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));

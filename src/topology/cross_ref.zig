@@ -2,7 +2,7 @@ const std = @import("std");
 const iidm = @import("../iidm/model.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
-const cim_model = @import("../cgmes/eq.zig");
+const eq = @import("../cgmes/eq.zig");
 const topology_mod = @import("resolve.zig");
 const Topology = topology_mod.Topology;
 
@@ -14,7 +14,7 @@ const strip_underscore = utils.strip_underscore;
 const CimObject = tag_index.CimObject;
 const CimObjectView = tag_index.CimObjectView;
 
-const CimModel = cim_model.CimModel;
+const EQ = eq.EQ;
 
 pub const TerminalInfo = struct {
     id: []const u8,
@@ -85,7 +85,7 @@ pub const CimIndex = struct {
 
     pub fn build(
         gpa: std.mem.Allocator,
-        model: *const CimModel,
+        model: *const EQ,
         boundary_base_voltage_ids: std.StringHashMapUnmanaged(void),
     ) !CimIndex {
         var index = create_empty_cim_index();
@@ -103,7 +103,7 @@ pub const CimIndex = struct {
 
     pub fn build_for_topology(
         gpa: std.mem.Allocator,
-        model: *const CimModel,
+        model: *const EQ,
         boundary_base_voltage_ids: std.StringHashMapUnmanaged(void),
     ) !CimIndex {
         var index = create_empty_cim_index();
@@ -190,7 +190,7 @@ fn create_empty_cim_index() CimIndex {
     };
 }
 
-fn build_limit_types(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
+fn build_limit_types(gpa: std.mem.Allocator, model: *const eq.EQ, index: *CimIndex) !void {
     assert(index.limit_types.count() == 0);
     const objects = model.get_objects_by_type("OperationalLimitType");
     try index.limit_types.ensureTotalCapacity(gpa, @intCast(objects.len));
@@ -206,7 +206,7 @@ fn build_limit_types(gpa: std.mem.Allocator, model: *const cim_model.CimModel, i
     assert(index.limit_types.count() == objects.len);
 }
 
-fn build_terminals(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
+fn build_terminals(gpa: std.mem.Allocator, model: *const eq.EQ, index: *CimIndex) !void {
     assert(index.terminal_equipment.count() == 0);
 
     const objects = model.get_objects_by_type("Terminal");
@@ -260,7 +260,7 @@ fn build_terminals(gpa: std.mem.Allocator, model: *const cim_model.CimModel, ind
     assert(index.terminal_conn_node.count() <= objects.len);
 }
 
-fn build_connectivity(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
+fn build_connectivity(gpa: std.mem.Allocator, model: *const eq.EQ, index: *CimIndex) !void {
     assert(index.terminal_equipment.count() > 0);
     assert(index.conn_node_container.count() == 0);
     assert(index.busbar_section_in_parse_order.items.len == 0);
@@ -309,7 +309,7 @@ fn build_connectivity(gpa: std.mem.Allocator, model: *const cim_model.CimModel, 
     assert(index.busbar_section_in_parse_order.items.len <= busbar_sections.len);
 }
 
-fn build_operational_limits(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
+fn build_operational_limits(gpa: std.mem.Allocator, model: *const eq.EQ, index: *CimIndex) !void {
     assert(index.terminal_limit_sets.count() == 0);
     assert(index.current_limits_by_set.count() == 0);
 
@@ -343,7 +343,7 @@ fn build_operational_limits(gpa: std.mem.Allocator, model: *const cim_model.CimM
     assert(index.current_limits_by_set.count() <= current_lims.len);
 }
 
-fn build_curve_points(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex) !void {
+fn build_curve_points(gpa: std.mem.Allocator, model: *const eq.EQ, index: *CimIndex) !void {
     assert(index.curve_points.count() == 0);
     const curve_datas = model.get_objects_by_type("CurveData");
     try index.curve_points.ensureTotalCapacity(gpa, @intCast(curve_datas.len));
@@ -380,7 +380,7 @@ fn build_curve_points(gpa: std.mem.Allocator, model: *const cim_model.CimModel, 
 // Then if the two CN Containers are different, we union their VoltageLevels.
 // VoltageLevel union basically puts the VoltageLevel with the lower mRID as the parent.
 pub fn process_switch_type(
-    model: *const cim_model.CimModel,
+    model: *const eq.EQ,
     index: *const CimIndex,
     switches: []const CimObject,
     parent: *std.StringHashMapUnmanaged([]const u8),
@@ -405,7 +405,7 @@ pub fn process_switch_type(
     }
 }
 
-pub fn build_voltage_limits(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *CimIndex, topology: *const Topology) !void {
+pub fn build_voltage_limits(gpa: std.mem.Allocator, model: *const eq.EQ, index: *CimIndex, topology: *const Topology) !void {
     assert(index.voltage_level_limits.count() == 0);
 
     const voltage_limits = model.get_objects_by_type("VoltageLimit");
@@ -424,8 +424,8 @@ pub fn build_voltage_limits(gpa: std.mem.Allocator, model: *const cim_model.CimM
         const raw_container_id: []const u8 = if (index.conn_node_container.get(conn_node_id)) |id| id else blk: {
             const terminal = model.getObjectById(terminal_id) orelse continue;
             const eq_ref = try terminal.getReference("Terminal.ConductingEquipment") orelse continue;
-            const eq = model.getObjectById(strip_hash(eq_ref)) orelse continue;
-            const ec_ref = try eq.getReference("Equipment.EquipmentContainer") orelse continue;
+            const equipment = model.getObjectById(strip_hash(eq_ref)) orelse continue;
+            const ec_ref = try equipment.getReference("Equipment.EquipmentContainer") orelse continue;
             break :blk strip_hash(ec_ref);
         };
         // Apply VL merge so limits are keyed by the representative VL.

@@ -9,7 +9,7 @@
 //! TP keeps both indexed independently: `patches` is sorted by stripped mRID
 //! (matching the `SSH` convention, so `CimMergedView` can fan out to both
 //! overlays with the same key), and `new_objects` is indexed by raw rdf:ID
-//! (matching the `CimModel` convention, so `browse` can look them up the same
+//! (matching the `EQ` convention, so `browse` can look them up the same
 //! way the user types them).
 //!
 //! Construction is a single pre-count pass plus a single fill pass — no dynamic
@@ -37,7 +37,7 @@ pub const TP = struct {
     /// Sorted by mRID (stripped). Terminal / ConnectivityNode overlays.
     patches: []const TpPatch,
     /// First-class objects added by TP (TopologicalNode, ...). Id stored with leading underscore,
-    /// matching CimModel's rdf:ID convention.
+    /// matching EQ's rdf:ID convention.
     new_objects: []const CimObject,
     /// Maps raw rdf:ID → index into new_objects.
     id_to_object: std.StringHashMap(u32),

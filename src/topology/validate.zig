@@ -1,6 +1,6 @@
 const std = @import("std");
 const utils = @import("../cgmes/ids.zig");
-const cim_model = @import("../cgmes/eq.zig");
+const eq = @import("../cgmes/eq.zig");
 const cim_index = @import("cross_ref.zig");
 const cim_ssh = @import("../cgmes/ssh.zig");
 const cim_tp = @import("../cgmes/tp.zig");
@@ -11,7 +11,7 @@ const assert = std.debug.assert;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
-const CimModel = cim_model.CimModel;
+const EQ = eq.EQ;
 const SSH = cim_ssh.SSH;
 const TP = cim_tp.TP;
 const CimIndex = cim_index.CimIndex;
@@ -80,7 +80,7 @@ pub const ValidateOptions = struct {
 /// were found so the caller can exit 1.
 pub fn validate(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     index: *const CimIndex,
     tp: *const TP,
     ssh_opt: ?*const SSH,
@@ -264,7 +264,7 @@ fn group_by_value(
 
 fn build_conn_node_to_topo_node(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     tp: *const TP,
 ) !IdMap {
     const conn_nodes = model.get_objects_by_type("ConnectivityNode");

@@ -1,7 +1,7 @@
 const std = @import("std");
-const CimModel = @import("eq.zig").CimModel;
+const EQ = @import("eq.zig").EQ;
 
-test "CimModel.init - parses all top-level CIM objects" {
+test "EQ.init - parses all top-level CIM objects" {
     const xml =
         \\<rdf:RDF>
         \\  <cim:Substation rdf:ID="_SS1">
@@ -18,7 +18,7 @@ test "CimModel.init - parses all top-level CIM objects" {
 
     const gpa = std.testing.allocator;
 
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, xml));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     // Should find 3 CIM objects (not the rdf:RDF wrapper)
@@ -33,7 +33,7 @@ test "CimModel.init - parses all top-level CIM objects" {
     try std.testing.expectEqual(1, voltage_levels.len);
 }
 
-test "CimModel.getObjectById - finds object by ID" {
+test "EQ.getObjectById - finds object by ID" {
     const xml =
         \\<rdf:RDF>
         \\  <cim:Substation rdf:ID="_SS1">
@@ -47,7 +47,7 @@ test "CimModel.getObjectById - finds object by ID" {
 
     const gpa = std.testing.allocator;
 
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, xml));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     // Should find VL1
@@ -60,7 +60,7 @@ test "CimModel.getObjectById - finds object by ID" {
     try std.testing.expect(missing == null);
 }
 
-test "CimModel.get_objects_by_type - returns all objects of given type" {
+test "EQ.get_objects_by_type - returns all objects of given type" {
     const xml =
         \\<rdf:RDF>
         \\  <cim:Substation rdf:ID="_SS1">
@@ -80,7 +80,7 @@ test "CimModel.get_objects_by_type - returns all objects of given type" {
 
     const gpa = std.testing.allocator;
 
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, xml));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     // Get all Substations (should be 3)
@@ -100,7 +100,7 @@ test "CimModel.get_objects_by_type - returns all objects of given type" {
     try std.testing.expectEqual(0, missing.len);
 }
 
-test "CimModel.getTypeCounts - returns count of each object type" {
+test "EQ.getTypeCounts - returns count of each object type" {
     const xml =
         \\<rdf:RDF>
         \\  <cim:Substation rdf:ID="_SS1"/>
@@ -114,7 +114,7 @@ test "CimModel.getTypeCounts - returns count of each object type" {
 
     const gpa = std.testing.allocator;
 
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, xml));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     var counts = try model.getTypeCounts(gpa);
@@ -129,18 +129,18 @@ test "CimModel.getTypeCounts - returns count of each object type" {
     try std.testing.expectEqual(3, counts.get("ACLineSegment").?);
 }
 
-test "CimModel.init - handles empty XML" {
+test "EQ.init - handles empty XML" {
     const xml = "<rdf:RDF></rdf:RDF>";
 
     const gpa = std.testing.allocator;
 
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, xml));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     try std.testing.expectEqual(0, model.objects.len);
 }
 
-test "CimModel objects maintain CimObject functionality" {
+test "EQ objects maintain CimObject functionality" {
     const xml =
         \\<rdf:RDF>
         \\  <cim:Substation rdf:ID="_SS1">
@@ -152,7 +152,7 @@ test "CimModel objects maintain CimObject functionality" {
 
     const gpa = std.testing.allocator;
 
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, xml));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     const obj = model.getObjectById("_SS1") orelse return error.TestFailed;

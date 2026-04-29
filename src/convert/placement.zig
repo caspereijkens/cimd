@@ -1,7 +1,7 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
 const cim_index = @import("../topology/cross_ref.zig");
-const cim_model = @import("../cgmes/eq.zig");
+const eq = @import("../cgmes/eq.zig");
 const utils = @import("../cgmes/ids.zig");
 const bus_conv = @import("bus.zig");
 const TP = @import("../cgmes/tp.zig").TP;
@@ -102,7 +102,7 @@ pub const TerminalPlacer = struct {
 ///   CGMES.OperationalLimitSetRdfID, CGMES.OperationalLimit_CurrentLimit_patl.
 pub fn build_op_lims(
     gpa: std.mem.Allocator,
-    model: *const cim_model.CimModel,
+    model: *const eq.EQ,
     index: *const CimIndex,
     terminal_id: []const u8,
 ) !std.ArrayListUnmanaged(iidm.OperationalLimitsGroup) {

@@ -14,7 +14,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const cim_model = @import("cgmes/eq.zig");
+const eq = @import("cgmes/eq.zig");
 const tag_index = @import("cgmes/tag_index.zig");
 
 pub const DiffOptions = struct {
@@ -55,8 +55,8 @@ pub const TypeStats = struct {
 /// Returns true when any differences were found (so main.zig can exit 1).
 pub fn diff_models(
     gpa: std.mem.Allocator,
-    model1: *cim_model.CimModel,
-    model2: *cim_model.CimModel,
+    model1: *eq.EQ,
+    model2: *eq.EQ,
     path1: []const u8,
     path2: []const u8,
     options: DiffOptions,
@@ -111,8 +111,8 @@ pub fn diff_models(
 /// can emit a meaningful error.
 pub fn diff_single(
     gpa: std.mem.Allocator,
-    model1: *cim_model.CimModel,
-    model2: *cim_model.CimModel,
+    model1: *eq.EQ,
+    model2: *eq.EQ,
     mrid: []const u8,
     path1: []const u8,
     path2: []const u8,
@@ -179,8 +179,8 @@ pub fn diff_single(
 /// mode write directly to the real writer — no header is needed.
 fn diff_type(
     gpa: std.mem.Allocator,
-    model1: *cim_model.CimModel,
-    model2: *cim_model.CimModel,
+    model1: *eq.EQ,
+    model2: *eq.EQ,
     type_name: []const u8,
     options: DiffOptions,
     writer: anytype,
@@ -201,8 +201,8 @@ fn diff_type(
 
 fn diff_type_core(
     gpa: std.mem.Allocator,
-    model1: *cim_model.CimModel,
-    model2: *cim_model.CimModel,
+    model1: *eq.EQ,
+    model2: *eq.EQ,
     type_name: []const u8,
     options: DiffOptions,
     writer: anytype,

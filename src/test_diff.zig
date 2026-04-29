@@ -1,5 +1,5 @@
 const std = @import("std");
-const CimModel = @import("cgmes/eq.zig").CimModel;
+const EQ = @import("cgmes/eq.zig").EQ;
 const diff = @import("diff.zig");
 const DiffOptions = diff.DiffOptions;
 
@@ -27,9 +27,9 @@ fn run_diff(
     xml2: []const u8,
     options: DiffOptions,
 ) !DiffResult {
-    var model1 = try CimModel.init(gpa, try gpa.dupe(u8, xml1));
+    var model1 = try EQ.init(gpa, try gpa.dupe(u8, xml1));
     defer model1.deinit(gpa);
-    var model2 = try CimModel.init(gpa, try gpa.dupe(u8, xml2));
+    var model2 = try EQ.init(gpa, try gpa.dupe(u8, xml2));
     defer model2.deinit(gpa);
 
     var result = DiffResult{ .had_diffs = false, .buf = undefined, .len = 0 };
@@ -802,9 +802,9 @@ fn run_diff_single(
     mrid: []const u8,
     options: DiffOptions,
 ) !SingleResult {
-    var model1 = try CimModel.init(gpa, try gpa.dupe(u8, xml1));
+    var model1 = try EQ.init(gpa, try gpa.dupe(u8, xml1));
     errdefer model1.deinit(gpa);
-    var model2 = try CimModel.init(gpa, try gpa.dupe(u8, xml2));
+    var model2 = try EQ.init(gpa, try gpa.dupe(u8, xml2));
     errdefer model2.deinit(gpa);
 
     var result = SingleResult{ .status = .not_found, .buf = undefined, .len = 0 };

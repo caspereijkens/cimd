@@ -1,6 +1,6 @@
 const std = @import("std");
 const utils = @import("../cgmes/ids.zig");
-const cim_model = @import("../cgmes/eq.zig");
+const eq = @import("../cgmes/eq.zig");
 const cim_index = @import("cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const cim_ssh = @import("../cgmes/ssh.zig");
@@ -10,7 +10,7 @@ const assert = std.debug.assert;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
-const CimModel = cim_model.CimModel;
+const EQ = eq.EQ;
 const SSH = cim_ssh.SSH;
 const CimIndex = cim_index.CimIndex;
 const CimObjectView = tag_index.CimObjectView;
@@ -35,7 +35,7 @@ pub const Topology = struct {
         };
     }
 
-    pub fn build(gpa: std.mem.Allocator, model: *const CimModel, index: *const CimIndex) !Topology {
+    pub fn build(gpa: std.mem.Allocator, model: *const EQ, index: *const CimIndex) !Topology {
         var topology = Topology.empty();
         errdefer topology.deinit(gpa);
 
@@ -46,7 +46,7 @@ pub const Topology = struct {
         return topology;
     }
 
-    pub fn build_for_topological_nodes(gpa: std.mem.Allocator, model: *const CimModel, index: *const CimIndex) !Topology {
+    pub fn build_for_topological_nodes(gpa: std.mem.Allocator, model: *const EQ, index: *const CimIndex) !Topology {
         var topology = Topology.empty();
         errdefer topology.deinit(gpa);
 
@@ -100,7 +100,7 @@ pub fn is_switch_type(type_name: []const u8) bool {
     return false;
 }
 
-pub fn get_switch_type_slices(model: *const CimModel) [switch_types.len][]const CimObject {
+pub fn get_switch_type_slices(model: *const EQ) [switch_types.len][]const CimObject {
     var switch_type_slices: [switch_types.len][]const CimObject = undefined;
     for (switch_types, 0..) |t, i| switch_type_slices[i] = model.get_objects_by_type(t);
     return switch_type_slices;
@@ -125,7 +125,7 @@ pub fn find_root(parent: *const IdMap, id: []const u8) []const u8 {
 // Smallest mRID wins as representative — PyPowSyBl's tie-breaking rule.
 // Required for byte-identical JIIDM output.
 pub fn union_voltage_levels(
-    model: *const CimModel,
+    model: *const EQ,
     parent: *IdMap,
     voltage_level_id_a: []const u8,
     voltage_level_id_b: []const u8,
@@ -164,7 +164,7 @@ pub fn union_smallest_id_wins(parent: *IdMap, id_a: []const u8, id_b: []const u8
 // A switch with terminals in two different CIM VoltageLevels means those
 // VLs are electrically one region. PyPowSyBl collapses them; this map
 // records each stub VL's representative so callers can normalize VL refs.
-pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *const CimIndex, topology: *Topology) !void {
+pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const eq.EQ, index: *const CimIndex, topology: *Topology) !void {
     assert(topology.voltage_level_merge.count() == 0);
 
     const voltage_levels = model.get_objects_by_type("VoltageLevel");
@@ -194,7 +194,7 @@ pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const cim_model
 
 // Substations merge transitively: when their VLs merge (cross-VL switches),
 // or when a PowerTransformer spans two substations. Mirrors PyPowSyBl.
-pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *const CimIndex, topology: *Topology) !void {
+pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const eq.EQ, index: *const CimIndex, topology: *Topology) !void {
     assert(topology.substation_merge.count() == 0);
     assert(index.conn_node_container.count() > 0);
 
@@ -260,7 +260,7 @@ pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const cim_model.Ci
     assert(topology.substation_merge.count() <= substations.len);
 }
 
-fn conn_node_to_voltage_level(model: *const cim_model.CimModel, index: *const CimIndex, conn_node_id: []const u8) ?CimObjectView {
+fn conn_node_to_voltage_level(model: *const eq.EQ, index: *const CimIndex, conn_node_id: []const u8) ?CimObjectView {
     const container_id = index.conn_node_container.get(conn_node_id) orelse return null;
     const obj = model.getObjectById(container_id) orelse return null;
     if (!std.mem.eql(u8, obj.type_name, "VoltageLevel")) return null;
@@ -269,7 +269,7 @@ fn conn_node_to_voltage_level(model: *const cim_model.CimModel, index: *const Ci
 
 /// RegulatingControl resolution needs to find a BBS reachable through switches,
 /// and doing the graph walk at query time would be quadratic. We pre-compute once.
-pub fn build_reachable_busbar_section_index(gpa: std.mem.Allocator, model: *const cim_model.CimModel, index: *const CimIndex, topology: *Topology) !void {
+pub fn build_reachable_busbar_section_index(gpa: std.mem.Allocator, model: *const eq.EQ, index: *const CimIndex, topology: *Topology) !void {
     assert(topology.conn_node_reachable_busbar_section.count() == 0);
     assert(index.conn_node_container.count() > 0);
 
@@ -371,7 +371,7 @@ fn increment_count(counts: *CountMap, id: []const u8) void {
     gop.value_ptr.* += 1;
 }
 
-fn count_non_switch_non_busbar_terminals(gpa: std.mem.Allocator, model: *const CimModel, index: *const CimIndex) !CountMap {
+fn count_non_switch_non_busbar_terminals(gpa: std.mem.Allocator, model: *const EQ, index: *const CimIndex) !CountMap {
     var counts: CountMap = .empty;
     errdefer counts.deinit(gpa);
     try counts.ensureTotalCapacity(gpa, @intCast(index.terminal_conn_node.count()));
@@ -388,7 +388,7 @@ fn count_non_switch_non_busbar_terminals(gpa: std.mem.Allocator, model: *const C
 }
 
 fn assign_base_nodes(
-    model: *const CimModel,
+    model: *const EQ,
     index: *const CimIndex,
     topology: *const Topology,
     voltage_levels: *const SetMap,
@@ -413,7 +413,7 @@ fn assign_base_nodes(
 }
 
 fn map_busbar_section_terminals(
-    model: *const CimModel,
+    model: *const EQ,
     index: *const CimIndex,
     conn_node_base_nodes: *const CountMap,
     node_map: *NodeMap,
@@ -428,7 +428,7 @@ fn map_busbar_section_terminals(
 }
 
 fn map_switch_terminals(
-    model: *const CimModel,
+    model: *const EQ,
     index: *const CimIndex,
     conn_node_base_nodes: *const CountMap,
     node_map: *NodeMap,
@@ -457,7 +457,7 @@ fn seed_conn_nodes_with_many_terminals(total_other_count: *const CountMap, conn_
 }
 
 fn map_phase2_equipment_terminals(
-    model: *const CimModel,
+    model: *const EQ,
     index: *const CimIndex,
     ssh_opt: ?SSH,
     conn_node_base_nodes: *const CountMap,
@@ -509,7 +509,7 @@ fn map_phase2_equipment_terminals(
 /// which derives the same dedicated-vs-base distinction from this function's output.
 pub fn build_node_map(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     index: *const CimIndex,
     topology: *const Topology,
     voltage_levels: *const SetMap,
@@ -611,7 +611,7 @@ pub fn is_switch_closed(ssh: *const SSH, switch_id: []const u8) !bool {
 }
 
 fn union_closed_switch_conn_nodes(
-    model: *const CimModel,
+    model: *const EQ,
     index: *const CimIndex,
     ssh_opt: ?*const SSH,
     parent: *IdMap,
@@ -642,7 +642,7 @@ fn union_closed_switch_conn_nodes(
     }
 }
 
-fn get_base_voltage_mrid(model: *const CimModel, voltage_level: CimObjectView) ![]const u8 {
+fn get_base_voltage_mrid(model: *const EQ, voltage_level: CimObjectView) ![]const u8 {
     const base_voltage_ref = try voltage_level.getReference("VoltageLevel.BaseVoltage") orelse "";
     if (base_voltage_ref.len == 0) return "";
 
@@ -653,7 +653,7 @@ fn get_base_voltage_mrid(model: *const CimModel, voltage_level: CimObjectView) !
 }
 
 fn append_topological_node(
-    model: *const CimModel,
+    model: *const EQ,
     index: *const CimIndex,
     topology: *const Topology,
     conn_node_id: []const u8,
@@ -690,7 +690,7 @@ fn append_topological_node(
 /// — TP emission for boundary nodes is a separate concern.
 pub fn build_topological_nodes(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     index: *const CimIndex,
     topology: *const Topology,
     ssh_opt: ?*const SSH,
@@ -715,7 +715,7 @@ pub fn build_topological_nodes(
     return nodes;
 }
 
-pub fn build_conn_node_root_map(gpa: std.mem.Allocator, model: *const CimModel, index: *const CimIndex, ssh_opt: ?*const SSH) !IdMap {
+pub fn build_conn_node_root_map(gpa: std.mem.Allocator, model: *const EQ, index: *const CimIndex, ssh_opt: ?*const SSH) !IdMap {
     const conn_nodes = model.get_objects_by_type("ConnectivityNode");
 
     // Union-find: each CN starts as its own root.

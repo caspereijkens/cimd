@@ -1,6 +1,6 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const cim_model = @import("../cgmes/eq.zig");
+const eq = @import("../cgmes/eq.zig");
 const cim_index = @import("../topology/cross_ref.zig");
 const utils = @import("../cgmes/ids.zig");
 const placement_mod = @import("placement.zig");
@@ -8,7 +8,7 @@ const topology_mod = @import("../topology/resolve.zig");
 
 const assert = std.debug.assert;
 
-const CimModel = cim_model.CimModel;
+const EQ = eq.EQ;
 const CimIndex = cim_index.CimIndex;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
@@ -56,7 +56,7 @@ fn resolve_line_terminal(
 
 pub fn convert_lines(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     network: *iidm.Network,
     placer: TerminalPlacer,
     ssh_opt: ?@import("../cgmes/ssh.zig").SSH,
@@ -98,7 +98,7 @@ pub fn convert_lines(
     }
 
     // Pass 1: collect boundary ConnectivityNode terminals in XML encounter order.
-    for ([_][]const cim_model.CimObject{ lines, series_compensators }) |segment_slice| {
+    for ([_][]const eq.CimObject{ lines, series_compensators }) |segment_slice| {
         for (segment_slice) |segment| {
             const segment_view = model.view(segment);
             const terminals = index.equipment_terminals.get(segment.id) orelse continue;

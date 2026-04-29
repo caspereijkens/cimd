@@ -1,8 +1,8 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const cim_model = @import("../cgmes/eq.zig");
+const eq = @import("../cgmes/eq.zig");
 const cim_index = @import("../topology/cross_ref.zig");
-const CimModel = cim_model.CimModel;
+const EQ = eq.EQ;
 const CimIndex = cim_index.CimIndex;
 const cim_ssh = @import("../cgmes/ssh.zig");
 const SSH = cim_ssh.SSH;
@@ -19,7 +19,7 @@ const Topology = topology.Topology;
 /// VL's internalConnections array is byte-identical to PyPowSyBl.
 pub fn populate_internal_connections(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     index: *const CimIndex,
     topology_data: *const Topology,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
