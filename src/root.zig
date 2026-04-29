@@ -1,7 +1,7 @@
 //! By convention, root.zig is the root source file when making a library.
 comptime {
     _ = @import("cgmes/test_tag_index.zig");
-    _ = @import("command/test_diff.zig");
+    _ = @import("test_diff.zig");
     _ = @import("cgmes/test_eq.zig");
     _ = @import("cgmes/test_ids.zig");
     _ = @import("topology/test_resolve.zig");

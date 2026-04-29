@@ -1,5 +1,5 @@
 const std = @import("std");
-const iidm = @import("../iidm.zig");
+const iidm = @import("../iidm/model.zig");
 const cim_model = @import("../cgmes/eq.zig");
 const cim_index = @import("../topology/cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
@@ -940,7 +940,7 @@ pub fn convert_generators(
 }
 
 test "energy_source_from_cim_type: all known types map correctly" {
-    const iidm_mod = @import("../iidm.zig");
+    const iidm_mod = @import("../iidm/model.zig");
     try std.testing.expectEqual(iidm_mod.EnergySource.hydro, energy_source_from_cim_type("HydroGeneratingUnit"));
     try std.testing.expectEqual(iidm_mod.EnergySource.thermal, energy_source_from_cim_type("ThermalGeneratingUnit"));
     try std.testing.expectEqual(iidm_mod.EnergySource.wind, energy_source_from_cim_type("WindGeneratingUnit"));

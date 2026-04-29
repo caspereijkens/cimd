@@ -1,5 +1,5 @@
 const std = @import("std");
-const iidm = @import("../iidm.zig");
+const iidm = @import("../iidm/model.zig");
 const cim_model = @import("../cgmes/eq.zig");
 const cim_index = @import("../topology/cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");

@@ -1,15 +1,15 @@
 const std = @import("std");
 const assert = std.debug.assert;
-const cli = @import("../cli.zig");
-const cim_model = @import("../cgmes/eq.zig");
-const CimTp = @import("../cgmes/tp.zig").CimTp;
-const CimSsh = @import("../cgmes/ssh.zig").CimSsh;
-const tag_index = @import("../cgmes/tag_index.zig");
-const print = @import("../io/print.zig");
+const cli = @import("cli.zig");
+const cim_model = @import("cgmes/eq.zig");
+const CimTp = @import("cgmes/tp.zig").CimTp;
+const CimSsh = @import("cgmes/ssh.zig").CimSsh;
+const tag_index = @import("cgmes/tag_index.zig");
+const print = @import("io/print.zig");
 const extract_rdf_resource = tag_index.extract_rdf_resource;
 const extract_rdf_id = tag_index.extract_rdf_id;
-const strip_hash = @import("../cgmes/ids.zig").strip_hash;
-const strip_underscore = @import("../cgmes/ids.zig").strip_underscore;
+const strip_hash = @import("cgmes/ids.zig").strip_hash;
+const strip_underscore = @import("cgmes/ids.zig").strip_underscore;
 
 const Nav = union(enum) { stay, back, quit, follow: []const u8, show_back_refs };
 
