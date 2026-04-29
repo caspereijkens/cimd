@@ -1,27 +1,26 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const cim_model = @import("../cgmes/eq.zig");
-const cim_index = @import("../topology/cross_ref.zig");
+const EQ = @import("../cgmes/eq.zig").EQ;
+const cross_ref = @import("../topology/cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
-const topology_mod = @import("../topology/resolve.zig");
+const resolve = @import("../topology/resolve.zig");
 
 const placement_mod = @import("placement.zig");
 
 const assert = std.debug.assert;
 
-const CimModel = cim_model.CimModel;
 const CimObject = tag_index.CimObject;
-const CimSsh = @import("../cgmes/ssh.zig").CimSsh;
+const SSH = @import("../cgmes/ssh.zig").SSH;
 const CimMergedView = @import("../cgmes/ssh.zig").CimMergedView;
-const CimIndex = cim_index.CimIndex;
+const CrossRef = cross_ref.CrossRef;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 const Placement = placement_mod.Placement;
 const TerminalPlacer = placement_mod.TerminalPlacer;
 const resolve_terminal_placement = placement_mod.resolve_terminal_placement;
-const NodeMap = topology_mod.NodeMap;
-const Topology = topology_mod.Topology;
+const NodeMap = resolve.NodeMap;
+const Topology = resolve.Topology;
 
 const VoltageLevelEquipmentCounts = struct {
     busbar_sections: usize = 0,
@@ -36,7 +35,7 @@ const VoltageLevelEquipmentCounts = struct {
 /// per-VL counts map. Uses comptime field name so the compiler resolves the
 /// field access at compile time with no runtime overhead.
 fn count_equipment_for_type(
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
     comptime cim_type: []const u8,
     comptime field_name: []const u8,
@@ -56,7 +55,7 @@ fn count_equipment_for_type(
 /// converters are node-breaker only).
 pub fn pre_allocate_equipment(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
 ) !void {
     assert(placer.voltage_level_map.count() > 0);
@@ -93,7 +92,7 @@ pub fn pre_allocate_equipment(
 
 pub fn convert_busbar_sections(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
 ) !void {
     const index = placer.index;
@@ -132,9 +131,9 @@ pub fn convert_busbar_sections(
 
 pub fn convert_switches(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
-    ssh_opt: ?CimSsh,
+    ssh_opt: ?SSH,
 ) !void {
     const index = placer.index;
     const voltage_level_map = placer.voltage_level_map;
@@ -142,7 +141,7 @@ pub fn convert_switches(
         .node_breaker => |nm| nm,
         .bus_branch => unreachable, // switches are node-breaker only
     };
-    const switch_slices = topology_mod.get_switch_type_slices(model);
+    const switch_slices = resolve.get_switch_type_slices(model);
 
     for (switch_slices) |switch_slice| {
         for (switch_slice) |sw| {
@@ -156,7 +155,7 @@ pub fn convert_switches(
             const conn_node0_id = terminals.items[0].conn_node_id orelse continue;
             const container0_id = index.conn_node_container.get(conn_node0_id) orelse continue;
 
-            const repr_voltage_level_id = topology_mod.find_root(&placer.topology.voltage_level_merge, container0_id);
+            const repr_voltage_level_id = resolve.find_root(&placer.topology.voltage_level_merge, container0_id);
             const voltage_level = voltage_level_map.get(repr_voltage_level_id) orelse continue;
 
             const eq_view = model.view(sw);
@@ -231,11 +230,11 @@ pub fn convert_switches(
 /// full passes over all terminal data that would otherwise duplicate build_node_map's work.
 pub fn convert_fictitious_switches(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
     cn_has_switch: *const std.StringHashMapUnmanaged(void),
     cn_other_count: *const std.StringHashMapUnmanaged(u32),
-    ssh_opt: ?CimSsh,
+    ssh_opt: ?SSH,
 ) !void {
     const index = placer.index;
     const voltage_level_map = placer.voltage_level_map;
@@ -249,10 +248,10 @@ pub fn convert_fictitious_switches(
     // 1. SSH-disconnected terminals (any equipment type — ACDCTerminal.connected=false in SSH).
     // 2. Structurally isolated injection terminals (SM/LSC/SVC on a CN with no switch and
     //    exactly one non-BBS/non-switch terminal) — these represent equipment not connected
-    //    via any switch in the node-breaker topology_mod.
+    //    via any switch in the node-breaker topology.
     //
     // Loads (EnergyConsumer, ConformLoad, NonConformLoad) never receive fictitious switches.
-    for (topology_mod.phase2_equipment_types) |eq_type| {
+    for (resolve.phase2_equipment_types) |eq_type| {
         const is_injection = std.mem.eql(u8, eq_type, "SynchronousMachine") or
             std.mem.eql(u8, eq_type, "LinearShuntCompensator") or
             std.mem.eql(u8, eq_type, "StaticVarCompensator");
@@ -262,7 +261,7 @@ pub fn convert_fictitious_switches(
             for (terminals.items) |t| {
                 const cn_id = t.conn_node_id orelse continue;
 
-                const ssh_disconnected = topology_mod.is_ssh_terminal_disconnected(ssh_opt, t.id);
+                const ssh_disconnected = resolve.is_ssh_terminal_disconnected(ssh_opt, t.id);
                 if (ssh_disconnected) {
                     // SSH-disconnected: always create fictitious regardless of type or CN topology.
                     // No-switch check is skipped — pypow creates fictitious even when the
@@ -281,7 +280,7 @@ pub fn convert_fictitious_switches(
 
                 // Resolve to a representative VL.
                 const container_id = index.conn_node_container.get(cn_id) orelse continue;
-                const repr_id = topology_mod.find_root(&placer.topology.voltage_level_merge, container_id);
+                const repr_id = resolve.find_root(&placer.topology.voltage_level_merge, container_id);
                 const voltage_level = voltage_level_map.get(repr_id) orelse continue;
 
                 // Get terminal mRID for the switch id/name.
@@ -320,9 +319,9 @@ pub fn convert_fictitious_switches(
 
 pub fn convert_loads(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
-    ssh_opt: ?CimSsh,
+    ssh_opt: ?SSH,
 ) !void {
     const energy_consumers = model.get_objects_by_type("EnergyConsumer");
     const conform_loads = model.get_objects_by_type("ConformLoad");
@@ -336,9 +335,9 @@ pub fn convert_loads(
 
 fn convert_load_type(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
-    ssh_opt: ?CimSsh,
+    ssh_opt: ?SSH,
     loads: []const CimObject,
     non_conform: bool,
 ) !void {
@@ -467,9 +466,9 @@ fn convert_load_type(
 
 pub fn convert_shunts(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
-    ssh_opt: ?CimSsh,
+    ssh_opt: ?SSH,
 ) !void {
     const index = placer.index;
     const shunts = model.get_objects_by_type("LinearShuntCompensator");
@@ -599,9 +598,9 @@ pub fn convert_shunts(
 }
 
 pub fn convert_static_var_compensators(
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
-    ssh_opt: ?CimSsh,
+    ssh_opt: ?SSH,
 ) !void {
     const static_var_compensators = model.get_objects_by_type("StaticVarCompensator");
     assert(static_var_compensators.len == 0 or placer.voltage_level_map.count() > 0);
@@ -670,9 +669,9 @@ fn energy_source_from_cim_type(type_name: []const u8) iidm.EnergySource {
 
 pub fn convert_generators(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     placer: TerminalPlacer,
-    ssh_opt: ?CimSsh,
+    ssh_opt: ?SSH,
 ) !void {
     const index = placer.index;
     const machines = model.get_objects_by_type("SynchronousMachine");

@@ -1,12 +1,11 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const cim_model = @import("../cgmes/eq.zig");
-const CimTp = @import("../cgmes/tp.zig").CimTp;
+const EQ = @import("../cgmes/eq.zig").EQ;
+const TP = @import("../cgmes/tp.zig").TP;
 const utils = @import("../cgmes/ids.zig");
 
 const assert = std.debug.assert;
 
-const CimModel = cim_model.CimModel;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
@@ -34,7 +33,7 @@ pub const BusMap = std.StringHashMapUnmanaged(BusPlacement);
 /// Caller owns the returned BusMap and must call .deinit(gpa).
 pub fn convert_buses(
     gpa: std.mem.Allocator,
-    tp: CimTp,
+    tp: TP,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
 ) !BusMap {
     var bus_map: BusMap = .empty;
@@ -97,7 +96,7 @@ pub fn convert_buses(
 /// BusPlacement the terminal sits on. Returns null if the terminal has no
 /// patch, no TopologicalNode reference, or the TN doesn't map to a known VL.
 pub fn resolve_terminal_bus(
-    tp: CimTp,
+    tp: TP,
     bus_map: *const BusMap,
     terminal_mrid_stripped: []const u8,
 ) !?BusPlacement {

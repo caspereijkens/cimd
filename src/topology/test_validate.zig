@@ -3,10 +3,10 @@
 //! plus the rendered output.
 
 const std = @import("std");
-const CimModel = @import("../cgmes/eq.zig").CimModel;
-const CimSsh = @import("../cgmes/ssh.zig").CimSsh;
-const CimTp = @import("../cgmes/tp.zig").CimTp;
-const CimIndex = @import("cross_ref.zig").CimIndex;
+const EQ = @import("../cgmes/eq.zig").EQ;
+const SSH = @import("../cgmes/ssh.zig").SSH;
+const TP = @import("../cgmes/tp.zig").TP;
+const CrossRef = @import("cross_ref.zig").CrossRef;
 const validate_topology = @import("validate.zig");
 
 const ValidateResult = struct {
@@ -30,20 +30,20 @@ fn run_validate(
     ssh_xml: ?[]const u8,
     options: validate_topology.ValidateOptions,
 ) !ValidateResult {
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, eq_xml));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, eq_xml));
     defer model.deinit(gpa);
 
-    var tp = try CimTp.init(gpa, try gpa.dupe(u8, tp_xml));
+    var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
     defer tp.deinit(gpa);
 
-    var ssh_opt: ?CimSsh = if (ssh_xml) |xml| try CimSsh.init(gpa, try gpa.dupe(u8, xml)) else null;
+    var ssh_opt: ?SSH = if (ssh_xml) |xml| try SSH.init(gpa, try gpa.dupe(u8, xml)) else null;
     defer if (ssh_opt) |*s| s.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
-    var index = try CimIndex.build(gpa, &model, boundary_ids);
+    var index = try CrossRef.build(gpa, &model, boundary_ids);
     defer index.deinit(gpa);
 
-    const ssh_ptr: ?*const CimSsh = if (ssh_opt) |*s| s else null;
+    const ssh_ptr: ?*const SSH = if (ssh_opt) |*s| s else null;
 
     var result = ValidateResult{ .had_mismatches = false, .buf = undefined, .len = 0 };
     var writer: std.Io.Writer = .fixed(&result.buf);

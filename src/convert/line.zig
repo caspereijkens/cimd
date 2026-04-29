@@ -1,18 +1,18 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const cim_model = @import("../cgmes/eq.zig");
-const cim_index = @import("../topology/cross_ref.zig");
+const eq = @import("../cgmes/eq.zig");
+const cross_ref = @import("../topology/cross_ref.zig");
 const utils = @import("../cgmes/ids.zig");
 const placement_mod = @import("placement.zig");
-const topology_mod = @import("../topology/resolve.zig");
+const resolve = @import("../topology/resolve.zig");
 
 const assert = std.debug.assert;
 
-const CimModel = cim_model.CimModel;
-const CimIndex = cim_index.CimIndex;
+const EQ = eq.EQ;
+const CrossRef = cross_ref.CrossRef;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
-const NodeMap = topology_mod.NodeMap;
+const NodeMap = resolve.NodeMap;
 const TerminalPlacer = placement_mod.TerminalPlacer;
 
 /// Resolved placement for one line terminal.
@@ -27,7 +27,7 @@ const LinePlacement = struct {
 /// Boundary terminals (node-breaker only): looks up terminal_node_map for the assigned node.
 /// Returns null if the terminal cannot be placed (line should be skipped).
 fn resolve_line_terminal(
-    terminal: cim_index.TerminalInfo,
+    terminal: cross_ref.TerminalInfo,
     placer: TerminalPlacer,
     boundary_conn_node_voltage_level_map: *const std.StringHashMapUnmanaged(u32),
     terminal_node_map: *const std.StringHashMapUnmanaged(u32),
@@ -56,10 +56,10 @@ fn resolve_line_terminal(
 
 pub fn convert_lines(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     network: *iidm.Network,
     placer: TerminalPlacer,
-    ssh_opt: ?@import("../cgmes/ssh.zig").CimSsh,
+    ssh_opt: ?@import("../cgmes/ssh.zig").SSH,
 ) !void {
     const index = placer.index;
     const voltage_level_map = placer.voltage_level_map;
@@ -98,14 +98,14 @@ pub fn convert_lines(
     }
 
     // Pass 1: collect boundary ConnectivityNode terminals in XML encounter order.
-    for ([_][]const cim_model.CimObject{ lines, series_compensators }) |segment_slice| {
+    for ([_][]const eq.CimObject{ lines, series_compensators }) |segment_slice| {
         for (segment_slice) |segment| {
             const segment_view = model.view(segment);
             const terminals = index.equipment_terminals.get(segment.id) orelse continue;
             for (terminals.items) |terminal| {
                 const conn_node_id = terminal.conn_node_id orelse continue;
                 const container_id = index.conn_node_container.get(conn_node_id) orelse continue;
-                const representative_id = topology_mod.find_root(&placer.topology.voltage_level_merge, container_id);
+                const representative_id = resolve.find_root(&placer.topology.voltage_level_merge, container_id);
                 if (voltage_level_map.contains(representative_id)) continue;
                 // Boundary ConnectivityNode: container is not a VoltageLevel.
 

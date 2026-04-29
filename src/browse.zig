@@ -1,9 +1,10 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const cli = @import("cli.zig");
-const cim_model = @import("cgmes/eq.zig");
-const CimTp = @import("cgmes/tp.zig").CimTp;
-const CimSsh = @import("cgmes/ssh.zig").CimSsh;
+const EQ = @import("cgmes/eq.zig").EQ;
+
+const TP = @import("cgmes/tp.zig").TP;
+const SSH = @import("cgmes/ssh.zig").SSH;
 const tag_index = @import("cgmes/tag_index.zig");
 const print = @import("io/print.zig");
 const extract_rdf_resource = tag_index.extract_rdf_resource;
@@ -39,9 +40,9 @@ const BackRefIndex = struct {
 /// register each rdf:resource it carries under that target's bucket.
 fn build_back_ref_index(
     gpa: std.mem.Allocator,
-    model: *const cim_model.CimModel,
-    tp_opt: ?CimTp,
-    ssh_opt: ?CimSsh,
+    model: *const EQ,
+    tp_opt: ?TP,
+    ssh_opt: ?SSH,
 ) !BackRefIndex {
     var index: BackRefIndex = .empty;
     errdefer index.deinit(gpa);
@@ -110,9 +111,9 @@ fn referrer_from_patch_tag(xml: []const u8, tag_start: u32) ?[]const u8 {
 pub fn browse(
     io: std.Io,
     gpa: std.mem.Allocator,
-    model: *const cim_model.CimModel,
-    tp_opt: ?CimTp,
-    ssh_opt: ?CimSsh,
+    model: *const EQ,
+    tp_opt: ?TP,
+    ssh_opt: ?SSH,
     mrid: []const u8,
 ) !void {
     var trace_ids: std.ArrayList([]const u8) = .empty;
@@ -210,8 +211,8 @@ pub fn browse(
 /// Look up an object by id in the primary model first, then in TP's new objects.
 /// TP and primary are already collision-checked at the command layer.
 fn resolve_object(
-    model: *const cim_model.CimModel,
-    tp_opt: ?CimTp,
+    model: *const EQ,
+    tp_opt: ?TP,
     id: []const u8,
 ) ?tag_index.CimObjectView {
     if (model.getObjectById(id)) |view| return view;
@@ -306,8 +307,8 @@ fn render_footer(
 fn render_back_refs(
     writer: *std.Io.Writer,
     gpa: std.mem.Allocator,
-    model: *const cim_model.CimModel,
-    tp_opt: ?CimTp,
+    model: *const EQ,
+    tp_opt: ?TP,
     target: tag_index.CimObjectView,
     referrers: []const []const u8,
     ref_list: *std.ArrayList([]const u8),

@@ -1,11 +1,11 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const cim_model = @import("../cgmes/eq.zig");
-const cim_index = @import("../topology/cross_ref.zig");
-const CimModel = cim_model.CimModel;
-const CimIndex = cim_index.CimIndex;
+const EQ = @import("../cgmes/eq.zig").EQ;
+const cross_ref = @import("../topology/cross_ref.zig");
+
+const CrossRef = cross_ref.CrossRef;
 const cim_ssh = @import("../cgmes/ssh.zig");
-const CimSsh = cim_ssh.CimSsh;
+const SSH = cim_ssh.SSH;
 const topology = @import("../topology/resolve.zig");
 const Topology = topology.Topology;
 
@@ -19,11 +19,11 @@ const Topology = topology.Topology;
 /// VL's internalConnections array is byte-identical to PyPowSyBl.
 pub fn populate_internal_connections(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
-    index: *const CimIndex,
+    model: *const EQ,
+    index: *const CrossRef,
     topology_data: *const Topology,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    ssh_opt: ?CimSsh,
+    ssh_opt: ?SSH,
     nm_result: *const topology.NodeMapResult,
 ) !void {
     // Per-CN Phase 2 terminal count — same prediction the original code used to

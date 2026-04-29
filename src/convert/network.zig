@@ -1,7 +1,7 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const cim_model = @import("../cgmes/eq.zig");
-const cim_index = @import("../topology/cross_ref.zig");
+const EQ = @import("../cgmes/eq.zig").EQ;
+const cross_ref = @import("../topology/cross_ref.zig");
 const utils = @import("../cgmes/ids.zig");
 const topology = @import("../topology/resolve.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
@@ -12,12 +12,12 @@ const transformer_conv = @import("transformer.zig");
 const line_conv = @import("line.zig");
 const bus_conv = @import("bus.zig");
 const placement_conv = @import("placement.zig");
-const CimSsh = @import("../cgmes/ssh.zig").CimSsh;
-const CimTp = @import("../cgmes/tp.zig").CimTp;
+const SSH = @import("../cgmes/ssh.zig").SSH;
+const TP = @import("../cgmes/tp.zig").TP;
 const populate_internal_connections = @import("internal_connections.zig").populate_internal_connections;
 
 const assert = std.debug.assert;
-const CimModel = cim_model.CimModel;
+
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
@@ -145,7 +145,7 @@ fn append_metadata_model(
 ///   boundary.id   = ConductingEquipment mRID of the TieFlow.Terminal
 ///   boundary.side = sequenceNumber of the TieFlow.Terminal (1→"ONE", 2→"TWO")
 ///   boundary.ac   = true (always, as all equipment is AC in EQ profiles)
-fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh, network: *iidm.Network) !void {
+fn convert_areas(gpa: std.mem.Allocator, model: *const EQ, ssh_opt: ?SSH, network: *iidm.Network) !void {
     const control_areas = model.get_objects_by_type("ControlArea");
     assert(network.areas.items.len == 0);
     if (control_areas.len == 0) return;
@@ -206,7 +206,7 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSs
     }
 }
 
-/// Convert a CimModel into an IIDM Network.
+/// Convert a EQ into an IIDM Network.
 /// Caller owns the returned network and must call network.deinit(gpa).
 /// Default JIIDM output is node-breaker (matches pypowsybl). When `bus_branch`
 /// is true, TP TopologicalNodes drive equipment placement onto buses and
@@ -214,22 +214,22 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSs
 /// `tp_opt` to be non-null (CLI enforces this).
 pub fn convert(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
-    tp_opt: ?CimTp,
-    ssh_opt: ?CimSsh,
+    model: *const EQ,
+    tp_opt: ?TP,
+    ssh_opt: ?SSH,
     bus_branch: bool,
 ) !iidm.Network {
     assert(model.get_objects_by_type("Substation").len > 0);
     assert(!bus_branch or tp_opt != null);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
-    var index = try cim_index.CimIndex.build(gpa, model, boundary_ids);
+    var index = try cross_ref.CrossRef.build(gpa, model, boundary_ids);
     defer index.deinit(gpa);
 
     var topology_data = try topology.Topology.build(gpa, model, &index);
     defer topology_data.deinit(gpa);
 
-    try cim_index.build_voltage_limits(gpa, model, &index, &topology_data);
+    try cross_ref.build_voltage_limits(gpa, model, &index, &topology_data);
 
     // ---- FullModel metadata: id, caseDate, forecastDistance ----
     const full_models = model.get_objects_by_type("FullModel");

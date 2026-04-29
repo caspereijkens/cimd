@@ -1,18 +1,19 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const cim_index = @import("../topology/cross_ref.zig");
-const cim_model = @import("../cgmes/eq.zig");
+const cross_ref = @import("../topology/cross_ref.zig");
+const EQ = @import("../cgmes/eq.zig").EQ;
+
 const utils = @import("../cgmes/ids.zig");
 const bus_conv = @import("bus.zig");
-const CimTp = @import("../cgmes/tp.zig").CimTp;
-const topology_mod = @import("../topology/resolve.zig");
+const TP = @import("../cgmes/tp.zig").TP;
+const resolve = @import("../topology/resolve.zig");
 
 const strip_underscore = utils.strip_underscore;
 const strip_hash = utils.strip_hash;
 
 const assert = std.debug.assert;
-const CimIndex = cim_index.CimIndex;
-const Topology = topology_mod.Topology;
+const CrossRef = cross_ref.CrossRef;
+const Topology = resolve.Topology;
 
 pub const Placement = struct {
     /// Raw rdf:ID of the containing VoltageLevel (merge-resolved in node-breaker,
@@ -33,15 +34,15 @@ pub const Placement = struct {
 pub fn resolve_terminal_placement(
     terminal_id: []const u8,
     conn_node_id: []const u8,
-    index: *const CimIndex,
+    index: *const CrossRef,
     topology: *const Topology,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    node_map: *const topology_mod.NodeMap,
+    node_map: *const resolve.NodeMap,
 ) ?Placement {
     assert(terminal_id.len > 0);
     assert(conn_node_id.len > 0);
     const container_id = index.conn_node_container.get(conn_node_id) orelse return null;
-    const repr_voltage_level_id = topology_mod.find_root(&topology.voltage_level_merge, container_id);
+    const repr_voltage_level_id = resolve.find_root(&topology.voltage_level_merge, container_id);
     const voltage_level = voltage_level_map.get(repr_voltage_level_id) orelse return null;
     const node = node_map.get(terminal_id) orelse return null;
     return .{ .repr_voltage_level_id = repr_voltage_level_id, .voltage_level = voltage_level, .node = node };
@@ -52,17 +53,17 @@ pub fn resolve_terminal_placement(
 /// bus-branch mode: resolves via TP Terminal.TopologicalNode patch → BusPlacement.
 pub const TerminalPlacer = struct {
     mode: Mode,
-    index: *const CimIndex,
+    index: *const CrossRef,
     topology: *const Topology,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
 
     pub const Mode = union(enum) {
-        node_breaker: *const topology_mod.NodeMap,
+        node_breaker: *const resolve.NodeMap,
         bus_branch: BusBranch,
     };
 
     pub const BusBranch = struct {
-        tp: CimTp,
+        tp: TP,
         bus_map: *const bus_conv.BusMap,
     };
 
@@ -95,15 +96,15 @@ pub const TerminalPlacer = struct {
     }
 };
 
-/// Build OperationalLimitsGroup list for one terminal from the CimIndex.
+/// Build OperationalLimitsGroup list for one terminal from the CrossRef.
 /// Caller owns the returned list and must deinit it.
 /// Group properties format matches PyPowSyBl's CGMES extension:
 ///   CGMES.normalValue_CurrentLimit_patl, CGMES.OperationalLimitSetName,
 ///   CGMES.OperationalLimitSetRdfID, CGMES.OperationalLimit_CurrentLimit_patl.
 pub fn build_op_lims(
     gpa: std.mem.Allocator,
-    model: *const cim_model.CimModel,
-    index: *const CimIndex,
+    model: *const EQ,
+    index: *const CrossRef,
     terminal_id: []const u8,
 ) !std.ArrayListUnmanaged(iidm.OperationalLimitsGroup) {
     assert(terminal_id.len > 0);

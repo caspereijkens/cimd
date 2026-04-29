@@ -1,24 +1,23 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const cim_model = @import("../cgmes/eq.zig");
-const cim_index = @import("../topology/cross_ref.zig");
+const EQ = @import("../cgmes/eq.zig").EQ;
+const cross_ref = @import("../topology/cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
-const topology_mod = @import("../topology/resolve.zig");
+const resolve = @import("../topology/resolve.zig");
 
 const assert = std.debug.assert;
-const Topology = topology_mod.Topology;
+const Topology = resolve.Topology;
 
-const CimModel = cim_model.CimModel;
 const CimObject = tag_index.CimObject;
 const CimObjectView = tag_index.CimObjectView;
-const CimIndex = cim_index.CimIndex;
+const CrossRef = cross_ref.CrossRef;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
 // Resolve the nominal voltage for a VoltageLevel.
 // VoltageLevel.BaseVoltage -> BaseVoltage.nominalVoltage -> parseFloat.
-fn resolve_nominal_voltageoltage(model: *const CimModel, voltage_level: CimObjectView) !?f64 {
+fn resolve_nominal_voltageoltage(model: *const EQ, voltage_level: CimObjectView) !?f64 {
     const base_voltage_ref = try voltage_level.getReference("VoltageLevel.BaseVoltage") orelse return null;
     const base_voltage = model.getObjectById(strip_hash(base_voltage_ref)) orelse return null;
     const nominal_voltageoltage_str = try base_voltage.getProperty("BaseVoltage.nominalVoltage") orelse return null;
@@ -30,8 +29,8 @@ fn resolve_nominal_voltageoltage(model: *const CimModel, voltage_level: CimObjec
 // `repr_to_stub_mrids`: representative raw VL ID → list of absorbed stub mRIDs (for aliases).
 fn append_voltage_level(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
-    index: *const CimIndex,
+    model: *const EQ,
+    index: *const CrossRef,
     voltage_level: CimObjectView,
     network: *iidm.Network,
     substation_id_map: *std.StringHashMapUnmanaged(usize),
@@ -83,7 +82,7 @@ fn append_voltage_level(
 // Property values for normalValue/OperationalLimit are heap-allocated and flagged owned.
 fn build_voltage_limit_properties(
     gpa: std.mem.Allocator,
-    limits_opt: ?cim_index.VoltageLimitInfo,
+    limits_opt: ?cross_ref.VoltageLimitInfo,
 ) !std.ArrayListUnmanaged(iidm.Property) {
     var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
 
@@ -136,8 +135,8 @@ fn build_voltage_limit_properties(
 
 pub fn convert_voltage_levels(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
-    index: *const CimIndex,
+    model: *const EQ,
+    index: *const CrossRef,
     topology: *const Topology,
     network: *iidm.Network,
     substation_id_map: *std.StringHashMapUnmanaged(usize),
@@ -197,7 +196,7 @@ pub fn convert_voltage_levels(
 
 pub fn build_voltage_level_map(
     gpa: std.mem.Allocator,
-    model: *const CimModel,
+    model: *const EQ,
     topology: *const Topology,
     network: *iidm.Network,
     substation_id_map: *const std.StringHashMapUnmanaged(usize),

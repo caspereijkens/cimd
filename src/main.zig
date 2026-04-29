@@ -2,15 +2,15 @@ const std = @import("std");
 const cli = @import("cli.zig");
 const print = @import("io/print.zig");
 const builtin = @import("builtin");
-const CimSsh = @import("cgmes/ssh.zig").CimSsh;
-const CimTp = @import("cgmes/tp.zig").CimTp;
+const SSH = @import("cgmes/ssh.zig").SSH;
+const TP = @import("cgmes/tp.zig").TP;
 const zip = @import("io/zip.zig");
-const cim_model = @import("cgmes/eq.zig");
+const EQ = @import("cgmes/eq.zig").EQ;
 const browse = @import("browse.zig");
 const diff = @import("diff.zig");
 const converter = @import("convert/network.zig");
-const cim_index = @import("topology/cross_ref.zig");
-const topology_mod = @import("topology/resolve.zig");
+const cross_ref = @import("topology/cross_ref.zig");
+const resolve = @import("topology/resolve.zig");
 const validate_topology = @import("topology/validate.zig");
 
 const assert = std.debug.assert;
@@ -42,10 +42,10 @@ fn command_convert(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Convert) !
     var model = try load_model(io, gpa, c.eq_path, c.eqbd_path);
     defer model.deinit(gpa);
 
-    var tp_opt: ?CimTp = if (c.tp_path) |path| try load_tp(io, gpa, path) else null;
+    var tp_opt: ?TP = if (c.tp_path) |path| try load_tp(io, gpa, path) else null;
     defer if (tp_opt) |*tp| tp.deinit(gpa);
 
-    var ssh_opt: ?CimSsh = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
+    var ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
     defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
 
     if (tp_opt) |tp| {
@@ -116,10 +116,10 @@ fn command_browse(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Browse) !vo
     var model = try load_model(io, gpa, c.file_path, c.eqbd_path);
     defer model.deinit(gpa);
 
-    var tp_opt: ?CimTp = if (c.tp_path) |path| try load_tp(io, gpa, path) else null;
+    var tp_opt: ?TP = if (c.tp_path) |path| try load_tp(io, gpa, path) else null;
     defer if (tp_opt) |*tp| tp.deinit(gpa);
 
-    var ssh_opt: ?CimSsh = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
+    var ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
     defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
 
     // Safety check: TP's new objects must not collide with primary model IDs.
@@ -143,7 +143,7 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
     if (c.mrid != null and c.count) print.stderr(io, "get: --count requires --type without <mrid>", .{});
     if (c.mrid != null and c.fields != null) print.stderr(io, "get: --fields requires --type without <mrid>", .{});
 
-    var model = try cim_model.CimModel.init(gpa, try read_path(io, gpa, c.file_path));
+    var model = try EQ.init(gpa, try read_path(io, gpa, c.file_path));
     defer model.deinit(gpa);
 
     // Single-object mode
@@ -213,7 +213,7 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
 }
 
 fn command_types(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Types) !void {
-    var model = try cim_model.CimModel.init(gpa, try read_path(io, gpa, c.file_path));
+    var model = try EQ.init(gpa, try read_path(io, gpa, c.file_path));
     defer model.deinit(gpa);
 
     if (c.json) {
@@ -281,18 +281,18 @@ fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology)
     var model = try load_model(io, gpa, c.eq_path, c.eqbd_path);
     defer model.deinit(gpa);
 
-    var ssh_opt: ?CimSsh = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
+    var ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
     defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
-    var index = try cim_index.CimIndex.build_for_topology(gpa, &model, boundary_ids);
+    var index = try cross_ref.CrossRef.build_for_topology(gpa, &model, boundary_ids);
     defer index.deinit(gpa);
 
-    var topology = try topology_mod.Topology.build_for_topological_nodes(gpa, &model, &index);
+    var topology = try resolve.Topology.build_for_topological_nodes(gpa, &model, &index);
     defer topology.deinit(gpa);
 
-    const ssh_ptr: ?*const CimSsh = if (ssh_opt) |*s| s else null;
-    var nodes = try topology_mod.build_topological_nodes(gpa, &model, &index, &topology, ssh_ptr);
+    const ssh_ptr: ?*const SSH = if (ssh_opt) |*s| s else null;
+    var nodes = try resolve.build_topological_nodes(gpa, &model, &index, &topology, ssh_ptr);
     defer nodes.deinit(gpa);
 
     try print.stderr_info(io, "TopologicalNodes: {d}\n", .{nodes.items.len});
@@ -320,14 +320,14 @@ fn command_validate_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.
     var tp = try load_tp(io, gpa, c.tp_path);
     defer tp.deinit(gpa);
 
-    var ssh_opt: ?CimSsh = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
+    var ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
     defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
-    var index = try cim_index.CimIndex.build(gpa, &model, boundary_ids);
+    var index = try cross_ref.CrossRef.build(gpa, &model, boundary_ids);
     defer index.deinit(gpa);
 
-    const ssh_ptr: ?*const CimSsh = if (ssh_opt) |*s| s else null;
+    const ssh_ptr: ?*const SSH = if (ssh_opt) |*s| s else null;
 
     var write_buffer: [4096]u8 = undefined;
     var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &write_buffer);
@@ -375,7 +375,7 @@ fn command_version(io: std.Io, verbose: bool, json: bool) !void {
     }
 }
 
-fn load_model(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8) !cim_model.CimModel {
+fn load_model(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8) !EQ {
     // errdefer is scoped to the block so it frees only when read/concat fail.
     // Once we hand `xml` to init, init owns it (frees on its own error path).
     const xml = blk: {
@@ -392,15 +392,15 @@ fn load_model(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path
         }
         break :blk x;
     };
-    return cim_model.CimModel.init(gpa, xml);
+    return EQ.init(gpa, xml);
 }
 
-fn load_ssh(io: std.Io, gpa: std.mem.Allocator, ssh_path: []const u8) !CimSsh {
-    return CimSsh.init(gpa, try read_path(io, gpa, ssh_path));
+fn load_ssh(io: std.Io, gpa: std.mem.Allocator, ssh_path: []const u8) !SSH {
+    return SSH.init(gpa, try read_path(io, gpa, ssh_path));
 }
 
-fn load_tp(io: std.Io, gpa: std.mem.Allocator, tp_path: []const u8) !CimTp {
-    return CimTp.init(gpa, try read_path(io, gpa, tp_path));
+fn load_tp(io: std.Io, gpa: std.mem.Allocator, tp_path: []const u8) !TP {
+    return TP.init(gpa, try read_path(io, gpa, tp_path));
 }
 
 fn read_path(io: std.Io, gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
@@ -428,5 +428,6 @@ fn read_file_to_memory(io: std.Io, gpa: std.mem.Allocator, file: std.Io.File) ![
     if (file_size > max_in_memory_input_bytes) return error.FileTooLarge;
 
     var file_reader = file.reader(io, &.{});
-    return try file_reader.interface.allocRemaining(gpa, .limited(file_size));
+    // +1 so the reader can observe EOF without tripping StreamTooLong on exact-size files.
+    return try file_reader.interface.allocRemaining(gpa, .limited(file_size + 1));
 }

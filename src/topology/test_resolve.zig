@@ -1,9 +1,9 @@
 const std = @import("std");
 const topology = @import("resolve.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
-const CimIndex = @import("cross_ref.zig").CimIndex;
-const CimModel = @import("../cgmes/eq.zig").CimModel;
-const CimSsh = @import("../cgmes/ssh.zig").CimSsh;
+const CrossRef = @import("cross_ref.zig").CrossRef;
+const EQ = @import("../cgmes/eq.zig").EQ;
+const SSH = @import("../cgmes/ssh.zig").SSH;
 
 const CimObject = tag_index.CimObject;
 
@@ -182,11 +182,11 @@ const EQ_SWITCH_WITH_MISSING_CN =
 
 test "build_conn_node_root_map: ignores switch endpoints that reference missing ConnectivityNodes" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_SWITCH_WITH_MISSING_CN));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_SWITCH_WITH_MISSING_CN));
     defer model.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
-    var index = try CimIndex.build_for_topology(gpa, &model, boundary_ids);
+    var index = try CrossRef.build_for_topology(gpa, &model, boundary_ids);
     defer index.deinit(gpa);
 
     var roots = try topology.build_conn_node_root_map(gpa, &model, &index, null);
@@ -218,11 +218,11 @@ const EQ_DIRECT_BUSBAR =
 
 test "Topology.build: direct busbar ConnectivityNode is reachable from itself" {
     const gpa = std.testing.allocator;
-    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_DIRECT_BUSBAR));
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_DIRECT_BUSBAR));
     defer model.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
-    var index = try CimIndex.build(gpa, &model, boundary_ids);
+    var index = try CrossRef.build(gpa, &model, boundary_ids);
     defer index.deinit(gpa);
 
     var topology_data = try topology.Topology.build(gpa, &model, &index);
@@ -251,7 +251,7 @@ const SSH_SWITCH_XML =
 
 test "is_switch_closed: open switch returns false" {
     const gpa = std.testing.allocator;
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);
 
     try std.testing.expectEqual(false, try topology.is_switch_closed(&ssh, "_BRK_OPEN"));
@@ -259,7 +259,7 @@ test "is_switch_closed: open switch returns false" {
 
 test "is_switch_closed: closed switch returns true" {
     const gpa = std.testing.allocator;
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);
 
     try std.testing.expectEqual(true, try topology.is_switch_closed(&ssh, "_BRK_CLOSED"));
@@ -267,7 +267,7 @@ test "is_switch_closed: closed switch returns true" {
 
 test "is_switch_closed: no SSH patch defaults to closed" {
     const gpa = std.testing.allocator;
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);
 
     try std.testing.expectEqual(true, try topology.is_switch_closed(&ssh, "_BRK_UNKNOWN"));
@@ -275,7 +275,7 @@ test "is_switch_closed: no SSH patch defaults to closed" {
 
 test "is_switch_closed: patch present without Switch.open defaults to closed" {
     const gpa = std.testing.allocator;
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);
 
     try std.testing.expectEqual(true, try topology.is_switch_closed(&ssh, "_BRK_NO_OPEN_FIELD"));
