@@ -1,12 +1,12 @@
 const std = @import("std");
 const iidm = @import("../iidm.zig");
 const cim_model = @import("../cgmes/eq.zig");
-const cim_index = @import("../cim_index.zig");
+const cim_index = @import("../topology/cross_ref.zig");
 const CimModel = cim_model.CimModel;
 const CimIndex = cim_index.CimIndex;
 const cim_ssh = @import("../cgmes/ssh.zig");
 const CimSsh = cim_ssh.CimSsh;
-const topology = @import("../topology.zig");
+const topology = @import("../topology/resolve.zig");
 const Topology = topology.Topology;
 
 /// Populate per-VoltageLevel internalConnections arrays from a built node map.

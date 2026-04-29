@@ -3,11 +3,11 @@
 //! plus the rendered output.
 
 const std = @import("std");
-const CimModel = @import("cgmes/eq.zig").CimModel;
-const CimSsh = @import("cgmes/ssh.zig").CimSsh;
-const CimTp = @import("cgmes/tp.zig").CimTp;
-const CimIndex = @import("cim_index.zig").CimIndex;
-const validate_topology = @import("validate_topology.zig");
+const CimModel = @import("../cgmes/eq.zig").CimModel;
+const CimSsh = @import("../cgmes/ssh.zig").CimSsh;
+const CimTp = @import("../cgmes/tp.zig").CimTp;
+const CimIndex = @import("cross_ref.zig").CimIndex;
+const validate_topology = @import("validate.zig");
 
 const ValidateResult = struct {
     had_mismatches: bool,

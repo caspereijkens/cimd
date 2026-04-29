@@ -1,9 +1,9 @@
 const std = @import("std");
-const topology = @import("topology.zig");
-const tag_index = @import("cgmes/tag_index.zig");
-const CimIndex = @import("cim_index.zig").CimIndex;
-const CimModel = @import("cgmes/eq.zig").CimModel;
-const CimSsh = @import("cgmes/ssh.zig").CimSsh;
+const topology = @import("resolve.zig");
+const tag_index = @import("../cgmes/tag_index.zig");
+const CimIndex = @import("cross_ref.zig").CimIndex;
+const CimModel = @import("../cgmes/eq.zig").CimModel;
+const CimSsh = @import("../cgmes/ssh.zig").CimSsh;
 
 const CimObject = tag_index.CimObject;
 

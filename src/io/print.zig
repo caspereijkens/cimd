@@ -1,7 +1,7 @@
 const std = @import("std");
-const cim_model = @import("cgmes/eq.zig");
-const tag_index = @import("cgmes/tag_index.zig");
-const utils = @import("cgmes/ids.zig");
+const cim_model = @import("../cgmes/eq.zig");
+const tag_index = @import("../cgmes/tag_index.zig");
+const utils = @import("../cgmes/ids.zig");
 
 /// Print a usage error to stderr and exit 2.
 /// Use for invalid arguments, missing flags, bad input — anything the caller did wrong.

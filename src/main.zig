@@ -1,17 +1,17 @@
 const std = @import("std");
 const cli = @import("cli.zig");
-const print = @import("print.zig");
+const print = @import("io/print.zig");
 const builtin = @import("builtin");
 const CimSsh = @import("cgmes/ssh.zig").CimSsh;
 const CimTp = @import("cgmes/tp.zig").CimTp;
-const zip = @import("zip.zig");
+const zip = @import("io/zip.zig");
 const cim_model = @import("cgmes/eq.zig");
-const browse = @import("browse.zig");
-const diff = @import("diff.zig");
-const converter = @import("converter.zig");
-const cim_index = @import("cim_index.zig");
-const topology_mod = @import("topology.zig");
-const validate_topology = @import("validate_topology.zig");
+const browse = @import("command/browse.zig");
+const diff = @import("command/diff.zig");
+const converter = @import("convert/network.zig");
+const cim_index = @import("topology/cross_ref.zig");
+const topology_mod = @import("topology/resolve.zig");
+const validate_topology = @import("topology/validate.zig");
 
 const assert = std.debug.assert;
 

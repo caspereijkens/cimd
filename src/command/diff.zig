@@ -14,8 +14,8 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const cim_model = @import("cgmes/eq.zig");
-const tag_index = @import("cgmes/tag_index.zig");
+const cim_model = @import("../cgmes/eq.zig");
+const tag_index = @import("../cgmes/tag_index.zig");
 
 pub const DiffOptions = struct {
     /// When set, only objects of this CIM type are compared.

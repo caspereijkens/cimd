@@ -1,10 +1,10 @@
 const std = @import("std");
-const utils = @import("cgmes/ids.zig");
-const cim_model = @import("cgmes/eq.zig");
-const cim_index = @import("cim_index.zig");
-const cim_ssh = @import("cgmes/ssh.zig");
-const cim_tp = @import("cgmes/tp.zig");
-const topology = @import("topology.zig");
+const utils = @import("../cgmes/ids.zig");
+const cim_model = @import("../cgmes/eq.zig");
+const cim_index = @import("cross_ref.zig");
+const cim_ssh = @import("../cgmes/ssh.zig");
+const cim_tp = @import("../cgmes/tp.zig");
+const topology = @import("resolve.zig");
 
 const assert = std.debug.assert;
 

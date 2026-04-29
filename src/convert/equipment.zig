@@ -1,10 +1,10 @@
 const std = @import("std");
 const iidm = @import("../iidm.zig");
 const cim_model = @import("../cgmes/eq.zig");
-const cim_index = @import("../cim_index.zig");
+const cim_index = @import("../topology/cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
-const topology_mod = @import("../topology.zig");
+const topology_mod = @import("../topology/resolve.zig");
 
 const placement_mod = @import("placement.zig");
 

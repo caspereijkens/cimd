@@ -10,7 +10,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const print = @import("print.zig");
+const print = @import("io/print.zig");
 
 pub const ansi_green = "\x1b[92m";
 pub const ansi_default = "\x1b[0m";

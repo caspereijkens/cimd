@@ -4,9 +4,9 @@
 /// Each test block runs the full converter.convert() pipeline and checks
 /// one specific behaviour; re-parsing is cheap for a model this small.
 const std = @import("std");
-const converter = @import("converter.zig");
-const CimModel = @import("cgmes/eq.zig").CimModel;
-const CimSsh = @import("cgmes/ssh.zig").CimSsh;
+const converter = @import("network.zig");
+const CimModel = @import("../cgmes/eq.zig").CimModel;
+const CimSsh = @import("../cgmes/ssh.zig").CimSsh;
 
 /// Minimal EQ model with enough objects to exercise every edge case.
 /// Objects and their purpose:
