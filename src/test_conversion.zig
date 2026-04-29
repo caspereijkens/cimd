@@ -5,8 +5,8 @@
 /// one specific behaviour; re-parsing is cheap for a model this small.
 const std = @import("std");
 const converter = @import("converter.zig");
-const CimModel = @import("cim_model.zig").CimModel;
-const CimSsh = @import("cim_ssh.zig").CimSsh;
+const CimModel = @import("cgmes/eq.zig").CimModel;
+const CimSsh = @import("cgmes/ssh.zig").CimSsh;
 
 /// Minimal EQ model with enough objects to exercise every edge case.
 /// Objects and their purpose:

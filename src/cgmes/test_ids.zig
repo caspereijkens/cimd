@@ -1,5 +1,5 @@
 const std = @import("std");
-const utils = @import("utils.zig");
+const utils = @import("ids.zig");
 
 test "strip_hash: strips leading # from non-empty string" {
     try std.testing.expectEqualStrings("foo", utils.strip_hash("#foo"));

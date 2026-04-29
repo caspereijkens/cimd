@@ -17,7 +17,7 @@
 
 const std = @import("std");
 const tag_index = @import("tag_index.zig");
-const utils = @import("utils.zig");
+const utils = @import("ids.zig");
 
 const assert = std.debug.assert;
 

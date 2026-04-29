@@ -3,9 +3,9 @@
 //! plus the rendered output.
 
 const std = @import("std");
-const CimModel = @import("cim_model.zig").CimModel;
-const CimSsh = @import("cim_ssh.zig").CimSsh;
-const CimTp = @import("cim_tp.zig").CimTp;
+const CimModel = @import("cgmes/eq.zig").CimModel;
+const CimSsh = @import("cgmes/ssh.zig").CimSsh;
+const CimTp = @import("cgmes/tp.zig").CimTp;
 const CimIndex = @import("cim_index.zig").CimIndex;
 const validate_topology = @import("validate_topology.zig");
 

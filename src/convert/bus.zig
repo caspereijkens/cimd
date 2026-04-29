@@ -1,8 +1,8 @@
 const std = @import("std");
 const iidm = @import("../iidm.zig");
-const cim_model = @import("../cim_model.zig");
-const CimTp = @import("../cim_tp.zig").CimTp;
-const utils = @import("../utils.zig");
+const cim_model = @import("../cgmes/eq.zig");
+const CimTp = @import("../cgmes/tp.zig").CimTp;
+const utils = @import("../cgmes/ids.zig");
 
 const assert = std.debug.assert;
 

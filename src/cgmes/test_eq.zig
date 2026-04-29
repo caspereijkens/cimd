@@ -1,5 +1,5 @@
 const std = @import("std");
-const CimModel = @import("cim_model.zig").CimModel;
+const CimModel = @import("eq.zig").CimModel;
 
 test "CimModel.init - parses all top-level CIM objects" {
     const xml =

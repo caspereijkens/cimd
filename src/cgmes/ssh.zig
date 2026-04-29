@@ -1,8 +1,8 @@
 const std = @import("std");
 const tag_index = @import("tag_index.zig");
-const utils = @import("utils.zig");
-const CimTp = @import("cim_tp.zig").CimTp;
-const TpPatch = @import("cim_tp.zig").TpPatch;
+const utils = @import("ids.zig");
+const CimTp = @import("tp.zig").CimTp;
+const TpPatch = @import("tp.zig").TpPatch;
 
 const assert = std.debug.assert;
 

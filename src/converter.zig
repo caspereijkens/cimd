@@ -1,10 +1,10 @@
 const std = @import("std");
 const iidm = @import("iidm.zig");
-const cim_model = @import("cim_model.zig");
+const cim_model = @import("cgmes/eq.zig");
 const cim_index = @import("cim_index.zig");
-const utils = @import("utils.zig");
+const utils = @import("cgmes/ids.zig");
 const topology = @import("topology.zig");
-const tag_index = @import("tag_index.zig");
+const tag_index = @import("cgmes/tag_index.zig");
 const substation_conv = @import("convert/substation.zig");
 const voltage_level_conv = @import("convert/voltage_level.zig");
 const equipment_conv = @import("convert/equipment.zig");
@@ -12,8 +12,8 @@ const transformer_conv = @import("convert/transformer.zig");
 const line_conv = @import("convert/line.zig");
 const bus_conv = @import("convert/bus.zig");
 const placement_conv = @import("convert/placement.zig");
-const CimSsh = @import("cim_ssh.zig").CimSsh;
-const CimTp = @import("cim_tp.zig").CimTp;
+const CimSsh = @import("cgmes/ssh.zig").CimSsh;
+const CimTp = @import("cgmes/tp.zig").CimTp;
 const populate_internal_connections = @import("convert/internal_connections.zig").populate_internal_connections;
 
 const assert = std.debug.assert;

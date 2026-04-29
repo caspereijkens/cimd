@@ -1,10 +1,10 @@
 const std = @import("std");
 const iidm = @import("../iidm.zig");
 const cim_index = @import("../cim_index.zig");
-const cim_model = @import("../cim_model.zig");
-const utils = @import("../utils.zig");
+const cim_model = @import("../cgmes/eq.zig");
+const utils = @import("../cgmes/ids.zig");
 const bus_conv = @import("bus.zig");
-const CimTp = @import("../cim_tp.zig").CimTp;
+const CimTp = @import("../cgmes/tp.zig").CimTp;
 const topology_mod = @import("../topology.zig");
 
 const strip_underscore = utils.strip_underscore;

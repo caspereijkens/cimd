@@ -1,9 +1,9 @@
 const std = @import("std");
 const iidm = @import("../iidm.zig");
-const cim_model = @import("../cim_model.zig");
+const cim_model = @import("../cgmes/eq.zig");
 const cim_index = @import("../cim_index.zig");
-const tag_index = @import("../tag_index.zig");
-const utils = @import("../utils.zig");
+const tag_index = @import("../cgmes/tag_index.zig");
+const utils = @import("../cgmes/ids.zig");
 const topology_mod = @import("../topology.zig");
 
 const assert = std.debug.assert;

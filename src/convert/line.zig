@@ -1,8 +1,8 @@
 const std = @import("std");
 const iidm = @import("../iidm.zig");
-const cim_model = @import("../cim_model.zig");
+const cim_model = @import("../cgmes/eq.zig");
 const cim_index = @import("../cim_index.zig");
-const utils = @import("../utils.zig");
+const utils = @import("../cgmes/ids.zig");
 const placement_mod = @import("placement.zig");
 const topology_mod = @import("../topology.zig");
 
@@ -59,7 +59,7 @@ pub fn convert_lines(
     model: *const CimModel,
     network: *iidm.Network,
     placer: TerminalPlacer,
-    ssh_opt: ?@import("../cim_ssh.zig").CimSsh,
+    ssh_opt: ?@import("../cgmes/ssh.zig").CimSsh,
 ) !void {
     const index = placer.index;
     const voltage_level_map = placer.voltage_level_map;

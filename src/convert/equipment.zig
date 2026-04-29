@@ -1,9 +1,9 @@
 const std = @import("std");
 const iidm = @import("../iidm.zig");
-const cim_model = @import("../cim_model.zig");
+const cim_model = @import("../cgmes/eq.zig");
 const cim_index = @import("../cim_index.zig");
-const tag_index = @import("../tag_index.zig");
-const utils = @import("../utils.zig");
+const tag_index = @import("../cgmes/tag_index.zig");
+const utils = @import("../cgmes/ids.zig");
 const topology_mod = @import("../topology.zig");
 
 const placement_mod = @import("placement.zig");
@@ -12,8 +12,8 @@ const assert = std.debug.assert;
 
 const CimModel = cim_model.CimModel;
 const CimObject = tag_index.CimObject;
-const CimSsh = @import("../cim_ssh.zig").CimSsh;
-const CimMergedView = @import("../cim_ssh.zig").CimMergedView;
+const CimSsh = @import("../cgmes/ssh.zig").CimSsh;
+const CimMergedView = @import("../cgmes/ssh.zig").CimMergedView;
 const CimIndex = cim_index.CimIndex;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;

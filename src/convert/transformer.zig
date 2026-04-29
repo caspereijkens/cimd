@@ -1,9 +1,9 @@
 const std = @import("std");
 const iidm = @import("../iidm.zig");
-const cim_model = @import("../cim_model.zig");
+const cim_model = @import("../cgmes/eq.zig");
 const cim_index = @import("../cim_index.zig");
-const tag_index = @import("../tag_index.zig");
-const utils = @import("../utils.zig");
+const tag_index = @import("../cgmes/tag_index.zig");
+const utils = @import("../cgmes/ids.zig");
 const topology = @import("../topology.zig");
 
 const assert = std.debug.assert;
@@ -58,7 +58,7 @@ const TapChangerCommon = struct { low_step: i32, normal_step: i32, ltc_flag: boo
 fn read_tap_changer_regulating(
     model: *const CimModel,
     tap_changer: CimObjectView,
-    ssh_opt: ?@import("../cim_ssh.zig").CimSsh,
+    ssh_opt: ?@import("../cgmes/ssh.zig").CimSsh,
 ) !?bool {
     const control_ref = try tap_changer.getReference("TapChanger.TapChangerControl") orelse return null;
     if (ssh_opt) |ssh| {
@@ -199,7 +199,7 @@ const PhaseTapChangerEntry = struct {
 fn build_ratio_tap_changer_map(
     gpa: std.mem.Allocator,
     model: *const CimModel,
-    ssh_opt: ?@import("../cim_ssh.zig").CimSsh,
+    ssh_opt: ?@import("../cgmes/ssh.zig").CimSsh,
 ) !std.StringHashMapUnmanaged(RatioTapChangerEntry) {
     var points_by_table = try build_ratio_table_points(gpa, model);
     defer {
@@ -256,7 +256,7 @@ const OrderedPhaseStep = struct {
 fn build_phase_tap_changer_map(
     gpa: std.mem.Allocator,
     model: *const CimModel,
-    ssh_opt: ?@import("../cim_ssh.zig").CimSsh,
+    ssh_opt: ?@import("../cgmes/ssh.zig").CimSsh,
 ) !std.StringHashMapUnmanaged(PhaseTapChangerEntry) {
     var points_by_table: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(OrderedPhaseStep)) = .empty;
     defer {
@@ -763,7 +763,7 @@ pub fn convert_transformers(
     model: *const CimModel,
     substation_map: *const std.StringHashMapUnmanaged(*iidm.Substation),
     placer: TerminalPlacer,
-    ssh_opt: ?@import("../cim_ssh.zig").CimSsh,
+    ssh_opt: ?@import("../cgmes/ssh.zig").CimSsh,
 ) !void {
     var ends_by_transformer: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObjectView)) = try build_ends_by_transformer(gpa, model);
     defer {
