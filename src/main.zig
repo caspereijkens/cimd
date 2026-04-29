@@ -385,6 +385,7 @@ fn load_model(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path
         if (eqbd_path) |path| {
             const eqbd_xml = try read_path(io, gpa, path);
             defer gpa.free(eqbd_xml);
+            if (x.len > max_in_memory_input_bytes - eqbd_xml.len) return error.FileTooLarge;
             const combined = try std.mem.concat(gpa, u8, &.{ x, eqbd_xml });
             gpa.free(x);
             x = combined;

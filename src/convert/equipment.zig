@@ -164,12 +164,20 @@ pub fn convert_switches(
             const mrid = try gpa.dupe(u8, mrid_raw);
             errdefer gpa.free(mrid);
             const view = CimMergedView.init(eq_view, mrid, null, ssh_opt);
-            const name = try view.getProperty("IdentifiedObject.name");
+            const props = try view.getProperties(.{
+                "IdentifiedObject.name",
+                "Switch.open",
+                "Switch.retained",
+            });
+            const eq_props = try eq_view.getProperties(.{
+                "Switch.normalOpen",
+            });
+            const name = props[0];
 
             // Switch.open and Switch.retained are SSH attributes — EQ does not carry open state.
-            const open_str = try view.getProperty("Switch.open") orelse "false";
+            const open_str = props[1] orelse "false";
             const open = std.mem.eql(u8, open_str, "true");
-            const retained_str = try view.getProperty("Switch.retained") orelse "false";
+            const retained_str = props[2] orelse "false";
             const retained = std.mem.eql(u8, retained_str, "true");
 
             const kind = iidm.SwitchKind.from_cim_type(sw.type_name);
@@ -191,7 +199,7 @@ pub fn convert_switches(
             var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
             errdefer properties.deinit(gpa);
             {
-                const normal_open_str = try eq_view.getProperty("Switch.normalOpen") orelse "false";
+                const normal_open_str = eq_props[0] orelse "false";
                 try properties.ensureTotalCapacity(gpa, 2);
                 properties.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = sw.type_name });
                 properties.appendAssumeCapacity(.{ .name = "CGMES.normalOpen", .value = normal_open_str });
@@ -281,7 +289,8 @@ pub fn convert_fictitious_switches(
                 const t_mrid = try t_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(t.id);
 
                 const terminal_node = node_map.get(t.id) orelse 0;
-                const isolated_node = terminal_node +% 1; // value stripped by diff; just needs to differ
+                if (terminal_node == std.math.maxInt(u32)) return error.NodeIdOverflow;
+                const isolated_node = terminal_node + 1;
 
                 var props: std.ArrayListUnmanaged(iidm.Property) = .empty;
                 errdefer props.deinit(gpa);
@@ -342,7 +351,17 @@ fn convert_load_type(
 
         const mrid = try eq_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(load.id);
         const view = CimMergedView.init(eq_view, mrid, null, ssh_opt);
-        const name = try view.getProperty("IdentifiedObject.name");
+        const load_values = try view.getProperties(.{
+            "IdentifiedObject.name",
+            "EnergyConsumer.p",
+            "EnergyConsumer.q",
+            "EnergyConsumer.pfixed",
+            "EnergyConsumer.qfixed",
+        });
+        const load_refs = try view.getReferences(.{
+            "EnergyConsumer.LoadResponse",
+        });
+        const name = load_values[0];
 
         // alias: CGMES.Terminal1 = terminal mRID
         var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
@@ -366,23 +385,34 @@ fn convert_load_type(
         // Load response characteristic → exponentialModel or zipModel.
         var exp_model: ?iidm.ExponentialModel = null;
         var zip_model: ?iidm.ZipModel = null;
-        if (try view.getReference("EnergyConsumer.LoadResponse")) |lr_ref| {
+        if (load_refs[0]) |lr_ref| {
             if (model.getObjectById(strip_hash(lr_ref))) |lrc| {
-                const exp_str = try lrc.getProperty("LoadResponseCharacteristic.exponentModel") orelse "false";
+                const lrc_props = try lrc.getProperties(.{
+                    "LoadResponseCharacteristic.exponentModel",
+                    "LoadResponseCharacteristic.pVoltageExponent",
+                    "LoadResponseCharacteristic.qVoltageExponent",
+                    "LoadResponseCharacteristic.pConstantPower",
+                    "LoadResponseCharacteristic.pConstantCurrent",
+                    "LoadResponseCharacteristic.pConstantImpedance",
+                    "LoadResponseCharacteristic.qConstantPower",
+                    "LoadResponseCharacteristic.qConstantCurrent",
+                    "LoadResponseCharacteristic.qConstantImpedance",
+                });
+                const exp_str = lrc_props[0] orelse "false";
                 if (std.mem.eql(u8, exp_str, "true")) {
-                    const np_str = try lrc.getProperty("LoadResponseCharacteristic.pVoltageExponent") orelse "0";
-                    const nq_str = try lrc.getProperty("LoadResponseCharacteristic.qVoltageExponent") orelse "0";
+                    const np_str = lrc_props[1] orelse "0";
+                    const nq_str = lrc_props[2] orelse "0";
                     exp_model = .{
                         .np = std.fmt.parseFloat(f64, np_str) catch 0.0,
                         .nq = std.fmt.parseFloat(f64, nq_str) catch 0.0,
                     };
                 } else {
-                    const c0p = std.fmt.parseFloat(f64, try lrc.getProperty("LoadResponseCharacteristic.pConstantPower") orelse "0") catch 0.0;
-                    const c1p = std.fmt.parseFloat(f64, try lrc.getProperty("LoadResponseCharacteristic.pConstantCurrent") orelse "0") catch 0.0;
-                    const c2p = std.fmt.parseFloat(f64, try lrc.getProperty("LoadResponseCharacteristic.pConstantImpedance") orelse "0") catch 0.0;
-                    const c0q = std.fmt.parseFloat(f64, try lrc.getProperty("LoadResponseCharacteristic.qConstantPower") orelse "0") catch 0.0;
-                    const c1q = std.fmt.parseFloat(f64, try lrc.getProperty("LoadResponseCharacteristic.qConstantCurrent") orelse "0") catch 0.0;
-                    const c2q = std.fmt.parseFloat(f64, try lrc.getProperty("LoadResponseCharacteristic.qConstantImpedance") orelse "0") catch 0.0;
+                    const c0p = std.fmt.parseFloat(f64, lrc_props[3] orelse "0") catch 0.0;
+                    const c1p = std.fmt.parseFloat(f64, lrc_props[4] orelse "0") catch 0.0;
+                    const c2p = std.fmt.parseFloat(f64, lrc_props[5] orelse "0") catch 0.0;
+                    const c0q = std.fmt.parseFloat(f64, lrc_props[6] orelse "0") catch 0.0;
+                    const c1q = std.fmt.parseFloat(f64, lrc_props[7] orelse "0") catch 0.0;
+                    const c2q = std.fmt.parseFloat(f64, lrc_props[8] orelse "0") catch 0.0;
                     zip_model = .{ .c0p = c0p, .c1p = c1p, .c2p = c2p, .c0q = c0q, .c1q = c1q, .c2q = c2q };
                 }
             }
@@ -390,10 +420,10 @@ fn convert_load_type(
 
         // SSH EnergyConsumer.p/q are in load convention (positive = consuming) — matches IIDM p0/q0.
         // When SSH is not provided, leave p0/q0 null so the fields are omitted from output.
-        const p0: ?f64 = if (try view.getProperty("EnergyConsumer.p")) |v|
+        const p0: ?f64 = if (load_values[1]) |v|
             (std.fmt.parseFloat(f64, v) catch 0.0)
         else if (ssh_opt != null) 0.0 else null;
-        const q0: ?f64 = if (try view.getProperty("EnergyConsumer.q")) |v|
+        const q0: ?f64 = if (load_values[2]) |v|
             (std.fmt.parseFloat(f64, v) catch 0.0)
         else if (ssh_opt != null) 0.0 else null;
 
@@ -402,13 +432,13 @@ fn convert_load_type(
         // ConformLoad / EnergyConsumer — fixed = pfixed (EQ), variable = p0 - pfixed.
         const fixed_active_power: f64 = if (non_conform)
             (p0 orelse 0.0)
-        else if (try view.getProperty("EnergyConsumer.pfixed")) |v|
+        else if (load_values[3]) |v|
             std.fmt.parseFloat(f64, v) catch 0.0
         else
             0.0;
         const fixed_reactive_power: f64 = if (non_conform)
             (q0 orelse 0.0)
-        else if (try view.getProperty("EnergyConsumer.qfixed")) |v|
+        else if (load_values[4]) |v|
             std.fmt.parseFloat(f64, v) catch 0.0
         else
             0.0;
@@ -453,23 +483,37 @@ pub fn convert_shunts(
 
         const mrid = try eq_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(shunt.id);
         const view = CimMergedView.init(eq_view, mrid, null, ssh_opt);
-        const name = try view.getProperty("IdentifiedObject.name");
+        const shunt_values = try view.getProperties(.{
+            "IdentifiedObject.name",
+            "ShuntCompensator.sections",
+            "ShuntCompensator.maximumSections",
+            "LinearShuntCompensator.bPerSection",
+            "LinearShuntCompensator.gPerSection",
+            "RegulatingCondEq.controlEnabled",
+        });
+        const shunt_refs = try eq_view.getReferences(.{
+            "RegulatingCondEq.RegulatingControl",
+        });
+        const eq_props = try eq_view.getProperties(.{
+            "ShuntCompensator.normalSections",
+        });
+        const name = shunt_values[0];
 
         // ShuntCompensator.sections (current in-service sections) is an SSH attribute.
         // ShuntCompensator.maximumSections and electrical data are EQ attributes.
-        const sections_str = try view.getProperty("ShuntCompensator.sections") orelse "0";
-        const section_count: u32 = @intCast(try std.fmt.parseInt(i64, sections_str, 10));
+        const sections_str = shunt_values[1] orelse "0";
+        const section_count = try std.fmt.parseInt(u32, std.mem.trim(u8, sections_str, " \t\r\n"), 10);
 
-        const max_sections_str = try view.getProperty("ShuntCompensator.maximumSections") orelse "0";
-        const max_section_count: u32 = @intCast(try std.fmt.parseInt(i64, max_sections_str, 10));
+        const max_sections_str = shunt_values[2] orelse "0";
+        const max_section_count = try std.fmt.parseInt(u32, std.mem.trim(u8, max_sections_str, " \t\r\n"), 10);
 
-        const b_per_section_str = try view.getProperty("LinearShuntCompensator.bPerSection") orelse "0.0";
+        const b_per_section_str = shunt_values[3] orelse "0.0";
         const b_per_section = try std.fmt.parseFloat(f64, b_per_section_str);
 
-        const g_per_section_str = try view.getProperty("LinearShuntCompensator.gPerSection") orelse "0.0";
+        const g_per_section_str = shunt_values[4] orelse "0.0";
         const g_per_section = try std.fmt.parseFloat(f64, g_per_section_str);
 
-        const control_enabled_str = try view.getProperty("RegulatingCondEq.controlEnabled") orelse "false";
+        const control_enabled_str = shunt_values[5] orelse "false";
         const voltage_regulator_on = std.mem.eql(u8, control_enabled_str, "true");
 
         // RegulatingControl: resolve RC mRID for targetV, targetDeadband (SSH), regulatingTerminal, and properties.
@@ -477,7 +521,7 @@ pub fn convert_shunts(
         var target_deadband: ?f64 = null;
         var rc_mrid: ?[]const u8 = null;
         var regulating_terminal: ?[]const u8 = null;
-        if (try eq_view.getReference("RegulatingCondEq.RegulatingControl")) |rc_ref| {
+        if (shunt_refs[0]) |rc_ref| {
             const rc_id = strip_hash(rc_ref);
             if (model.getObjectById(rc_id)) |rc_view| {
                 rc_mrid = try rc_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(rc_id);
@@ -509,7 +553,7 @@ pub fn convert_shunts(
         if (ssh_opt != null and target_deadband == null) target_deadband = 0.0;
 
         // normalSections: EQ attribute, emitted as CGMES.normalSections property.
-        const normal_sections_str = try eq_view.getProperty("ShuntCompensator.normalSections");
+        const normal_sections_str = eq_props[0];
 
         var props: std.ArrayListUnmanaged(iidm.Property) = .empty;
         const prop_count: usize = (if (rc_mrid != null) @as(usize, 1) else 0) +
@@ -570,18 +614,27 @@ pub fn convert_static_var_compensators(
 
         const mrid = try eq_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(static_var_compensator.id);
         const view = CimMergedView.init(eq_view, mrid, null, ssh_opt);
-        const name = try view.getProperty("IdentifiedObject.name");
+        const svc_values = try view.getProperties(.{
+            "IdentifiedObject.name",
+            "StaticVarCompensator.bMin",
+            "StaticVarCompensator.bMax",
+            "RegulatingCondEq.controlEnabled",
+        });
+        const svc_refs = try view.getReferences(.{
+            "StaticVarCompensator.regulationMode",
+        });
+        const name = svc_values[0];
 
-        const b_min_str = try view.getProperty("StaticVarCompensator.bMin") orelse "0.0";
+        const b_min_str = svc_values[1] orelse "0.0";
         const b_min = try std.fmt.parseFloat(f64, b_min_str);
 
-        const b_max_str = try view.getProperty("StaticVarCompensator.bMax") orelse "0.0";
+        const b_max_str = svc_values[2] orelse "0.0";
         const b_max = try std.fmt.parseFloat(f64, b_max_str);
 
-        const control_enabled_str = try view.getProperty("RegulatingCondEq.controlEnabled") orelse "false";
+        const control_enabled_str = svc_values[3] orelse "false";
         const regulating = std.mem.eql(u8, control_enabled_str, "true");
 
-        const regulation_mode_ref = try view.getReference("StaticVarCompensator.regulationMode");
+        const regulation_mode_ref = svc_refs[0];
         const regulation_mode: iidm.SvcRegulationMode = blk: {
             const ref = regulation_mode_ref orelse break :blk .off;
             if (std.mem.endsWith(u8, ref, "voltage")) break :blk .voltage;
@@ -656,21 +709,39 @@ pub fn convert_generators(
         const eq_view = model.view(machine);
         const mrid = try eq_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(machine.id);
         const view = CimMergedView.init(eq_view, mrid, null, ssh_opt);
+        const machine_values = try view.getProperties(.{
+            "IdentifiedObject.name",
+            "RotatingMachine.ratedS",
+            "RegulatingCondEq.controlEnabled",
+            "SynchronousMachine.minQ",
+            "SynchronousMachine.maxQ",
+            "RotatingMachine.p",
+            "RotatingMachine.q",
+            "SynchronousMachine.qPercent",
+        });
+        const machine_refs = try view.getReferences(.{
+            "RotatingMachine.GeneratingUnit",
+            "SynchronousMachine.InitialReactiveCapabilityCurve",
+            "RegulatingCondEq.RegulatingControl",
+        });
+        const eq_refs = try eq_view.getReferences(.{
+            "SynchronousMachine.type",
+        });
 
-        const name = try view.getProperty("IdentifiedObject.name");
+        const name = machine_values[0];
 
         const rated_s: ?f64 = blk: {
-            const s = try view.getProperty("RotatingMachine.ratedS") orelse break :blk null;
+            const s = machine_values[1] orelse break :blk null;
             break :blk try std.fmt.parseFloat(f64, s);
         };
 
-        const control_enabled_str = try view.getProperty("RegulatingCondEq.controlEnabled") orelse "false";
+        const control_enabled_str = machine_values[2] orelse "false";
         const voltage_regulator_on = std.mem.eql(u8, control_enabled_str, "true");
 
         // isCondenser is a capability flag from EQ (can this machine act as a condenser?).
         // It is true if EQ SynchronousMachine.type contains "condenser" (either "condenser"
         // or "generatorOrCondenser"). SSH operatingMode does not affect this flag.
-        const type_ref = try eq_view.getReference("SynchronousMachine.type") orelse "";
+        const type_ref = eq_refs[0] orelse "";
         const is_condenser = std.mem.indexOf(u8, type_ref, "ondenser") != null;
         // Extract "kind value" from a CIM enum URL: part after the last '.' in the fragment.
         // e.g. "http://...#SynchronousMachineKind.generatorOrCondenser" → "generatorOrCondenser"
@@ -690,18 +761,26 @@ pub fn convert_generators(
         var wind_unit_type: ?[]const u8 = null;
         var fuel_type: ?[]const u8 = null;
         var participation_factor: ?f64 = null;
-        if (try view.getReference("RotatingMachine.GeneratingUnit")) |unit_ref| {
+        if (machine_refs[0]) |unit_ref| {
             const unit_id = strip_hash(unit_ref);
             if (model.getObjectById(unit_id)) |unit| {
+                const unit_props = try unit.getProperties(.{
+                    "GeneratingUnit.minOperatingP",
+                    "GeneratingUnit.maxOperatingP",
+                    "IdentifiedObject.mRID",
+                });
+                const unit_refs = try unit.getReferences(.{
+                    "WindGeneratingUnit.windGenUnitType",
+                });
                 energy_source = energy_source_from_cim_type(unit.type_name);
-                if (try unit.getProperty("GeneratingUnit.minOperatingP")) |v|
+                if (unit_props[0]) |v|
                     min_p = try std.fmt.parseFloat(f64, v);
-                if (try unit.getProperty("GeneratingUnit.maxOperatingP")) |v|
+                if (unit_props[1]) |v|
                     max_p = try std.fmt.parseFloat(f64, v);
-                unit_mrid = try unit.getProperty("IdentifiedObject.mRID") orelse strip_underscore(unit_id);
+                unit_mrid = unit_props[2] orelse strip_underscore(unit_id);
                 // WindGeneratingUnit: extract windGenUnitType kind value.
                 if (std.mem.eql(u8, unit.type_name, "WindGeneratingUnit")) {
-                    if (try unit.getReference("WindGeneratingUnit.windGenUnitType")) |wt_ref| {
+                    if (unit_refs[0]) |wt_ref| {
                         const wt_frag = blk: {
                             const h = std.mem.lastIndexOfScalar(u8, wt_ref, '#') orelse break :blk wt_ref;
                             const frag = wt_ref[h + 1 ..];
@@ -726,18 +805,18 @@ pub fn convert_generators(
         var curve_points: std.ArrayListUnmanaged(iidm.ReactiveCapabilityCurvePoint) = .empty;
         var min_max_reactive_limits: ?iidm.MinMaxReactiveLimits = null;
 
-        if (try view.getReference("SynchronousMachine.InitialReactiveCapabilityCurve")) |curve_ref| {
+        if (machine_refs[1]) |curve_ref| {
             if (index.curve_points.get(strip_hash(curve_ref))) |points| {
                 try curve_points.appendSlice(gpa, points.items);
             }
         }
 
         if (curve_points.items.len == 0) {
-            const min_q: ?f64 = if (try view.getProperty("SynchronousMachine.minQ")) |v|
+            const min_q: ?f64 = if (machine_values[3]) |v|
                 try std.fmt.parseFloat(f64, v)
             else
                 null;
-            const max_q: ?f64 = if (try view.getProperty("SynchronousMachine.maxQ")) |v|
+            const max_q: ?f64 = if (machine_values[4]) |v|
                 try std.fmt.parseFloat(f64, v)
             else
                 null;
@@ -751,10 +830,17 @@ pub fn convert_generators(
         var rc_mrid: ?[]const u8 = null;
         var rc_mode_lower: ?[]u8 = null;
         var target_v: ?f64 = null;
-        if (try view.getReference("RegulatingCondEq.RegulatingControl")) |rc_ref| {
+        if (machine_refs[2]) |rc_ref| {
             const rc_id = strip_hash(rc_ref);
             if (model.getObjectById(rc_id)) |rc| {
-                rc_mrid = try rc.getProperty("IdentifiedObject.mRID") orelse strip_underscore(rc_id);
+                const rc_props = try rc.getProperties(.{
+                    "IdentifiedObject.mRID",
+                });
+                const rc_refs = try rc.getReferences(.{
+                    "RegulatingControl.mode",
+                    "RegulatingControl.Terminal",
+                });
+                rc_mrid = rc_props[0] orelse strip_underscore(rc_id);
                 // SSH RegulatingControl.targetValue → IIDM targetV.
                 if (rc_mrid) |rm| {
                     if (ssh_opt) |ssh| {
@@ -763,13 +849,13 @@ pub fn convert_generators(
                     }
                 }
                 // CGMES.mode: full URL of RegulatingControl.mode, lowercased.
-                if (try rc.getReference("RegulatingControl.mode")) |mode_ref| {
+                if (rc_refs[0]) |mode_ref| {
                     rc_mode_lower = try gpa.alloc(u8, mode_ref.len);
                     _ = std.ascii.lowerString(rc_mode_lower.?, mode_ref);
                 }
                 // Bus-branch mode has no busbarSections, so the BBS ref would dangle.
                 if (placer.mode == .node_breaker) {
-                    if (try rc.getReference("RegulatingControl.Terminal")) |rt_ref| {
+                    if (rc_refs[1]) |rt_ref| {
                         const rt_id = strip_hash(rt_ref);
                         const rt_eq = index.terminal_equipment.get(rt_id) orelse "";
                         // If RC terminal is on this machine → local regulation (null).
@@ -810,17 +896,17 @@ pub fn convert_generators(
 
         // SSH RotatingMachine.p/q are in load convention (negative = generating).
         // IIDM targetP/targetQ use generator convention (positive = generating) → negate.
-        const target_p: ?f64 = if (try view.getProperty("RotatingMachine.p")) |v|
+        const target_p: ?f64 = if (machine_values[5]) |v|
             -(try std.fmt.parseFloat(f64, v))
         else
             null;
-        const target_q: ?f64 = if (try view.getProperty("RotatingMachine.q")) |v|
+        const target_q: ?f64 = if (machine_values[6]) |v|
             -(try std.fmt.parseFloat(f64, v))
         else
             null;
 
         const q_percent: ?f64 = blk: {
-            const v = try view.getProperty("SynchronousMachine.qPercent") orelse break :blk null;
+            const v = machine_values[7] orelse break :blk null;
             break :blk std.fmt.parseFloat(f64, std.mem.trim(u8, v, " \t\r\n")) catch null;
         };
 

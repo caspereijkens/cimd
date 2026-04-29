@@ -184,4 +184,31 @@ Examples:
   cimd diff eq_v1.zip eq_v2.zip -j | jq .
   cimd diff eq_v1.zip eq_v2.zip -s
 ```
+
+### Topology
+```
+$ cimd topology --help
+
+Usage: cimd topology <file> [options]
+
+Generate TopologicalNodes from an EQ profile (and optional SSH). Each TN is
+a connected component of ConnectivityNodes joined by *closed* switches —
+equivalent to a CGMES TP profile's terminal→TopologicalNode mapping.
+Output is JSON on stdout.
+
+Without --ssh, all switches are treated as closed (electrical-equivalence
+snapshot ignoring switch state).
+
+Arguments:
+  <file>                  EQ profile (XML or ZIP)
+
+Options:
+  -b, --boundary <file>   EQBD boundary profile (XML or ZIP)
+  -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
+  -o, --output <file>     Write output to file instead of stdout
+
+Examples:
+  cimd topology data/eq.zip -s ssh.zip
+  cimd topology data/eq.zip -b eqbd.zip -s ssh.zip -o tn.json
+```
 <!-- FEATURES_END -->

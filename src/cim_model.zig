@@ -40,6 +40,9 @@ pub const CimModel = struct {
         // Pass 1: collect objects and count per type.
         var type_counts = std.StringHashMap(u32).init(gpa);
         defer type_counts.deinit();
+        var seen_ids = std.StringHashMap(void).init(gpa);
+        defer seen_ids.deinit();
+        try seen_ids.ensureTotalCapacity(@intCast(boundaries.items.len));
 
         for (boundaries.items, 0..) |tag, i| {
             // Try rdf:ID first, then fall back to rdf:about (for FullModel etc.)
@@ -48,6 +51,10 @@ pub const CimModel = struct {
                 error.MalformedTag => continue,
             };
             if (id.len > 0) {
+                const seen = seen_ids.getOrPutAssumeCapacity(id);
+                if (seen.found_existing) return error.DuplicateId;
+                seen.value_ptr.* = {};
+
                 const object = try tag_index.CimObject.init(
                     xml,
                     boundaries.items,
@@ -178,3 +185,19 @@ pub const CimModel = struct {
         return out;
     }
 };
+
+test "CimModel.init rejects duplicate RDF identifiers" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:BaseVoltage rdf:ID="_DUP">
+        \\    <cim:BaseVoltage.nominalVoltage>110</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\  <cim:BaseVoltage rdf:ID="_DUP">
+        \\    <cim:BaseVoltage.nominalVoltage>220</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\</rdf:RDF>
+    ;
+
+    try std.testing.expectError(error.DuplicateId, CimModel.init(gpa, try gpa.dupe(u8, xml)));
+}

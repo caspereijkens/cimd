@@ -259,7 +259,10 @@ pub fn convert(
         const st_secs = parse_iso8601_seconds(std.mem.trim(u8, st, " \t\r\n")) orelse break :blk 0;
         const ct_secs = parse_iso8601_seconds(std.mem.trim(u8, ct, " \t\r\n")) orelse break :blk 0;
         const diff_secs = st_secs - ct_secs;
-        break :blk if (diff_secs > 0) @intCast(@divTrunc(diff_secs, 60)) else 0;
+        if (diff_secs <= 0) break :blk 0;
+        const minutes = @divTrunc(diff_secs, 60);
+        if (minutes > std.math.maxInt(u32)) return error.ForecastDistanceTooLarge;
+        break :blk @intCast(minutes);
     };
 
     var network = iidm.Network{

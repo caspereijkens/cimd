@@ -278,7 +278,11 @@ pub fn build_reachable_busbar_section_index(gpa: std.mem.Allocator, model: *cons
 
     var parent: IdMap = .empty;
     defer parent.deinit(gpa);
-    try parent.ensureTotalCapacity(gpa, @intCast(get_switch_count(switch_slices) * 2));
+    try parent.ensureTotalCapacity(gpa, @intCast(conn_nodes.len));
+
+    for (conn_nodes) |conn_node| {
+        parent.putAssumeCapacity(conn_node.id, conn_node.id);
+    }
 
     for (switch_slices) |switches| {
         for (switches) |@"switch"| {
@@ -286,6 +290,8 @@ pub fn build_reachable_busbar_section_index(gpa: std.mem.Allocator, model: *cons
             if (terminals.items.len != 2) continue;
             const conn_node0 = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
             const conn_node1 = index.terminal_conn_node.get(terminals.items[1].id) orelse continue;
+            if (!parent.contains(conn_node0)) continue;
+            if (!parent.contains(conn_node1)) continue;
             union_smallest_id_wins(&parent, conn_node0, conn_node1);
         }
     }
@@ -303,11 +309,10 @@ pub fn build_reachable_busbar_section_index(gpa: std.mem.Allocator, model: *cons
 
     try topology.conn_node_reachable_busbar_section.ensureTotalCapacity(gpa, @intCast(conn_nodes.len));
 
-    var it = parent.keyIterator();
-    while (it.next()) |conn_node_id| {
-        const root = find_root(&parent, conn_node_id.*);
+    for (conn_nodes) |conn_node| {
+        const root = find_root(&parent, conn_node.id);
         const busbar_section_mrid = cluster_to_busbar_section.get(root) orelse continue;
-        topology.conn_node_reachable_busbar_section.putAssumeCapacity(conn_node_id.*, busbar_section_mrid);
+        topology.conn_node_reachable_busbar_section.putAssumeCapacity(conn_node.id, busbar_section_mrid);
     }
 
     assert(topology.conn_node_reachable_busbar_section.count() <= conn_nodes.len);

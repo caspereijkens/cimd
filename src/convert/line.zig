@@ -264,13 +264,21 @@ pub fn convert_lines(
 
     for (lines) |line| {
         const line_view = model.view(line);
-        const mrid = try line_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(line.id);
-        const name = try line_view.getProperty("IdentifiedObject.name");
+        const props = try line_view.getProperties(.{
+            "IdentifiedObject.mRID",
+            "IdentifiedObject.name",
+            "ACLineSegment.r",
+            "ACLineSegment.x",
+            "ACLineSegment.gch",
+            "ACLineSegment.bch",
+        });
+        const mrid = props[0] orelse strip_underscore(line.id);
+        const name = props[1];
 
-        const r = try std.fmt.parseFloat(f64, try line_view.getProperty("ACLineSegment.r") orelse "0.0");
-        const x = try std.fmt.parseFloat(f64, try line_view.getProperty("ACLineSegment.x") orelse "0.0");
-        const charging_conductance = try std.fmt.parseFloat(f64, try line_view.getProperty("ACLineSegment.gch") orelse "0.0");
-        const charging_susceptance = try std.fmt.parseFloat(f64, try line_view.getProperty("ACLineSegment.bch") orelse "0.0");
+        const r = try std.fmt.parseFloat(f64, props[2] orelse "0.0");
+        const x = try std.fmt.parseFloat(f64, props[3] orelse "0.0");
+        const charging_conductance = try std.fmt.parseFloat(f64, props[4] orelse "0.0");
+        const charging_susceptance = try std.fmt.parseFloat(f64, props[5] orelse "0.0");
 
         const terminals = index.equipment_terminals.get(line.id) orelse continue;
         if (terminals.items.len != 2) continue;
@@ -352,11 +360,17 @@ pub fn convert_lines(
     // SeriesCompensator has r/x but no shunt admittance (charging conductance/susceptance = 0.0).
     for (series_compensators) |series_compensator| {
         const series_compensator_view = model.view(series_compensator);
-        const mrid = try series_compensator_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(series_compensator.id);
-        const name = try series_compensator_view.getProperty("IdentifiedObject.name");
+        const props = try series_compensator_view.getProperties(.{
+            "IdentifiedObject.mRID",
+            "IdentifiedObject.name",
+            "SeriesCompensator.r",
+            "SeriesCompensator.x",
+        });
+        const mrid = props[0] orelse strip_underscore(series_compensator.id);
+        const name = props[1];
 
-        const r = try std.fmt.parseFloat(f64, try series_compensator_view.getProperty("SeriesCompensator.r") orelse "0.0");
-        const x = try std.fmt.parseFloat(f64, try series_compensator_view.getProperty("SeriesCompensator.x") orelse "0.0");
+        const r = try std.fmt.parseFloat(f64, props[2] orelse "0.0");
+        const x = try std.fmt.parseFloat(f64, props[3] orelse "0.0");
 
         const terminals = index.equipment_terminals.get(series_compensator.id) orelse continue;
         if (terminals.items.len != 2) continue;

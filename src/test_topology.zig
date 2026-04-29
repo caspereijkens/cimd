@@ -197,6 +197,43 @@ test "build_conn_node_root_map: ignores switch endpoints that reference missing 
     try std.testing.expect(!roots.contains("_CN_MISSING"));
 }
 
+const EQ_DIRECT_BUSBAR =
+    \\<rdf:RDF>
+    \\  <cim:VoltageLevel rdf:ID="_VL1">
+    \\    <cim:IdentifiedObject.mRID>VL1</cim:IdentifiedObject.mRID>
+    \\  </cim:VoltageLevel>
+    \\  <cim:ConnectivityNode rdf:ID="_CN_A">
+    \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#_VL1"/>
+    \\  </cim:ConnectivityNode>
+    \\  <cim:BusbarSection rdf:ID="_BBS1">
+    \\    <cim:IdentifiedObject.mRID>BBS1</cim:IdentifiedObject.mRID>
+    \\  </cim:BusbarSection>
+    \\  <cim:Terminal rdf:ID="_T_BBS1">
+    \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BBS1"/>
+    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN_A"/>
+    \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+    \\  </cim:Terminal>
+    \\</rdf:RDF>
+;
+
+test "Topology.build: direct busbar ConnectivityNode is reachable from itself" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_DIRECT_BUSBAR));
+    defer model.deinit(gpa);
+
+    const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
+    var index = try CimIndex.build(gpa, &model, boundary_ids);
+    defer index.deinit(gpa);
+
+    var topology_data = try topology.Topology.build(gpa, &model, &index);
+    defer topology_data.deinit(gpa);
+
+    try std.testing.expectEqualStrings(
+        "BBS1",
+        topology_data.conn_node_reachable_busbar_section.get("_CN_A").?,
+    );
+}
+
 const SSH_SWITCH_XML =
     \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:cim="cim:" xmlns:md="md:">
     \\  <md:FullModel rdf:about="urn:uuid:SSH_FM"/>

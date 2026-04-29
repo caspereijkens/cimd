@@ -83,6 +83,9 @@ pub const CimTp = struct {
                 .skip => {},
                 .new_object => |raw_id| {
                     assert(object_cursor < new_object_count);
+                    const gop = id_to_object.getOrPutAssumeCapacity(raw_id);
+                    if (gop.found_existing) return error.DuplicateId;
+
                     const obj = try CimObject.init(
                         xml,
                         boundaries.items,
@@ -91,7 +94,7 @@ pub const CimTp = struct {
                         raw_id,
                     );
                     new_objects[object_cursor] = obj;
-                    id_to_object.putAssumeCapacity(raw_id, @intCast(object_cursor));
+                    gop.value_ptr.* = @intCast(object_cursor);
                     object_cursor += 1;
                 },
                 .patch => |stripped_mrid| {
@@ -110,6 +113,11 @@ pub const CimTp = struct {
         assert(id_to_object.count() == new_object_count);
 
         std.mem.sort(TpPatch, patches, {}, patch_less_than);
+        if (patches.len > 1) {
+            for (patches[1..], 1..) |patch, i| {
+                if (std.mem.eql(u8, patches[i - 1].mrid, patch.mrid)) return error.DuplicateId;
+            }
+        }
 
         return .{
             .xml = xml,
@@ -318,4 +326,28 @@ test "CimTp.init - skips metadata tags (FullModel, rdf:RDF)" {
 
     try std.testing.expectEqual(@as(usize, 0), tp.new_objects.len);
     try std.testing.expectEqual(@as(usize, 0), tp.patches.len);
+}
+
+test "CimTp.init - rejects duplicate new object IDs" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:TopologicalNode rdf:ID="_TN1"/>
+        \\  <cim:TopologicalNode rdf:ID="_TN1"/>
+        \\</rdf:RDF>
+    ;
+
+    try std.testing.expectError(error.DuplicateId, CimTp.init(gpa, try gpa.dupe(u8, xml)));
+}
+
+test "CimTp.init - rejects duplicate patch mRIDs" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Terminal rdf:about="#_T1"/>
+        \\  <cim:Terminal rdf:about="#_T1"/>
+        \\</rdf:RDF>
+    ;
+
+    try std.testing.expectError(error.DuplicateId, CimTp.init(gpa, try gpa.dupe(u8, xml)));
 }
