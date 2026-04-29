@@ -27,17 +27,30 @@ pub const Topology = struct {
     substation_merge: std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)),
     conn_node_reachable_busbar_section: IdMap,
 
-    pub fn build(gpa: std.mem.Allocator, model: *const CimModel, index: *const CimIndex) !Topology {
-        var topology = Topology{
+    pub fn empty() Topology {
+        return .{
             .conn_node_reachable_busbar_section = .empty,
             .voltage_level_merge = .empty,
             .substation_merge = .empty,
         };
+    }
+
+    pub fn build(gpa: std.mem.Allocator, model: *const CimModel, index: *const CimIndex) !Topology {
+        var topology = Topology.empty();
         errdefer topology.deinit(gpa);
 
         try build_voltage_level_merge(gpa, model, index, &topology);
         try build_substation_merge(gpa, model, index, &topology);
         try build_reachable_busbar_section_index(gpa, model, index, &topology);
+
+        return topology;
+    }
+
+    pub fn build_for_topological_nodes(gpa: std.mem.Allocator, model: *const CimModel, index: *const CimIndex) !Topology {
+        var topology = Topology.empty();
+        errdefer topology.deinit(gpa);
+
+        try build_voltage_level_merge(gpa, model, index, &topology);
 
         return topology;
     }
@@ -58,6 +71,19 @@ pub const TopologicalNode = struct {
     name: []const u8,
     base_voltage: []const u8,
     conn_node_container: []const u8,
+
+    pub fn jsonStringify(self: TopologicalNode, jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("mrid");
+        try jws.write(self.mrid);
+        try jws.objectField("name");
+        try jws.write(self.name);
+        try jws.objectField("baseVoltage");
+        try jws.write(self.base_voltage);
+        try jws.objectField("voltageLevel");
+        try jws.write(self.conn_node_container);
+        try jws.endObject();
+    }
 };
 
 /// Maps terminal raw ID → IIDM node number within its VoltageLevel.
@@ -587,20 +613,25 @@ fn union_closed_switch_conn_nodes(
 ) !void {
     for (switch_types) |switch_type| {
         for (model.get_objects_by_type(switch_type)) |@"switch"| {
-            // default behavior is closed.
-            const closed = if (ssh_opt) |s| try is_switch_closed(s, @"switch".id) else true;
-            if (!closed) continue;
+            const terminals = index.equipment_terminals.get(@"switch".id) orelse continue;
+            if (terminals.items.len != 2) continue;
+
+            const conn_node0 = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
+            const conn_node1 = index.terminal_conn_node.get(terminals.items[1].id) orelse continue;
+            // A CN may be absent from `parent` if the EQ references a CN object that doesn't
+            // exist (malformed input, or partial profile). Skip rather than insert a phantom root.
+            if (!parent.contains(conn_node0)) continue;
+            if (!parent.contains(conn_node1)) continue;
 
             // Retained closed switches become SwitchBranches in the IIDM bus-branch view —
             // each end stays its own TopologicalNode, so do not union across them.
             const retained_str = try model.view(@"switch").getProperty("Switch.retained") orelse "false";
             if (std.mem.eql(u8, retained_str, "true")) continue;
 
-            const terminals = index.equipment_terminals.get(@"switch".id) orelse continue;
-            if (terminals.items.len != 2) continue;
+            // default behavior is closed.
+            const closed = if (ssh_opt) |s| try is_switch_closed(s, @"switch".id) else true;
+            if (!closed) continue;
 
-            const conn_node0 = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
-            const conn_node1 = index.terminal_conn_node.get(terminals.items[1].id) orelse continue;
             union_smallest_id_wins(parent, conn_node0, conn_node1);
         }
     }

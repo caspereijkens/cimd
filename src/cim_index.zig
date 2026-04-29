@@ -101,6 +101,21 @@ pub const CimIndex = struct {
         return index;
     }
 
+    pub fn build_for_topology(
+        gpa: std.mem.Allocator,
+        model: *const CimModel,
+        boundary_base_voltage_ids: std.StringHashMapUnmanaged(void),
+    ) !CimIndex {
+        var index = create_empty_cim_index();
+        errdefer index.deinit(gpa);
+
+        try build_terminals(gpa, model, &index);
+        try build_connectivity(gpa, model, &index);
+
+        index.boundary_base_voltage_ids = boundary_base_voltage_ids;
+        return index;
+    }
+
     pub fn deinit(self: *CimIndex, gpa: std.mem.Allocator) void {
         self.terminal_equipment.deinit(gpa);
         self.terminal_conn_node.deinit(gpa);

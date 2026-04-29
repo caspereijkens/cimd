@@ -285,10 +285,10 @@ fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology)
     defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
-    var index = try cim_index.CimIndex.build(gpa, &model, boundary_ids);
+    var index = try cim_index.CimIndex.build_for_topology(gpa, &model, boundary_ids);
     defer index.deinit(gpa);
 
-    var topology = try topology_mod.Topology.build(gpa, &model, &index);
+    var topology = try topology_mod.Topology.build_for_topological_nodes(gpa, &model, &index);
     defer topology.deinit(gpa);
 
     const ssh_ptr: ?*const CimSsh = if (ssh_opt) |*s| s else null;
@@ -308,15 +308,8 @@ fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology)
     var file_writer = std.Io.File.Writer.init(output_file, io, &write_buffer);
     const w = &file_writer.interface;
 
-    try w.writeAll("{\"topologicalNodes\":[");
-    for (nodes.items, 0..) |tn, i| {
-        if (i > 0) try w.writeByte(',');
-        try w.print(
-            "{{\"mrid\":\"{s}\",\"name\":\"{s}\",\"baseVoltage\":\"{s}\",\"voltageLevel\":\"{s}\"}}",
-            .{ tn.mrid, tn.name, tn.base_voltage, tn.conn_node_container },
-        );
-    }
-    try w.writeAll("]}\n");
+    try std.json.Stringify.value(.{ .topologicalNodes = nodes.items }, .{}, w);
+    try w.writeByte('\n');
     try w.flush();
 }
 

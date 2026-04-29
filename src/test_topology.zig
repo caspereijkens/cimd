@@ -1,6 +1,8 @@
 const std = @import("std");
 const topology = @import("topology.zig");
 const tag_index = @import("tag_index.zig");
+const CimIndex = @import("cim_index.zig").CimIndex;
+const CimModel = @import("cim_model.zig").CimModel;
 const CimSsh = @import("cim_ssh.zig").CimSsh;
 
 const CimObject = tag_index.CimObject;
@@ -133,6 +135,66 @@ test "topology.get_switch_count: mixed empty and non-empty" {
     var objs: [4]CimObject = undefined;
     const slices = [topology.switch_types.len][]const CimObject{ &.{}, &objs, &.{} };
     try std.testing.expectEqual(@as(usize, 4), topology.get_switch_count(slices));
+}
+
+test "TopologicalNode jsonStringify: escapes strings and uses command field names" {
+    const gpa = std.testing.allocator;
+    const nodes = [_]topology.TopologicalNode{.{
+        .mrid = "CN\"1",
+        .name = "Line\\Name\n",
+        .base_voltage = "BV1",
+        .conn_node_container = "VL1",
+    }};
+
+    const json = try std.json.Stringify.valueAlloc(gpa, .{ .topologicalNodes = nodes[0..] }, .{});
+    defer gpa.free(json);
+
+    try std.testing.expectEqualStrings(
+        "{\"topologicalNodes\":[{\"mrid\":\"CN\\\"1\",\"name\":\"Line\\\\Name\\n\",\"baseVoltage\":\"BV1\",\"voltageLevel\":\"VL1\"}]}",
+        json,
+    );
+}
+
+const EQ_SWITCH_WITH_MISSING_CN =
+    \\<rdf:RDF>
+    \\  <cim:VoltageLevel rdf:ID="_VL1">
+    \\    <cim:IdentifiedObject.mRID>VL1</cim:IdentifiedObject.mRID>
+    \\  </cim:VoltageLevel>
+    \\  <cim:ConnectivityNode rdf:ID="_CN_A">
+    \\    <cim:IdentifiedObject.mRID>CN_A</cim:IdentifiedObject.mRID>
+    \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#_VL1"/>
+    \\  </cim:ConnectivityNode>
+    \\  <cim:Breaker rdf:ID="_BRK1">
+    \\    <cim:IdentifiedObject.mRID>BRK1</cim:IdentifiedObject.mRID>
+    \\  </cim:Breaker>
+    \\  <cim:Terminal rdf:ID="_T_BRK1_A">
+    \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BRK1"/>
+    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN_A"/>
+    \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+    \\  </cim:Terminal>
+    \\  <cim:Terminal rdf:ID="_T_BRK1_MISSING">
+    \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BRK1"/>
+    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN_MISSING"/>
+    \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+    \\  </cim:Terminal>
+    \\</rdf:RDF>
+;
+
+test "build_conn_node_root_map: ignores switch endpoints that reference missing ConnectivityNodes" {
+    const gpa = std.testing.allocator;
+    var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_SWITCH_WITH_MISSING_CN));
+    defer model.deinit(gpa);
+
+    const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
+    var index = try CimIndex.build_for_topology(gpa, &model, boundary_ids);
+    defer index.deinit(gpa);
+
+    var roots = try topology.build_conn_node_root_map(gpa, &model, &index, null);
+    defer roots.deinit(gpa);
+
+    try std.testing.expectEqual(@as(@TypeOf(roots.count()), 1), roots.count());
+    try std.testing.expectEqualStrings("_CN_A", roots.get("_CN_A").?);
+    try std.testing.expect(!roots.contains("_CN_MISSING"));
 }
 
 const SSH_SWITCH_XML =
