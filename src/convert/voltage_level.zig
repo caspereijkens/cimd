@@ -1,7 +1,7 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
 const eq = @import("../cgmes/eq.zig");
-const cim_index = @import("../topology/cross_ref.zig");
+const cross_ref = @import("../topology/cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
 const topology_mod = @import("../topology/resolve.zig");
@@ -12,7 +12,7 @@ const Topology = topology_mod.Topology;
 const EQ = eq.EQ;
 const CimObject = tag_index.CimObject;
 const CimObjectView = tag_index.CimObjectView;
-const CimIndex = cim_index.CimIndex;
+const CrossRef = cross_ref.CrossRef;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
@@ -31,7 +31,7 @@ fn resolve_nominal_voltageoltage(model: *const EQ, voltage_level: CimObjectView)
 fn append_voltage_level(
     gpa: std.mem.Allocator,
     model: *const EQ,
-    index: *const CimIndex,
+    index: *const CrossRef,
     voltage_level: CimObjectView,
     network: *iidm.Network,
     substation_id_map: *std.StringHashMapUnmanaged(usize),
@@ -83,7 +83,7 @@ fn append_voltage_level(
 // Property values for normalValue/OperationalLimit are heap-allocated and flagged owned.
 fn build_voltage_limit_properties(
     gpa: std.mem.Allocator,
-    limits_opt: ?cim_index.VoltageLimitInfo,
+    limits_opt: ?cross_ref.VoltageLimitInfo,
 ) !std.ArrayListUnmanaged(iidm.Property) {
     var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
 
@@ -137,7 +137,7 @@ fn build_voltage_limit_properties(
 pub fn convert_voltage_levels(
     gpa: std.mem.Allocator,
     model: *const EQ,
-    index: *const CimIndex,
+    index: *const CrossRef,
     topology: *const Topology,
     network: *iidm.Network,
     substation_id_map: *std.StringHashMapUnmanaged(usize),

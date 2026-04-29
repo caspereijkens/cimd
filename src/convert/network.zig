@@ -1,7 +1,7 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
 const eq = @import("../cgmes/eq.zig");
-const cim_index = @import("../topology/cross_ref.zig");
+const cross_ref = @import("../topology/cross_ref.zig");
 const utils = @import("../cgmes/ids.zig");
 const topology = @import("../topology/resolve.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
@@ -223,13 +223,13 @@ pub fn convert(
     assert(!bus_branch or tp_opt != null);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
-    var index = try cim_index.CimIndex.build(gpa, model, boundary_ids);
+    var index = try cross_ref.CrossRef.build(gpa, model, boundary_ids);
     defer index.deinit(gpa);
 
     var topology_data = try topology.Topology.build(gpa, model, &index);
     defer topology_data.deinit(gpa);
 
-    try cim_index.build_voltage_limits(gpa, model, &index, &topology_data);
+    try cross_ref.build_voltage_limits(gpa, model, &index, &topology_data);
 
     // ---- FullModel metadata: id, caseDate, forecastDistance ----
     const full_models = model.get_objects_by_type("FullModel");

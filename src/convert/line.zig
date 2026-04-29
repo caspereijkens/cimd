@@ -1,7 +1,7 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
 const eq = @import("../cgmes/eq.zig");
-const cim_index = @import("../topology/cross_ref.zig");
+const cross_ref = @import("../topology/cross_ref.zig");
 const utils = @import("../cgmes/ids.zig");
 const placement_mod = @import("placement.zig");
 const topology_mod = @import("../topology/resolve.zig");
@@ -9,7 +9,7 @@ const topology_mod = @import("../topology/resolve.zig");
 const assert = std.debug.assert;
 
 const EQ = eq.EQ;
-const CimIndex = cim_index.CimIndex;
+const CrossRef = cross_ref.CrossRef;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 const NodeMap = topology_mod.NodeMap;
@@ -27,7 +27,7 @@ const LinePlacement = struct {
 /// Boundary terminals (node-breaker only): looks up terminal_node_map for the assigned node.
 /// Returns null if the terminal cannot be placed (line should be skipped).
 fn resolve_line_terminal(
-    terminal: cim_index.TerminalInfo,
+    terminal: cross_ref.TerminalInfo,
     placer: TerminalPlacer,
     boundary_conn_node_voltage_level_map: *const std.StringHashMapUnmanaged(u32),
     terminal_node_map: *const std.StringHashMapUnmanaged(u32),

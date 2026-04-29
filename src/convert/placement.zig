@@ -1,6 +1,6 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const cim_index = @import("../topology/cross_ref.zig");
+const cross_ref = @import("../topology/cross_ref.zig");
 const eq = @import("../cgmes/eq.zig");
 const utils = @import("../cgmes/ids.zig");
 const bus_conv = @import("bus.zig");
@@ -11,7 +11,7 @@ const strip_underscore = utils.strip_underscore;
 const strip_hash = utils.strip_hash;
 
 const assert = std.debug.assert;
-const CimIndex = cim_index.CimIndex;
+const CrossRef = cross_ref.CrossRef;
 const Topology = topology_mod.Topology;
 
 pub const Placement = struct {
@@ -33,7 +33,7 @@ pub const Placement = struct {
 pub fn resolve_terminal_placement(
     terminal_id: []const u8,
     conn_node_id: []const u8,
-    index: *const CimIndex,
+    index: *const CrossRef,
     topology: *const Topology,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const topology_mod.NodeMap,
@@ -52,7 +52,7 @@ pub fn resolve_terminal_placement(
 /// bus-branch mode: resolves via TP Terminal.TopologicalNode patch → BusPlacement.
 pub const TerminalPlacer = struct {
     mode: Mode,
-    index: *const CimIndex,
+    index: *const CrossRef,
     topology: *const Topology,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
 
@@ -95,7 +95,7 @@ pub const TerminalPlacer = struct {
     }
 };
 
-/// Build OperationalLimitsGroup list for one terminal from the CimIndex.
+/// Build OperationalLimitsGroup list for one terminal from the CrossRef.
 /// Caller owns the returned list and must deinit it.
 /// Group properties format matches PyPowSyBl's CGMES extension:
 ///   CGMES.normalValue_CurrentLimit_patl, CGMES.OperationalLimitSetName,
@@ -103,7 +103,7 @@ pub const TerminalPlacer = struct {
 pub fn build_op_lims(
     gpa: std.mem.Allocator,
     model: *const eq.EQ,
-    index: *const CimIndex,
+    index: *const CrossRef,
     terminal_id: []const u8,
 ) !std.ArrayListUnmanaged(iidm.OperationalLimitsGroup) {
     assert(terminal_id.len > 0);

@@ -1,7 +1,7 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
 const eq = @import("../cgmes/eq.zig");
-const cim_index = @import("../topology/cross_ref.zig");
+const cross_ref = @import("../topology/cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
 const topology_mod = @import("../topology/resolve.zig");
@@ -12,7 +12,7 @@ const Topology = topology_mod.Topology;
 const EQ = eq.EQ;
 const CimObject = tag_index.CimObject;
 const CimObjectView = tag_index.CimObjectView;
-const CimIndex = cim_index.CimIndex;
+const CrossRef = cross_ref.CrossRef;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 

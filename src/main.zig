@@ -9,7 +9,7 @@ const eq = @import("cgmes/eq.zig");
 const browse = @import("browse.zig");
 const diff = @import("diff.zig");
 const converter = @import("convert/network.zig");
-const cim_index = @import("topology/cross_ref.zig");
+const cross_ref = @import("topology/cross_ref.zig");
 const topology_mod = @import("topology/resolve.zig");
 const validate_topology = @import("topology/validate.zig");
 
@@ -285,7 +285,7 @@ fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology)
     defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
-    var index = try cim_index.CimIndex.build_for_topology(gpa, &model, boundary_ids);
+    var index = try cross_ref.CrossRef.build_for_topology(gpa, &model, boundary_ids);
     defer index.deinit(gpa);
 
     var topology = try topology_mod.Topology.build_for_topological_nodes(gpa, &model, &index);
@@ -324,7 +324,7 @@ fn command_validate_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.
     defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
-    var index = try cim_index.CimIndex.build(gpa, &model, boundary_ids);
+    var index = try cross_ref.CrossRef.build(gpa, &model, boundary_ids);
     defer index.deinit(gpa);
 
     const ssh_ptr: ?*const SSH = if (ssh_opt) |*s| s else null;

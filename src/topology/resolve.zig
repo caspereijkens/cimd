@@ -1,7 +1,7 @@
 const std = @import("std");
 const utils = @import("../cgmes/ids.zig");
 const eq = @import("../cgmes/eq.zig");
-const cim_index = @import("cross_ref.zig");
+const cross_ref = @import("cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const cim_ssh = @import("../cgmes/ssh.zig");
 
@@ -12,7 +12,7 @@ const strip_underscore = utils.strip_underscore;
 
 const EQ = eq.EQ;
 const SSH = cim_ssh.SSH;
-const CimIndex = cim_index.CimIndex;
+const CrossRef = cross_ref.CrossRef;
 const CimObjectView = tag_index.CimObjectView;
 const CimObject = tag_index.CimObject;
 
@@ -35,7 +35,7 @@ pub const Topology = struct {
         };
     }
 
-    pub fn build(gpa: std.mem.Allocator, model: *const EQ, index: *const CimIndex) !Topology {
+    pub fn build(gpa: std.mem.Allocator, model: *const EQ, index: *const CrossRef) !Topology {
         var topology = Topology.empty();
         errdefer topology.deinit(gpa);
 
@@ -46,7 +46,7 @@ pub const Topology = struct {
         return topology;
     }
 
-    pub fn build_for_topological_nodes(gpa: std.mem.Allocator, model: *const EQ, index: *const CimIndex) !Topology {
+    pub fn build_for_topological_nodes(gpa: std.mem.Allocator, model: *const EQ, index: *const CrossRef) !Topology {
         var topology = Topology.empty();
         errdefer topology.deinit(gpa);
 
@@ -164,7 +164,7 @@ pub fn union_smallest_id_wins(parent: *IdMap, id_a: []const u8, id_b: []const u8
 // A switch with terminals in two different CIM VoltageLevels means those
 // VLs are electrically one region. PyPowSyBl collapses them; this map
 // records each stub VL's representative so callers can normalize VL refs.
-pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const eq.EQ, index: *const CimIndex, topology: *Topology) !void {
+pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const eq.EQ, index: *const CrossRef, topology: *Topology) !void {
     assert(topology.voltage_level_merge.count() == 0);
 
     const voltage_levels = model.get_objects_by_type("VoltageLevel");
@@ -174,7 +174,7 @@ pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const eq.EQ, in
     defer parent.deinit(gpa);
     try parent.ensureTotalCapacity(gpa, @intCast(get_switch_count(switch_slices)));
 
-    for (switch_slices) |slice| try cim_index.process_switch_type(model, index, slice, &parent);
+    for (switch_slices) |slice| try cross_ref.process_switch_type(model, index, slice, &parent);
 
     try topology.voltage_level_merge.ensureTotalCapacity(gpa, @intCast(voltage_levels.len));
     for (voltage_levels) |voltage_level| {
@@ -194,7 +194,7 @@ pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const eq.EQ, in
 
 // Substations merge transitively: when their VLs merge (cross-VL switches),
 // or when a PowerTransformer spans two substations. Mirrors PyPowSyBl.
-pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const eq.EQ, index: *const CimIndex, topology: *Topology) !void {
+pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const eq.EQ, index: *const CrossRef, topology: *Topology) !void {
     assert(topology.substation_merge.count() == 0);
     assert(index.conn_node_container.count() > 0);
 
@@ -260,7 +260,7 @@ pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const eq.EQ, index
     assert(topology.substation_merge.count() <= substations.len);
 }
 
-fn conn_node_to_voltage_level(model: *const eq.EQ, index: *const CimIndex, conn_node_id: []const u8) ?CimObjectView {
+fn conn_node_to_voltage_level(model: *const eq.EQ, index: *const CrossRef, conn_node_id: []const u8) ?CimObjectView {
     const container_id = index.conn_node_container.get(conn_node_id) orelse return null;
     const obj = model.getObjectById(container_id) orelse return null;
     if (!std.mem.eql(u8, obj.type_name, "VoltageLevel")) return null;
@@ -269,7 +269,7 @@ fn conn_node_to_voltage_level(model: *const eq.EQ, index: *const CimIndex, conn_
 
 /// RegulatingControl resolution needs to find a BBS reachable through switches,
 /// and doing the graph walk at query time would be quadratic. We pre-compute once.
-pub fn build_reachable_busbar_section_index(gpa: std.mem.Allocator, model: *const eq.EQ, index: *const CimIndex, topology: *Topology) !void {
+pub fn build_reachable_busbar_section_index(gpa: std.mem.Allocator, model: *const eq.EQ, index: *const CrossRef, topology: *Topology) !void {
     assert(topology.conn_node_reachable_busbar_section.count() == 0);
     assert(index.conn_node_container.count() > 0);
 
@@ -371,7 +371,7 @@ fn increment_count(counts: *CountMap, id: []const u8) void {
     gop.value_ptr.* += 1;
 }
 
-fn count_non_switch_non_busbar_terminals(gpa: std.mem.Allocator, model: *const EQ, index: *const CimIndex) !CountMap {
+fn count_non_switch_non_busbar_terminals(gpa: std.mem.Allocator, model: *const EQ, index: *const CrossRef) !CountMap {
     var counts: CountMap = .empty;
     errdefer counts.deinit(gpa);
     try counts.ensureTotalCapacity(gpa, @intCast(index.terminal_conn_node.count()));
@@ -389,7 +389,7 @@ fn count_non_switch_non_busbar_terminals(gpa: std.mem.Allocator, model: *const E
 
 fn assign_base_nodes(
     model: *const EQ,
-    index: *const CimIndex,
+    index: *const CrossRef,
     topology: *const Topology,
     voltage_levels: *const SetMap,
     conn_node_base_nodes: *CountMap,
@@ -414,7 +414,7 @@ fn assign_base_nodes(
 
 fn map_busbar_section_terminals(
     model: *const EQ,
-    index: *const CimIndex,
+    index: *const CrossRef,
     conn_node_base_nodes: *const CountMap,
     node_map: *NodeMap,
 ) void {
@@ -429,7 +429,7 @@ fn map_busbar_section_terminals(
 
 fn map_switch_terminals(
     model: *const EQ,
-    index: *const CimIndex,
+    index: *const CrossRef,
     conn_node_base_nodes: *const CountMap,
     node_map: *NodeMap,
     conn_node_has_switch: *SetMap,
@@ -458,7 +458,7 @@ fn seed_conn_nodes_with_many_terminals(total_other_count: *const CountMap, conn_
 
 fn map_phase2_equipment_terminals(
     model: *const EQ,
-    index: *const CimIndex,
+    index: *const CrossRef,
     ssh_opt: ?SSH,
     conn_node_base_nodes: *const CountMap,
     conn_node_repr_voltage_level: *const IdMap,
@@ -510,7 +510,7 @@ fn map_phase2_equipment_terminals(
 pub fn build_node_map(
     gpa: std.mem.Allocator,
     model: *const EQ,
-    index: *const CimIndex,
+    index: *const CrossRef,
     topology: *const Topology,
     voltage_levels: *const SetMap,
     ssh_opt: ?SSH,
@@ -612,7 +612,7 @@ pub fn is_switch_closed(ssh: *const SSH, switch_id: []const u8) !bool {
 
 fn union_closed_switch_conn_nodes(
     model: *const EQ,
-    index: *const CimIndex,
+    index: *const CrossRef,
     ssh_opt: ?*const SSH,
     parent: *IdMap,
 ) !void {
@@ -654,7 +654,7 @@ fn get_base_voltage_mrid(model: *const EQ, voltage_level: CimObjectView) ![]cons
 
 fn append_topological_node(
     model: *const EQ,
-    index: *const CimIndex,
+    index: *const CrossRef,
     topology: *const Topology,
     conn_node_id: []const u8,
     nodes: *std.ArrayListUnmanaged(TopologicalNode),
@@ -691,7 +691,7 @@ fn append_topological_node(
 pub fn build_topological_nodes(
     gpa: std.mem.Allocator,
     model: *const EQ,
-    index: *const CimIndex,
+    index: *const CrossRef,
     topology: *const Topology,
     ssh_opt: ?*const SSH,
 ) !std.ArrayListUnmanaged(TopologicalNode) {
@@ -715,7 +715,7 @@ pub fn build_topological_nodes(
     return nodes;
 }
 
-pub fn build_conn_node_root_map(gpa: std.mem.Allocator, model: *const EQ, index: *const CimIndex, ssh_opt: ?*const SSH) !IdMap {
+pub fn build_conn_node_root_map(gpa: std.mem.Allocator, model: *const EQ, index: *const CrossRef, ssh_opt: ?*const SSH) !IdMap {
     const conn_nodes = model.get_objects_by_type("ConnectivityNode");
 
     // Union-find: each CN starts as its own root.

@@ -1,7 +1,7 @@
 const std = @import("std");
 const utils = @import("../cgmes/ids.zig");
 const eq = @import("../cgmes/eq.zig");
-const cim_index = @import("cross_ref.zig");
+const cross_ref = @import("cross_ref.zig");
 const cim_ssh = @import("../cgmes/ssh.zig");
 const cim_tp = @import("../cgmes/tp.zig");
 const topology = @import("resolve.zig");
@@ -14,7 +14,7 @@ const strip_underscore = utils.strip_underscore;
 const EQ = eq.EQ;
 const SSH = cim_ssh.SSH;
 const TP = cim_tp.TP;
-const CimIndex = cim_index.CimIndex;
+const CrossRef = cross_ref.CrossRef;
 
 const IdMap = std.StringHashMapUnmanaged([]const u8);
 const ListMap = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8));
@@ -81,7 +81,7 @@ pub const ValidateOptions = struct {
 pub fn validate(
     gpa: std.mem.Allocator,
     model: *const EQ,
-    index: *const CimIndex,
+    index: *const CrossRef,
     tp: *const TP,
     ssh_opt: ?*const SSH,
     options: ValidateOptions,

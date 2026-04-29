@@ -6,7 +6,7 @@ const std = @import("std");
 const EQ = @import("../cgmes/eq.zig").EQ;
 const SSH = @import("../cgmes/ssh.zig").SSH;
 const TP = @import("../cgmes/tp.zig").TP;
-const CimIndex = @import("cross_ref.zig").CimIndex;
+const CrossRef = @import("cross_ref.zig").CrossRef;
 const validate_topology = @import("validate.zig");
 
 const ValidateResult = struct {
@@ -40,7 +40,7 @@ fn run_validate(
     defer if (ssh_opt) |*s| s.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
-    var index = try CimIndex.build(gpa, &model, boundary_ids);
+    var index = try CrossRef.build(gpa, &model, boundary_ids);
     defer index.deinit(gpa);
 
     const ssh_ptr: ?*const SSH = if (ssh_opt) |*s| s else null;

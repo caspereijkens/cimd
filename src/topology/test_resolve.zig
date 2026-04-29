@@ -1,7 +1,7 @@
 const std = @import("std");
 const topology = @import("resolve.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
-const CimIndex = @import("cross_ref.zig").CimIndex;
+const CrossRef = @import("cross_ref.zig").CrossRef;
 const EQ = @import("../cgmes/eq.zig").EQ;
 const SSH = @import("../cgmes/ssh.zig").SSH;
 
@@ -186,7 +186,7 @@ test "build_conn_node_root_map: ignores switch endpoints that reference missing 
     defer model.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
-    var index = try CimIndex.build_for_topology(gpa, &model, boundary_ids);
+    var index = try CrossRef.build_for_topology(gpa, &model, boundary_ids);
     defer index.deinit(gpa);
 
     var roots = try topology.build_conn_node_root_map(gpa, &model, &index, null);
@@ -222,7 +222,7 @@ test "Topology.build: direct busbar ConnectivityNode is reachable from itself" {
     defer model.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
-    var index = try CimIndex.build(gpa, &model, boundary_ids);
+    var index = try CrossRef.build(gpa, &model, boundary_ids);
     defer index.deinit(gpa);
 
     var topology_data = try topology.Topology.build(gpa, &model, &index);

@@ -1,9 +1,9 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
 const eq = @import("../cgmes/eq.zig");
-const cim_index = @import("../topology/cross_ref.zig");
+const cross_ref = @import("../topology/cross_ref.zig");
 const EQ = eq.EQ;
-const CimIndex = cim_index.CimIndex;
+const CrossRef = cross_ref.CrossRef;
 const cim_ssh = @import("../cgmes/ssh.zig");
 const SSH = cim_ssh.SSH;
 const topology = @import("../topology/resolve.zig");
@@ -20,7 +20,7 @@ const Topology = topology.Topology;
 pub fn populate_internal_connections(
     gpa: std.mem.Allocator,
     model: *const EQ,
-    index: *const CimIndex,
+    index: *const CrossRef,
     topology_data: *const Topology,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     ssh_opt: ?SSH,
