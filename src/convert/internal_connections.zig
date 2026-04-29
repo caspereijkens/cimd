@@ -5,7 +5,7 @@ const cim_index = @import("../topology/cross_ref.zig");
 const CimModel = cim_model.CimModel;
 const CimIndex = cim_index.CimIndex;
 const cim_ssh = @import("../cgmes/ssh.zig");
-const CimSsh = cim_ssh.CimSsh;
+const SSH = cim_ssh.SSH;
 const topology = @import("../topology/resolve.zig");
 const Topology = topology.Topology;
 
@@ -23,7 +23,7 @@ pub fn populate_internal_connections(
     index: *const CimIndex,
     topology_data: *const Topology,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
-    ssh_opt: ?CimSsh,
+    ssh_opt: ?SSH,
     nm_result: *const topology.NodeMapResult,
 ) !void {
     // Per-CN Phase 2 terminal count — same prediction the original code used to

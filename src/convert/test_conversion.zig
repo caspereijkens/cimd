@@ -6,7 +6,7 @@
 const std = @import("std");
 const converter = @import("network.zig");
 const CimModel = @import("../cgmes/eq.zig").CimModel;
-const CimSsh = @import("../cgmes/ssh.zig").CimSsh;
+const SSH = @import("../cgmes/ssh.zig").SSH;
 
 /// Minimal EQ model with enough objects to exercise every edge case.
 /// Objects and their purpose:
@@ -1011,7 +1011,7 @@ test "shunt: targetDeadband defaults to 0.0 when SSH provided but no RegulatingC
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
@@ -1542,7 +1542,7 @@ test "SSH: switch open and retained state come from SSH overlay" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
@@ -1560,7 +1560,7 @@ test "SSH: load p0 and q0 read from EnergyConsumer.p and .q in SSH" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
@@ -1579,7 +1579,7 @@ test "SSH: disconnected terminal creates fictitious switch for any equipment typ
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
@@ -1606,7 +1606,7 @@ test "SSH: case_date comes from SSH scenarioTime, not EQ" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
@@ -1623,7 +1623,7 @@ test "SSH: forecastDistance computed from SSH times, not EQ" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
@@ -1639,7 +1639,7 @@ test "SSH: FullModel appears as MetadataModel with long-form subset after EQ ent
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
@@ -1666,7 +1666,7 @@ test "SSH: minimumValidationLevel follows SSH presence" {
     const gpa = std.testing.allocator;
     var model = try CimModel.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_XML));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);

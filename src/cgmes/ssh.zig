@@ -1,7 +1,7 @@
 const std = @import("std");
 const tag_index = @import("tag_index.zig");
 const utils = @import("ids.zig");
-const CimTp = @import("tp.zig").CimTp;
+const TP = @import("tp.zig").TP;
 const TpPatch = @import("tp.zig").TpPatch;
 
 const assert = std.debug.assert;
@@ -12,14 +12,14 @@ pub const SshPatch = struct {
     closing_tag_idx: u32,
 };
 
-pub const CimSsh = struct {
+pub const SSH = struct {
     xml: []const u8,
     boundaries: []const tag_index.TagBoundary,
     patches: []const SshPatch,
 
     /// Takes ownership of `xml`: on success the SSH owns it (freed by deinit),
     /// on error it is freed before returning. Callers never need to clean up `xml`.
-    pub fn init(gpa: std.mem.Allocator, xml: []const u8) !CimSsh {
+    pub fn init(gpa: std.mem.Allocator, xml: []const u8) !SSH {
         errdefer gpa.free(xml);
         assert(xml.len > 0);
 
@@ -64,7 +64,7 @@ pub const CimSsh = struct {
         };
     }
 
-    pub fn deinit(self: *CimSsh, gpa: std.mem.Allocator) void {
+    pub fn deinit(self: *SSH, gpa: std.mem.Allocator) void {
         gpa.free(self.patches);
         gpa.free(self.boundaries);
         gpa.free(self.xml);
@@ -74,7 +74,7 @@ pub const CimSsh = struct {
     /// Use the returned SshPatch with getPropertyFromPatch/getReferenceFromPatch
     /// when reading multiple properties for the same object — avoids redundant
     /// binary searches.
-    pub fn find_patch(self: CimSsh, mrid: []const u8) ?SshPatch {
+    pub fn find_patch(self: SSH, mrid: []const u8) ?SshPatch {
         assert(mrid.len > 0);
         var lo: usize = 0;
         var hi: usize = self.patches.len;
@@ -90,7 +90,7 @@ pub const CimSsh = struct {
     }
 
     /// Read a text property from a patch returned by find_patch.
-    pub fn getPropertyFromPatch(self: CimSsh, patch: SshPatch, property_name: []const u8) !?[]const u8 {
+    pub fn getPropertyFromPatch(self: SSH, patch: SshPatch, property_name: []const u8) !?[]const u8 {
         return tag_index.get_property_from_indices(
             self.xml,
             self.boundaries,
@@ -101,7 +101,7 @@ pub const CimSsh = struct {
     }
 
     /// Read an rdf:resource reference from a patch returned by find_patch.
-    pub fn getReferenceFromPatch(self: CimSsh, patch: SshPatch, reference_name: []const u8) !?[]const u8 {
+    pub fn getReferenceFromPatch(self: SSH, patch: SshPatch, reference_name: []const u8) !?[]const u8 {
         return tag_index.get_reference_from_indices(
             self.xml,
             self.boundaries,
@@ -113,21 +113,21 @@ pub const CimSsh = struct {
 
     /// Convenience wrapper for single-property lookups (e.g. eq get).
     /// For multiple properties on the same object, use find_patch + getPropertyFromPatch.
-    pub fn getProperty(self: CimSsh, mrid: []const u8, property_name: []const u8) !?[]const u8 {
+    pub fn getProperty(self: SSH, mrid: []const u8, property_name: []const u8) !?[]const u8 {
         const patch = self.find_patch(mrid) orelse return null;
         return self.getPropertyFromPatch(patch, property_name);
     }
 
     /// Convenience wrapper for single-reference lookups.
     /// For multiple references on the same object, use find_patch + getReferenceFromPatch.
-    pub fn getReference(self: CimSsh, mrid: []const u8, reference_name: []const u8) !?[]const u8 {
+    pub fn getReference(self: SSH, mrid: []const u8, reference_name: []const u8) !?[]const u8 {
         const patch = self.find_patch(mrid) orelse return null;
         return self.getReferenceFromPatch(patch, reference_name);
     }
 
     /// Return a CimObjectView over the SSH FullModel metadata element.
     /// Returns null if no FullModel is present in the SSH XML.
-    pub fn getFullModelView(self: CimSsh) !?tag_index.CimObjectView {
+    pub fn getFullModelView(self: SSH) !?tag_index.CimObjectView {
         assert(self.boundaries.len > 0);
         assert(self.xml.len > 0);
         for (self.boundaries, 0..) |tag, tag_idx| {
@@ -149,7 +149,7 @@ pub const CimSsh = struct {
 
     /// Get a property from the SSH FullModel metadata element.
     /// Returns null if the FullModel is absent or the property is not found.
-    pub fn getFullModelProperty(self: CimSsh, property_name: []const u8) !?[]const u8 {
+    pub fn getFullModelProperty(self: SSH, property_name: []const u8) !?[]const u8 {
         assert(property_name.len > 0);
         assert(self.boundaries.len > 0);
         const view = try self.getFullModelView() orelse return null;
@@ -181,8 +181,8 @@ pub const CimMergedView = struct {
     pub fn init(
         eq: tag_index.CimObjectView,
         mrid: []const u8,
-        tp_opt: ?CimTp,
-        ssh_opt: ?CimSsh,
+        tp_opt: ?TP,
+        ssh_opt: ?SSH,
     ) CimMergedView {
         assert(mrid.len > 0);
         var tp: ?TpContext = null;
@@ -300,7 +300,7 @@ fn patch_less_than(_: void, a: SshPatch, b: SshPatch) bool {
     return std.mem.order(u8, a.mrid, b.mrid) == .lt;
 }
 
-test "CimSsh.getFullModelView - returns view with correct id and type_name" {
+test "SSH.getFullModelView - returns view with correct id and type_name" {
     const gpa = std.testing.allocator;
     const xml =
         \\<rdf:RDF>
@@ -312,7 +312,7 @@ test "CimSsh.getFullModelView - returns view with correct id and type_name" {
         \\  </cim:Switch>
         \\</rdf:RDF>
     ;
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, xml));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, xml));
     defer ssh.deinit(gpa);
 
     const view = try ssh.getFullModelView();
@@ -328,7 +328,7 @@ test "CimSsh.getFullModelView - returns view with correct id and type_name" {
     );
 }
 
-test "CimSsh.getFullModelView - returns null when no FullModel present" {
+test "SSH.getFullModelView - returns null when no FullModel present" {
     const gpa = std.testing.allocator;
     const xml =
         \\<rdf:RDF>
@@ -337,14 +337,14 @@ test "CimSsh.getFullModelView - returns null when no FullModel present" {
         \\  </cim:Switch>
         \\</rdf:RDF>
     ;
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, xml));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, xml));
     defer ssh.deinit(gpa);
 
     const view = try ssh.getFullModelView();
     try std.testing.expectEqual(@as(?tag_index.CimObjectView, null), view);
 }
 
-test "CimSsh.getFullModelProperty - returns scenarioTime from SSH FullModel" {
+test "SSH.getFullModelProperty - returns scenarioTime from SSH FullModel" {
     const gpa = std.testing.allocator;
     const xml =
         \\<rdf:RDF>
@@ -357,7 +357,7 @@ test "CimSsh.getFullModelProperty - returns scenarioTime from SSH FullModel" {
         \\  </cim:Switch>
         \\</rdf:RDF>
     ;
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, xml));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, xml));
     defer ssh.deinit(gpa);
 
     const scenario_time = try ssh.getFullModelProperty("Model.scenarioTime");
@@ -369,7 +369,7 @@ test "CimSsh.getFullModelProperty - returns scenarioTime from SSH FullModel" {
     try std.testing.expectEqualStrings("2023-01-01T10:00:00Z", std.mem.trim(u8, created.?, " \t\r\n"));
 }
 
-test "CimSsh.getFullModelProperty - returns null when property absent" {
+test "SSH.getFullModelProperty - returns null when property absent" {
     const gpa = std.testing.allocator;
     const xml =
         \\<rdf:RDF>
@@ -378,14 +378,14 @@ test "CimSsh.getFullModelProperty - returns null when property absent" {
         \\  </md:FullModel>
         \\</rdf:RDF>
     ;
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, xml));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, xml));
     defer ssh.deinit(gpa);
 
     const result = try ssh.getFullModelProperty("Model.scenarioTime");
     try std.testing.expectEqual(@as(?[]const u8, null), result);
 }
 
-test "CimSsh.getFullModelProperty - returns null when no FullModel present" {
+test "SSH.getFullModelProperty - returns null when no FullModel present" {
     const gpa = std.testing.allocator;
     const xml =
         \\<rdf:RDF>
@@ -394,14 +394,14 @@ test "CimSsh.getFullModelProperty - returns null when no FullModel present" {
         \\  </cim:Switch>
         \\</rdf:RDF>
     ;
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, xml));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, xml));
     defer ssh.deinit(gpa);
 
     const result = try ssh.getFullModelProperty("Model.scenarioTime");
     try std.testing.expectEqual(@as(?[]const u8, null), result);
 }
 
-test "CimSsh.init - rejects duplicate patch mRIDs" {
+test "SSH.init - rejects duplicate patch mRIDs" {
     const gpa = std.testing.allocator;
     const xml =
         \\<rdf:RDF>
@@ -410,5 +410,5 @@ test "CimSsh.init - rejects duplicate patch mRIDs" {
         \\</rdf:RDF>
     ;
 
-    try std.testing.expectError(error.DuplicateId, CimSsh.init(gpa, try gpa.dupe(u8, xml)));
+    try std.testing.expectError(error.DuplicateId, SSH.init(gpa, try gpa.dupe(u8, xml)));
 }

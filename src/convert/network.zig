@@ -12,8 +12,8 @@ const transformer_conv = @import("transformer.zig");
 const line_conv = @import("line.zig");
 const bus_conv = @import("bus.zig");
 const placement_conv = @import("placement.zig");
-const CimSsh = @import("../cgmes/ssh.zig").CimSsh;
-const CimTp = @import("../cgmes/tp.zig").CimTp;
+const SSH = @import("../cgmes/ssh.zig").SSH;
+const TP = @import("../cgmes/tp.zig").TP;
 const populate_internal_connections = @import("internal_connections.zig").populate_internal_connections;
 
 const assert = std.debug.assert;
@@ -145,7 +145,7 @@ fn append_metadata_model(
 ///   boundary.id   = ConductingEquipment mRID of the TieFlow.Terminal
 ///   boundary.side = sequenceNumber of the TieFlow.Terminal (1→"ONE", 2→"TWO")
 ///   boundary.ac   = true (always, as all equipment is AC in EQ profiles)
-fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSsh, network: *iidm.Network) !void {
+fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?SSH, network: *iidm.Network) !void {
     const control_areas = model.get_objects_by_type("ControlArea");
     assert(network.areas.items.len == 0);
     if (control_areas.len == 0) return;
@@ -215,8 +215,8 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimModel, ssh_opt: ?CimSs
 pub fn convert(
     gpa: std.mem.Allocator,
     model: *const CimModel,
-    tp_opt: ?CimTp,
-    ssh_opt: ?CimSsh,
+    tp_opt: ?TP,
+    ssh_opt: ?SSH,
     bus_branch: bool,
 ) !iidm.Network {
     assert(model.get_objects_by_type("Substation").len > 0);

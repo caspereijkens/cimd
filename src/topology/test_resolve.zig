@@ -3,7 +3,7 @@ const topology = @import("resolve.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const CimIndex = @import("cross_ref.zig").CimIndex;
 const CimModel = @import("../cgmes/eq.zig").CimModel;
-const CimSsh = @import("../cgmes/ssh.zig").CimSsh;
+const SSH = @import("../cgmes/ssh.zig").SSH;
 
 const CimObject = tag_index.CimObject;
 
@@ -251,7 +251,7 @@ const SSH_SWITCH_XML =
 
 test "is_switch_closed: open switch returns false" {
     const gpa = std.testing.allocator;
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);
 
     try std.testing.expectEqual(false, try topology.is_switch_closed(&ssh, "_BRK_OPEN"));
@@ -259,7 +259,7 @@ test "is_switch_closed: open switch returns false" {
 
 test "is_switch_closed: closed switch returns true" {
     const gpa = std.testing.allocator;
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);
 
     try std.testing.expectEqual(true, try topology.is_switch_closed(&ssh, "_BRK_CLOSED"));
@@ -267,7 +267,7 @@ test "is_switch_closed: closed switch returns true" {
 
 test "is_switch_closed: no SSH patch defaults to closed" {
     const gpa = std.testing.allocator;
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);
 
     try std.testing.expectEqual(true, try topology.is_switch_closed(&ssh, "_BRK_UNKNOWN"));
@@ -275,7 +275,7 @@ test "is_switch_closed: no SSH patch defaults to closed" {
 
 test "is_switch_closed: patch present without Switch.open defaults to closed" {
     const gpa = std.testing.allocator;
-    var ssh = try CimSsh.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);
 
     try std.testing.expectEqual(true, try topology.is_switch_closed(&ssh, "_BRK_NO_OPEN_FIELD"));

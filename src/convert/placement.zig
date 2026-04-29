@@ -4,7 +4,7 @@ const cim_index = @import("../topology/cross_ref.zig");
 const cim_model = @import("../cgmes/eq.zig");
 const utils = @import("../cgmes/ids.zig");
 const bus_conv = @import("bus.zig");
-const CimTp = @import("../cgmes/tp.zig").CimTp;
+const TP = @import("../cgmes/tp.zig").TP;
 const topology_mod = @import("../topology/resolve.zig");
 
 const strip_underscore = utils.strip_underscore;
@@ -62,7 +62,7 @@ pub const TerminalPlacer = struct {
     };
 
     pub const BusBranch = struct {
-        tp: CimTp,
+        tp: TP,
         bus_map: *const bus_conv.BusMap,
     };
 

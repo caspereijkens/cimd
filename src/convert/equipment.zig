@@ -12,7 +12,7 @@ const assert = std.debug.assert;
 
 const CimModel = cim_model.CimModel;
 const CimObject = tag_index.CimObject;
-const CimSsh = @import("../cgmes/ssh.zig").CimSsh;
+const SSH = @import("../cgmes/ssh.zig").SSH;
 const CimMergedView = @import("../cgmes/ssh.zig").CimMergedView;
 const CimIndex = cim_index.CimIndex;
 const strip_hash = utils.strip_hash;
@@ -134,7 +134,7 @@ pub fn convert_switches(
     gpa: std.mem.Allocator,
     model: *const CimModel,
     placer: TerminalPlacer,
-    ssh_opt: ?CimSsh,
+    ssh_opt: ?SSH,
 ) !void {
     const index = placer.index;
     const voltage_level_map = placer.voltage_level_map;
@@ -235,7 +235,7 @@ pub fn convert_fictitious_switches(
     placer: TerminalPlacer,
     cn_has_switch: *const std.StringHashMapUnmanaged(void),
     cn_other_count: *const std.StringHashMapUnmanaged(u32),
-    ssh_opt: ?CimSsh,
+    ssh_opt: ?SSH,
 ) !void {
     const index = placer.index;
     const voltage_level_map = placer.voltage_level_map;
@@ -322,7 +322,7 @@ pub fn convert_loads(
     gpa: std.mem.Allocator,
     model: *const CimModel,
     placer: TerminalPlacer,
-    ssh_opt: ?CimSsh,
+    ssh_opt: ?SSH,
 ) !void {
     const energy_consumers = model.get_objects_by_type("EnergyConsumer");
     const conform_loads = model.get_objects_by_type("ConformLoad");
@@ -338,7 +338,7 @@ fn convert_load_type(
     gpa: std.mem.Allocator,
     model: *const CimModel,
     placer: TerminalPlacer,
-    ssh_opt: ?CimSsh,
+    ssh_opt: ?SSH,
     loads: []const CimObject,
     non_conform: bool,
 ) !void {
@@ -469,7 +469,7 @@ pub fn convert_shunts(
     gpa: std.mem.Allocator,
     model: *const CimModel,
     placer: TerminalPlacer,
-    ssh_opt: ?CimSsh,
+    ssh_opt: ?SSH,
 ) !void {
     const index = placer.index;
     const shunts = model.get_objects_by_type("LinearShuntCompensator");
@@ -601,7 +601,7 @@ pub fn convert_shunts(
 pub fn convert_static_var_compensators(
     model: *const CimModel,
     placer: TerminalPlacer,
-    ssh_opt: ?CimSsh,
+    ssh_opt: ?SSH,
 ) !void {
     const static_var_compensators = model.get_objects_by_type("StaticVarCompensator");
     assert(static_var_compensators.len == 0 or placer.voltage_level_map.count() > 0);
@@ -672,7 +672,7 @@ pub fn convert_generators(
     gpa: std.mem.Allocator,
     model: *const CimModel,
     placer: TerminalPlacer,
-    ssh_opt: ?CimSsh,
+    ssh_opt: ?SSH,
 ) !void {
     const index = placer.index;
     const machines = model.get_objects_by_type("SynchronousMachine");

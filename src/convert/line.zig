@@ -59,7 +59,7 @@ pub fn convert_lines(
     model: *const CimModel,
     network: *iidm.Network,
     placer: TerminalPlacer,
-    ssh_opt: ?@import("../cgmes/ssh.zig").CimSsh,
+    ssh_opt: ?@import("../cgmes/ssh.zig").SSH,
 ) !void {
     const index = placer.index;
     const voltage_level_map = placer.voltage_level_map;

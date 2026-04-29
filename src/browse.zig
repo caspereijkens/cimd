@@ -2,8 +2,8 @@ const std = @import("std");
 const assert = std.debug.assert;
 const cli = @import("cli.zig");
 const cim_model = @import("cgmes/eq.zig");
-const CimTp = @import("cgmes/tp.zig").CimTp;
-const CimSsh = @import("cgmes/ssh.zig").CimSsh;
+const TP = @import("cgmes/tp.zig").TP;
+const SSH = @import("cgmes/ssh.zig").SSH;
 const tag_index = @import("cgmes/tag_index.zig");
 const print = @import("io/print.zig");
 const extract_rdf_resource = tag_index.extract_rdf_resource;
@@ -40,8 +40,8 @@ const BackRefIndex = struct {
 fn build_back_ref_index(
     gpa: std.mem.Allocator,
     model: *const cim_model.CimModel,
-    tp_opt: ?CimTp,
-    ssh_opt: ?CimSsh,
+    tp_opt: ?TP,
+    ssh_opt: ?SSH,
 ) !BackRefIndex {
     var index: BackRefIndex = .empty;
     errdefer index.deinit(gpa);
@@ -111,8 +111,8 @@ pub fn browse(
     io: std.Io,
     gpa: std.mem.Allocator,
     model: *const cim_model.CimModel,
-    tp_opt: ?CimTp,
-    ssh_opt: ?CimSsh,
+    tp_opt: ?TP,
+    ssh_opt: ?SSH,
     mrid: []const u8,
 ) !void {
     var trace_ids: std.ArrayList([]const u8) = .empty;
@@ -211,7 +211,7 @@ pub fn browse(
 /// TP and primary are already collision-checked at the command layer.
 fn resolve_object(
     model: *const cim_model.CimModel,
-    tp_opt: ?CimTp,
+    tp_opt: ?TP,
     id: []const u8,
 ) ?tag_index.CimObjectView {
     if (model.getObjectById(id)) |view| return view;
@@ -307,7 +307,7 @@ fn render_back_refs(
     writer: *std.Io.Writer,
     gpa: std.mem.Allocator,
     model: *const cim_model.CimModel,
-    tp_opt: ?CimTp,
+    tp_opt: ?TP,
     target: tag_index.CimObjectView,
     referrers: []const []const u8,
     ref_list: *std.ArrayList([]const u8),

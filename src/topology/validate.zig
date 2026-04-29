@@ -12,8 +12,8 @@ const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
 const CimModel = cim_model.CimModel;
-const CimSsh = cim_ssh.CimSsh;
-const CimTp = cim_tp.CimTp;
+const SSH = cim_ssh.SSH;
+const TP = cim_tp.TP;
 const CimIndex = cim_index.CimIndex;
 
 const IdMap = std.StringHashMapUnmanaged([]const u8);
@@ -82,8 +82,8 @@ pub fn validate(
     gpa: std.mem.Allocator,
     model: *const CimModel,
     index: *const CimIndex,
-    tp: *const CimTp,
-    ssh_opt: ?*const CimSsh,
+    tp: *const TP,
+    ssh_opt: ?*const SSH,
     options: ValidateOptions,
     writer: anytype,
 ) !bool {
@@ -265,7 +265,7 @@ fn group_by_value(
 fn build_conn_node_to_topo_node(
     gpa: std.mem.Allocator,
     model: *const CimModel,
-    tp: *const CimTp,
+    tp: *const TP,
 ) !IdMap {
     const conn_nodes = model.get_objects_by_type("ConnectivityNode");
 

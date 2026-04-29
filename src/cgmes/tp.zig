@@ -1,4 +1,4 @@
-//! CimTp — loads a CGMES TP (Topology) profile as an overlay on top of an EQ model.
+//! TP — loads a CGMES TP (Topology) profile as an overlay on top of an EQ model.
 //!
 //! A TP profile contains two structurally distinct kinds of tags:
 //!   1. New first-class objects (identified by `rdf:ID`), typically `TopologicalNode`.
@@ -6,8 +6,8 @@
 //!   2. Patches on existing objects (identified by `rdf:about="#_..."`), typically
 //!      `Terminal` and `ConnectivityNode`, adding a `.TopologicalNode` reference.
 //!
-//! CimTp keeps both indexed independently: `patches` is sorted by stripped mRID
-//! (matching the `CimSsh` convention, so `CimMergedView` can fan out to both
+//! TP keeps both indexed independently: `patches` is sorted by stripped mRID
+//! (matching the `SSH` convention, so `CimMergedView` can fan out to both
 //! overlays with the same key), and `new_objects` is indexed by raw rdf:ID
 //! (matching the `CimModel` convention, so `browse` can look them up the same
 //! way the user types them).
@@ -25,13 +25,13 @@ pub const CimObject = tag_index.CimObject;
 const TagBoundary = tag_index.TagBoundary;
 
 pub const TpPatch = struct {
-    /// Stripped mRID (leading underscore removed). Matches CimSsh.SshPatch convention.
+    /// Stripped mRID (leading underscore removed). Matches SSH.SshPatch convention.
     mrid: []const u8,
     patch_tag_idx: u32,
     closing_tag_idx: u32,
 };
 
-pub const CimTp = struct {
+pub const TP = struct {
     xml: []const u8,
     boundaries: []const TagBoundary,
     /// Sorted by mRID (stripped). Terminal / ConnectivityNode overlays.
@@ -44,7 +44,7 @@ pub const CimTp = struct {
 
     /// Takes ownership of `xml`: on success the TP owns it (freed by deinit),
     /// on error it is freed before returning. Callers never need to clean up `xml`.
-    pub fn init(gpa: std.mem.Allocator, xml: []const u8) !CimTp {
+    pub fn init(gpa: std.mem.Allocator, xml: []const u8) !TP {
         errdefer gpa.free(xml);
         assert(xml.len > 0);
 
@@ -128,7 +128,7 @@ pub const CimTp = struct {
         };
     }
 
-    pub fn deinit(self: *CimTp, gpa: std.mem.Allocator) void {
+    pub fn deinit(self: *TP, gpa: std.mem.Allocator) void {
         self.id_to_object.deinit();
         gpa.free(self.new_objects);
         gpa.free(self.patches);
@@ -138,7 +138,7 @@ pub const CimTp = struct {
 
     /// Look up the patch for an mRID (stripped, no leading underscore).
     /// Returns null if the object is not patched by the TP profile.
-    pub fn find_patch(self: CimTp, mrid: []const u8) ?TpPatch {
+    pub fn find_patch(self: TP, mrid: []const u8) ?TpPatch {
         assert(mrid.len > 0);
         var lo: usize = 0;
         var hi: usize = self.patches.len;
@@ -154,7 +154,7 @@ pub const CimTp = struct {
     }
 
     /// Read a text property from a patch returned by find_patch.
-    pub fn getPropertyFromPatch(self: CimTp, patch: TpPatch, property_name: []const u8) !?[]const u8 {
+    pub fn getPropertyFromPatch(self: TP, patch: TpPatch, property_name: []const u8) !?[]const u8 {
         return tag_index.get_property_from_indices(
             self.xml,
             self.boundaries,
@@ -165,7 +165,7 @@ pub const CimTp = struct {
     }
 
     /// Read an rdf:resource reference from a patch returned by find_patch.
-    pub fn getReferenceFromPatch(self: CimTp, patch: TpPatch, reference_name: []const u8) !?[]const u8 {
+    pub fn getReferenceFromPatch(self: TP, patch: TpPatch, reference_name: []const u8) !?[]const u8 {
         return tag_index.get_reference_from_indices(
             self.xml,
             self.boundaries,
@@ -177,20 +177,20 @@ pub const CimTp = struct {
 
     /// Convenience wrapper for single-property lookups. For multiple properties
     /// on the same object, use find_patch + getPropertyFromPatch.
-    pub fn getProperty(self: CimTp, mrid: []const u8, property_name: []const u8) !?[]const u8 {
+    pub fn getProperty(self: TP, mrid: []const u8, property_name: []const u8) !?[]const u8 {
         const patch = self.find_patch(mrid) orelse return null;
         return self.getPropertyFromPatch(patch, property_name);
     }
 
     /// Convenience wrapper for single-reference lookups.
-    pub fn getReference(self: CimTp, mrid: []const u8, reference_name: []const u8) !?[]const u8 {
+    pub fn getReference(self: TP, mrid: []const u8, reference_name: []const u8) !?[]const u8 {
         const patch = self.find_patch(mrid) orelse return null;
         return self.getReferenceFromPatch(patch, reference_name);
     }
 
     /// Look up a new TP-added object by raw rdf:ID (with leading underscore).
     /// Used by browse to navigate into TopologicalNodes.
-    pub fn get_object_by_id(self: CimTp, id: []const u8) ?tag_index.CimObjectView {
+    pub fn get_object_by_id(self: TP, id: []const u8) ?tag_index.CimObjectView {
         const idx = self.id_to_object.get(id) orelse return null;
         const obj = self.new_objects[idx];
         return .{
@@ -234,7 +234,7 @@ fn patch_less_than(_: void, a: TpPatch, b: TpPatch) bool {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-test "CimTp.init - classifies new objects and patches separately" {
+test "TP.init - classifies new objects and patches separately" {
     const gpa = std.testing.allocator;
     const xml =
         \\<rdf:RDF>
@@ -256,7 +256,7 @@ test "CimTp.init - classifies new objects and patches separately" {
         \\  </cim:ConnectivityNode>
         \\</rdf:RDF>
     ;
-    var tp = try CimTp.init(gpa, try gpa.dupe(u8, xml));
+    var tp = try TP.init(gpa, try gpa.dupe(u8, xml));
     defer tp.deinit(gpa);
 
     try std.testing.expectEqual(@as(usize, 2), tp.new_objects.len);
@@ -267,7 +267,7 @@ test "CimTp.init - classifies new objects and patches separately" {
     try std.testing.expectEqualStrings("T_LOAD1", tp.patches[1].mrid);
 }
 
-test "CimTp.find_patch - returns patch for Terminal and resolves TopologicalNode reference" {
+test "TP.find_patch - returns patch for Terminal and resolves TopologicalNode reference" {
     const gpa = std.testing.allocator;
     const xml =
         \\<rdf:RDF>
@@ -276,7 +276,7 @@ test "CimTp.find_patch - returns patch for Terminal and resolves TopologicalNode
         \\  </cim:Terminal>
         \\</rdf:RDF>
     ;
-    var tp = try CimTp.init(gpa, try gpa.dupe(u8, xml));
+    var tp = try TP.init(gpa, try gpa.dupe(u8, xml));
     defer tp.deinit(gpa);
 
     const patch = tp.find_patch("T_LOAD1") orelse return error.TestFailed;
@@ -288,7 +288,7 @@ test "CimTp.find_patch - returns patch for Terminal and resolves TopologicalNode
     try std.testing.expectEqual(@as(?TpPatch, null), tp.find_patch("not_there"));
 }
 
-test "CimTp.get_object_by_id - returns TopologicalNode view by raw rdf:ID" {
+test "TP.get_object_by_id - returns TopologicalNode view by raw rdf:ID" {
     const gpa = std.testing.allocator;
     const xml =
         \\<rdf:RDF>
@@ -298,7 +298,7 @@ test "CimTp.get_object_by_id - returns TopologicalNode view by raw rdf:ID" {
         \\  </cim:TopologicalNode>
         \\</rdf:RDF>
     ;
-    var tp = try CimTp.init(gpa, try gpa.dupe(u8, xml));
+    var tp = try TP.init(gpa, try gpa.dupe(u8, xml));
     defer tp.deinit(gpa);
 
     const view = tp.get_object_by_id("_TN1") orelse return error.TestFailed;
@@ -312,7 +312,7 @@ test "CimTp.get_object_by_id - returns TopologicalNode view by raw rdf:ID" {
     try std.testing.expectEqual(@as(?tag_index.CimObjectView, null), tp.get_object_by_id("_nope"));
 }
 
-test "CimTp.init - skips metadata tags (FullModel, rdf:RDF)" {
+test "TP.init - skips metadata tags (FullModel, rdf:RDF)" {
     const gpa = std.testing.allocator;
     const xml =
         \\<rdf:RDF>
@@ -321,14 +321,14 @@ test "CimTp.init - skips metadata tags (FullModel, rdf:RDF)" {
         \\  </md:FullModel>
         \\</rdf:RDF>
     ;
-    var tp = try CimTp.init(gpa, try gpa.dupe(u8, xml));
+    var tp = try TP.init(gpa, try gpa.dupe(u8, xml));
     defer tp.deinit(gpa);
 
     try std.testing.expectEqual(@as(usize, 0), tp.new_objects.len);
     try std.testing.expectEqual(@as(usize, 0), tp.patches.len);
 }
 
-test "CimTp.init - rejects duplicate new object IDs" {
+test "TP.init - rejects duplicate new object IDs" {
     const gpa = std.testing.allocator;
     const xml =
         \\<rdf:RDF>
@@ -337,10 +337,10 @@ test "CimTp.init - rejects duplicate new object IDs" {
         \\</rdf:RDF>
     ;
 
-    try std.testing.expectError(error.DuplicateId, CimTp.init(gpa, try gpa.dupe(u8, xml)));
+    try std.testing.expectError(error.DuplicateId, TP.init(gpa, try gpa.dupe(u8, xml)));
 }
 
-test "CimTp.init - rejects duplicate patch mRIDs" {
+test "TP.init - rejects duplicate patch mRIDs" {
     const gpa = std.testing.allocator;
     const xml =
         \\<rdf:RDF>
@@ -349,5 +349,5 @@ test "CimTp.init - rejects duplicate patch mRIDs" {
         \\</rdf:RDF>
     ;
 
-    try std.testing.expectError(error.DuplicateId, CimTp.init(gpa, try gpa.dupe(u8, xml)));
+    try std.testing.expectError(error.DuplicateId, TP.init(gpa, try gpa.dupe(u8, xml)));
 }

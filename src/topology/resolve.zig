@@ -11,7 +11,7 @@ const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
 const CimModel = cim_model.CimModel;
-const CimSsh = cim_ssh.CimSsh;
+const SSH = cim_ssh.SSH;
 const CimIndex = cim_index.CimIndex;
 const CimObjectView = tag_index.CimObjectView;
 const CimObject = tag_index.CimObject;
@@ -459,7 +459,7 @@ fn seed_conn_nodes_with_many_terminals(total_other_count: *const CountMap, conn_
 fn map_phase2_equipment_terminals(
     model: *const CimModel,
     index: *const CimIndex,
-    ssh_opt: ?CimSsh,
+    ssh_opt: ?SSH,
     conn_node_base_nodes: *const CountMap,
     conn_node_repr_voltage_level: *const IdMap,
     voltage_level_counters: *CountMap,
@@ -513,7 +513,7 @@ pub fn build_node_map(
     index: *const CimIndex,
     topology: *const Topology,
     voltage_levels: *const SetMap,
-    ssh_opt: ?CimSsh,
+    ssh_opt: ?SSH,
 ) !NodeMapResult {
     assert(index.conn_node_container.count() > 0);
 
@@ -592,7 +592,7 @@ pub fn build_node_map(
 /// Returns true if the terminal is marked as disconnected in SSH
 /// (ACDCTerminal.connected = "false"). The terminal raw rdf:ID is used
 /// to look up the SSH patch; strip_underscore converts it to the mRID key.
-pub fn is_ssh_terminal_disconnected(ssh_opt: ?CimSsh, terminal_id: []const u8) bool {
+pub fn is_ssh_terminal_disconnected(ssh_opt: ?SSH, terminal_id: []const u8) bool {
     assert(terminal_id.len > 0);
     const ssh = ssh_opt orelse return false;
     const mrid = strip_underscore(terminal_id);
@@ -601,7 +601,7 @@ pub fn is_ssh_terminal_disconnected(ssh_opt: ?CimSsh, terminal_id: []const u8) b
     return std.mem.eql(u8, val, "false");
 }
 
-pub fn is_switch_closed(ssh: *const CimSsh, switch_id: []const u8) !bool {
+pub fn is_switch_closed(ssh: *const SSH, switch_id: []const u8) !bool {
     assert(switch_id.len > 0);
     // SSH patches are keyed by mRID; switch_id is the raw rdf:ID with leading underscore.
     const mrid = strip_underscore(switch_id);
@@ -613,7 +613,7 @@ pub fn is_switch_closed(ssh: *const CimSsh, switch_id: []const u8) !bool {
 fn union_closed_switch_conn_nodes(
     model: *const CimModel,
     index: *const CimIndex,
-    ssh_opt: ?*const CimSsh,
+    ssh_opt: ?*const SSH,
     parent: *IdMap,
 ) !void {
     for (switch_types) |switch_type| {
@@ -693,7 +693,7 @@ pub fn build_topological_nodes(
     model: *const CimModel,
     index: *const CimIndex,
     topology: *const Topology,
-    ssh_opt: ?*const CimSsh,
+    ssh_opt: ?*const SSH,
 ) !std.ArrayListUnmanaged(TopologicalNode) {
     assert(index.conn_node_container.count() > 0);
     var conn_node_to_root = try build_conn_node_root_map(gpa, model, index, ssh_opt);
@@ -715,7 +715,7 @@ pub fn build_topological_nodes(
     return nodes;
 }
 
-pub fn build_conn_node_root_map(gpa: std.mem.Allocator, model: *const CimModel, index: *const CimIndex, ssh_opt: ?*const CimSsh) !IdMap {
+pub fn build_conn_node_root_map(gpa: std.mem.Allocator, model: *const CimModel, index: *const CimIndex, ssh_opt: ?*const SSH) !IdMap {
     const conn_nodes = model.get_objects_by_type("ConnectivityNode");
 
     // Union-find: each CN starts as its own root.
