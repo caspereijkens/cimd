@@ -10,7 +10,6 @@ const assert = std.debug.assert;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
-
 const SSH = cim_ssh.SSH;
 const CrossRef = cross_ref.CrossRef;
 const CimObjectView = tag_index.CimObjectView;

@@ -14,8 +14,6 @@ const strip_underscore = utils.strip_underscore;
 const CimObject = tag_index.CimObject;
 const CimObjectView = tag_index.CimObjectView;
 
-
-
 pub const TerminalInfo = struct {
     id: []const u8,
     conn_node_id: ?[]const u8, // null if terminal has no ConnectivityNode.

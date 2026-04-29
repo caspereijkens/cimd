@@ -9,7 +9,6 @@ const topology = @import("../topology/resolve.zig");
 const assert = std.debug.assert;
 const testing = std.testing;
 
-
 const CimObject = tag_index.CimObject;
 const CimObjectView = tag_index.CimObjectView;
 const CrossRef = cross_ref.CrossRef;

@@ -10,7 +10,6 @@ const placement_mod = @import("placement.zig");
 
 const assert = std.debug.assert;
 
-
 const CimObject = tag_index.CimObject;
 const SSH = @import("../cgmes/ssh.zig").SSH;
 const CimMergedView = @import("../cgmes/ssh.zig").CimMergedView;

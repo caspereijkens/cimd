@@ -6,7 +6,6 @@ const utils = @import("../cgmes/ids.zig");
 
 const assert = std.debug.assert;
 
-
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
