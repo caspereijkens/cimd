@@ -1,10 +1,10 @@
 const std = @import("std");
-const iidm = @import("../iidm.zig");
-const cim_model = @import("../cim_model.zig");
-const cim_index = @import("../cim_index.zig");
-const utils = @import("../utils.zig");
+const iidm = @import("../iidm/model.zig");
+const cim_model = @import("../cgmes/eq.zig");
+const cim_index = @import("../topology/cross_ref.zig");
+const utils = @import("../cgmes/ids.zig");
 const placement_mod = @import("placement.zig");
-const connection_mod = @import("connection.zig");
+const topology_mod = @import("../topology/resolve.zig");
 
 const assert = std.debug.assert;
 
@@ -12,7 +12,7 @@ const CimModel = cim_model.CimModel;
 const CimIndex = cim_index.CimIndex;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
-const NodeMap = connection_mod.NodeMap;
+const NodeMap = topology_mod.NodeMap;
 const TerminalPlacer = placement_mod.TerminalPlacer;
 
 /// Resolved placement for one line terminal.
@@ -59,7 +59,7 @@ pub fn convert_lines(
     model: *const CimModel,
     network: *iidm.Network,
     placer: TerminalPlacer,
-    ssh_opt: ?@import("../cim_ssh.zig").CimSsh,
+    ssh_opt: ?@import("../cgmes/ssh.zig").CimSsh,
 ) !void {
     const index = placer.index;
     const voltage_level_map = placer.voltage_level_map;
@@ -105,7 +105,7 @@ pub fn convert_lines(
             for (terminals.items) |terminal| {
                 const conn_node_id = terminal.conn_node_id orelse continue;
                 const container_id = index.conn_node_container.get(conn_node_id) orelse continue;
-                const representative_id = cim_index.find_voltage_level(&index.voltage_level_merge, container_id);
+                const representative_id = topology_mod.find_root(&placer.topology.voltage_level_merge, container_id);
                 if (voltage_level_map.contains(representative_id)) continue;
                 // Boundary ConnectivityNode: container is not a VoltageLevel.
 
@@ -264,13 +264,21 @@ pub fn convert_lines(
 
     for (lines) |line| {
         const line_view = model.view(line);
-        const mrid = try line_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(line.id);
-        const name = try line_view.getProperty("IdentifiedObject.name");
+        const props = try line_view.getProperties(.{
+            "IdentifiedObject.mRID",
+            "IdentifiedObject.name",
+            "ACLineSegment.r",
+            "ACLineSegment.x",
+            "ACLineSegment.gch",
+            "ACLineSegment.bch",
+        });
+        const mrid = props[0] orelse strip_underscore(line.id);
+        const name = props[1];
 
-        const r = try std.fmt.parseFloat(f64, try line_view.getProperty("ACLineSegment.r") orelse "0.0");
-        const x = try std.fmt.parseFloat(f64, try line_view.getProperty("ACLineSegment.x") orelse "0.0");
-        const charging_conductance = try std.fmt.parseFloat(f64, try line_view.getProperty("ACLineSegment.gch") orelse "0.0");
-        const charging_susceptance = try std.fmt.parseFloat(f64, try line_view.getProperty("ACLineSegment.bch") orelse "0.0");
+        const r = try std.fmt.parseFloat(f64, props[2] orelse "0.0");
+        const x = try std.fmt.parseFloat(f64, props[3] orelse "0.0");
+        const charging_conductance = try std.fmt.parseFloat(f64, props[4] orelse "0.0");
+        const charging_susceptance = try std.fmt.parseFloat(f64, props[5] orelse "0.0");
 
         const terminals = index.equipment_terminals.get(line.id) orelse continue;
         if (terminals.items.len != 2) continue;
@@ -352,11 +360,17 @@ pub fn convert_lines(
     // SeriesCompensator has r/x but no shunt admittance (charging conductance/susceptance = 0.0).
     for (series_compensators) |series_compensator| {
         const series_compensator_view = model.view(series_compensator);
-        const mrid = try series_compensator_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(series_compensator.id);
-        const name = try series_compensator_view.getProperty("IdentifiedObject.name");
+        const props = try series_compensator_view.getProperties(.{
+            "IdentifiedObject.mRID",
+            "IdentifiedObject.name",
+            "SeriesCompensator.r",
+            "SeriesCompensator.x",
+        });
+        const mrid = props[0] orelse strip_underscore(series_compensator.id);
+        const name = props[1];
 
-        const r = try std.fmt.parseFloat(f64, try series_compensator_view.getProperty("SeriesCompensator.r") orelse "0.0");
-        const x = try std.fmt.parseFloat(f64, try series_compensator_view.getProperty("SeriesCompensator.x") orelse "0.0");
+        const r = try std.fmt.parseFloat(f64, props[2] orelse "0.0");
+        const x = try std.fmt.parseFloat(f64, props[3] orelse "0.0");
 
         const terminals = index.equipment_terminals.get(series_compensator.id) orelse continue;
         if (terminals.items.len != 2) continue;

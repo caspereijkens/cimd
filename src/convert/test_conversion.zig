@@ -4,9 +4,9 @@
 /// Each test block runs the full converter.convert() pipeline and checks
 /// one specific behaviour; re-parsing is cheap for a model this small.
 const std = @import("std");
-const converter = @import("converter.zig");
-const CimModel = @import("cim_model.zig").CimModel;
-const CimSsh = @import("cim_ssh.zig").CimSsh;
+const converter = @import("network.zig");
+const CimModel = @import("../cgmes/eq.zig").CimModel;
+const CimSsh = @import("../cgmes/ssh.zig").CimSsh;
 
 /// Minimal EQ model with enough objects to exercise every edge case.
 /// Objects and their purpose:
@@ -717,7 +717,7 @@ fn find_substation(network: anytype, mrid: []const u8) ?@TypeOf(network.substati
 }
 
 /// Find a VoltageLevel by mRID across all substations.
-fn find_voltage_level(network: anytype, mrid: []const u8) ?@TypeOf(network.substations.items[0].voltage_levels.items[0]) {
+fn find_root(network: anytype, mrid: []const u8) ?@TypeOf(network.substations.items[0].voltage_levels.items[0]) {
     for (network.substations.items) |s| {
         for (s.voltage_levels.items) |vl| {
             if (std.mem.eql(u8, vl.id, mrid)) return vl;
@@ -1704,7 +1704,7 @@ test "voltage level: most-restrictive low/high limits resolved from VoltageLimit
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
-    const vl = find_voltage_level(network, "VL1") orelse return error.TestFailed;
+    const vl = find_root(network, "VL1") orelse return error.TestFailed;
     try std.testing.expectEqual(@as(?f64, 121.0), vl.high_voltage_limit);
     try std.testing.expectEqual(@as(?f64, 99.0), vl.low_voltage_limit);
 }
@@ -1716,7 +1716,7 @@ test "voltage level: emits CGMES.normalValue_* and OperationalLimit_* properties
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
-    const vl = find_voltage_level(network, "VL1") orelse return error.TestFailed;
+    const vl = find_root(network, "VL1") orelse return error.TestFailed;
 
     const normal_hi = find_property(vl.properties.items, "CGMES.normalValue_highVoltageLimit") orelse return error.TestFailed;
     try std.testing.expectEqualStrings("121.0", normal_hi.value);
@@ -1746,7 +1746,7 @@ test "voltage level: only NaN placeholders emitted when no voltage limits apply"
     var network = try converter.convert(gpa, &model, null, null, false);
     defer network.deinit(gpa);
 
-    const vl = find_voltage_level(network, "VL2") orelse return error.TestFailed;
+    const vl = find_root(network, "VL2") orelse return error.TestFailed;
     // pypowsybl always emits the two NaN placeholders on every VL.
     try std.testing.expectEqual(@as(usize, 2), vl.properties.items.len);
     const nan_hi = find_property(vl.properties.items, "CGMES.highVoltageLimit") orelse return error.TestFailed;

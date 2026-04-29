@@ -1,19 +1,20 @@
 const std = @import("std");
-const iidm = @import("iidm.zig");
-const cim_model = @import("cim_model.zig");
-const cim_index = @import("cim_index.zig");
-const utils = @import("utils.zig");
-const tag_index = @import("tag_index.zig");
-const substation_conv = @import("convert/substation.zig");
-const voltage_level_conv = @import("convert/voltage_level.zig");
-const connection_conv = @import("convert/connection.zig");
-const equipment_conv = @import("convert/equipment.zig");
-const transformer_conv = @import("convert/transformer.zig");
-const line_conv = @import("convert/line.zig");
-const bus_conv = @import("convert/bus.zig");
-const placement_conv = @import("convert/placement.zig");
-const CimSsh = @import("cim_ssh.zig").CimSsh;
-const CimTp = @import("cim_tp.zig").CimTp;
+const iidm = @import("../iidm/model.zig");
+const cim_model = @import("../cgmes/eq.zig");
+const cim_index = @import("../topology/cross_ref.zig");
+const utils = @import("../cgmes/ids.zig");
+const topology = @import("../topology/resolve.zig");
+const tag_index = @import("../cgmes/tag_index.zig");
+const substation_conv = @import("substation.zig");
+const voltage_level_conv = @import("voltage_level.zig");
+const equipment_conv = @import("equipment.zig");
+const transformer_conv = @import("transformer.zig");
+const line_conv = @import("line.zig");
+const bus_conv = @import("bus.zig");
+const placement_conv = @import("placement.zig");
+const CimSsh = @import("../cgmes/ssh.zig").CimSsh;
+const CimTp = @import("../cgmes/tp.zig").CimTp;
+const populate_internal_connections = @import("internal_connections.zig").populate_internal_connections;
 
 const assert = std.debug.assert;
 const CimModel = cim_model.CimModel;
@@ -225,6 +226,11 @@ pub fn convert(
     var index = try cim_index.CimIndex.build(gpa, model, boundary_ids);
     defer index.deinit(gpa);
 
+    var topology_data = try topology.Topology.build(gpa, model, &index);
+    defer topology_data.deinit(gpa);
+
+    try cim_index.build_voltage_limits(gpa, model, &index, &topology_data);
+
     // ---- FullModel metadata: id, caseDate, forecastDistance ----
     const full_models = model.get_objects_by_type("FullModel");
     const eq_full_model: ?tag_index.CimObjectView = if (full_models.len > 0) model.view(full_models[0]) else null;
@@ -253,7 +259,10 @@ pub fn convert(
         const st_secs = parse_iso8601_seconds(std.mem.trim(u8, st, " \t\r\n")) orelse break :blk 0;
         const ct_secs = parse_iso8601_seconds(std.mem.trim(u8, ct, " \t\r\n")) orelse break :blk 0;
         const diff_secs = st_secs - ct_secs;
-        break :blk if (diff_secs > 0) @intCast(@divTrunc(diff_secs, 60)) else 0;
+        if (diff_secs <= 0) break :blk 0;
+        const minutes = @divTrunc(diff_secs, 60);
+        if (minutes > std.math.maxInt(u32)) return error.ForecastDistanceTooLarge;
+        break :blk @intCast(minutes);
     };
 
     var network = iidm.Network{
@@ -270,13 +279,13 @@ pub fn convert(
 
     var sub_id_map: std.StringHashMapUnmanaged(usize) = .empty;
     defer sub_id_map.deinit(gpa);
-    try substation_conv.convert_substations(gpa, model, &index, &network, &sub_id_map);
+    try substation_conv.convert_substations(gpa, model, &topology_data, &network, &sub_id_map);
 
-    try voltage_level_conv.convert_voltage_levels(gpa, model, &index, &network, &sub_id_map);
+    try voltage_level_conv.convert_voltage_levels(gpa, model, &index, &topology_data, &network, &sub_id_map);
 
     var substation_map: std.StringHashMapUnmanaged(*iidm.Substation) = .empty;
     defer substation_map.deinit(gpa);
-    var voltage_level_map = try voltage_level_conv.build_voltage_level_map(gpa, model, &index, &network, &sub_id_map, &substation_map);
+    var voltage_level_map = try voltage_level_conv.build_voltage_level_map(gpa, model, &topology_data, &network, &sub_id_map, &substation_map);
     defer voltage_level_map.deinit(gpa);
 
     // Branch on output shape. Bus-branch derives placement from TP's
@@ -291,6 +300,7 @@ pub fn convert(
         const placer = placement_conv.TerminalPlacer{
             .mode = .{ .bus_branch = .{ .tp = tp, .bus_map = &bus_map } },
             .index = &index,
+            .topology = &topology_data,
             .voltage_level_map = &voltage_level_map,
         };
 
@@ -302,20 +312,28 @@ pub fn convert(
         try transformer_conv.convert_transformers(gpa, model, &substation_map, placer, ssh_opt);
         try line_conv.convert_lines(gpa, model, &network, placer, ssh_opt);
     } else {
-        var nm_result = try connection_conv.build_node_map(gpa, model, &index, &voltage_level_map, ssh_opt);
+        var voltage_level_id_set: std.StringHashMapUnmanaged(void) = .empty;
+        defer voltage_level_id_set.deinit(gpa);
+        try voltage_level_id_set.ensureTotalCapacity(gpa, @intCast(voltage_level_map.count()));
+        var voltage_level_id_it = voltage_level_map.keyIterator();
+        while (voltage_level_id_it.next()) |k| voltage_level_id_set.putAssumeCapacity(k.*, {});
+
+        var nm_result = try topology.build_node_map(gpa, model, &index, &topology_data, &voltage_level_id_set, ssh_opt);
         defer nm_result.deinit(gpa);
+        try populate_internal_connections(gpa, model, &index, &topology_data, &voltage_level_map, ssh_opt, &nm_result);
         const node_map = &nm_result.node_map;
 
         const placer = placement_conv.TerminalPlacer{
             .mode = .{ .node_breaker = node_map },
             .index = &index,
+            .topology = &topology_data,
             .voltage_level_map = &voltage_level_map,
         };
 
         try equipment_conv.pre_allocate_equipment(gpa, model, placer);
         try equipment_conv.convert_busbar_sections(gpa, model, placer);
         try equipment_conv.convert_switches(gpa, model, placer, ssh_opt);
-        try equipment_conv.convert_fictitious_switches(gpa, model, placer, &nm_result.cn_has_switch, &nm_result.cn_other_count, ssh_opt);
+        try equipment_conv.convert_fictitious_switches(gpa, model, placer, &nm_result.conn_node_has_switch, &nm_result.conn_node_other_count, ssh_opt);
         try equipment_conv.convert_loads(gpa, model, placer, ssh_opt);
         try equipment_conv.convert_shunts(gpa, model, placer, ssh_opt);
         try equipment_conv.convert_static_var_compensators(model, placer, ssh_opt);

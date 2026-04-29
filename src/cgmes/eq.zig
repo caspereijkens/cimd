@@ -14,9 +14,16 @@ pub const CimModel = struct {
     boundaries: []TagBoundary,
 
     const TypeRange = struct { start: u32, len: u32 };
+    pub const TypeCount = struct {
+        type_name: []const u8,
+        count: u32,
+    };
 
+    /// Takes ownership of `xml`: on success the model owns it (freed by deinit),
+    /// on error it is freed before returning. Callers never need to clean up `xml`.
     pub fn init(gpa: std.mem.Allocator, xml: []const u8) !CimModel {
-        assert(xml.len > 0);
+        errdefer gpa.free(xml);
+        if (xml.len == 0) return error.EmptyInput;
 
         var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
         errdefer boundaries.deinit(gpa);
@@ -33,6 +40,9 @@ pub const CimModel = struct {
         // Pass 1: collect objects and count per type.
         var type_counts = std.StringHashMap(u32).init(gpa);
         defer type_counts.deinit();
+        var seen_ids = std.StringHashMap(void).init(gpa);
+        defer seen_ids.deinit();
+        try seen_ids.ensureTotalCapacity(@intCast(boundaries.items.len));
 
         for (boundaries.items, 0..) |tag, i| {
             // Try rdf:ID first, then fall back to rdf:about (for FullModel etc.)
@@ -41,6 +51,10 @@ pub const CimModel = struct {
                 error.MalformedTag => continue,
             };
             if (id.len > 0) {
+                const seen = seen_ids.getOrPutAssumeCapacity(id);
+                if (seen.found_existing) return error.DuplicateId;
+                seen.value_ptr.* = {};
+
                 const object = try tag_index.CimObject.init(
                     xml,
                     boundaries.items,
@@ -143,4 +157,47 @@ pub const CimModel = struct {
         }
         return result;
     }
+
+    /// Return a heap-allocated, alphabetically sorted type-count list.
+    /// Caller owns the returned slice and must free it with gpa.free().
+    pub fn sorted_type_counts(self: CimModel, gpa: std.mem.Allocator) ![]TypeCount {
+        const n = self.type_index.count();
+        const out = try gpa.alloc(TypeCount, n);
+        errdefer gpa.free(out);
+
+        var i: usize = 0;
+        var it = self.type_index.iterator();
+        while (it.next()) |entry| {
+            out[i] = .{
+                .type_name = entry.key_ptr.*,
+                .count = entry.value_ptr.*.len,
+            };
+            i += 1;
+        }
+        assert(i == n);
+
+        std.mem.sort(TypeCount, out, {}, struct {
+            fn lessThan(_: void, a: TypeCount, b: TypeCount) bool {
+                return std.mem.order(u8, a.type_name, b.type_name) == .lt;
+            }
+        }.lessThan);
+
+        return out;
+    }
 };
+
+test "CimModel.init rejects duplicate RDF identifiers" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:BaseVoltage rdf:ID="_DUP">
+        \\    <cim:BaseVoltage.nominalVoltage>110</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\  <cim:BaseVoltage rdf:ID="_DUP">
+        \\    <cim:BaseVoltage.nominalVoltage>220</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\</rdf:RDF>
+    ;
+
+    try std.testing.expectError(error.DuplicateId, CimModel.init(gpa, try gpa.dupe(u8, xml)));
+}

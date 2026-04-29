@@ -1,5 +1,5 @@
 const std = @import("std");
-const CimModel = @import("cim_model.zig").CimModel;
+const CimModel = @import("cgmes/eq.zig").CimModel;
 const diff = @import("diff.zig");
 const DiffOptions = diff.DiffOptions;
 

@@ -1,8 +1,8 @@
 const std = @import("std");
 const tag_index = @import("tag_index.zig");
-const utils = @import("utils.zig");
-const CimTp = @import("cim_tp.zig").CimTp;
-const TpPatch = @import("cim_tp.zig").TpPatch;
+const utils = @import("ids.zig");
+const CimTp = @import("tp.zig").CimTp;
+const TpPatch = @import("tp.zig").TpPatch;
 
 const assert = std.debug.assert;
 
@@ -17,7 +17,10 @@ pub const CimSsh = struct {
     boundaries: []const tag_index.TagBoundary,
     patches: []const SshPatch,
 
+    /// Takes ownership of `xml`: on success the SSH owns it (freed by deinit),
+    /// on error it is freed before returning. Callers never need to clean up `xml`.
     pub fn init(gpa: std.mem.Allocator, xml: []const u8) !CimSsh {
+        errdefer gpa.free(xml);
         assert(xml.len > 0);
 
         var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
@@ -48,6 +51,11 @@ pub const CimSsh = struct {
         assert(write_idx == patch_count);
 
         std.mem.sort(SshPatch, patches, {}, patch_less_than);
+        if (patches.len > 1) {
+            for (patches[1..], 1..) |patch, i| {
+                if (std.mem.eql(u8, patches[i - 1].mrid, patch.mrid)) return error.DuplicateId;
+            }
+        }
 
         return .{
             .xml = xml,
@@ -237,6 +245,39 @@ pub const CimMergedView = struct {
         }
         return self.eq.getReference(name);
     }
+
+    fn patch_view(ctx: anytype) tag_index.CimObjectView {
+        return .{
+            .xml = ctx.xml,
+            .boundaries = ctx.boundaries,
+            .object_tag_idx = ctx.patch.patch_tag_idx,
+            .closing_tag_idx = ctx.patch.closing_tag_idx,
+            .id = ctx.patch.mrid,
+            .type_name = "",
+        };
+    }
+
+    fn apply_overrides(result: anytype, values: anytype, comptime names: anytype) void {
+        inline for (names, 0..) |_, idx| {
+            if (values[idx]) |value| result[idx] = value;
+        }
+    }
+
+    /// Batch-fetch text properties. SSH values take priority, then TP, then EQ.
+    pub fn getProperties(self: CimMergedView, comptime names: anytype) ![names.len]?[]const u8 {
+        var result = try self.eq.getProperties(names);
+        if (self.tp) |t| apply_overrides(&result, try patch_view(t).getProperties(names), names);
+        if (self.ssh) |s| apply_overrides(&result, try patch_view(s).getProperties(names), names);
+        return result;
+    }
+
+    /// Batch-fetch rdf:resource references. SSH values take priority, then TP, then EQ.
+    pub fn getReferences(self: CimMergedView, comptime names: anytype) ![names.len]?[]const u8 {
+        var result = try self.eq.getReferences(names);
+        if (self.tp) |t| apply_overrides(&result, try patch_view(t).getReferences(names), names);
+        if (self.ssh) |s| apply_overrides(&result, try patch_view(s).getReferences(names), names);
+        return result;
+    }
 };
 
 /// Returns the stripped mRID if this tag is an SSH equipment patch, null otherwise.
@@ -358,4 +399,16 @@ test "CimSsh.getFullModelProperty - returns null when no FullModel present" {
 
     const result = try ssh.getFullModelProperty("Model.scenarioTime");
     try std.testing.expectEqual(@as(?[]const u8, null), result);
+}
+
+test "CimSsh.init - rejects duplicate patch mRIDs" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Switch rdf:ID="_SW1"/>
+        \\  <cim:Switch rdf:about="#_SW1"/>
+        \\</rdf:RDF>
+    ;
+
+    try std.testing.expectError(error.DuplicateId, CimSsh.init(gpa, try gpa.dupe(u8, xml)));
 }

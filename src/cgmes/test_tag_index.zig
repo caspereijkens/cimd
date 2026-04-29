@@ -1030,6 +1030,28 @@ test "tag_index.find_closing_tag - no closing tag (error)" {
     try std.testing.expectError(error.NoClosingTag, result);
 }
 
+test "tag_index.build_closing_index - mismatched nesting returns MalformedXML" {
+    const gpa = std.testing.allocator;
+    const xml = "<cim:Root><cim:Child></cim:Root></cim:Child>";
+
+    var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const result = tag_index.build_closing_index(gpa, xml, boundaries.items);
+    try std.testing.expectError(error.MalformedXML, result);
+}
+
+test "tag_index.build_closing_index - unclosed opener returns MalformedXML" {
+    const gpa = std.testing.allocator;
+    const xml = "<cim:Root><cim:Child></cim:Child>";
+
+    var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const result = tag_index.build_closing_index(gpa, xml, boundaries.items);
+    try std.testing.expectError(error.MalformedXML, result);
+}
+
 test "tag_index.find_closing_tag - multiple same-name tags at same level" {
     const gpa = std.testing.allocator;
 

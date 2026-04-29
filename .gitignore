@@ -3,3 +3,6 @@ zig-out/
 data/
 .cimd/
 .DS_Store
+*.DS_Store
+*.xml
+*.zip

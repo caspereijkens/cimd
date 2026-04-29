@@ -1,18 +1,22 @@
 const std = @import("std");
 const cli = @import("cli.zig");
-const print = @import("print.zig");
+const print = @import("io/print.zig");
 const builtin = @import("builtin");
-const CimSsh = @import("cim_ssh.zig").CimSsh;
-const CimTp = @import("cim_tp.zig").CimTp;
-const zip = @import("zip.zig");
-const cim_model = @import("cim_model.zig");
+const CimSsh = @import("cgmes/ssh.zig").CimSsh;
+const CimTp = @import("cgmes/tp.zig").CimTp;
+const zip = @import("io/zip.zig");
+const cim_model = @import("cgmes/eq.zig");
 const browse = @import("browse.zig");
 const diff = @import("diff.zig");
-const converter = @import("converter.zig");
+const converter = @import("convert/network.zig");
+const cim_index = @import("topology/cross_ref.zig");
+const topology_mod = @import("topology/resolve.zig");
+const validate_topology = @import("topology/validate.zig");
 
 const assert = std.debug.assert;
 
 const build_options = @import("build_options");
+const max_in_memory_input_bytes = std.math.maxInt(u32);
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -28,42 +32,9 @@ pub fn main(init: std.process.Init) !void {
         .get => |c| try command_get(io, gpa, c),
         .types => |c| try command_types(io, gpa, c),
         .diff => |c| try command_diff(io, gpa, c),
+        .topology => |c| try command_topology(io, gpa, c),
+        .validate_topology => |c| try command_validate_topology(io, gpa, c),
         .version => |v| try command_version(io, v.verbose, v.json),
-    }
-}
-
-fn command_version(io: std.Io, verbose: bool, json: bool) !void {
-    const version_string = build_options.version;
-
-    if (json) {
-        if (verbose) {
-            try print.stdout(io,
-                \\{{"version":"{s}","zig":"{s}","target":"{s}-{s}","optimize":"{s}"}}
-                \\
-            , .{
-                version_string,
-                builtin.zig_version_string,
-                @tagName(builtin.cpu.arch),
-                @tagName(builtin.os.tag),
-                @tagName(builtin.mode),
-            });
-        } else {
-            try print.stdout(io, "{{\"version\":\"{s}\"}}\n", .{version_string});
-        }
-        return;
-    }
-
-    try print.stdout(io, "cimd {s}\n", .{version_string});
-
-    if (verbose) {
-        try print.stdout(io, "\nBuild Information:\n", .{});
-        try print.stdout(io, "  Version:       {s}\n", .{version_string});
-        try print.stdout(io, "  Zig Version:   {s}\n", .{builtin.zig_version_string});
-        try print.stdout(io, "  Target:        {s}-{s}\n", .{
-            @tagName(builtin.cpu.arch),
-            @tagName(builtin.os.tag),
-        });
-        try print.stdout(io, "  Optimize:      {s}\n", .{@tagName(builtin.mode)});
     }
 }
 
@@ -172,8 +143,7 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
     if (c.mrid != null and c.count) print.stderr(io, "get: --count requires --type without <mrid>", .{});
     if (c.mrid != null and c.fields != null) print.stderr(io, "get: --fields requires --type without <mrid>", .{});
 
-    const xml = try read_path(io, gpa, c.file_path);
-    var model = try cim_model.CimModel.init(gpa, xml);
+    var model = try cim_model.CimModel.init(gpa, try read_path(io, gpa, c.file_path));
     defer model.deinit(gpa);
 
     // Single-object mode
@@ -243,8 +213,7 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
 }
 
 fn command_types(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Types) !void {
-    const xml = try read_path(io, gpa, c.file_path);
-    var model = try cim_model.CimModel.init(gpa, xml);
+    var model = try cim_model.CimModel.init(gpa, try read_path(io, gpa, c.file_path));
     defer model.deinit(gpa);
 
     if (c.json) {
@@ -308,16 +277,121 @@ fn command_diff(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Diff) !void {
     if (had_diffs) std.process.exit(1);
 }
 
-fn load_model(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8) !cim_model.CimModel {
-    var xml = try read_path(io, gpa, eq_path);
-    if (eqbd_path) |path| {
-        const eqbd_xml = try read_path(io, gpa, path);
-        const combined = try std.mem.concat(gpa, u8, &.{ xml, eqbd_xml });
-        // Free both source buffers immediately: only the concatenated buffer is needed going forward.
-        gpa.free(eqbd_xml);
-        gpa.free(xml);
-        xml = combined;
+fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology) !void {
+    var model = try load_model(io, gpa, c.eq_path, c.eqbd_path);
+    defer model.deinit(gpa);
+
+    var ssh_opt: ?CimSsh = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
+    defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
+
+    const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
+    var index = try cim_index.CimIndex.build_for_topology(gpa, &model, boundary_ids);
+    defer index.deinit(gpa);
+
+    var topology = try topology_mod.Topology.build_for_topological_nodes(gpa, &model, &index);
+    defer topology.deinit(gpa);
+
+    const ssh_ptr: ?*const CimSsh = if (ssh_opt) |*s| s else null;
+    var nodes = try topology_mod.build_topological_nodes(gpa, &model, &index, &topology, ssh_ptr);
+    defer nodes.deinit(gpa);
+
+    try print.stderr_info(io, "TopologicalNodes: {d}\n", .{nodes.items.len});
+
+    const cwd = std.Io.Dir.cwd();
+    const output_file = if (c.output_path) |path|
+        try cwd.createFile(io, path, .{})
+    else
+        std.Io.File.stdout();
+    defer if (c.output_path != null) output_file.close(io);
+
+    var write_buffer: [4096]u8 = undefined;
+    var file_writer = std.Io.File.Writer.init(output_file, io, &write_buffer);
+    const w = &file_writer.interface;
+
+    try std.json.Stringify.value(.{ .topologicalNodes = nodes.items }, .{}, w);
+    try w.writeByte('\n');
+    try w.flush();
+}
+
+fn command_validate_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.ValidateTopology) !void {
+    var model = try load_model(io, gpa, c.eq_path, c.eqbd_path);
+    defer model.deinit(gpa);
+
+    var tp = try load_tp(io, gpa, c.tp_path);
+    defer tp.deinit(gpa);
+
+    var ssh_opt: ?CimSsh = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
+    defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
+
+    const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
+    var index = try cim_index.CimIndex.build(gpa, &model, boundary_ids);
+    defer index.deinit(gpa);
+
+    const ssh_ptr: ?*const CimSsh = if (ssh_opt) |*s| s else null;
+
+    var write_buffer: [4096]u8 = undefined;
+    var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &write_buffer);
+    const w = &file_writer.interface;
+
+    const options = validate_topology.ValidateOptions{ .json = c.json, .summary = c.summary };
+    const had_mismatches = try validate_topology.validate(gpa, &model, &index, &tp, ssh_ptr, options, w);
+
+    try w.flush();
+    if (had_mismatches) std.process.exit(1);
+}
+
+fn command_version(io: std.Io, verbose: bool, json: bool) !void {
+    const version_string = build_options.version;
+
+    if (json) {
+        if (verbose) {
+            try print.stdout(io,
+                \\{{"version":"{s}","zig":"{s}","target":"{s}-{s}","optimize":"{s}"}}
+                \\
+            , .{
+                version_string,
+                builtin.zig_version_string,
+                @tagName(builtin.cpu.arch),
+                @tagName(builtin.os.tag),
+                @tagName(builtin.mode),
+            });
+        } else {
+            try print.stdout(io, "{{\"version\":\"{s}\"}}\n", .{version_string});
+        }
+        return;
     }
+
+    try print.stdout(io, "cimd {s}\n", .{version_string});
+
+    if (verbose) {
+        try print.stdout(io, "\nBuild Information:\n", .{});
+        try print.stdout(io, "  Version:       {s}\n", .{version_string});
+        try print.stdout(io, "  Zig Version:   {s}\n", .{builtin.zig_version_string});
+        try print.stdout(io, "  Target:        {s}-{s}\n", .{
+            @tagName(builtin.cpu.arch),
+            @tagName(builtin.os.tag),
+        });
+        try print.stdout(io, "  Optimize:      {s}\n", .{@tagName(builtin.mode)});
+    }
+}
+
+fn load_model(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8) !cim_model.CimModel {
+    // errdefer is scoped to the block so it frees only when read/concat fail.
+    // Once we hand `xml` to init, init owns it (frees on its own error path).
+    const xml = blk: {
+        var x = try read_path(io, gpa, eq_path);
+        errdefer gpa.free(x);
+
+        if (eqbd_path) |path| {
+            const eqbd_xml = try read_path(io, gpa, path);
+            defer gpa.free(eqbd_xml);
+            if (x.len > max_in_memory_input_bytes - eqbd_xml.len) return error.FileTooLarge;
+            const combined = try std.mem.concat(gpa, u8, &.{ x, eqbd_xml });
+            gpa.free(x);
+            x = combined;
+        }
+        break :blk x;
+    };
     return cim_model.CimModel.init(gpa, xml);
 }
 
@@ -337,11 +411,12 @@ fn read_path(io: std.Io, gpa: std.mem.Allocator, file_path: []const u8) ![]const
     if (try zip.is_zip_file(io, file)) {
         var zip_buffer: [8192]u8 = undefined;
         var file_reader = file.reader(io, &zip_buffer);
-        var extracted_files = try zip.extract_to_memory(gpa, &file_reader, .{});
-        const data = extracted_files.items[0].data;
-        gpa.free(extracted_files.items[0].filename);
-        for (extracted_files.items[1..]) |f| f.deinit(gpa);
-        extracted_files.deinit(gpa);
+        const extracted = try zip.extract_first_file_to_memory(gpa, &file_reader, .{
+            .extract = .{},
+            .max_uncompressed_bytes = max_in_memory_input_bytes,
+        });
+        const data = extracted.data;
+        gpa.free(extracted.filename);
         return data;
     } else {
         return try read_file_to_memory(io, gpa, file);
@@ -350,7 +425,7 @@ fn read_path(io: std.Io, gpa: std.mem.Allocator, file_path: []const u8) ![]const
 
 fn read_file_to_memory(io: std.Io, gpa: std.mem.Allocator, file: std.Io.File) ![]u8 {
     const file_size = try file.length(io);
-    if (file_size > std.math.maxInt(u32)) return error.FileTooLarge;
+    if (file_size > max_in_memory_input_bytes) return error.FileTooLarge;
 
     var file_reader = file.reader(io, &.{});
     return try file_reader.interface.allocRemaining(gpa, .limited(file_size));

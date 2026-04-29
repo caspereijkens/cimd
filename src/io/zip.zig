@@ -102,6 +102,31 @@ fn parse_and_validate_local_header(
     return @as(u64, local_header.filename_len) + @as(u64, local_header.extra_len);
 }
 
+fn read_entry_filename(
+    entry: std.zip.Iterator.Entry,
+    gpa: std.mem.Allocator,
+    stream: *std.Io.File.Reader,
+    options: std.zip.ExtractOptions,
+) ![]u8 {
+    const filename = try gpa.alloc(u8, entry.filename_len);
+    errdefer gpa.free(filename);
+
+    try stream.seekTo(entry.header_zip_offset + @sizeOf(std.zip.CentralDirectoryFileHeader));
+    try stream.interface.readSliceAll(filename);
+
+    if (options.allow_backslashes) {
+        std.mem.replaceScalar(u8, filename, '\\', '/');
+    } else {
+        if (std.mem.indexOfScalar(u8, filename, '\\')) |_|
+            return error.ZipFilenameHasBackslash;
+    }
+
+    if (is_bad_filename(filename))
+        return error.ZipBadFilename;
+
+    return filename;
+}
+
 /// Extract a single ZIP entry into memory (instead of to disk)
 /// Returns ExtractedFile with filename and decompressed data
 ///
@@ -119,34 +144,29 @@ fn extract_entry_to_memory(
     stream: *std.Io.File.Reader,
     options: std.zip.ExtractOptions,
 ) !ExtractedFile {
+    const filename = try read_entry_filename(entry, gpa, stream, options);
+    errdefer gpa.free(filename);
+    return extract_entry_with_filename(entry, gpa, stream, filename);
+}
+
+/// Like extract_entry_to_memory but takes ownership of an already-read filename,
+/// avoiding a second seek+read when the caller has already inspected the name.
+fn extract_entry_with_filename(
+    entry: std.zip.Iterator.Entry,
+    gpa: std.mem.Allocator,
+    stream: *std.Io.File.Reader,
+    filename: []u8,
+) !ExtractedFile {
+    errdefer gpa.free(filename);
+
     // Validate compression method (only store and deflate supported)
     switch (entry.compression_method) {
         .store, .deflate => {},
         else => return error.UnsupportedCompressionMethod,
     }
 
-    // Read filename from central directory
-    const filename = try gpa.alloc(u8, entry.filename_len);
-    errdefer gpa.free(filename);
-    {
-        try stream.seekTo(entry.header_zip_offset + @sizeOf(std.zip.CentralDirectoryFileHeader));
-        try stream.interface.readSliceAll(filename);
-    }
-
     // Parse and validate local header
     const local_data_header_offset = try parse_and_validate_local_header(entry, stream);
-
-    // Normalize backslashes to forward slashes if allowed
-    if (options.allow_backslashes) {
-        std.mem.replaceScalar(u8, filename, '\\', '/');
-    } else {
-        if (std.mem.indexOfScalar(u8, filename, '\\')) |_|
-            return error.ZipFilenameHasBackslash;
-    }
-
-    // Validate filename for security (no path traversal)
-    if (is_bad_filename(filename))
-        return error.ZipBadFilename;
 
     // Handle directory entries (end with '/')
     if (filename[filename.len - 1] == '/') {
@@ -154,9 +174,10 @@ fn extract_entry_to_memory(
             return error.ZipBadDirectorySize;
 
         // Directories have no data
+        const data = try gpa.alloc(u8, 0);
         return .{
             .filename = filename,
-            .data = &[_]u8{},
+            .data = data,
         };
     }
 
@@ -236,6 +257,46 @@ pub fn extract_to_memory(
     }
 
     return result;
+}
+
+pub const FirstFileOptions = struct {
+    extract: std.zip.ExtractOptions = .{},
+    /// Maximum uncompressed size allowed for the selected archive entry.
+    max_uncompressed_bytes: u64 = std.math.maxInt(u32),
+};
+
+/// Extract the first regular XML file (skipping directory and non-XML entries) from a ZIP archive.
+/// Returns error.ZipArchiveHasNoXmlFiles when the archive has no XML file entries.
+pub fn extract_first_file_to_memory(
+    gpa: std.mem.Allocator,
+    stream: *std.Io.File.Reader,
+    options: FirstFileOptions,
+) !ExtractedFile {
+    var iter = try std.zip.Iterator.init(stream);
+
+    while (try iter.next()) |entry| {
+        const filename = try read_entry_filename(entry, gpa, stream, options.extract);
+        errdefer gpa.free(filename);
+
+        if (filename[filename.len - 1] == '/') {
+            gpa.free(filename);
+            continue;
+        }
+
+        const ext = std.fs.path.extension(filename);
+        if (!std.ascii.eqlIgnoreCase(ext, ".xml")) {
+            gpa.free(filename);
+            continue;
+        }
+
+        if (entry.uncompressed_size > options.max_uncompressed_bytes) {
+            return error.FileTooLarge;
+        }
+
+        return try extract_entry_with_filename(entry, gpa, stream, filename);
+    }
+
+    return error.ZipArchiveHasNoXmlFiles;
 }
 
 test "is_zip_file" {
