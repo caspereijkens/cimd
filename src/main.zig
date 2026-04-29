@@ -428,5 +428,6 @@ fn read_file_to_memory(io: std.Io, gpa: std.mem.Allocator, file: std.Io.File) ![
     if (file_size > max_in_memory_input_bytes) return error.FileTooLarge;
 
     var file_reader = file.reader(io, &.{});
-    return try file_reader.interface.allocRemaining(gpa, .limited(file_size));
+    // +1 so the reader can observe EOF without tripping StreamTooLong on exact-size files.
+    return try file_reader.interface.allocRemaining(gpa, .limited(file_size + 1));
 }
