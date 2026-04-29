@@ -1,6 +1,6 @@
 const std = @import("std");
 const utils = @import("../cgmes/ids.zig");
-const eq = @import("../cgmes/eq.zig");
+const EQ = @import("../cgmes/eq.zig").EQ;
 const cross_ref = @import("cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const cim_ssh = @import("../cgmes/ssh.zig");
@@ -10,7 +10,7 @@ const assert = std.debug.assert;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
-const EQ = eq.EQ;
+
 const SSH = cim_ssh.SSH;
 const CrossRef = cross_ref.CrossRef;
 const CimObjectView = tag_index.CimObjectView;
@@ -164,7 +164,7 @@ pub fn union_smallest_id_wins(parent: *IdMap, id_a: []const u8, id_b: []const u8
 // A switch with terminals in two different CIM VoltageLevels means those
 // VLs are electrically one region. PyPowSyBl collapses them; this map
 // records each stub VL's representative so callers can normalize VL refs.
-pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const eq.EQ, index: *const CrossRef, topology: *Topology) !void {
+pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const EQ, index: *const CrossRef, topology: *Topology) !void {
     assert(topology.voltage_level_merge.count() == 0);
 
     const voltage_levels = model.get_objects_by_type("VoltageLevel");
@@ -194,7 +194,7 @@ pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const eq.EQ, in
 
 // Substations merge transitively: when their VLs merge (cross-VL switches),
 // or when a PowerTransformer spans two substations. Mirrors PyPowSyBl.
-pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const eq.EQ, index: *const CrossRef, topology: *Topology) !void {
+pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const EQ, index: *const CrossRef, topology: *Topology) !void {
     assert(topology.substation_merge.count() == 0);
     assert(index.conn_node_container.count() > 0);
 
@@ -260,7 +260,7 @@ pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const eq.EQ, index
     assert(topology.substation_merge.count() <= substations.len);
 }
 
-fn conn_node_to_voltage_level(model: *const eq.EQ, index: *const CrossRef, conn_node_id: []const u8) ?CimObjectView {
+fn conn_node_to_voltage_level(model: *const EQ, index: *const CrossRef, conn_node_id: []const u8) ?CimObjectView {
     const container_id = index.conn_node_container.get(conn_node_id) orelse return null;
     const obj = model.getObjectById(container_id) orelse return null;
     if (!std.mem.eql(u8, obj.type_name, "VoltageLevel")) return null;
@@ -269,7 +269,7 @@ fn conn_node_to_voltage_level(model: *const eq.EQ, index: *const CrossRef, conn_
 
 /// RegulatingControl resolution needs to find a BBS reachable through switches,
 /// and doing the graph walk at query time would be quadratic. We pre-compute once.
-pub fn build_reachable_busbar_section_index(gpa: std.mem.Allocator, model: *const eq.EQ, index: *const CrossRef, topology: *Topology) !void {
+pub fn build_reachable_busbar_section_index(gpa: std.mem.Allocator, model: *const EQ, index: *const CrossRef, topology: *Topology) !void {
     assert(topology.conn_node_reachable_busbar_section.count() == 0);
     assert(index.conn_node_container.count() > 0);
 

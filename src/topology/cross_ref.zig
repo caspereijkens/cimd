@@ -2,7 +2,7 @@ const std = @import("std");
 const iidm = @import("../iidm/model.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
-const eq = @import("../cgmes/eq.zig");
+const EQ = @import("../cgmes/eq.zig").EQ;
 const topology_mod = @import("resolve.zig");
 const Topology = topology_mod.Topology;
 
@@ -14,7 +14,7 @@ const strip_underscore = utils.strip_underscore;
 const CimObject = tag_index.CimObject;
 const CimObjectView = tag_index.CimObjectView;
 
-const EQ = eq.EQ;
+
 
 pub const TerminalInfo = struct {
     id: []const u8,
@@ -190,7 +190,7 @@ fn create_empty_cross_ref() CrossRef {
     };
 }
 
-fn build_limit_types(gpa: std.mem.Allocator, model: *const eq.EQ, index: *CrossRef) !void {
+fn build_limit_types(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef) !void {
     assert(index.limit_types.count() == 0);
     const objects = model.get_objects_by_type("OperationalLimitType");
     try index.limit_types.ensureTotalCapacity(gpa, @intCast(objects.len));
@@ -206,7 +206,7 @@ fn build_limit_types(gpa: std.mem.Allocator, model: *const eq.EQ, index: *CrossR
     assert(index.limit_types.count() == objects.len);
 }
 
-fn build_terminals(gpa: std.mem.Allocator, model: *const eq.EQ, index: *CrossRef) !void {
+fn build_terminals(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef) !void {
     assert(index.terminal_equipment.count() == 0);
 
     const objects = model.get_objects_by_type("Terminal");
@@ -260,7 +260,7 @@ fn build_terminals(gpa: std.mem.Allocator, model: *const eq.EQ, index: *CrossRef
     assert(index.terminal_conn_node.count() <= objects.len);
 }
 
-fn build_connectivity(gpa: std.mem.Allocator, model: *const eq.EQ, index: *CrossRef) !void {
+fn build_connectivity(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef) !void {
     assert(index.terminal_equipment.count() > 0);
     assert(index.conn_node_container.count() == 0);
     assert(index.busbar_section_in_parse_order.items.len == 0);
@@ -309,7 +309,7 @@ fn build_connectivity(gpa: std.mem.Allocator, model: *const eq.EQ, index: *Cross
     assert(index.busbar_section_in_parse_order.items.len <= busbar_sections.len);
 }
 
-fn build_operational_limits(gpa: std.mem.Allocator, model: *const eq.EQ, index: *CrossRef) !void {
+fn build_operational_limits(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef) !void {
     assert(index.terminal_limit_sets.count() == 0);
     assert(index.current_limits_by_set.count() == 0);
 
@@ -343,7 +343,7 @@ fn build_operational_limits(gpa: std.mem.Allocator, model: *const eq.EQ, index: 
     assert(index.current_limits_by_set.count() <= current_lims.len);
 }
 
-fn build_curve_points(gpa: std.mem.Allocator, model: *const eq.EQ, index: *CrossRef) !void {
+fn build_curve_points(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef) !void {
     assert(index.curve_points.count() == 0);
     const curve_datas = model.get_objects_by_type("CurveData");
     try index.curve_points.ensureTotalCapacity(gpa, @intCast(curve_datas.len));
@@ -380,7 +380,7 @@ fn build_curve_points(gpa: std.mem.Allocator, model: *const eq.EQ, index: *Cross
 // Then if the two CN Containers are different, we union their VoltageLevels.
 // VoltageLevel union basically puts the VoltageLevel with the lower mRID as the parent.
 pub fn process_switch_type(
-    model: *const eq.EQ,
+    model: *const EQ,
     index: *const CrossRef,
     switches: []const CimObject,
     parent: *std.StringHashMapUnmanaged([]const u8),
@@ -405,7 +405,7 @@ pub fn process_switch_type(
     }
 }
 
-pub fn build_voltage_limits(gpa: std.mem.Allocator, model: *const eq.EQ, index: *CrossRef, topology: *const Topology) !void {
+pub fn build_voltage_limits(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef, topology: *const Topology) !void {
     assert(index.voltage_level_limits.count() == 0);
 
     const voltage_limits = model.get_objects_by_type("VoltageLimit");

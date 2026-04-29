@@ -1,6 +1,6 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const eq = @import("../cgmes/eq.zig");
+const EQ = @import("../cgmes/eq.zig").EQ;
 const cross_ref = @import("../topology/cross_ref.zig");
 const utils = @import("../cgmes/ids.zig");
 const topology = @import("../topology/resolve.zig");
@@ -17,7 +17,7 @@ const TP = @import("../cgmes/tp.zig").TP;
 const populate_internal_connections = @import("internal_connections.zig").populate_internal_connections;
 
 const assert = std.debug.assert;
-const EQ = eq.EQ;
+
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 

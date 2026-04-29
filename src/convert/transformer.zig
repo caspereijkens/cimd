@@ -1,6 +1,6 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const eq = @import("../cgmes/eq.zig");
+const EQ = @import("../cgmes/eq.zig").EQ;
 const cross_ref = @import("../topology/cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
@@ -9,7 +9,7 @@ const topology = @import("../topology/resolve.zig");
 const assert = std.debug.assert;
 const testing = std.testing;
 
-const EQ = eq.EQ;
+
 const CimObject = tag_index.CimObject;
 const CimObjectView = tag_index.CimObjectView;
 const CrossRef = cross_ref.CrossRef;
@@ -377,10 +377,10 @@ fn view_less_than(_: void, a: CimObjectView, b: CimObjectView) bool {
     return end_number0 < end_number1;
 }
 
-const TestEnd = struct { model: eq.EQ, end: CimObjectView };
+const TestEnd = struct { model: EQ, end: CimObjectView };
 
 fn make_end(xml: []const u8) !TestEnd {
-    const model = try eq.EQ.init(testing.allocator, try testing.allocator.dupe(u8, xml));
+    const model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, xml));
     return .{ .model = model, .end = model.view(model.get_objects_by_type("PowerTransformerEnd")[0]) };
 }
 

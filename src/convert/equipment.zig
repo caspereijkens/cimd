@@ -1,6 +1,6 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const eq = @import("../cgmes/eq.zig");
+const EQ = @import("../cgmes/eq.zig").EQ;
 const cross_ref = @import("../topology/cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
@@ -10,7 +10,7 @@ const placement_mod = @import("placement.zig");
 
 const assert = std.debug.assert;
 
-const EQ = eq.EQ;
+
 const CimObject = tag_index.CimObject;
 const SSH = @import("../cgmes/ssh.zig").SSH;
 const CimMergedView = @import("../cgmes/ssh.zig").CimMergedView;

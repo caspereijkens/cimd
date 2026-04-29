@@ -1,6 +1,6 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const eq = @import("../cgmes/eq.zig");
+const EQ = @import("../cgmes/eq.zig").EQ;
 const cross_ref = @import("../topology/cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
@@ -9,7 +9,7 @@ const topology_mod = @import("../topology/resolve.zig");
 const assert = std.debug.assert;
 const Topology = topology_mod.Topology;
 
-const EQ = eq.EQ;
+
 const CimObject = tag_index.CimObject;
 const CimObjectView = tag_index.CimObjectView;
 const CrossRef = cross_ref.CrossRef;

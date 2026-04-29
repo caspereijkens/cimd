@@ -1,6 +1,6 @@
 const std = @import("std");
 const utils = @import("../cgmes/ids.zig");
-const eq = @import("../cgmes/eq.zig");
+const EQ = @import("../cgmes/eq.zig").EQ;
 const cross_ref = @import("cross_ref.zig");
 const cim_ssh = @import("../cgmes/ssh.zig");
 const cim_tp = @import("../cgmes/tp.zig");
@@ -11,7 +11,7 @@ const assert = std.debug.assert;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
-const EQ = eq.EQ;
+
 const SSH = cim_ssh.SSH;
 const TP = cim_tp.TP;
 const CrossRef = cross_ref.CrossRef;

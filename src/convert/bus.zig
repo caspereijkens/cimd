@@ -1,12 +1,12 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const eq = @import("../cgmes/eq.zig");
+const EQ = @import("../cgmes/eq.zig").EQ;
 const TP = @import("../cgmes/tp.zig").TP;
 const utils = @import("../cgmes/ids.zig");
 
 const assert = std.debug.assert;
 
-const EQ = eq.EQ;
+
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 

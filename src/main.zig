@@ -5,7 +5,7 @@ const builtin = @import("builtin");
 const SSH = @import("cgmes/ssh.zig").SSH;
 const TP = @import("cgmes/tp.zig").TP;
 const zip = @import("io/zip.zig");
-const eq = @import("cgmes/eq.zig");
+const EQ = @import("cgmes/eq.zig").EQ;
 const browse = @import("browse.zig");
 const diff = @import("diff.zig");
 const converter = @import("convert/network.zig");
@@ -143,7 +143,7 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
     if (c.mrid != null and c.count) print.stderr(io, "get: --count requires --type without <mrid>", .{});
     if (c.mrid != null and c.fields != null) print.stderr(io, "get: --fields requires --type without <mrid>", .{});
 
-    var model = try eq.EQ.init(gpa, try read_path(io, gpa, c.file_path));
+    var model = try EQ.init(gpa, try read_path(io, gpa, c.file_path));
     defer model.deinit(gpa);
 
     // Single-object mode
@@ -213,7 +213,7 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
 }
 
 fn command_types(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Types) !void {
-    var model = try eq.EQ.init(gpa, try read_path(io, gpa, c.file_path));
+    var model = try EQ.init(gpa, try read_path(io, gpa, c.file_path));
     defer model.deinit(gpa);
 
     if (c.json) {
@@ -375,7 +375,7 @@ fn command_version(io: std.Io, verbose: bool, json: bool) !void {
     }
 }
 
-fn load_model(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8) !eq.EQ {
+fn load_model(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8) !EQ {
     // errdefer is scoped to the block so it frees only when read/concat fail.
     // Once we hand `xml` to init, init owns it (frees on its own error path).
     const xml = blk: {
@@ -392,7 +392,7 @@ fn load_model(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path
         }
         break :blk x;
     };
-    return eq.EQ.init(gpa, xml);
+    return EQ.init(gpa, xml);
 }
 
 fn load_ssh(io: std.Io, gpa: std.mem.Allocator, ssh_path: []const u8) !SSH {

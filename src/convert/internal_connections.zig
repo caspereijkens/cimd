@@ -1,8 +1,8 @@
 const std = @import("std");
 const iidm = @import("../iidm/model.zig");
-const eq = @import("../cgmes/eq.zig");
+const EQ = @import("../cgmes/eq.zig").EQ;
 const cross_ref = @import("../topology/cross_ref.zig");
-const EQ = eq.EQ;
+
 const CrossRef = cross_ref.CrossRef;
 const cim_ssh = @import("../cgmes/ssh.zig");
 const SSH = cim_ssh.SSH;
