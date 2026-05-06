@@ -34,8 +34,6 @@ Commands:
   types      List CIM types present in a CIM file
   diff       Semantic diff between two EQ profiles
   topology   Generate TopologicalNodes from EQ (+SSH) — TP-equivalent output
-  validate-topology
-             Validate cimd's topology clustering against a TP profile
   version    Print version information
 
 Use 'cimd <command> --help' for more information about a command.

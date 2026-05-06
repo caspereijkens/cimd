@@ -11,7 +11,6 @@ const diff = @import("diff.zig");
 const converter = @import("convert/network.zig");
 const cross_ref = @import("topology/cross_ref.zig");
 const resolve = @import("topology/resolve.zig");
-const validate_topology = @import("topology/validate.zig");
 
 const assert = std.debug.assert;
 
@@ -33,7 +32,6 @@ pub fn main(init: std.process.Init) !void {
         .types => |c| try command_types(io, gpa, c),
         .diff => |c| try command_diff(io, gpa, c),
         .topology => |c| try command_topology(io, gpa, c),
-        .validate_topology => |c| try command_validate_topology(io, gpa, c),
         .version => |v| try command_version(io, v.verbose, v.json),
     }
 }
@@ -311,33 +309,6 @@ fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology)
     try std.json.Stringify.value(.{ .topologicalNodes = nodes.items }, .{}, w);
     try w.writeByte('\n');
     try w.flush();
-}
-
-fn command_validate_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.ValidateTopology) !void {
-    var model = try load_model(io, gpa, c.eq_path, c.eqbd_path);
-    defer model.deinit(gpa);
-
-    var tp = try load_tp(io, gpa, c.tp_path);
-    defer tp.deinit(gpa);
-
-    var ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
-    defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
-
-    const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
-    var index = try cross_ref.CrossRef.build(gpa, &model, boundary_ids);
-    defer index.deinit(gpa);
-
-    const ssh_ptr: ?*const SSH = if (ssh_opt) |*s| s else null;
-
-    var write_buffer: [4096]u8 = undefined;
-    var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &write_buffer);
-    const w = &file_writer.interface;
-
-    const options = validate_topology.ValidateOptions{ .json = c.json, .summary = c.summary };
-    const had_mismatches = try validate_topology.validate(gpa, &model, &index, &tp, ssh_ptr, options, w);
-
-    try w.flush();
-    if (had_mismatches) std.process.exit(1);
 }
 
 fn command_version(io: std.Io, verbose: bool, json: bool) !void {
