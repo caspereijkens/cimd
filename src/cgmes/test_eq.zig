@@ -140,6 +140,28 @@ test "EQ.init - handles empty XML" {
     try std.testing.expectEqual(0, model.objects.len);
 }
 
+test "EQ.init - falls back to rdf:about when rdf:ID is unusable" {
+    const xml =
+        \\<rdf:RDF>
+        \\  <md:FullModel rdf:ID="" rdf:about="urn:uuid:empty-id">
+        \\    <md:Model.scenarioTime>2026-01-01T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
+        \\  <md:FullModel rdf:about="urn:uuid:malformed-id" rdf:ID="_BROKEN>
+        \\    <md:Model.scenarioTime>2026-01-02T00:00:00Z</md:Model.scenarioTime>
+        \\  </md:FullModel>
+        \\</rdf:RDF>
+    ;
+
+    const gpa = std.testing.allocator;
+
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    try std.testing.expectEqual(2, model.objects.len);
+    _ = model.getObjectById("urn:uuid:empty-id") orelse return error.TestFailed;
+    _ = model.getObjectById("urn:uuid:malformed-id") orelse return error.TestFailed;
+}
+
 test "EQ objects maintain CimObject functionality" {
     const xml =
         \\<rdf:RDF>

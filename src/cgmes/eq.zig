@@ -45,28 +45,22 @@ pub const EQ = struct {
         try seen_ids.ensureTotalCapacity(@intCast(boundaries.items.len));
 
         for (boundaries.items, 0..) |tag, i| {
-            // Try rdf:ID first, then fall back to rdf:about (for FullModel etc.)
-            const id = tag_index.extract_rdf_id(xml, tag.start) catch |err| switch (err) {
-                error.NoRdfId => tag_index.extract_rdf_about(xml, tag.start) catch continue,
-                error.MalformedTag => continue,
-            };
-            if (id.len > 0) {
-                const seen = seen_ids.getOrPutAssumeCapacity(id);
-                if (seen.found_existing) return error.DuplicateId;
-                seen.value_ptr.* = {};
+            const id = extract_object_id(xml, tag.start) orelse continue;
+            const seen = seen_ids.getOrPutAssumeCapacity(id);
+            if (seen.found_existing) return error.DuplicateId;
+            seen.value_ptr.* = {};
 
-                const object = try tag_index.CimObject.init(
-                    xml,
-                    boundaries.items,
-                    @intCast(i),
-                    closing_for[i],
-                    id,
-                );
-                try objects.append(gpa, object);
-                const entry = try type_counts.getOrPut(object.type_name);
-                if (!entry.found_existing) entry.value_ptr.* = 0;
-                entry.value_ptr.* += 1;
-            }
+            const object = try tag_index.CimObject.init(
+                xml,
+                boundaries.items,
+                @intCast(i),
+                closing_for[i],
+                id,
+            );
+            try objects.append(gpa, object);
+            const entry = try type_counts.getOrPut(object.type_name);
+            if (!entry.found_existing) entry.value_ptr.* = 0;
+            entry.value_ptr.* += 1;
         }
 
         // Pass 2: compute write cursors (prefix sums) and populate type_index.
@@ -185,6 +179,23 @@ pub const EQ = struct {
         return out;
     }
 };
+
+/// Extract the identifier that makes a tag a CIM object.
+/// Prefer a non-empty rdf:ID, but keep inventory-style commands tolerant by
+/// falling back to rdf:about when rdf:ID is absent, empty, or malformed.
+fn extract_object_id(xml: []const u8, tag_start: u32) ?[]const u8 {
+    if (tag_index.extract_rdf_id(xml, tag_start)) |id| {
+        if (id.len > 0) return id;
+    } else |err| switch (err) {
+        error.NoRdfId, error.MalformedTag => {},
+    }
+
+    const about = tag_index.extract_rdf_about(xml, tag_start) catch |err| switch (err) {
+        error.NoRdfAbout, error.MalformedTag => return null,
+    };
+    if (about.len == 0) return null;
+    return about;
+}
 
 test "EQ.init rejects duplicate RDF identifiers" {
     const gpa = std.testing.allocator;
