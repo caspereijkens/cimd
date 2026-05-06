@@ -1,0 +1,196 @@
+version = 1
+revision = 3
+requires-python = ">=3.13"
+resolution-markers = [
+    "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version >= '3.14' and sys_platform == 'emscripten'",
+    "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.14' and sys_platform == 'win32'",
+    "python_full_version < '3.14' and sys_platform == 'emscripten'",
+    "python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
+
+[[package]]
+name = "benchmark"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "pypowsybl" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pypowsybl", specifier = ">=1.15.0" }]
+
+[[package]]
+name = "networkx"
+version = "3.6.1"
+source = { registry = "https://REDACTED.local/repository/pypi-proxy/simple/" }
+sdist = { url = "https://REDACTED.local/repository/pypi-proxy/packages/networkx/3.6.1/networkx-3.6.1.tar.gz", hash = "sha256:26b7c357accc0c8cde558ad486283728b65b6a95d85ee1cd66bafab4c8168509" }
+wheels = [
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/networkx/3.6.1/networkx-3.6.1-py3-none-any.whl", hash = "sha256:d47fbf302e7d9cbbb9e2555a0d267983d2aa476bac30e90dfbe5669bd57f3762" },
+]
+
+[[package]]
+name = "numpy"
+version = "2.4.4"
+source = { registry = "https://REDACTED.local/repository/pypi-proxy/simple/" }
+sdist = { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4.tar.gz", hash = "sha256:2d390634c5182175533585cc89f3608a4682ccb173cc9bb940b2881c8d6f8fa0" }
+wheels = [
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:08f2e31ed5e6f04b118e49821397f12767934cfdd12a1ce86a058f91e004ee50" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:e823b8b6edc81e747526f70f71a9c0a07ac4e7ad13020aa736bb7c9d67196115" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:4a19d9dba1a76618dd86b164d608566f393f8ec6ac7c44f0cc879011c45e65af" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313-macosx_14_0_x86_64.whl", hash = "sha256:d2a8490669bfe99a233298348acc2d824d496dee0e66e31b66a6022c2ad74a5c" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:45dbed2ab436a9e826e302fcdcbe9133f9b0006e5af7168afb8963a6520da103" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c901b15172510173f5cb310eae652908340f8dede90fff9e3bf6c0d8dfd92f83" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:99d838547ace2c4aace6c4f76e879ddfe02bb58a80c1549928477862b7a6d6ed" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:0aec54fd785890ecca25a6003fd9a5aed47ad607bbac5cd64f836ad8666f4959" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313-win32.whl", hash = "sha256:07077278157d02f65c43b1b26a3886bce886f95d20aabd11f87932750dfb14ed" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313-win_amd64.whl", hash = "sha256:5c70f1cc1c4efbe316a572e2d8b9b9cc44e89b95f79ca3331553fbb63716e2bf" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313-win_arm64.whl", hash = "sha256:ef4059d6e5152fa1a39f888e344c73fdc926e1b2dd58c771d67b0acfbf2aa67d" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313t-macosx_11_0_arm64.whl", hash = "sha256:4bbc7f303d125971f60ec0aaad5e12c62d0d2c925f0ab1273debd0e4ba37aba5" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313t-macosx_14_0_arm64.whl", hash = "sha256:4d6d57903571f86180eb98f8f0c839fa9ebbfb031356d87f1361be91e433f5b7" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313t-macosx_14_0_x86_64.whl", hash = "sha256:4636de7fd195197b7535f231b5de9e4b36d2c440b6e566d2e4e4746e6af0ca93" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:ad2e2ef14e0b04e544ea2fa0a36463f847f113d314aa02e5b402fdf910ef309e" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5a285b3b96f951841799528cd1f4f01cd70e7e0204b4abebac9463eecfcf2a40" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313t-musllinux_1_2_aarch64.whl", hash = "sha256:f8474c4241bc18b750be2abea9d7a9ec84f46ef861dbacf86a4f6e043401f79e" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313t-musllinux_1_2_x86_64.whl", hash = "sha256:4e874c976154687c1f71715b034739b45c7711bec81db01914770373d125e392" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313t-win32.whl", hash = "sha256:9c585a1790d5436a5374bac930dad6ed244c046ed91b2b2a3634eb2971d21008" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313t-win_amd64.whl", hash = "sha256:93e15038125dc1e5345d9b5b68aa7f996ec33b98118d18c6ca0d0b7d6198b7e8" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp313-cp313t-win_arm64.whl", hash = "sha256:0dfd3f9d3adbe2920b68b5cd3d51444e13a10792ec7154cd0a2f6e74d4ab3233" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:f169b9a863d34f5d11b8698ead99febeaa17a13ca044961aa8e2662a6c7766a0" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:2483e4584a1cb3092da4470b38866634bafb223cbcd551ee047633fd2584599a" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:2d19e6e2095506d1736b7d80595e0f252d76b89f5e715c35e06e937679ea7d7a" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314-macosx_14_0_x86_64.whl", hash = "sha256:6a246d5914aa1c820c9443ddcee9c02bec3e203b0c080349533fae17727dfd1b" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:989824e9faf85f96ec9c7761cd8d29c531ad857bfa1daa930cba85baaecf1a9a" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:27a8d92cd10f1382a67d7cf4db7ce18341b66438bdd9f691d7b0e48d104c2a9d" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:e44319a2953c738205bf3354537979eaa3998ed673395b964c1176083dd46252" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:e892aff75639bbef0d2a2cfd55535510df26ff92f63c92cd84ef8d4ba5a5557f" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314-win32.whl", hash = "sha256:1378871da56ca8943c2ba674530924bb8ca40cd228358a3b5f302ad60cf875fc" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314-win_amd64.whl", hash = "sha256:715d1c092715954784bc79e1174fc2a90093dc4dc84ea15eb14dad8abdcdeb74" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314-win_arm64.whl", hash = "sha256:2c194dd721e54ecad9ad387c1d35e63dce5c4450c6dc7dd5611283dda239aabb" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:2aa0613a5177c264ff5921051a5719d20095ea586ca88cc802c5c218d1c67d3e" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314t-macosx_14_0_arm64.whl", hash = "sha256:42c16925aa5a02362f986765f9ebabf20de75cdefdca827d14315c568dcab113" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314t-macosx_14_0_x86_64.whl", hash = "sha256:874f200b2a981c647340f841730fc3a2b54c9d940566a3c4149099591e2c4c3d" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:c9b39d38a9bd2ae1becd7eac1303d031c5c110ad31f2b319c6e7d98b135c934d" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b268594bccac7d7cf5844c7732e3f20c50921d94e36d7ec9b79e9857694b1b2f" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:ac6b31e35612a26483e20750126d30d0941f949426974cace8e6b5c58a3657b0" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:8e3ed142f2728df44263aaf5fb1f5b0b99f4070c553a0d7f033be65338329150" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314t-win32.whl", hash = "sha256:dddbbd259598d7240b18c9d87c56a9d2fb3b02fe266f49a7c101532e78c1d871" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314t-win_amd64.whl", hash = "sha256:a7164afb23be6e37ad90b2f10426149fd75aee07ca55653d2aa41e66c4ef697e" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/numpy/2.4.4/numpy-2.4.4-cp314-cp314t-win_arm64.whl", hash = "sha256:ba203255017337d39f89bdd58417f03c4426f12beed0440cfd933cb15f8669c7" },
+]
+
+[[package]]
+name = "pandas"
+version = "3.0.2"
+source = { registry = "https://REDACTED.local/repository/pypi-proxy/simple/" }
+dependencies = [
+    { name = "numpy" },
+    { name = "python-dateutil" },
+    { name = "tzdata", marker = "sys_platform == 'emscripten' or sys_platform == 'win32'" },
+]
+sdist = { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2.tar.gz", hash = "sha256:f4753e73e34c8d83221ba58f232433fca2748be8b18dbca02d242ed153945043" }
+wheels = [
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:b5918ba197c951dec132b0c5929a00c0bf05d5942f590d3c10a807f6e15a57d3" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:d606a041c89c0a474a4702d532ab7e73a14fe35c8d427b972a625c8e46373668" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:710246ba0616e86891b58ab95f2495143bb2bc83ab6b06747c74216f583a6ac9" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5d3cfe227c725b1f3dff4278b43d8c784656a42a9325b63af6b1492a8232209e" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:c3b723df9087a9a9a840e263ebd9f88b64a12075d1bf2ea401a5a42f254f084d" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:a3096110bf9eac0070b7208465f2740e2d8a670d5cb6530b5bb884eca495fd39" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp313-cp313-win_amd64.whl", hash = "sha256:07a10f5c36512eead51bc578eb3354ad17578b22c013d89a796ab5eee90cd991" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp313-cp313-win_arm64.whl", hash = "sha256:5fdbfa05931071aba28b408e59226186b01eb5e92bea2ab78b65863ca3228d84" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp313-cp313t-macosx_10_13_x86_64.whl", hash = "sha256:dbc20dea3b9e27d0e66d74c42b2d0c1bed9c2ffe92adea33633e3bedeb5ac235" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp313-cp313t-macosx_11_0_arm64.whl", hash = "sha256:b75c347eff42497452116ce05ef461822d97ce5b9ff8df6edacb8076092c855d" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp313-cp313t-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:d1478075142e83a5571782ad007fb201ed074bdeac7ebcc8890c71442e96adf7" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp313-cp313t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5880314e69e763d4c8b27937090de570f1fb8d027059a7ada3f7f8e98bdcb677" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp313-cp313t-musllinux_1_2_aarch64.whl", hash = "sha256:b5329e26898896f06035241a626d7c335daa479b9bbc82be7c2742d048e41172" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp313-cp313t-musllinux_1_2_x86_64.whl", hash = "sha256:81526c4afd31971f8b62671442a4b2b51e0aa9acc3819c9f0f12a28b6fcf85f1" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp313-cp313t-win_amd64.whl", hash = "sha256:7cadd7e9a44ec13b621aec60f9150e744cfc7a3dd32924a7e2f45edff31823b0" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:db0dbfd2a6cdf3770aa60464d50333d8f3d9165b2f2671bcc299b72de5a6677b" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:0555c5882688a39317179ab4a0ed41d3ebc8812ab14c69364bbee8fb7a3f6288" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp314-cp314-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:01f31a546acd5574ef77fe199bc90b55527c225c20ccda6601cf6b0fd5ed597c" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:deeca1b5a931fdf0c2212c8a659ade6d3b1edc21f0914ce71ef24456ca7a6535" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:0f48afd9bb13300ffb5a3316973324c787054ba6665cda0da3fbd67f451995db" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:6c4d8458b97a35717b62469a4ea0e85abd5ed8687277f5ccfc67f8a5126f8c53" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp314-cp314-win_amd64.whl", hash = "sha256:b35d14bb5d8285d9494fe93815a9e9307c0876e10f1e8e89ac5b88f728ec8dcf" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp314-cp314-win_arm64.whl", hash = "sha256:63d141b56ef686f7f0d714cfb8de4e320475b86bf4b620aa0b7da89af8cbdbbb" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:140f0cffb1fa2524e874dde5b477d9defe10780d8e9e220d259b2c0874c89d9d" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:ae37e833ff4fed0ba352f6bdd8b73ba3ab3256a85e54edfd1ab51ae40cca0af8" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp314-cp314t-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:4d888a5c678a419a5bb41a2a93818e8ed9fd3172246555c0b37b7cc27027effd" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp314-cp314t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b444dc64c079e84df91baa8bf613d58405645461cabca929d9178f2cd392398d" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:4544c7a54920de8eeacaa1466a6b7268ecfbc9bc64ab4dbb89c6bbe94d5e0660" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:734be7551687c00fbd760dc0522ed974f82ad230d4a10f54bf51b80d44a08702" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp314-cp314t-win_amd64.whl", hash = "sha256:57a07209bebcbcf768d2d13c9b78b852f9a15978dac41b9e6421a81ad4cdd276" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pandas/3.0.2/pandas-3.0.2-cp314-cp314t-win_arm64.whl", hash = "sha256:5371b72c2d4d415d08765f32d689217a43227484e81b2305b52076e328f6f482" },
+]
+
+[[package]]
+name = "prettytable"
+version = "3.17.0"
+source = { registry = "https://REDACTED.local/repository/pypi-proxy/simple/" }
+dependencies = [
+    { name = "wcwidth" },
+]
+sdist = { url = "https://REDACTED.local/repository/pypi-proxy/packages/prettytable/3.17.0/prettytable-3.17.0.tar.gz", hash = "sha256:59f2590776527f3c9e8cf9fe7b66dd215837cca96a9c39567414cbc632e8ddb0" }
+wheels = [
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/prettytable/3.17.0/prettytable-3.17.0-py3-none-any.whl", hash = "sha256:aad69b294ddbe3e1f95ef8886a060ed1666a0b83018bbf56295f6f226c43d287" },
+]
+
+[[package]]
+name = "pypowsybl"
+version = "1.15.0"
+source = { registry = "https://REDACTED.local/repository/pypi-proxy/simple/" }
+dependencies = [
+    { name = "networkx" },
+    { name = "pandas" },
+    { name = "prettytable" },
+]
+wheels = [
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pypowsybl/1.15.0/pypowsybl-1.15.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:60539ee319cba8b0f2546bd90c2f53f9686a90aafc3ef80f4579db47b2d13ba2" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pypowsybl/1.15.0/pypowsybl-1.15.0-cp313-cp313-macosx_11_0_x86_64.whl", hash = "sha256:d16ea51ff4c20e664bcd7ec29013806ea395c4be5c3eda7429f5834a7ba74eb5" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pypowsybl/1.15.0/pypowsybl-1.15.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:78fed685f212fa50d6948e6698bc9ce0d2a6d4544b3021d23627c98cb6bbd3ef" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pypowsybl/1.15.0/pypowsybl-1.15.0-cp313-cp313-win_amd64.whl", hash = "sha256:a93e17ec5ae6a5696060bace089efa939e85c03383973fa2389baacec2a4b509" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pypowsybl/1.15.0/pypowsybl-1.15.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:8fda7822b730f60664f41616b1608cb620b39f214572690340baf0c459433ea2" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pypowsybl/1.15.0/pypowsybl-1.15.0-cp314-cp314-macosx_11_0_x86_64.whl", hash = "sha256:b067867301085a45563f879169830d88a8ea77281f86b37d973048868c800e87" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pypowsybl/1.15.0/pypowsybl-1.15.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:43b905776d575ebc0187f24231722aaa98a60a8dc4e1134d476237d0fd0e541e" },
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/pypowsybl/1.15.0/pypowsybl-1.15.0-cp314-cp314-win_amd64.whl", hash = "sha256:a0c4ee76d7c3c752cac7b0c300a3e761ea1d64c41858d4fef90d1a75d78c441f" },
+]
+
+[[package]]
+name = "python-dateutil"
+version = "2.9.0.post0"
+source = { registry = "https://REDACTED.local/repository/pypi-proxy/simple/" }
+dependencies = [
+    { name = "six" },
+]
+sdist = { url = "https://REDACTED.local/repository/pypi-proxy/packages/python-dateutil/2.9.0.post0/python-dateutil-2.9.0.post0.tar.gz", hash = "sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3" }
+wheels = [
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/python-dateutil/2.9.0.post0/python_dateutil-2.9.0.post0-py2.py3-none-any.whl", hash = "sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427" },
+]
+
+[[package]]
+name = "six"
+version = "1.17.0"
+source = { registry = "https://REDACTED.local/repository/pypi-proxy/simple/" }
+sdist = { url = "https://REDACTED.local/repository/pypi-proxy/packages/six/1.17.0/six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81" }
+wheels = [
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/six/1.17.0/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274" },
+]
+
+[[package]]
+name = "tzdata"
+version = "2026.2"
+source = { registry = "https://REDACTED.local/repository/pypi-proxy/simple/" }
+sdist = { url = "https://REDACTED.local/repository/pypi-proxy/packages/tzdata/2026.2/tzdata-2026.2.tar.gz", hash = "sha256:9173fde7d80d9018e02a662e168e5a2d04f87c41ea174b139fbef642eda62d10" }
+wheels = [
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/tzdata/2026.2/tzdata-2026.2-py2.py3-none-any.whl", hash = "sha256:bbe9af844f658da81a5f95019480da3a89415801f6cc966806612cc7169bffe7" },
+]
+
+[[package]]
+name = "wcwidth"
+version = "0.7.0"
+source = { registry = "https://REDACTED.local/repository/pypi-proxy/simple/" }
+sdist = { url = "https://REDACTED.local/repository/pypi-proxy/packages/wcwidth/0.7.0/wcwidth-0.7.0.tar.gz", hash = "sha256:90e3a7ea092341c44b99562e75d09e4d5160fe7a3974c6fb842a101a95e7eed0" }
+wheels = [
+    { url = "https://REDACTED.local/repository/pypi-proxy/packages/wcwidth/0.7.0/wcwidth-0.7.0-py3-none-any.whl", hash = "sha256:5d69154c429a82910e241c738cd0e2976fac8a2dd47a1a805f4afed1c0f136f2" },
+]

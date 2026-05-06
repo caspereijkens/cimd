@@ -62,6 +62,20 @@ test "union_smallest_id_wins: independent clusters do not interfere" {
     try std.testing.expect(!std.mem.eql(u8, root_ab, root_xy));
 }
 
+test "union_smallest_id_wins: compresses existing parent chains" {
+    var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer parent.deinit(std.testing.allocator);
+    try parent.ensureTotalCapacity(std.testing.allocator, 3);
+    parent.putAssumeCapacity("a", "b");
+    parent.putAssumeCapacity("b", "c");
+
+    topology.union_smallest_id_wins(&parent, "a", "d");
+
+    try std.testing.expectEqualStrings("c", parent.get("a").?);
+    try std.testing.expectEqualStrings("c", parent.get("b").?);
+    try std.testing.expectEqualStrings("c", topology.find_root(&parent, "d"));
+}
+
 test "find_root: id not in map returns itself" {
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer parent.deinit(std.testing.allocator);
@@ -232,6 +246,23 @@ test "Topology.build: direct busbar ConnectivityNode is reachable from itself" {
         "BBS1",
         topology_data.conn_node_reachable_busbar_section.get("_CN_A").?,
     );
+}
+
+test "Topology.build_with_options: can skip reachable busbar index" {
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_DIRECT_BUSBAR));
+    defer model.deinit(gpa);
+
+    const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
+    var index = try CrossRef.build(gpa, &model, boundary_ids);
+    defer index.deinit(gpa);
+
+    var topology_data = try topology.Topology.build_with_options(gpa, &model, &index, .{
+        .include_reachable_busbar_section = false,
+    });
+    defer topology_data.deinit(gpa);
+
+    try std.testing.expectEqual(@as(@TypeOf(topology_data.conn_node_reachable_busbar_section.count()), 0), topology_data.conn_node_reachable_busbar_section.count());
 }
 
 const SSH_SWITCH_XML =

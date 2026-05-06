@@ -1232,6 +1232,40 @@ test "two winding transformer: phaseTapChanger populated from PhaseTapChangerTab
     try std.testing.expectEqualStrings("CURRENT_LIMITER", ptc.regulation_mode.?);
 }
 
+test "cgmesTapChangers extension: populated for ratio and phase tap changers" {
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const twt1_ext = find_extension(network, "TWT1") orelse return error.TestFailed;
+    const twt1_tap_changers = twt1_ext.cgmes_tap_changers.?.tap_changers.items;
+    try std.testing.expectEqual(@as(usize, 2), twt1_tap_changers.len);
+
+    var found_rtc_twt1 = false;
+    var found_ptc_twt1 = false;
+    for (twt1_tap_changers) |tap_changer| {
+        if (std.mem.eql(u8, tap_changer.id, "RTC_TWT1")) {
+            found_rtc_twt1 = true;
+            try std.testing.expectEqual(@as(?[]const u8, null), tap_changer.tap_changer_type);
+            try std.testing.expectEqual(@as(i32, 2), tap_changer.step);
+        } else if (std.mem.eql(u8, tap_changer.id, "PTC_TWT1")) {
+            found_ptc_twt1 = true;
+            try std.testing.expectEqualStrings("PhaseTapChangerTabular", tap_changer.tap_changer_type.?);
+            try std.testing.expectEqual(@as(i32, 1), tap_changer.step);
+        }
+    }
+    try std.testing.expect(found_rtc_twt1);
+    try std.testing.expect(found_ptc_twt1);
+
+    const twt2_ext = find_extension(network, "TWT2") orelse return error.TestFailed;
+    const twt2_tap_changers = twt2_ext.cgmes_tap_changers.?.tap_changers.items;
+    try std.testing.expectEqual(@as(usize, 1), twt2_tap_changers.len);
+    try std.testing.expectEqualStrings("RTC_TWT2", twt2_tap_changers[0].id);
+    try std.testing.expectEqual(@as(i32, 1), twt2_tap_changers[0].step);
+}
+
 test "two winding transformer: phaseTapChanger on end 1 inverts rho and negates alpha" {
     const gpa = std.testing.allocator;
     var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
