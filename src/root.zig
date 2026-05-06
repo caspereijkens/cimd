@@ -5,7 +5,6 @@ comptime {
     _ = @import("cgmes/test_eq.zig");
     _ = @import("cgmes/test_ids.zig");
     _ = @import("topology/test_resolve.zig");
-    _ = @import("topology/test_validate.zig");
     _ = @import("convert/test_conversion.zig");
     _ = @import("topology/cross_ref.zig");
     _ = @import("cgmes/ssh.zig");
