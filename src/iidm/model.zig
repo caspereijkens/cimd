@@ -592,19 +592,19 @@ pub const Generator = struct {
             try jws.objectField("ratedS");
             try writeFloat(jws, rs);
         }
+        try jws.objectField("voltageRegulatorOn");
+        try jws.write(self.voltage_regulator_on);
         if (self.target_p) |tp| {
             try jws.objectField("targetP");
             try writeFloat(jws, tp);
         }
-        if (self.target_q) |tq| {
-            try jws.objectField("targetQ");
-            try writeFloat(jws, tq);
-        }
-        try jws.objectField("voltageRegulatorOn");
-        try jws.write(self.voltage_regulator_on);
         if (self.target_v) |tv| {
             try jws.objectField("targetV");
             try writeFloat(jws, tv);
+        }
+        if (self.target_q) |tq| {
+            try jws.objectField("targetQ");
+            try writeFloat(jws, tq);
         }
         if (self.is_condenser) {
             try jws.objectField("isCondenser");

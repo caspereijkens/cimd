@@ -7,9 +7,9 @@ cimd is a **C**ommand line **I**nterface for grid **M**odel **D**ata. It is a hi
 
 ![CGMES EQ → JIIDM conversion benchmark: cimd vs pypowsybl](docs/benchmark.svg)
 
-*Converting a real-world 5MB zipped EQ file to JIIDM.*
+*End-to-end CGMES → in-memory pypowsybl `Network` on a real-world Dutch transmission model (EQ + EQBD, ~5MB zipped). The `cimd` bar measures `cimd convert` (ReleaseFast) writing JIIDM to disk plus `pypowsybl.network.load` reading it back; the `pypowsybl` bar measures `pypowsybl.network.load_from_binary_buffers` on the same CGMES inputs.*
 
-*Measured on Apple M4 Pro · both tools processing the same EQ + EQBD input · median of 6 warm runs.*
+*Median of 10 runs after a discarded warm-up. Measured on Apple M4 Pro. Reproduce with `benchmark/main.py`.*
 
 ## Contributing
 `cimd` is alpha software. Using `cimd` today means participating in its development. 
