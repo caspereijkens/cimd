@@ -107,25 +107,25 @@ fn write_float_auto(jws: anytype, value: f64) !void {
 
 /// Format a float string to ensure it has a decimal point (e.g., "100" -> "100.0")
 /// Returns the original string if it already has a decimal, otherwise allocates a new one.
-pub fn format_float_str(allocator: std.mem.Allocator, str: []const u8) ![]const u8 {
+pub fn format_float_str(gpa: std.mem.Allocator, str: []const u8) ![]const u8 {
     // If string is in scientific notation (contains 'e'/'E'), parse and reformat as
     // fixed-point decimal to match Java's Double.toString behaviour (e.g. "1250000.0").
     const has_exp = std.mem.indexOfAny(u8, str, "eE") != null;
     if (has_exp) {
         const value = try std.fmt.parseFloat(f64, str);
-        const formatted = try std.fmt.allocPrint(allocator, "{d}", .{value});
+        const formatted = try std.fmt.allocPrint(gpa, "{d}", .{value});
         if (std.mem.indexOfScalar(u8, formatted, '.') == null) {
-            defer allocator.free(formatted);
-            return std.fmt.allocPrint(allocator, "{s}.0", .{formatted});
+            defer gpa.free(formatted);
+            return std.fmt.allocPrint(gpa, "{s}.0", .{formatted});
         }
         return formatted;
     }
     // Check if it already has a decimal point — dupe so callers always own the result.
     if (std.mem.indexOfScalar(u8, str, '.') != null) {
-        return allocator.dupe(u8, str);
+        return gpa.dupe(u8, str);
     }
     // Allocate new string with .0 suffix
-    const result = try allocator.alloc(u8, str.len + 2);
+    const result = try gpa.alloc(u8, str.len + 2);
     @memcpy(result[0..str.len], str);
     result[str.len] = '.';
     result[str.len + 1] = '0';
@@ -251,9 +251,9 @@ pub const Load = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *Load, allocator: std.mem.Allocator) void {
-        self.aliases.deinit(allocator);
-        free_properties(allocator, &self.properties);
+    pub fn deinit(self: *Load, gpa: std.mem.Allocator) void {
+        self.aliases.deinit(gpa);
+        free_properties(gpa, &self.properties);
     }
 };
 
@@ -328,9 +328,9 @@ pub const Shunt = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *Shunt, allocator: std.mem.Allocator) void {
-        self.aliases.deinit(allocator);
-        free_properties(allocator, &self.properties);
+    pub fn deinit(self: *Shunt, gpa: std.mem.Allocator) void {
+        self.aliases.deinit(gpa);
+        free_properties(gpa, &self.properties);
     }
 };
 
@@ -382,10 +382,10 @@ pub const VsConverterStation = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *VsConverterStation, allocator: std.mem.Allocator) void {
-        self.reactive_capability_curve_points.deinit(allocator);
-        self.aliases.deinit(allocator);
-        free_properties(allocator, &self.properties);
+    pub fn deinit(self: *VsConverterStation, gpa: std.mem.Allocator) void {
+        self.reactive_capability_curve_points.deinit(gpa);
+        self.aliases.deinit(gpa);
+        free_properties(gpa, &self.properties);
     }
 };
 
@@ -417,8 +417,8 @@ pub const LccConverterStation = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *LccConverterStation, allocator: std.mem.Allocator) void {
-        self.aliases.deinit(allocator);
+    pub fn deinit(self: *LccConverterStation, gpa: std.mem.Allocator) void {
+        self.aliases.deinit(gpa);
     }
 };
 
@@ -475,9 +475,9 @@ pub const StaticVarCompensator = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *StaticVarCompensator, allocator: std.mem.Allocator) void {
-        self.aliases.deinit(allocator);
-        free_properties(allocator, &self.properties);
+    pub fn deinit(self: *StaticVarCompensator, gpa: std.mem.Allocator) void {
+        self.aliases.deinit(gpa);
+        free_properties(gpa, &self.properties);
     }
 };
 
@@ -639,10 +639,10 @@ pub const Generator = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *Generator, allocator: std.mem.Allocator) void {
-        self.reactive_capability_curve_points.deinit(allocator);
-        self.aliases.deinit(allocator);
-        free_properties(allocator, &self.properties);
+    pub fn deinit(self: *Generator, gpa: std.mem.Allocator) void {
+        self.reactive_capability_curve_points.deinit(gpa);
+        self.aliases.deinit(gpa);
+        free_properties(gpa, &self.properties);
     }
 };
 
@@ -724,10 +724,10 @@ pub const Switch = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *Switch, allocator: std.mem.Allocator) void {
-        allocator.free(self.id);
-        self.aliases.deinit(allocator);
-        free_properties(allocator, &self.properties);
+    pub fn deinit(self: *Switch, gpa: std.mem.Allocator) void {
+        gpa.free(self.id);
+        self.aliases.deinit(gpa);
+        free_properties(gpa, &self.properties);
     }
 };
 
@@ -778,8 +778,8 @@ pub const BusbarSection = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *BusbarSection, allocator: std.mem.Allocator) void {
-        self.aliases.deinit(allocator);
+    pub fn deinit(self: *BusbarSection, gpa: std.mem.Allocator) void {
+        self.aliases.deinit(gpa);
     }
 };
 
@@ -837,8 +837,8 @@ pub const BusBreakerTopology = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *BusBreakerTopology, allocator: std.mem.Allocator) void {
-        self.buses.deinit(allocator);
+    pub fn deinit(self: *BusBreakerTopology, gpa: std.mem.Allocator) void {
+        self.buses.deinit(gpa);
     }
 };
 
@@ -860,16 +860,16 @@ pub const NodeBreakerTopology = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *NodeBreakerTopology, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *NodeBreakerTopology, gpa: std.mem.Allocator) void {
         for (self.busbar_sections.items) |*busbar_section| {
-            busbar_section.deinit(allocator);
+            busbar_section.deinit(gpa);
         }
-        self.busbar_sections.deinit(allocator);
+        self.busbar_sections.deinit(gpa);
         for (self.switches.items) |*sw| {
-            sw.deinit(allocator);
+            sw.deinit(gpa);
         }
-        self.switches.deinit(allocator);
-        self.internal_connections.deinit(allocator);
+        self.switches.deinit(gpa);
+        self.internal_connections.deinit(gpa);
     }
 };
 
@@ -949,35 +949,35 @@ pub const VoltageLevel = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *VoltageLevel, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *VoltageLevel, gpa: std.mem.Allocator) void {
         for (self.generators.items) |*gen| {
-            gen.deinit(allocator);
+            gen.deinit(gpa);
         }
         for (self.loads.items) |*load| {
-            load.deinit(allocator);
+            load.deinit(gpa);
         }
         for (self.shunts.items) |*shunt| {
-            shunt.deinit(allocator);
+            shunt.deinit(gpa);
         }
         for (self.static_var_compensators.items) |*svc| {
-            svc.deinit(allocator);
+            svc.deinit(gpa);
         }
         for (self.vs_converter_stations.items) |*vsc| {
-            vsc.deinit(allocator);
+            vsc.deinit(gpa);
         }
         for (self.lcc_converter_stations.items) |*lcc| {
-            lcc.deinit(allocator);
+            lcc.deinit(gpa);
         }
-        self.node_breaker_topology.deinit(allocator);
-        self.bus_breaker_topology.deinit(allocator);
-        self.generators.deinit(allocator);
-        self.loads.deinit(allocator);
-        self.shunts.deinit(allocator);
-        self.static_var_compensators.deinit(allocator);
-        self.vs_converter_stations.deinit(allocator);
-        self.lcc_converter_stations.deinit(allocator);
-        self.aliases.deinit(allocator);
-        free_properties(allocator, &self.properties);
+        self.node_breaker_topology.deinit(gpa);
+        self.bus_breaker_topology.deinit(gpa);
+        self.generators.deinit(gpa);
+        self.loads.deinit(gpa);
+        self.shunts.deinit(gpa);
+        self.static_var_compensators.deinit(gpa);
+        self.vs_converter_stations.deinit(gpa);
+        self.lcc_converter_stations.deinit(gpa);
+        self.aliases.deinit(gpa);
+        free_properties(gpa, &self.properties);
     }
 };
 
@@ -1026,11 +1026,11 @@ pub const FictitiousVoltageLevel = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *FictitiousVoltageLevel, allocator: std.mem.Allocator) void {
-        allocator.free(self.id); // id is always heap-allocated via allocPrint in line.zig
-        self.internal_connections.deinit(allocator);
-        for (self.generators.items) |*gen| gen.deinit(allocator);
-        self.generators.deinit(allocator);
+    pub fn deinit(self: *FictitiousVoltageLevel, gpa: std.mem.Allocator) void {
+        gpa.free(self.id); // id is always heap-allocated via allocPrint in line.zig
+        self.internal_connections.deinit(gpa);
+        for (self.generators.items) |*gen| gen.deinit(gpa);
+        self.generators.deinit(gpa);
     }
 };
 
@@ -1128,8 +1128,8 @@ pub const RatioTapChanger = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *RatioTapChanger, allocator: std.mem.Allocator) void {
-        self.steps.deinit(allocator);
+    pub fn deinit(self: *RatioTapChanger, gpa: std.mem.Allocator) void {
+        self.steps.deinit(gpa);
     }
 };
 
@@ -1162,8 +1162,8 @@ pub const PhaseTapChanger = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *PhaseTapChanger, allocator: std.mem.Allocator) void {
-        self.steps.deinit(allocator);
+    pub fn deinit(self: *PhaseTapChanger, gpa: std.mem.Allocator) void {
+        self.steps.deinit(gpa);
     }
 };
 
@@ -1201,8 +1201,8 @@ pub const CurrentLimits = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *CurrentLimits, allocator: std.mem.Allocator) void {
-        self.temporary_limits.deinit(allocator);
+    pub fn deinit(self: *CurrentLimits, gpa: std.mem.Allocator) void {
+        self.temporary_limits.deinit(gpa);
     }
 };
 
@@ -1226,10 +1226,10 @@ pub const OperationalLimitsGroup = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *OperationalLimitsGroup, allocator: std.mem.Allocator) void {
-        free_properties(allocator, &self.properties);
+    pub fn deinit(self: *OperationalLimitsGroup, gpa: std.mem.Allocator) void {
+        free_properties(gpa, &self.properties);
         if (self.current_limits) |*cl| {
-            cl.deinit(allocator);
+            cl.deinit(gpa);
         }
     }
 };
@@ -1313,22 +1313,22 @@ pub const TwoWindingsTransformer = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *TwoWindingsTransformer, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *TwoWindingsTransformer, gpa: std.mem.Allocator) void {
         if (self.ratio_tap_changer) |*rtc| {
-            rtc.deinit(allocator);
+            rtc.deinit(gpa);
         }
         if (self.phase_tap_changer) |*ptc| {
-            ptc.deinit(allocator);
+            ptc.deinit(gpa);
         }
         for (self.op_lims_groups1.items) |*olg| {
-            olg.deinit(allocator);
+            olg.deinit(gpa);
         }
-        self.op_lims_groups1.deinit(allocator);
+        self.op_lims_groups1.deinit(gpa);
         for (self.op_lims_groups2.items) |*olg| {
-            olg.deinit(allocator);
+            olg.deinit(gpa);
         }
-        self.op_lims_groups2.deinit(allocator);
-        self.aliases.deinit(allocator);
+        self.op_lims_groups2.deinit(gpa);
+        self.aliases.deinit(gpa);
     }
 };
 
@@ -1471,17 +1471,17 @@ pub const ThreeWindingsTransformer = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *ThreeWindingsTransformer, allocator: std.mem.Allocator) void {
-        if (self.ratio_tap_changer1) |*rtc| rtc.deinit(allocator);
-        if (self.ratio_tap_changer2) |*rtc| rtc.deinit(allocator);
-        if (self.ratio_tap_changer3) |*rtc| rtc.deinit(allocator);
-        for (self.op_lims_groups1.items) |*olg| olg.deinit(allocator);
-        self.op_lims_groups1.deinit(allocator);
-        for (self.op_lims_groups2.items) |*olg| olg.deinit(allocator);
-        self.op_lims_groups2.deinit(allocator);
-        for (self.op_lims_groups3.items) |*olg| olg.deinit(allocator);
-        self.op_lims_groups3.deinit(allocator);
-        self.aliases.deinit(allocator);
+    pub fn deinit(self: *ThreeWindingsTransformer, gpa: std.mem.Allocator) void {
+        if (self.ratio_tap_changer1) |*rtc| rtc.deinit(gpa);
+        if (self.ratio_tap_changer2) |*rtc| rtc.deinit(gpa);
+        if (self.ratio_tap_changer3) |*rtc| rtc.deinit(gpa);
+        for (self.op_lims_groups1.items) |*olg| olg.deinit(gpa);
+        self.op_lims_groups1.deinit(gpa);
+        for (self.op_lims_groups2.items) |*olg| olg.deinit(gpa);
+        self.op_lims_groups2.deinit(gpa);
+        for (self.op_lims_groups3.items) |*olg| olg.deinit(gpa);
+        self.op_lims_groups3.deinit(gpa);
+        self.aliases.deinit(gpa);
     }
 };
 
@@ -1504,9 +1504,9 @@ pub const Property = struct {
     }
 };
 
-fn free_properties(allocator: std.mem.Allocator, properties: *std.ArrayListUnmanaged(Property)) void {
-    for (properties.items) |prop| if (prop.owned_value) allocator.free(prop.value);
-    properties.deinit(allocator);
+fn free_properties(gpa: std.mem.Allocator, properties: *std.ArrayListUnmanaged(Property)) void {
+    for (properties.items) |prop| if (prop.owned_value) gpa.free(prop.value);
+    properties.deinit(gpa);
 }
 
 test "Property: jsonStringify emits only name and value" {
@@ -1573,22 +1573,22 @@ pub const Substation = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *Substation, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *Substation, gpa: std.mem.Allocator) void {
         for (self.voltage_levels.items) |*voltage_level| {
-            voltage_level.deinit(allocator);
+            voltage_level.deinit(gpa);
         }
-        self.voltage_levels.deinit(allocator);
+        self.voltage_levels.deinit(gpa);
         for (self.two_winding_transformers.items) |*twt| {
-            twt.deinit(allocator);
+            twt.deinit(gpa);
         }
-        self.two_winding_transformers.deinit(allocator);
+        self.two_winding_transformers.deinit(gpa);
         for (self.three_winding_transformers.items) |*twt| {
-            twt.deinit(allocator);
+            twt.deinit(gpa);
         }
-        self.three_winding_transformers.deinit(allocator);
-        self.aliases.deinit(allocator);
-        free_properties(allocator, &self.properties);
-        self.geo_tags.deinit(allocator);
+        self.three_winding_transformers.deinit(gpa);
+        self.aliases.deinit(gpa);
+        free_properties(gpa, &self.properties);
+        self.geo_tags.deinit(gpa);
     }
 };
 
@@ -1661,17 +1661,17 @@ pub const Line = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *Line, allocator: std.mem.Allocator) void {
-        self.aliases.deinit(allocator);
-        free_properties(allocator, &self.properties);
+    pub fn deinit(self: *Line, gpa: std.mem.Allocator) void {
+        self.aliases.deinit(gpa);
+        free_properties(gpa, &self.properties);
         for (self.op_lims_groups1.items) |*olg| {
-            olg.deinit(allocator);
+            olg.deinit(gpa);
         }
-        self.op_lims_groups1.deinit(allocator);
+        self.op_lims_groups1.deinit(gpa);
         for (self.op_lims_groups2.items) |*olg| {
-            olg.deinit(allocator);
+            olg.deinit(gpa);
         }
-        self.op_lims_groups2.deinit(allocator);
+        self.op_lims_groups2.deinit(gpa);
     }
 };
 
@@ -1726,8 +1726,8 @@ pub const HvdcLine = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *HvdcLine, allocator: std.mem.Allocator) void {
-        self.aliases.deinit(allocator);
+    pub fn deinit(self: *HvdcLine, gpa: std.mem.Allocator) void {
+        self.aliases.deinit(gpa);
     }
 };
 
@@ -1766,8 +1766,8 @@ pub const CgmesTapChangers = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *CgmesTapChangers, allocator: std.mem.Allocator) void {
-        self.tap_changers.deinit(allocator);
+    pub fn deinit(self: *CgmesTapChangers, gpa: std.mem.Allocator) void {
+        self.tap_changers.deinit(gpa);
     }
 };
 
@@ -1836,10 +1836,10 @@ pub const MetadataModel = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *MetadataModel, allocator: std.mem.Allocator) void {
-        allocator.free(self.description);
-        self.profiles.deinit(allocator);
-        self.dependent_on_models.deinit(allocator);
+    pub fn deinit(self: *MetadataModel, gpa: std.mem.Allocator) void {
+        gpa.free(self.description);
+        self.profiles.deinit(gpa);
+        self.dependent_on_models.deinit(gpa);
     }
 };
 
@@ -1853,9 +1853,9 @@ pub const CgmesMetadataModels = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *CgmesMetadataModels, allocator: std.mem.Allocator) void {
-        for (self.models.items) |*m| m.deinit(allocator);
-        self.models.deinit(allocator);
+    pub fn deinit(self: *CgmesMetadataModels, gpa: std.mem.Allocator) void {
+        for (self.models.items) |*m| m.deinit(gpa);
+        self.models.deinit(gpa);
     }
 };
 
@@ -1886,8 +1886,8 @@ pub const BaseVoltageMapping = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *BaseVoltageMapping, allocator: std.mem.Allocator) void {
-        self.base_voltages.deinit(allocator);
+    pub fn deinit(self: *BaseVoltageMapping, gpa: std.mem.Allocator) void {
+        self.base_voltages.deinit(gpa);
     }
 };
 
@@ -2000,10 +2000,10 @@ pub const Extension = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *Extension, allocator: std.mem.Allocator) void {
-        if (self.cgmes_tap_changers) |*tc| tc.deinit(allocator);
-        if (self.cgmes_metadata_models) |*m| m.deinit(allocator);
-        if (self.base_voltage_mapping) |*b| b.deinit(allocator);
+    pub fn deinit(self: *Extension, gpa: std.mem.Allocator) void {
+        if (self.cgmes_tap_changers) |*tc| tc.deinit(gpa);
+        if (self.cgmes_metadata_models) |*m| m.deinit(gpa);
+        if (self.base_voltage_mapping) |*b| b.deinit(gpa);
     }
 };
 
@@ -2063,8 +2063,8 @@ pub const Area = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *Area, allocator: std.mem.Allocator) void {
-        self.boundaries.deinit(allocator);
+    pub fn deinit(self: *Area, gpa: std.mem.Allocator) void {
+        self.boundaries.deinit(gpa);
     }
 };
 
@@ -2127,31 +2127,31 @@ pub const Network = struct {
         try jws.endObject();
     }
 
-    pub fn deinit(self: *Network, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *Network, gpa: std.mem.Allocator) void {
         for (self.substations.items) |*substation| {
-            substation.deinit(allocator);
+            substation.deinit(gpa);
         }
-        self.substations.deinit(allocator);
+        self.substations.deinit(gpa);
         for (self.fictitious_voltage_levels.items) |*fvoltage_level| {
-            fvoltage_level.deinit(allocator);
+            fvoltage_level.deinit(gpa);
         }
-        self.fictitious_voltage_levels.deinit(allocator);
+        self.fictitious_voltage_levels.deinit(gpa);
         for (self.lines.items) |*line| {
-            line.deinit(allocator);
+            line.deinit(gpa);
         }
-        self.lines.deinit(allocator);
+        self.lines.deinit(gpa);
         for (self.hvdc_lines.items) |*hvdc| {
-            hvdc.deinit(allocator);
+            hvdc.deinit(gpa);
         }
-        self.hvdc_lines.deinit(allocator);
+        self.hvdc_lines.deinit(gpa);
         for (self.areas.items) |*area| {
-            area.deinit(allocator);
+            area.deinit(gpa);
         }
-        self.areas.deinit(allocator);
+        self.areas.deinit(gpa);
         for (self.extensions.items) |*ext| {
-            ext.deinit(allocator);
+            ext.deinit(gpa);
         }
-        self.extensions.deinit(allocator);
-        self.extension_versions.deinit(allocator);
+        self.extensions.deinit(gpa);
+        self.extension_versions.deinit(gpa);
     }
 };
