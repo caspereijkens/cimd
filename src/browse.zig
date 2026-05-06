@@ -345,7 +345,7 @@ fn render_footer(
     try writer.writeAll("\n\n");
     if (counter > 2) {
         try writer.print(" [1-{d}]", .{counter - 1});
-    } else {
+    } else if (counter == 2) {
         try writer.print(" [1]", .{});
     }
     if (has_back) try writer.writeAll("  [b]ack");
