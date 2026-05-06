@@ -226,7 +226,9 @@ pub fn convert(
     var index = try cross_ref.CrossRef.build(gpa, model, boundary_ids);
     defer index.deinit(gpa);
 
-    var topology_data = try topology.Topology.build(gpa, model, &index);
+    var topology_data = try topology.Topology.build_with_options(gpa, model, &index, .{
+        .include_reachable_busbar_section = !bus_branch,
+    });
     defer topology_data.deinit(gpa);
 
     try cross_ref.build_voltage_limits(gpa, model, &index, &topology_data);
@@ -288,6 +290,10 @@ pub fn convert(
     var voltage_level_map = try voltage_level_conv.build_voltage_level_map(gpa, model, &topology_data, &network, &sub_id_map, &substation_map);
     defer voltage_level_map.deinit(gpa);
 
+    var tap_changer_info_map: transformer_conv.TapChangerInfoMap = .empty;
+    defer transformer_conv.deinit_tap_changer_info_map(gpa, &tap_changer_info_map);
+    const tap_changer_info_target: ?*transformer_conv.TapChangerInfoMap = if (bus_branch) null else &tap_changer_info_map;
+
     // Branch on output shape. Bus-branch derives placement from TP's
     // TopologicalNodes; node-breaker builds a NodeMap from EQ CNs + switches.
     // Node-breaker is the default even when TP is loaded (matches pypowsybl);
@@ -309,7 +315,7 @@ pub fn convert(
         try equipment_conv.convert_shunts(gpa, model, placer, ssh_opt);
         try equipment_conv.convert_static_var_compensators(model, placer, ssh_opt);
         try equipment_conv.convert_generators(gpa, model, placer, ssh_opt);
-        try transformer_conv.convert_transformers(gpa, model, &substation_map, placer, ssh_opt);
+        try transformer_conv.convert_transformers(gpa, model, &substation_map, placer, ssh_opt, tap_changer_info_target);
         try line_conv.convert_lines(gpa, model, &network, placer, ssh_opt);
     } else {
         var voltage_level_id_set: std.StringHashMapUnmanaged(void) = .empty;
@@ -338,7 +344,7 @@ pub fn convert(
         try equipment_conv.convert_shunts(gpa, model, placer, ssh_opt);
         try equipment_conv.convert_static_var_compensators(model, placer, ssh_opt);
         try equipment_conv.convert_generators(gpa, model, placer, ssh_opt);
-        try transformer_conv.convert_transformers(gpa, model, &substation_map, placer, ssh_opt);
+        try transformer_conv.convert_transformers(gpa, model, &substation_map, placer, ssh_opt, tap_changer_info_target);
         try line_conv.convert_lines(gpa, model, &network, placer, ssh_opt);
     }
     try convert_areas(gpa, model, ssh_opt, &network);
@@ -354,57 +360,17 @@ pub fn convert(
     // or PhaseTapChangerTabular. The extension ID is the PowerTransformer mRID.
     // step = TapChanger.normalStep.
     // Emitted for node-breaker JIIDM only; bus-branch output skips it.
-    if (!bus_branch) {
-        // Build a map: transformer_mrid -> list of TapChangerInfo
-        var xfmr_tap_changer_map: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(iidm.TapChangerInfo)) = .empty;
-        defer {
-            var it = xfmr_tap_changer_map.iterator();
-            while (it.next()) |entry| entry.value_ptr.deinit(gpa);
-            xfmr_tap_changer_map.deinit(gpa);
+    if (!bus_branch and tap_changer_info_map.count() > 0) {
+        try network.extensions.ensureTotalCapacity(gpa, network.extensions.items.len + tap_changer_info_map.count());
+        var it = tap_changer_info_map.iterator();
+        while (it.next()) |entry| {
+            network.extensions.appendAssumeCapacity(.{
+                .id = entry.key_ptr.*,
+                .cgmes_tap_changers = .{ .tap_changers = entry.value_ptr.* },
+            });
+            entry.value_ptr.* = .empty; // ownership transferred
         }
-
-        const tap_changer_types = [_]struct { type_name: []const u8, is_phase: bool }{
-            .{ .type_name = "RatioTapChanger", .is_phase = false },
-            .{ .type_name = "PhaseTapChangerTabular", .is_phase = true },
-        };
-        for (tap_changer_types) |tap_changer_type| {
-            for (model.get_objects_by_type(tap_changer_type.type_name)) |tap_changer| {
-                const tap_changer_view = model.view(tap_changer);
-                const step_str = try tap_changer_view.getProperty("TapChanger.normalStep") orelse continue;
-                const step = std.fmt.parseInt(i32, std.mem.trim(u8, step_str, " \t\r\n"), 10) catch continue;
-                const tap_changer_mrid = try tap_changer_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(tap_changer.id);
-
-                // TransformerEnd → PowerTransformer
-                const end_ref = try tap_changer_view.getReference(if (tap_changer_type.is_phase) "PhaseTapChanger.TransformerEnd" else "RatioTapChanger.TransformerEnd") orelse continue;
-                const end_id = strip_hash(end_ref);
-                const end_obj = model.getObjectById(end_id) orelse continue;
-                const xfmr_ref = try end_obj.getReference("PowerTransformerEnd.PowerTransformer") orelse continue;
-                const xfmr_id = strip_hash(xfmr_ref);
-                const xfmr_obj = model.getObjectById(xfmr_id) orelse continue;
-                const xfmr_mrid = try xfmr_obj.getProperty("IdentifiedObject.mRID") orelse strip_underscore(xfmr_id);
-
-                const gop = try xfmr_tap_changer_map.getOrPut(gpa, xfmr_mrid);
-                if (!gop.found_existing) gop.value_ptr.* = .empty;
-                try gop.value_ptr.append(gpa, .{
-                    .id = tap_changer_mrid,
-                    .tap_changer_type = if (tap_changer_type.is_phase) "PhaseTapChangerTabular" else null,
-                    .step = step,
-                });
-            }
-        }
-
-        if (xfmr_tap_changer_map.count() > 0) {
-            try network.extensions.ensureTotalCapacity(gpa, network.extensions.items.len + xfmr_tap_changer_map.count());
-            var it = xfmr_tap_changer_map.iterator();
-            while (it.next()) |entry| {
-                network.extensions.appendAssumeCapacity(.{
-                    .id = entry.key_ptr.*,
-                    .cgmes_tap_changers = .{ .tap_changers = entry.value_ptr.* },
-                });
-                entry.value_ptr.* = .empty; // ownership transferred
-            }
-            try network.extension_versions.append(gpa, .{ .extension_name = "cgmesTapChangers", .version = extension_version("cgmesTapChangers") });
-        }
+        try network.extension_versions.append(gpa, .{ .extension_name = "cgmesTapChangers", .version = extension_version("cgmesTapChangers") });
     }
 
     // detail extension: every load gets fixedActivePower/fixedReactivePower from EQ

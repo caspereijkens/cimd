@@ -64,10 +64,15 @@ pub fn pre_allocate_equipment(
     defer equipment_counts.deinit(gpa);
     try equipment_counts.ensureTotalCapacity(gpa, @intCast(placer.voltage_level_map.count()));
 
-    try count_equipment_for_type(model, placer, "BusbarSection", "busbar_sections", &equipment_counts);
-    try count_equipment_for_type(model, placer, "Breaker", "switches", &equipment_counts);
-    try count_equipment_for_type(model, placer, "Disconnector", "switches", &equipment_counts);
-    try count_equipment_for_type(model, placer, "LoadBreakSwitch", "switches", &equipment_counts);
+    switch (placer.mode) {
+        .node_breaker => {
+            try count_equipment_for_type(model, placer, "BusbarSection", "busbar_sections", &equipment_counts);
+            try count_equipment_for_type(model, placer, "Breaker", "switches", &equipment_counts);
+            try count_equipment_for_type(model, placer, "Disconnector", "switches", &equipment_counts);
+            try count_equipment_for_type(model, placer, "LoadBreakSwitch", "switches", &equipment_counts);
+        },
+        .bus_branch => {},
+    }
     try count_equipment_for_type(model, placer, "EnergyConsumer", "loads", &equipment_counts);
     try count_equipment_for_type(model, placer, "ConformLoad", "loads", &equipment_counts);
     try count_equipment_for_type(model, placer, "NonConformLoad", "loads", &equipment_counts);

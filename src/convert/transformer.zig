@@ -22,6 +22,14 @@ const resolve_terminal_placement = placement_mod.resolve_terminal_placement;
 const NodeMap = topology.NodeMap;
 const max_tap_steps = 10_000;
 
+pub const TapChangerInfoMap = std.StringHashMapUnmanaged(std.ArrayListUnmanaged(iidm.TapChangerInfo));
+
+pub fn deinit_tap_changer_info_map(gpa: std.mem.Allocator, map: *TapChangerInfoMap) void {
+    var it = map.valueIterator();
+    while (it.next()) |list| list.deinit(gpa);
+    map.deinit(gpa);
+}
+
 fn build_ends_by_transformer(
     gpa: std.mem.Allocator,
     model: *const EQ,
@@ -85,6 +93,31 @@ fn read_tap_changer_common(tap_changer: CimObjectView) !?TapChangerCommon {
     const ltc_flag_str = props[2] orelse return null;
     const ltc_flag = std.mem.eql(u8, ltc_flag_str, "true");
     return .{ .low_step = low_step, .normal_step = normal_step, .ltc_flag = ltc_flag };
+}
+
+fn append_tap_changer_info(
+    gpa: std.mem.Allocator,
+    model: *const EQ,
+    map_opt: ?*TapChangerInfoMap,
+    end_id: []const u8,
+    tap_changer_mrid: []const u8,
+    tap_changer_type: ?[]const u8,
+    normal_step: i32,
+) !void {
+    const map = map_opt orelse return;
+    const end_obj = model.getObjectById(end_id) orelse return;
+    const transformer_ref = try end_obj.getReference("PowerTransformerEnd.PowerTransformer") orelse return;
+    const transformer_id = strip_hash(transformer_ref);
+    const transformer_obj = model.getObjectById(transformer_id) orelse return;
+    const transformer_mrid = try transformer_obj.getProperty("IdentifiedObject.mRID") orelse strip_underscore(transformer_id);
+
+    const gop = try map.getOrPut(gpa, transformer_mrid);
+    if (!gop.found_existing) gop.value_ptr.* = .empty;
+    try gop.value_ptr.append(gpa, .{
+        .id = tap_changer_mrid,
+        .tap_changer_type = tap_changer_type,
+        .step = normal_step,
+    });
 }
 
 // Raw CGMES step values. rho transform differs between ratio (invert) and phase (passthrough)
@@ -199,6 +232,7 @@ fn build_ratio_tap_changer_map(
     gpa: std.mem.Allocator,
     model: *const EQ,
     ssh_opt: ?@import("../cgmes/ssh.zig").SSH,
+    tap_changer_info_map: ?*TapChangerInfoMap,
 ) !std.StringHashMapUnmanaged(RatioTapChangerEntry) {
     var points_by_table = try build_ratio_table_points(gpa, model);
     defer {
@@ -214,8 +248,11 @@ fn build_ratio_tap_changer_map(
     for (tap_changers) |tap_changer| {
         const tap_changer_view = model.view(tap_changer);
         const end_ref = try tap_changer_view.getReference("RatioTapChanger.TransformerEnd") orelse continue;
+        const end_id = strip_hash(end_ref);
         const common = try read_tap_changer_common(tap_changer_view) orelse continue;
         const regulating = try read_tap_changer_regulating(model, tap_changer_view, ssh_opt);
+        const mrid = try tap_changer_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(tap_changer.id);
+        try append_tap_changer_info(gpa, model, tap_changer_info_map, end_id, mrid, null, common.normal_step);
 
         const owned_steps = if (try tap_changer_view.getReference("RatioTapChanger.RatioTapChangerTable")) |table_ref| blk: {
             const ordered = points_by_table.get(strip_hash(table_ref)) orelse continue;
@@ -227,8 +264,7 @@ fn build_ratio_tap_changer_map(
             break :blk try build_linear_ratio_steps(gpa, tap_changer_view, common.low_step) orelse continue;
         };
 
-        const mrid = try tap_changer_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(tap_changer.id);
-        ratio_tap_changer_map.putAssumeCapacity(strip_hash(end_ref), .{
+        ratio_tap_changer_map.putAssumeCapacity(end_id, .{
             .mrid = mrid,
             .tap_changer = .{
                 .low_tap_position = common.low_step,
@@ -256,6 +292,7 @@ fn build_phase_tap_changer_map(
     gpa: std.mem.Allocator,
     model: *const EQ,
     ssh_opt: ?@import("../cgmes/ssh.zig").SSH,
+    tap_changer_info_map: ?*TapChangerInfoMap,
 ) !std.StringHashMapUnmanaged(PhaseTapChangerEntry) {
     var points_by_table: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(OrderedPhaseStep)) = .empty;
     defer {
@@ -313,6 +350,8 @@ fn build_phase_tap_changer_map(
         const regulating = try read_tap_changer_regulating(model, tap_changer_view, ssh_opt);
 
         const common = try read_tap_changer_common(tap_changer_view) orelse continue;
+        const mrid = try tap_changer_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(tap_changer.id);
+        try append_tap_changer_info(gpa, model, tap_changer_info_map, end_id, mrid, "PhaseTapChangerTabular", common.normal_step);
 
         const table_ref = try tap_changer_view.getReference("PhaseTapChangerTabular.PhaseTapChangerTable") orelse continue;
         const table_id = strip_hash(table_ref);
@@ -349,7 +388,6 @@ fn build_phase_tap_changer_map(
             owned_steps.appendAssumeCapacity(step);
         }
 
-        const mrid = try tap_changer_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(tap_changer.id);
         // PhaseTapChangerTabular maps to CURRENT_LIMITER in pypowsybl's CGMES importer.
         phase_tap_changer_map.putAssumeCapacity(end_id, .{
             .mrid = mrid,
@@ -763,6 +801,7 @@ pub fn convert_transformers(
     substation_map: *const std.StringHashMapUnmanaged(*iidm.Substation),
     placer: TerminalPlacer,
     ssh_opt: ?@import("../cgmes/ssh.zig").SSH,
+    tap_changer_info_map: ?*TapChangerInfoMap,
 ) !void {
     var ends_by_transformer: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObjectView)) = try build_ends_by_transformer(gpa, model);
     defer {
@@ -771,14 +810,14 @@ pub fn convert_transformers(
         ends_by_transformer.deinit(gpa);
     }
 
-    var ratio_tap_changer_map = try build_ratio_tap_changer_map(gpa, model, ssh_opt);
+    var ratio_tap_changer_map = try build_ratio_tap_changer_map(gpa, model, ssh_opt, tap_changer_info_map);
     defer {
         var it = ratio_tap_changer_map.valueIterator();
         while (it.next()) |value| value.deinit(gpa);
         ratio_tap_changer_map.deinit(gpa);
     }
 
-    var phase_tap_changer_map = try build_phase_tap_changer_map(gpa, model, ssh_opt);
+    var phase_tap_changer_map = try build_phase_tap_changer_map(gpa, model, ssh_opt, tap_changer_info_map);
     defer {
         var it = phase_tap_changer_map.valueIterator();
         while (it.next()) |value| value.deinit(gpa);

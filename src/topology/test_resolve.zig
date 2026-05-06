@@ -248,6 +248,23 @@ test "Topology.build: direct busbar ConnectivityNode is reachable from itself" {
     );
 }
 
+test "Topology.build_with_options: can skip reachable busbar index" {
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_DIRECT_BUSBAR));
+    defer model.deinit(gpa);
+
+    const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
+    var index = try CrossRef.build(gpa, &model, boundary_ids);
+    defer index.deinit(gpa);
+
+    var topology_data = try topology.Topology.build_with_options(gpa, &model, &index, .{
+        .include_reachable_busbar_section = false,
+    });
+    defer topology_data.deinit(gpa);
+
+    try std.testing.expectEqual(@as(@TypeOf(topology_data.conn_node_reachable_busbar_section.count()), 0), topology_data.conn_node_reachable_busbar_section.count());
+}
+
 const SSH_SWITCH_XML =
     \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:cim="cim:" xmlns:md="md:">
     \\  <md:FullModel rdf:about="urn:uuid:SSH_FM"/>

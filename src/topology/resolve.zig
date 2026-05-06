@@ -26,6 +26,10 @@ pub const Topology = struct {
     substation_merge: std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)),
     conn_node_reachable_busbar_section: IdMap,
 
+    pub const BuildOptions = struct {
+        include_reachable_busbar_section: bool = true,
+    };
+
     pub fn empty() Topology {
         return .{
             .conn_node_reachable_busbar_section = .empty,
@@ -35,12 +39,18 @@ pub const Topology = struct {
     }
 
     pub fn build(gpa: std.mem.Allocator, model: *const EQ, index: *const CrossRef) !Topology {
+        return build_with_options(gpa, model, index, .{});
+    }
+
+    pub fn build_with_options(gpa: std.mem.Allocator, model: *const EQ, index: *const CrossRef, options: BuildOptions) !Topology {
         var topology = Topology.empty();
         errdefer topology.deinit(gpa);
 
         try build_voltage_level_merge(gpa, model, index, &topology);
         try build_substation_merge(gpa, model, index, &topology);
-        try build_reachable_busbar_section_index(gpa, model, index, &topology);
+        if (options.include_reachable_busbar_section) {
+            try build_reachable_busbar_section_index(gpa, model, index, &topology);
+        }
 
         return topology;
     }
