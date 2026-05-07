@@ -23,5 +23,5 @@ fi
 
 echo "Version check passed: $ZON_VERSION"
 
-git tag "$TAG"
-git push -u origin "$TAG"
+git tag v"$TAG"
+git push -u origin v"$TAG"
