@@ -57,29 +57,34 @@
 <text x="68" y="68.0" text-anchor="end" font-size="11" fill="#374151">400</text>
 <text x="403" y="422" text-anchor="middle" font-size="12" fill="#111827">CGMES EQ size (log scale)</text>
 <text x="20" y="217" text-anchor="middle" font-size="12" fill="#111827" transform="rotate(-90 20 217)">throughput (MB/s)</text>
-<polygon points="235.1,192.5 315.8,157.4 402.4,162.6 480.5,176.1 565.5,197.1 565.5,198.8 480.5,178.4 402.4,163.5 315.8,160.6 235.1,200.8" fill="#F26522" fill-opacity="0.12" stroke="none"/>
-<polyline points="235.1,200.8 315.8,160.6 402.4,163.5 480.5,178.4 565.5,198.8" fill="none" stroke="#8B5CF6" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="235.1" cy="200.8" r="4" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="1.5"/>
-<circle cx="315.8" cy="160.6" r="4" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="1.5"/>
-<circle cx="402.4" cy="163.5" r="4" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="1.5"/>
-<circle cx="480.5" cy="178.4" r="4" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="1.5"/>
-<circle cx="565.5" cy="198.8" r="4" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="1.5"/>
-<polyline points="235.1,192.5 315.8,157.4 402.4,162.6 480.5,176.1 565.5,197.1" fill="none" stroke="#F26522" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="235.1" cy="192.5" r="4" fill="#F26522" stroke="#FFFFFF" stroke-width="1.5"/>
-<circle cx="315.8" cy="157.4" r="4" fill="#F26522" stroke="#FFFFFF" stroke-width="1.5"/>
-<circle cx="402.4" cy="162.6" r="4" fill="#F26522" stroke="#FFFFFF" stroke-width="1.5"/>
-<circle cx="480.5" cy="176.1" r="4" fill="#F26522" stroke="#FFFFFF" stroke-width="1.5"/>
-<circle cx="565.5" cy="197.1" r="4" fill="#F26522" stroke="#FFFFFF" stroke-width="1.5"/>
-<text x="235.1" y="182.5" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">232</text>
-<text x="315.8" y="147.4" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">278</text>
-<text x="402.4" y="152.6" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">271</text>
-<text x="480.5" y="166.1" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">253</text>
-<text x="565.5" y="187.1" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">226</text>
+<polygon points="235.1,183.8 315.8,153.4 402.4,160.4 480.5,174.5 565.5,192.6 565.5,193.9 480.5,176.2 402.4,160.8 315.8,156.7 235.1,194.7" fill="#F26522" fill-opacity="0.12" stroke="none"/>
+<polyline points="235.1,194.7 315.8,156.7 402.4,160.8 480.5,176.2 565.5,193.9" fill="none" stroke="#F26522" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.45"/>
+<circle cx="235.1" cy="194.7" r="4" fill="#F26522" fill-opacity="0.45" stroke="#FFFFFF" stroke-width="1.5"/>
+<circle cx="315.8" cy="156.7" r="4" fill="#F26522" fill-opacity="0.45" stroke="#FFFFFF" stroke-width="1.5"/>
+<circle cx="402.4" cy="160.8" r="4" fill="#F26522" fill-opacity="0.45" stroke="#FFFFFF" stroke-width="1.5"/>
+<circle cx="480.5" cy="176.2" r="4" fill="#F26522" fill-opacity="0.45" stroke="#FFFFFF" stroke-width="1.5"/>
+<circle cx="565.5" cy="193.9" r="4" fill="#F26522" fill-opacity="0.45" stroke="#FFFFFF" stroke-width="1.5"/>
+<polyline points="235.1,183.8 315.8,153.4 402.4,160.4 480.5,174.5 565.5,192.6" fill="none" stroke="#F26522" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="1.0"/>
+<circle cx="235.1" cy="183.8" r="4" fill="#F26522" fill-opacity="1.0" stroke="#FFFFFF" stroke-width="1.5"/>
+<circle cx="315.8" cy="153.4" r="4" fill="#F26522" fill-opacity="1.0" stroke="#FFFFFF" stroke-width="1.5"/>
+<circle cx="402.4" cy="160.4" r="4" fill="#F26522" fill-opacity="1.0" stroke="#FFFFFF" stroke-width="1.5"/>
+<circle cx="480.5" cy="174.5" r="4" fill="#F26522" fill-opacity="1.0" stroke="#FFFFFF" stroke-width="1.5"/>
+<circle cx="565.5" cy="192.6" r="4" fill="#F26522" fill-opacity="1.0" stroke="#FFFFFF" stroke-width="1.5"/>
+<polyline points="235.1,357.8 315.8,361.5 402.4,365.0 480.5,367.9" fill="none" stroke="#8B5CF6" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="235.1" cy="357.8" r="4" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="1.5"/>
+<circle cx="315.8" cy="361.5" r="4" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="1.5"/>
+<circle cx="402.4" cy="365.0" r="4" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="1.5"/>
+<circle cx="480.5" cy="367.9" r="4" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="1.5"/>
+<text x="235.1" y="173.8" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">243</text>
+<text x="315.8" y="143.4" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">283</text>
+<text x="402.4" y="150.4" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">274</text>
+<text x="480.5" y="164.5" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">256</text>
+<text x="565.5" y="182.6" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">232</text>
 <rect x="84" y="68" width="156" height="42" rx="6" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1"/>
 <line x1="92" y1="80" x2="114" y2="80" stroke="#F26522" stroke-width="2.4"/>
 <circle cx="103" cy="80" r="3.5" fill="#F26522"/>
-<text x="122" y="84" font-size="11" fill="#111827">best of run</text>
+<text x="122" y="84" font-size="11" fill="#111827">cimd</text>
 <line x1="92" y1="96" x2="114" y2="96" stroke="#8B5CF6" stroke-width="2.4"/>
 <circle cx="103" cy="96" r="3.5" fill="#8B5CF6"/>
-<text x="122" y="100" font-size="11" fill="#111827">median</text>
+<text x="122" y="100" font-size="11" fill="#111827">pypowsybl</text>
 </svg>
