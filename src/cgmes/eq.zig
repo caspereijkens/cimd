@@ -44,8 +44,10 @@ pub const EQ = struct {
         defer seen_ids.deinit();
         try seen_ids.ensureTotalCapacity(@intCast(boundaries.items.len));
 
-        for (boundaries.items, 0..) |tag, i| {
-            const id = extract_object_id(xml, tag.start) orelse continue;
+        var i: usize = 0;
+        while (i < boundaries.items.len) : (i += 1) {
+            const tag = boundaries.items[i];
+            const id = extract_object_id_from_tag(xml, tag) orelse continue;
             const seen = seen_ids.getOrPutAssumeCapacity(id);
             if (seen.found_existing) return error.DuplicateId;
             seen.value_ptr.* = {};
@@ -61,6 +63,9 @@ pub const EQ = struct {
             const entry = try type_counts.getOrPut(object.type_name);
             if (!entry.found_existing) entry.value_ptr.* = 0;
             entry.value_ptr.* += 1;
+
+            // CGMES/RDF objects are top-level; child tags are properties.
+            i = closing_for[i];
         }
 
         // Pass 2: compute write cursors (prefix sums) and populate type_index.
@@ -180,21 +185,34 @@ pub const EQ = struct {
     }
 };
 
-/// Extract the identifier that makes a tag a CIM object.
-/// Prefer a non-empty rdf:ID, but keep inventory-style commands tolerant by
-/// falling back to rdf:about when rdf:ID is absent, empty, or malformed.
-fn extract_object_id(xml: []const u8, tag_start: u32) ?[]const u8 {
-    if (tag_index.extract_rdf_id(xml, tag_start)) |id| {
-        if (id.len > 0) return id;
-    } else |err| switch (err) {
-        error.NoRdfId, error.MalformedTag => {},
+fn extract_attribute_from_tag(xml: []const u8, tag: TagBoundary, comptime pattern: []const u8) ?[]const u8 {
+    const tag_content = xml[tag.start..tag.end];
+    const pattern_offset = std.mem.indexOf(u8, tag_content, pattern) orelse return null;
+    const value_start = tag.start + pattern_offset + pattern.len;
+    const value_end = std.mem.indexOfScalarPos(u8, xml, value_start, '"') orelse return null;
+    if (value_end >= tag.end) return null;
+    return xml[value_start..value_end];
+}
+
+/// Extract the identifier that makes a tag a CIM object. Prefer a non-empty
+/// rdf:ID, but keep inventory-style commands tolerant by falling back to
+/// rdf:about when rdf:ID is absent, empty, or malformed.
+fn extract_object_id_from_tag(xml: []const u8, tag: TagBoundary) ?[]const u8 {
+    if (tag.start + 1 >= tag.end) return null;
+    switch (xml[tag.start + 1]) {
+        '/', '!', '?' => return null,
+        else => {},
     }
 
-    const about = tag_index.extract_rdf_about(xml, tag_start) catch |err| switch (err) {
-        error.NoRdfAbout, error.MalformedTag => return null,
-    };
-    if (about.len == 0) return null;
-    return about;
+    if (extract_attribute_from_tag(xml, tag, "rdf:ID=\"")) |id| {
+        if (id.len > 0) return id;
+    }
+
+    if (extract_attribute_from_tag(xml, tag, "rdf:about=\"")) |about| {
+        if (about.len > 0) return about;
+    }
+
+    return null;
 }
 
 test "EQ.init rejects duplicate RDF identifiers" {

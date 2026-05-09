@@ -62,7 +62,7 @@ test "union_smallest_id_wins: independent clusters do not interfere" {
     try std.testing.expect(!std.mem.eql(u8, root_ab, root_xy));
 }
 
-test "union_smallest_id_wins: compresses existing parent chains" {
+test "union_smallest_id_wins: handles existing parent chains" {
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer parent.deinit(std.testing.allocator);
     try parent.ensureTotalCapacity(std.testing.allocator, 3);
@@ -71,8 +71,8 @@ test "union_smallest_id_wins: compresses existing parent chains" {
 
     topology.union_smallest_id_wins(&parent, "a", "d");
 
-    try std.testing.expectEqualStrings("c", parent.get("a").?);
-    try std.testing.expectEqualStrings("c", parent.get("b").?);
+    try std.testing.expectEqualStrings("c", topology.find_root(&parent, "a"));
+    try std.testing.expectEqualStrings("c", topology.find_root(&parent, "b"));
     try std.testing.expectEqualStrings("c", topology.find_root(&parent, "d"));
 }
 

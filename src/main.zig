@@ -36,15 +36,16 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-fn command_convert(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Convert) !void {
-    var model = try load_model(io, gpa, c.eq_path, c.eqbd_path);
-    defer model.deinit(gpa);
+fn command_convert(io: std.Io, parent_gpa: std.mem.Allocator, c: cli.Command.Convert) !void {
+    var arena_instance = std.heap.ArenaAllocator.init(parent_gpa);
+    defer arena_instance.deinit();
+    const gpa = arena_instance.allocator();
 
-    var tp_opt: ?TP = if (c.tp_path) |path| try load_tp(io, gpa, path) else null;
-    defer if (tp_opt) |*tp| tp.deinit(gpa);
+    const model = try load_model(io, gpa, c.eq_path, c.eqbd_path);
 
-    var ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
-    defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
+    const tp_opt: ?TP = if (c.tp_path) |path| try load_tp(io, gpa, path) else null;
+
+    const ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
 
     if (tp_opt) |tp| {
         for (tp.new_objects) |obj| {
@@ -56,8 +57,7 @@ fn command_convert(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Convert) !
         }
     }
 
-    var network = try converter.convert(gpa, &model, tp_opt, ssh_opt, c.bus_branch);
-    defer network.deinit(gpa);
+    const network = try converter.convert(gpa, &model, tp_opt, ssh_opt, c.bus_branch);
 
     var total_voltage_levels: usize = 0;
     var total_buses: usize = 0;
@@ -103,7 +103,7 @@ fn command_convert(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Convert) !
         std.Io.File.stdout();
     defer if (c.output_path != null) output_file.close(io);
 
-    var write_buffer: [4096]u8 = undefined;
+    var write_buffer: [64 * 1024]u8 = undefined;
     var file_writer = std.Io.File.Writer.init(output_file, io, &write_buffer);
     try std.json.Stringify.value(network, .{}, &file_writer.interface);
     try file_writer.interface.writeByte('\n');
@@ -380,7 +380,7 @@ fn read_path(io: std.Io, gpa: std.mem.Allocator, file_path: []const u8) ![]const
     defer file.close(io);
 
     if (try zip.is_zip_file(io, file)) {
-        var zip_buffer: [8192]u8 = undefined;
+        var zip_buffer: [256 * 1024]u8 = undefined;
         var file_reader = file.reader(io, &zip_buffer);
         const extracted = try zip.extract_first_file_to_memory(gpa, &file_reader, .{
             .extract = .{},

@@ -131,25 +131,6 @@ pub fn find_root(parent: *const IdMap, id: []const u8) []const u8 {
     }
 }
 
-fn find_root_compress(parent: *IdMap, id: []const u8) []const u8 {
-    var current = id;
-    while (true) {
-        const p = parent.get(current) orelse break;
-        if (std.mem.eql(u8, p, current)) break;
-        current = p;
-    }
-
-    const root = current;
-    current = id;
-    while (true) {
-        const p = parent.getPtr(current) orelse return root;
-        if (std.mem.eql(u8, p.*, root)) return root;
-        const next = p.*;
-        p.* = root;
-        current = next;
-    }
-}
-
 // Smallest mRID wins as representative — PyPowSyBl's tie-breaking rule.
 // Required for byte-identical JIIDM output.
 pub fn union_voltage_levels(
@@ -158,8 +139,8 @@ pub fn union_voltage_levels(
     voltage_level_id_a: []const u8,
     voltage_level_id_b: []const u8,
 ) !void {
-    const root_a = find_root_compress(parent, voltage_level_id_a);
-    const root_b = find_root_compress(parent, voltage_level_id_b);
+    const root_a = find_root(parent, voltage_level_id_a);
+    const root_b = find_root(parent, voltage_level_id_b);
     if (std.mem.eql(u8, root_a, root_b)) return;
 
     const voltage_level_a = model.getObjectById(root_a) orelse return;
@@ -179,8 +160,8 @@ pub fn union_voltage_levels(
 // Smallest stripped id wins as representative — PyPowSyBl tie-breaking. Used
 // for CN and substation unions, where the mRID is `strip_underscore(rdf:ID)`.
 pub fn union_smallest_id_wins(parent: *IdMap, id_a: []const u8, id_b: []const u8) void {
-    const root_a = find_root_compress(parent, id_a);
-    const root_b = find_root_compress(parent, id_b);
+    const root_a = find_root(parent, id_a);
+    const root_b = find_root(parent, id_b);
     if (std.mem.eql(u8, root_a, root_b)) return;
     if (std.mem.lessThan(u8, strip_underscore(root_a), strip_underscore(root_b))) {
         parent.putAssumeCapacity(root_b, root_a);
@@ -755,11 +736,11 @@ pub fn build_conn_node_root_map(gpa: std.mem.Allocator, model: *const EQ, index:
 
     try union_closed_switch_conn_nodes(model, index, ssh_opt, &conn_node_to_root);
 
-    // Path compression: every value is now the true root, so callers can read
-    // value_ptr.* directly instead of walking parent chains.
+    // Flatten the map once, so callers can read value_ptr.* directly instead
+    // of walking parent chains.
     var it = conn_node_to_root.iterator();
     while (it.next()) |entry| {
-        entry.value_ptr.* = find_root_compress(&conn_node_to_root, entry.key_ptr.*);
+        entry.value_ptr.* = find_root(&conn_node_to_root, entry.key_ptr.*);
     }
 
     return conn_node_to_root;

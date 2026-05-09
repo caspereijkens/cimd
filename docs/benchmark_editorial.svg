@@ -6,12 +6,14 @@
 <line x1="84" y1="100" x2="84" y2="400" stroke="#111827" stroke-width="1.2"/>
 <line x1="84" y1="400" x2="760" y2="400" stroke="#111827" stroke-width="1.2"/>
 <text x="72" y="404.0" text-anchor="end" font-size="11" fill="#374151">0</text>
-<line x1="84" y1="300.0" x2="760" y2="300.0" stroke="#F3F4F6" stroke-width="1" stroke-dasharray="2 3"/>
-<text x="72" y="304.0" text-anchor="end" font-size="11" fill="#374151">100</text>
-<line x1="84" y1="200.0" x2="760" y2="200.0" stroke="#F3F4F6" stroke-width="1" stroke-dasharray="2 3"/>
-<text x="72" y="204.0" text-anchor="end" font-size="11" fill="#374151">200</text>
+<line x1="84" y1="325.0" x2="760" y2="325.0" stroke="#F3F4F6" stroke-width="1" stroke-dasharray="2 3"/>
+<text x="72" y="329.0" text-anchor="end" font-size="11" fill="#374151">100</text>
+<line x1="84" y1="250.0" x2="760" y2="250.0" stroke="#F3F4F6" stroke-width="1" stroke-dasharray="2 3"/>
+<text x="72" y="254.0" text-anchor="end" font-size="11" fill="#374151">200</text>
+<line x1="84" y1="175.0" x2="760" y2="175.0" stroke="#F3F4F6" stroke-width="1" stroke-dasharray="2 3"/>
+<text x="72" y="179.0" text-anchor="end" font-size="11" fill="#374151">300</text>
 <line x1="84" y1="100.0" x2="760" y2="100.0" stroke="#F3F4F6" stroke-width="1" stroke-dasharray="2 3"/>
-<text x="72" y="104.0" text-anchor="end" font-size="11" fill="#374151">300</text>
+<text x="72" y="104.0" text-anchor="end" font-size="11" fill="#374151">400</text>
 <line x1="84.0" y1="400" x2="84.0" y2="405" stroke="#111827" stroke-width="1"/>
 <text x="84.0" y="422" text-anchor="middle" font-size="11" fill="#374151">1 MB</text>
 <line x1="253.0" y1="400" x2="253.0" y2="405" stroke="#111827" stroke-width="1"/>
@@ -24,22 +26,22 @@
 <text x="760.0" y="422" text-anchor="middle" font-size="11" fill="#374151">10 GB</text>
 <text x="422" y="452" text-anchor="middle" font-size="12" fill="#111827" font-weight="500">CGMES EQ size · log scale</text>
 <text x="22" y="250" text-anchor="middle" font-size="12" fill="#111827" font-weight="500" transform="rotate(-90 22 250)">throughput (MB/s)</text>
-<polygon points="247.3,224.4 331.4,203.6 421.4,207.4 502.6,220.4 591.0,233.4 591.0,400.0 247.3,400.0" fill="#F26522" fill-opacity="0.10" stroke="none"/>
-<polyline points="247.3,224.4 331.4,203.6 421.4,207.4 502.6,220.4 591.0,233.4" fill="none" stroke="#F26522" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round"/>
-<rect x="216.4" y="194.4" width="61.8" height="20" rx="10" fill="#111827"/>
-<text x="247.3" y="207.4" text-anchor="middle" font-size="11" font-weight="600" fill="#FFFFFF">176 MB/s</text>
-<circle cx="247.3" cy="224.4" r="5.5" fill="#FFFFFF" stroke="#F26522" stroke-width="2.6"/>
-<rect x="300.5" y="173.6" width="61.8" height="20" rx="10" fill="#111827"/>
-<text x="331.4" y="186.6" text-anchor="middle" font-size="11" font-weight="600" fill="#FFFFFF">196 MB/s</text>
-<circle cx="331.4" cy="203.6" r="5.5" fill="#FFFFFF" stroke="#F26522" stroke-width="2.6"/>
-<rect x="390.5" y="177.4" width="61.8" height="20" rx="10" fill="#111827"/>
-<text x="421.4" y="190.4" text-anchor="middle" font-size="11" font-weight="600" fill="#FFFFFF">193 MB/s</text>
-<circle cx="421.4" cy="207.4" r="5.5" fill="#FFFFFF" stroke="#F26522" stroke-width="2.6"/>
-<rect x="471.7" y="190.4" width="61.8" height="20" rx="10" fill="#111827"/>
-<text x="502.6" y="203.4" text-anchor="middle" font-size="11" font-weight="600" fill="#FFFFFF">180 MB/s</text>
-<circle cx="502.6" cy="220.4" r="5.5" fill="#FFFFFF" stroke="#F26522" stroke-width="2.6"/>
-<rect x="560.1" y="203.4" width="61.8" height="20" rx="10" fill="#111827"/>
-<text x="591.0" y="216.4" text-anchor="middle" font-size="11" font-weight="600" fill="#FFFFFF">167 MB/s</text>
-<circle cx="591.0" cy="233.4" r="5.5" fill="#FFFFFF" stroke="#F26522" stroke-width="2.6"/>
+<polygon points="247.3,226.0 331.4,191.6 421.4,196.7 502.6,209.9 591.0,230.5 591.0,400.0 247.3,400.0" fill="#F26522" fill-opacity="0.10" stroke="none"/>
+<polyline points="247.3,226.0 331.4,191.6 421.4,196.7 502.6,209.9 591.0,230.5" fill="none" stroke="#F26522" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round"/>
+<rect x="216.4" y="196.0" width="61.8" height="20" rx="10" fill="#111827"/>
+<text x="247.3" y="209.0" text-anchor="middle" font-size="11" font-weight="600" fill="#FFFFFF">232 MB/s</text>
+<circle cx="247.3" cy="226.0" r="5.5" fill="#FFFFFF" stroke="#F26522" stroke-width="2.6"/>
+<rect x="300.5" y="161.6" width="61.8" height="20" rx="10" fill="#111827"/>
+<text x="331.4" y="174.6" text-anchor="middle" font-size="11" font-weight="600" fill="#FFFFFF">278 MB/s</text>
+<circle cx="331.4" cy="191.6" r="5.5" fill="#FFFFFF" stroke="#F26522" stroke-width="2.6"/>
+<rect x="390.5" y="166.7" width="61.8" height="20" rx="10" fill="#111827"/>
+<text x="421.4" y="179.7" text-anchor="middle" font-size="11" font-weight="600" fill="#FFFFFF">271 MB/s</text>
+<circle cx="421.4" cy="196.7" r="5.5" fill="#FFFFFF" stroke="#F26522" stroke-width="2.6"/>
+<rect x="471.7" y="179.9" width="61.8" height="20" rx="10" fill="#111827"/>
+<text x="502.6" y="192.9" text-anchor="middle" font-size="11" font-weight="600" fill="#FFFFFF">253 MB/s</text>
+<circle cx="502.6" cy="209.9" r="5.5" fill="#FFFFFF" stroke="#F26522" stroke-width="2.6"/>
+<rect x="560.1" y="200.5" width="61.8" height="20" rx="10" fill="#111827"/>
+<text x="591.0" y="213.5" text-anchor="middle" font-size="11" font-weight="600" fill="#FFFFFF">226 MB/s</text>
+<circle cx="591.0" cy="230.5" r="5.5" fill="#FFFFFF" stroke="#F26522" stroke-width="2.6"/>
 <text x="84" y="470" font-size="10" fill="#6B7280" letter-spacing="0.3">cimd · ReleaseFast</text>
 </svg>

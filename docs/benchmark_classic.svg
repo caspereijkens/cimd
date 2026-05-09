@@ -47,32 +47,34 @@
 <text x="728.0" y="388" text-anchor="middle" font-size="11" fill="#374151">10 GB</text>
 <line x1="78" y1="370.0" x2="728" y2="370.0" stroke="#E5E7EB" stroke-width="1"/>
 <text x="68" y="374.0" text-anchor="end" font-size="11" fill="#374151">0</text>
-<line x1="78" y1="268.0" x2="728" y2="268.0" stroke="#E5E7EB" stroke-width="1"/>
-<text x="68" y="272.0" text-anchor="end" font-size="11" fill="#374151">100</text>
-<line x1="78" y1="166.0" x2="728" y2="166.0" stroke="#E5E7EB" stroke-width="1"/>
-<text x="68" y="170.0" text-anchor="end" font-size="11" fill="#374151">200</text>
+<line x1="78" y1="293.5" x2="728" y2="293.5" stroke="#E5E7EB" stroke-width="1"/>
+<text x="68" y="297.5" text-anchor="end" font-size="11" fill="#374151">100</text>
+<line x1="78" y1="217.0" x2="728" y2="217.0" stroke="#E5E7EB" stroke-width="1"/>
+<text x="68" y="221.0" text-anchor="end" font-size="11" fill="#374151">200</text>
+<line x1="78" y1="140.5" x2="728" y2="140.5" stroke="#E5E7EB" stroke-width="1"/>
+<text x="68" y="144.5" text-anchor="end" font-size="11" fill="#374151">300</text>
 <line x1="78" y1="64.0" x2="728" y2="64.0" stroke="#E5E7EB" stroke-width="1"/>
-<text x="68" y="68.0" text-anchor="end" font-size="11" fill="#374151">300</text>
+<text x="68" y="68.0" text-anchor="end" font-size="11" fill="#374151">400</text>
 <text x="403" y="422" text-anchor="middle" font-size="12" fill="#111827">CGMES EQ size (log scale)</text>
 <text x="20" y="217" text-anchor="middle" font-size="12" fill="#111827" transform="rotate(-90 20 217)">throughput (MB/s)</text>
-<polygon points="235.1,190.9 315.8,169.6 402.4,173.6 480.5,186.8 565.5,200.1 565.5,201.6 480.5,187.4 402.4,176.8 315.8,172.7 235.1,202.6" fill="#F26522" fill-opacity="0.12" stroke="none"/>
-<polyline points="235.1,202.6 315.8,172.7 402.4,176.8 480.5,187.4 565.5,201.6" fill="none" stroke="#8B5CF6" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="235.1" cy="202.6" r="4" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="1.5"/>
-<circle cx="315.8" cy="172.7" r="4" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="1.5"/>
-<circle cx="402.4" cy="176.8" r="4" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="1.5"/>
-<circle cx="480.5" cy="187.4" r="4" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="1.5"/>
-<circle cx="565.5" cy="201.6" r="4" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="1.5"/>
-<polyline points="235.1,190.9 315.8,169.6 402.4,173.6 480.5,186.8 565.5,200.1" fill="none" stroke="#F26522" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="235.1" cy="190.9" r="4" fill="#F26522" stroke="#FFFFFF" stroke-width="1.5"/>
-<circle cx="315.8" cy="169.6" r="4" fill="#F26522" stroke="#FFFFFF" stroke-width="1.5"/>
-<circle cx="402.4" cy="173.6" r="4" fill="#F26522" stroke="#FFFFFF" stroke-width="1.5"/>
-<circle cx="480.5" cy="186.8" r="4" fill="#F26522" stroke="#FFFFFF" stroke-width="1.5"/>
-<circle cx="565.5" cy="200.1" r="4" fill="#F26522" stroke="#FFFFFF" stroke-width="1.5"/>
-<text x="235.1" y="180.9" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">176</text>
-<text x="315.8" y="159.6" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">196</text>
-<text x="402.4" y="163.6" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">193</text>
-<text x="480.5" y="176.8" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">180</text>
-<text x="565.5" y="190.1" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">167</text>
+<polygon points="235.1,192.5 315.8,157.4 402.4,162.6 480.5,176.1 565.5,197.1 565.5,198.8 480.5,178.4 402.4,163.5 315.8,160.6 235.1,200.8" fill="#F26522" fill-opacity="0.12" stroke="none"/>
+<polyline points="235.1,200.8 315.8,160.6 402.4,163.5 480.5,178.4 565.5,198.8" fill="none" stroke="#8B5CF6" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="235.1" cy="200.8" r="4" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="1.5"/>
+<circle cx="315.8" cy="160.6" r="4" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="1.5"/>
+<circle cx="402.4" cy="163.5" r="4" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="1.5"/>
+<circle cx="480.5" cy="178.4" r="4" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="1.5"/>
+<circle cx="565.5" cy="198.8" r="4" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="1.5"/>
+<polyline points="235.1,192.5 315.8,157.4 402.4,162.6 480.5,176.1 565.5,197.1" fill="none" stroke="#F26522" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="235.1" cy="192.5" r="4" fill="#F26522" stroke="#FFFFFF" stroke-width="1.5"/>
+<circle cx="315.8" cy="157.4" r="4" fill="#F26522" stroke="#FFFFFF" stroke-width="1.5"/>
+<circle cx="402.4" cy="162.6" r="4" fill="#F26522" stroke="#FFFFFF" stroke-width="1.5"/>
+<circle cx="480.5" cy="176.1" r="4" fill="#F26522" stroke="#FFFFFF" stroke-width="1.5"/>
+<circle cx="565.5" cy="197.1" r="4" fill="#F26522" stroke="#FFFFFF" stroke-width="1.5"/>
+<text x="235.1" y="182.5" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">232</text>
+<text x="315.8" y="147.4" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">278</text>
+<text x="402.4" y="152.6" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">271</text>
+<text x="480.5" y="166.1" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">253</text>
+<text x="565.5" y="187.1" text-anchor="middle" font-size="10.5" fill="#111827" font-weight="500">226</text>
 <rect x="84" y="68" width="156" height="42" rx="6" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1"/>
 <line x1="92" y1="80" x2="114" y2="80" stroke="#F26522" stroke-width="2.4"/>
 <circle cx="103" cy="80" r="3.5" fill="#F26522"/>
