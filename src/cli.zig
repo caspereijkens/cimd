@@ -87,19 +87,26 @@ const help_browse =
 const help_get =
     \\Usage: cimd get <file> [<mrid>] [options]
     \\
-    \\Fetch a CIM object by mRID, or list all objects of a given type.
-    \\Works on any CGMES file (EQ, EQBD, TP, SSH, ...).
+    \\Fetch a CIM object by mRID (or a prefix of one), or list all objects of a
+    \\given type. Works on any CGMES file (EQ, EQBD, TP, SSH, ...).
     \\At least one of <mrid> or --type must be provided.
-    \\Exits 0 on success, 1 if the mRID is not found.
+    \\Exits 0 on success, 1 if no object is found.
+    \\
+    \\Prefix lookup:
+    \\  <mrid> may be any prefix of a full mRID; the leading underscore is
+    \\  optional, so "_be60" and "be60" are equivalent. When a prefix matches
+    \\  multiple objects, cimd prints the candidates and exits without selecting
+    \\  one. Pass --type to narrow ambiguous prefixes to a single type.
     \\
     \\Arguments:
     \\  <file>    CGMES file (XML or ZIP)
-    \\  <mrid>    mRID of the object to fetch (optional if --type is given)
+    \\  <mrid>    Full mRID or a unique prefix (optional if --type is given)
     \\
     \\Options:
     \\  -t, --type <type>          Filter by CIM type (e.g. PowerTransformer)
     \\                             Without <mrid>: list all objects of this type
-    \\                             With <mrid>: verify the object is of this type
+    \\                             With <mrid>: verify the object is of this type,
+    \\                             or narrow an ambiguous prefix to one of this type
     \\  -f, --fields <f1,f2,...>   Properties to include in list output (list mode only)
     \\                             Default: IdentifiedObject.name
     \\  -c, --count                Print only the count of matching objects (list mode only)
@@ -107,8 +114,10 @@ const help_get =
     \\
     \\Examples:
     \\  cimd get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
+    \\  cimd get data/eq.zip be60a3cf                          # prefix; underscore optional
     \\  cimd get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -j
     \\  cimd get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -t PowerTransformer
+    \\  cimd get data/eq.zip be60 -t PowerTransformer          # narrow ambiguous prefix
     \\  cimd get data/eq.zip -t PowerTransformer -j
     \\  cimd get data/eq.zip -t PowerTransformer -c
     \\  cimd get data/eq.zip -t VoltageLevel -f IdentifiedObject.name,VoltageLevel.nominalVoltage
