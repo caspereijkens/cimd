@@ -36,6 +36,13 @@ pub fn stdout(io: std.Io, comptime fmt_str: []const u8, args: anytype) !void {
     try std.Io.File.stdout().writeStreamingAll(io, msg);
 }
 
+/// Write raw bytes to stdout without going through fmt. Use for static text
+/// (help strings, etc.) that may contain `{` or `}` which would otherwise be
+/// misparsed as format placeholders.
+pub fn write(io: std.Io, msg: []const u8) !void {
+    try std.Io.File.stdout().writeStreamingAll(io, msg);
+}
+
 pub fn display_object_inventory_json(io: std.Io, gpa: std.mem.Allocator, model: EQ) !void {
     const counts = try model.sorted_type_counts(gpa);
     defer gpa.free(counts);
