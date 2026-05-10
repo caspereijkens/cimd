@@ -2,6 +2,7 @@ const std = @import("std");
 const tag_index = @import("tag_index.zig");
 pub const CimObject = tag_index.CimObject;
 const TagBoundary = tag_index.TagBoundary;
+const cgmes_ids = @import("ids.zig");
 
 const assert = std.debug.assert;
 
@@ -140,6 +141,93 @@ pub const EQ = struct {
         return self.view(self.objects[idx]);
     }
 
+    /// Returns objects whose mRID starts with `id_prefix`, in storage order
+    /// (grouped by type). The caller owns the returned slice. The prefix is
+    /// normalised by ensuring a leading `_`, so users may omit it.
+    pub fn get_object_by_id_prefix(
+        self: EQ,
+        gpa: std.mem.Allocator,
+        id_prefix: []const u8,
+    ) ![]const tag_index.CimObject {
+        const needle = try cgmes_ids.with_leading_underscore(gpa, id_prefix);
+        defer gpa.free(needle);
+
+        var matches: std.ArrayList(CimObject) = .empty;
+        errdefer matches.deinit(gpa);
+        for (self.objects) |obj| {
+            if (std.mem.startsWith(u8, obj.id, needle)) try matches.append(gpa, obj);
+        }
+        return matches.toOwnedSlice(gpa);
+    }
+
+    /// Result of resolving a (prefix, optional type) pair to a single object.
+    /// The `matches` slice contains every object whose mRID starts with the prefix
+    /// (in storage order). The caller owns it and must call `deinit`.
+    /// `outcome` tells the caller what to do with `matches`.
+    pub const PrefixResolution = struct {
+        matches: []const CimObject,
+        outcome: Outcome,
+
+        pub const Outcome = union(enum) {
+            /// Zero objects match the prefix.
+            none,
+            /// Exactly one object remains after optional type narrowing. The
+            /// payload indexes into `matches`.
+            unique: usize,
+            /// Exactly one prefix match exists, but its type differs from the
+            /// requested `type_filter`. The payload indexes into `matches`.
+            type_mismatch: usize,
+            /// Multiple prefix matches exist and none are of the requested type.
+            none_of_type,
+            /// Multiple prefix matches exist and no type filter was given.
+            ambiguous_any,
+            /// Multiple prefix matches of the requested type remain after narrowing.
+            ambiguous_of_type,
+        };
+
+        pub fn deinit(self: PrefixResolution, gpa: std.mem.Allocator) void {
+            gpa.free(self.matches);
+        }
+    };
+
+    /// Resolve a prefix (optionally narrowed by `type_filter`) to a single object.
+    /// See `PrefixResolution` for the possible outcomes.
+    pub fn resolve_by_prefix(
+        self: EQ,
+        gpa: std.mem.Allocator,
+        id_prefix: []const u8,
+        type_filter: ?[]const u8,
+    ) !PrefixResolution {
+        const matches = try self.get_object_by_id_prefix(gpa, id_prefix);
+        errdefer gpa.free(matches);
+
+        if (matches.len == 0) return .{ .matches = matches, .outcome = .none };
+
+        if (matches.len == 1) {
+            if (type_filter) |t| {
+                if (!std.mem.eql(u8, matches[0].type_name, t))
+                    return .{ .matches = matches, .outcome = .{ .type_mismatch = 0 } };
+            }
+            return .{ .matches = matches, .outcome = .{ .unique = 0 } };
+        }
+
+        if (type_filter) |t| {
+            var hits: usize = 0;
+            var hit_idx: usize = 0;
+            for (matches, 0..) |m, i| {
+                if (std.mem.eql(u8, m.type_name, t)) {
+                    hits += 1;
+                    hit_idx = i;
+                }
+            }
+            if (hits == 0) return .{ .matches = matches, .outcome = .none_of_type };
+            if (hits == 1) return .{ .matches = matches, .outcome = .{ .unique = hit_idx } };
+            return .{ .matches = matches, .outcome = .ambiguous_of_type };
+        }
+
+        return .{ .matches = matches, .outcome = .ambiguous_any };
+    }
+
     pub fn get_objects_by_type(self: EQ, type_name: []const u8) []const CimObject {
         const range = self.type_index.get(type_name) orelse return &[_]CimObject{};
         return self.objects[range.start .. range.start + range.len];
@@ -229,4 +317,195 @@ test "EQ.init rejects duplicate RDF identifiers" {
     ;
 
     try std.testing.expectError(error.DuplicateId, EQ.init(gpa, try gpa.dupe(u8, xml)));
+}
+
+const PREFIX_TEST_XML =
+    \\<rdf:RDF>
+    \\  <cim:BaseVoltage rdf:ID="_abc123">
+    \\    <cim:BaseVoltage.nominalVoltage>110</cim:BaseVoltage.nominalVoltage>
+    \\  </cim:BaseVoltage>
+    \\  <cim:BaseVoltage rdf:ID="_abc456">
+    \\    <cim:BaseVoltage.nominalVoltage>220</cim:BaseVoltage.nominalVoltage>
+    \\  </cim:BaseVoltage>
+    \\  <cim:BaseVoltage rdf:ID="_xyz789">
+    \\    <cim:BaseVoltage.nominalVoltage>400</cim:BaseVoltage.nominalVoltage>
+    \\  </cim:BaseVoltage>
+    \\</rdf:RDF>
+;
+
+test "get_object_by_id_prefix returns a unique match" {
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
+    defer model.deinit(gpa);
+
+    const matches = try model.get_object_by_id_prefix(gpa, "xyz");
+    defer gpa.free(matches);
+    try std.testing.expectEqual(@as(usize, 1), matches.len);
+    try std.testing.expectEqualStrings("_xyz789", matches[0].id);
+}
+
+test "get_object_by_id_prefix returns all ambiguous matches" {
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
+    defer model.deinit(gpa);
+
+    const matches = try model.get_object_by_id_prefix(gpa, "abc");
+    defer gpa.free(matches);
+    try std.testing.expectEqual(@as(usize, 2), matches.len);
+
+    var seen_123 = false;
+    var seen_456 = false;
+    for (matches) |m| {
+        if (std.mem.eql(u8, m.id, "_abc123")) seen_123 = true;
+        if (std.mem.eql(u8, m.id, "_abc456")) seen_456 = true;
+    }
+    try std.testing.expect(seen_123 and seen_456);
+}
+
+test "get_object_by_id_prefix returns empty slice on no match" {
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
+    defer model.deinit(gpa);
+
+    const matches = try model.get_object_by_id_prefix(gpa, "nope");
+    defer gpa.free(matches);
+    try std.testing.expectEqual(@as(usize, 0), matches.len);
+}
+
+test "get_object_by_id_prefix accepts prefix with explicit underscore" {
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
+    defer model.deinit(gpa);
+
+    const matches = try model.get_object_by_id_prefix(gpa, "_xyz");
+    defer gpa.free(matches);
+    try std.testing.expectEqual(@as(usize, 1), matches.len);
+    try std.testing.expectEqualStrings("_xyz789", matches[0].id);
+}
+
+test "get_object_by_id_prefix matches full mRID" {
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
+    defer model.deinit(gpa);
+
+    const matches = try model.get_object_by_id_prefix(gpa, "_abc123");
+    defer gpa.free(matches);
+    try std.testing.expectEqual(@as(usize, 1), matches.len);
+    try std.testing.expectEqualStrings("_abc123", matches[0].id);
+}
+
+const RESOLVE_TEST_XML =
+    \\<rdf:RDF>
+    \\  <cim:BaseVoltage rdf:ID="_abc111">
+    \\    <cim:BaseVoltage.nominalVoltage>110</cim:BaseVoltage.nominalVoltage>
+    \\  </cim:BaseVoltage>
+    \\  <cim:BaseVoltage rdf:ID="_abc222">
+    \\    <cim:BaseVoltage.nominalVoltage>220</cim:BaseVoltage.nominalVoltage>
+    \\  </cim:BaseVoltage>
+    \\  <cim:Substation rdf:ID="_abc333">
+    \\    <cim:IdentifiedObject.name>SS-A</cim:IdentifiedObject.name>
+    \\  </cim:Substation>
+    \\  <cim:Substation rdf:ID="_xyz999">
+    \\    <cim:IdentifiedObject.name>SS-X</cim:IdentifiedObject.name>
+    \\  </cim:Substation>
+    \\</rdf:RDF>
+;
+
+test "resolve_by_prefix: unique match, no type filter" {
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, RESOLVE_TEST_XML));
+    defer model.deinit(gpa);
+
+    const r = try model.resolve_by_prefix(gpa, "xyz", null);
+    defer r.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 1), r.matches.len);
+    switch (r.outcome) {
+        .unique => |idx| try std.testing.expectEqualStrings("_xyz999", r.matches[idx].id),
+        else => return error.TestExpectedUnique,
+    }
+}
+
+test "resolve_by_prefix: unique match with matching type" {
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, RESOLVE_TEST_XML));
+    defer model.deinit(gpa);
+
+    const r = try model.resolve_by_prefix(gpa, "xyz", "Substation");
+    defer r.deinit(gpa);
+    switch (r.outcome) {
+        .unique => |idx| try std.testing.expectEqualStrings("_xyz999", r.matches[idx].id),
+        else => return error.TestExpectedUnique,
+    }
+}
+
+test "resolve_by_prefix: single match, wrong type" {
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, RESOLVE_TEST_XML));
+    defer model.deinit(gpa);
+
+    const r = try model.resolve_by_prefix(gpa, "xyz", "BaseVoltage");
+    defer r.deinit(gpa);
+    switch (r.outcome) {
+        .type_mismatch => |idx| try std.testing.expectEqualStrings("Substation", r.matches[idx].type_name),
+        else => return error.TestExpectedTypeMismatch,
+    }
+}
+
+test "resolve_by_prefix: no prefix matches" {
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, RESOLVE_TEST_XML));
+    defer model.deinit(gpa);
+
+    const r = try model.resolve_by_prefix(gpa, "nope", null);
+    defer r.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 0), r.matches.len);
+    try std.testing.expect(r.outcome == .none);
+}
+
+test "resolve_by_prefix: ambiguous prefix without type filter" {
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, RESOLVE_TEST_XML));
+    defer model.deinit(gpa);
+
+    const r = try model.resolve_by_prefix(gpa, "abc", null);
+    defer r.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 3), r.matches.len);
+    try std.testing.expect(r.outcome == .ambiguous_any);
+}
+
+test "resolve_by_prefix: ambiguous prefix narrowed to unique by type" {
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, RESOLVE_TEST_XML));
+    defer model.deinit(gpa);
+
+    const r = try model.resolve_by_prefix(gpa, "abc", "Substation");
+    defer r.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 3), r.matches.len);
+    switch (r.outcome) {
+        .unique => |idx| {
+            try std.testing.expectEqualStrings("_abc333", r.matches[idx].id);
+            try std.testing.expectEqualStrings("Substation", r.matches[idx].type_name);
+        },
+        else => return error.TestExpectedUnique,
+    }
+}
+
+test "resolve_by_prefix: ambiguous prefix with no objects of the given type" {
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, RESOLVE_TEST_XML));
+    defer model.deinit(gpa);
+
+    const r = try model.resolve_by_prefix(gpa, "abc", "Terminal");
+    defer r.deinit(gpa);
+    try std.testing.expect(r.outcome == .none_of_type);
+}
+
+test "resolve_by_prefix: ambiguous prefix with multiple of the given type" {
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, RESOLVE_TEST_XML));
+    defer model.deinit(gpa);
+
+    const r = try model.resolve_by_prefix(gpa, "abc", "BaseVoltage");
+    defer r.deinit(gpa);
+    try std.testing.expect(r.outcome == .ambiguous_of_type);
 }

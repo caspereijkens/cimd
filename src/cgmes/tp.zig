@@ -188,6 +188,25 @@ pub const TP = struct {
         return self.getReferenceFromPatch(patch, reference_name);
     }
 
+    /// Returns the TP-added objects whose mRID starts with `id_prefix`, in
+    /// storage order. The caller owns the returned slice. The prefix is
+    /// normalised by ensuring a leading `_`, so users may omit it.
+    pub fn get_object_by_id_prefix(
+        self: TP,
+        gpa: std.mem.Allocator,
+        id_prefix: []const u8,
+    ) ![]const tag_index.CimObject {
+        const needle = try utils.with_leading_underscore(gpa, id_prefix);
+        defer gpa.free(needle);
+
+        var matches: std.ArrayList(CimObject) = .empty;
+        errdefer matches.deinit(gpa);
+        for (self.new_objects) |obj| {
+            if (std.mem.startsWith(u8, obj.id, needle)) try matches.append(gpa, obj);
+        }
+        return matches.toOwnedSlice(gpa);
+    }
+
     /// Look up a new TP-added object by raw rdf:ID (with leading underscore).
     /// Used by browse to navigate into TopologicalNodes.
     pub fn get_object_by_id(self: TP, id: []const u8) ?tag_index.CimObjectView {
@@ -310,6 +329,32 @@ test "TP.get_object_by_id - returns TopologicalNode view by raw rdf:ID" {
 
     // Unknown id yields null.
     try std.testing.expectEqual(@as(?tag_index.CimObjectView, null), tp.get_object_by_id("_nope"));
+}
+
+test "TP.get_object_by_id_prefix - returns matches by prefix; leading _ optional" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:TopologicalNode rdf:ID="_TN_abc1"/>
+        \\  <cim:TopologicalNode rdf:ID="_TN_abc2"/>
+        \\  <cim:TopologicalNode rdf:ID="_TN_xyz"/>
+        \\</rdf:RDF>
+    ;
+    var tp = try TP.init(gpa, try gpa.dupe(u8, xml));
+    defer tp.deinit(gpa);
+
+    const ambiguous = try tp.get_object_by_id_prefix(gpa, "TN_abc");
+    defer gpa.free(ambiguous);
+    try std.testing.expectEqual(@as(usize, 2), ambiguous.len);
+
+    const unique = try tp.get_object_by_id_prefix(gpa, "_TN_xyz");
+    defer gpa.free(unique);
+    try std.testing.expectEqual(@as(usize, 1), unique.len);
+    try std.testing.expectEqualStrings("_TN_xyz", unique[0].id);
+
+    const none = try tp.get_object_by_id_prefix(gpa, "nope");
+    defer gpa.free(none);
+    try std.testing.expectEqual(@as(usize, 0), none.len);
 }
 
 test "TP.init - skips metadata tags (FullModel, rdf:RDF)" {

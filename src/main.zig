@@ -6,6 +6,7 @@ const SSH = @import("cgmes/ssh.zig").SSH;
 const TP = @import("cgmes/tp.zig").TP;
 const zip = @import("io/zip.zig");
 const EQ = @import("cgmes/eq.zig").EQ;
+const CimObject = @import("cgmes/eq.zig").CimObject;
 const browse = @import("browse.zig");
 const diff = @import("diff.zig");
 const converter = @import("convert/network.zig");
@@ -133,7 +134,33 @@ fn command_browse(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Browse) !vo
         }
     }
 
-    try browse.browse(io, gpa, &model, tp_opt, ssh_opt, c.mrid);
+    const start_id: []const u8 = blk: {
+        // Exact match first for full mRIDs (covers both EQ and TP-added ids).
+        if (browse.resolve_object(&model, tp_opt, c.mrid) != null) break :blk c.mrid;
+
+        // Prefix lookup spans EQ and TP's new_objects (e.g. TopologicalNodes).
+        const eq_matches = try model.get_object_by_id_prefix(gpa, c.mrid);
+        defer gpa.free(eq_matches);
+        const tp_matches: []const CimObject = if (tp_opt) |tp|
+            try tp.get_object_by_id_prefix(gpa, c.mrid)
+        else
+            &.{};
+        defer if (tp_opt != null) gpa.free(tp_matches);
+
+        const total = eq_matches.len + tp_matches.len;
+        if (total == 0) print.not_found(io, "No object found with id '{s}'", .{c.mrid});
+        if (total == 1) break :blk if (eq_matches.len == 1) eq_matches[0].id else tp_matches[0].id;
+
+        // The picker takes a single slice; concatenate. The returned id points
+        // into the underlying xml buffer, so freeing this temporary is safe.
+        const combined = try gpa.alloc(CimObject, total);
+        defer gpa.free(combined);
+        @memcpy(combined[0..eq_matches.len], eq_matches);
+        @memcpy(combined[eq_matches.len..], tp_matches);
+        break :blk try browse.pick_from_prefix(io, gpa, c.mrid, combined);
+    };
+
+    try browse.browse(io, gpa, &model, tp_opt, ssh_opt, start_id);
 }
 
 fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
@@ -146,14 +173,66 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
 
     // Single-object mode
     if (c.mrid) |mrid_val| {
-        const object = model.getObjectById(mrid_val) orelse
-            print.not_found(io, "No object found with id '{s}'", .{mrid_val});
+        const resolution = try model.resolve_by_prefix(gpa, mrid_val, c.type_filter);
+        defer resolution.deinit(gpa);
 
-        if (c.type_filter) |type_name| {
-            if (!std.mem.eql(u8, type_name, object.type_name))
-                print.not_found(io, "Object '{s}' is of type '{s}', not '{s}'", .{ mrid_val, object.type_name, type_name });
-        }
+        const resolved_idx = switch (resolution.outcome) {
+            .unique => |idx| idx,
+            .none => if (c.json)
+                exit_json_error(io, .{ .@"error" = "not_found", .prefix = mrid_val })
+            else
+                print.not_found(io, "No object found with id '{s}'", .{mrid_val}),
+            .type_mismatch => |idx| blk: {
+                const m = resolution.matches[idx];
+                if (c.json) exit_json_error(io, .{
+                    .@"error" = "type_mismatch",
+                    .prefix = mrid_val,
+                    .id = m.id,
+                    .actual_type = m.type_name,
+                    .requested_type = c.type_filter.?,
+                });
+                print.not_found(io, "Object '{s}' is of type '{s}', not '{s}'", .{ mrid_val, m.type_name, c.type_filter.? });
+                break :blk idx;
+            },
+            .none_of_type => if (c.json) exit_json_error(io, .{
+                .@"error" = "none_of_type",
+                .prefix = mrid_val,
+                .total = resolution.matches.len,
+                .requested_type = c.type_filter.?,
+            }) else print.not_found(
+                io,
+                "Prefix '{s}' matched {d} objects but none of type '{s}'",
+                .{ mrid_val, resolution.matches.len, c.type_filter.? },
+            ),
+            .ambiguous_any => {
+                if (c.json) {
+                    try render_ambiguous_json(io, gpa, mrid_val, resolution.matches);
+                } else if (resolution.matches.len > browse.group_threshold) {
+                    try render_type_breakdown(io, gpa, mrid_val, resolution.matches);
+                } else {
+                    try print.stderr_info(io, "Ambiguous prefix '{s}' matched {d} objects:\n", .{ mrid_val, resolution.matches.len });
+                    for (resolution.matches) |m| try print.stdout(io, "{s} | {s}\n", .{ m.id, m.type_name });
+                }
+                return;
+            },
+            .ambiguous_of_type => {
+                const type_name = c.type_filter.?;
+                var filtered: std.ArrayList(CimObject) = .empty;
+                defer filtered.deinit(gpa);
+                for (resolution.matches) |m| {
+                    if (std.mem.eql(u8, m.type_name, type_name)) try filtered.append(gpa, m);
+                }
+                if (c.json) {
+                    try render_ambiguous_json(io, gpa, mrid_val, filtered.items);
+                } else {
+                    try print.stderr_info(io, "Ambiguous prefix '{s}' matched {d} objects of type '{s}':\n", .{ mrid_val, filtered.items.len, type_name });
+                    for (filtered.items) |m| try print.stdout(io, "{s} | {s}\n", .{ m.id, m.type_name });
+                }
+                return;
+            },
+        };
 
+        const object = model.view(resolution.matches[resolved_idx]);
         if (c.json) {
             try print.display_object_json(io, gpa, object);
         } else {
@@ -208,6 +287,122 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
             try print.stdout(io, "\n", .{});
         }
     }
+}
+
+/// Write `value` as JSON to stdout and exit 1. The exit code matches
+/// `print.not_found`'s text-mode behavior so shell scripts can still detect
+/// failure; tooling parses the JSON envelope on stdout to discriminate.
+fn exit_json_error(io: std.Io, value: anytype) noreturn {
+    var write_buffer: [1024]u8 = undefined;
+    var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &write_buffer);
+    const w = &file_writer.interface;
+    std.json.Stringify.value(value, .{}, w) catch {};
+    w.writeByte('\n') catch {};
+    w.flush() catch {};
+    std.process.exit(1);
+}
+
+/// JSON envelope for ambiguous `cimd get` lookups. Always emits both the flat
+/// match list and an alphabetically-sorted per-type breakdown so tooling can
+/// pick whichever it needs without re-aggregating.
+fn render_ambiguous_json(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    prefix: []const u8,
+    matches: []const CimObject,
+) !void {
+    var counts: std.StringHashMap(u32) = .init(gpa);
+    defer counts.deinit();
+    for (matches) |m| {
+        const gop = try counts.getOrPut(m.type_name);
+        if (!gop.found_existing) gop.value_ptr.* = 0;
+        gop.value_ptr.* += 1;
+    }
+
+    const TypeCount = struct { type_name: []const u8, count: u32 };
+    const types = try gpa.alloc(TypeCount, counts.count());
+    defer gpa.free(types);
+    var i: usize = 0;
+    var it = counts.iterator();
+    while (it.next()) |entry| : (i += 1)
+        types[i] = .{ .type_name = entry.key_ptr.*, .count = entry.value_ptr.* };
+    std.mem.sort(TypeCount, types, {}, struct {
+        fn lt(_: void, a: TypeCount, b: TypeCount) bool {
+            return std.mem.order(u8, a.type_name, b.type_name) == .lt;
+        }
+    }.lt);
+
+    var write_buffer: [4096]u8 = undefined;
+    var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &write_buffer);
+    const w = &file_writer.interface;
+
+    try w.writeAll("{\"prefix\":");
+    try std.json.Stringify.value(prefix, .{}, w);
+    try w.print(",\"total\":{d},\"matches\":[", .{matches.len});
+    for (matches, 0..) |m, j| {
+        if (j > 0) try w.writeByte(',');
+        try w.writeAll("{\"id\":");
+        try std.json.Stringify.value(m.id, .{}, w);
+        try w.writeAll(",\"type\":");
+        try std.json.Stringify.value(m.type_name, .{}, w);
+        try w.writeByte('}');
+    }
+    try w.writeAll("],\"types\":[");
+    for (types, 0..) |t, j| {
+        if (j > 0) try w.writeByte(',');
+        try w.writeAll("{\"type\":");
+        try std.json.Stringify.value(t.type_name, .{}, w);
+        try w.print(",\"count\":{d}}}", .{t.count});
+    }
+    try w.writeAll("]}\n");
+    try w.flush();
+}
+
+/// Non-interactive type breakdown for `cimd get` when a prefix is too ambiguous
+/// to list flat. Mirrors the grouped layout the browse picker uses.
+fn render_type_breakdown(io: std.Io, gpa: std.mem.Allocator, prefix: []const u8, matches: []const CimObject) !void {
+    const TypeCount = struct { type_name: []const u8, count: u32 };
+
+    var counts: std.StringHashMap(u32) = .init(gpa);
+    defer counts.deinit();
+    for (matches) |m| {
+        const gop = try counts.getOrPut(m.type_name);
+        if (!gop.found_existing) gop.value_ptr.* = 0;
+        gop.value_ptr.* += 1;
+    }
+
+    const entries = try gpa.alloc(TypeCount, counts.count());
+    defer gpa.free(entries);
+    var i: usize = 0;
+    var it = counts.iterator();
+    while (it.next()) |entry| : (i += 1)
+        entries[i] = .{ .type_name = entry.key_ptr.*, .count = entry.value_ptr.* };
+    std.mem.sort(TypeCount, entries, {}, struct {
+        fn lt(_: void, a: TypeCount, b: TypeCount) bool {
+            return std.mem.order(u8, a.type_name, b.type_name) == .lt;
+        }
+    }.lt);
+
+    var max_type_len: usize = 0;
+    for (entries) |e| if (e.type_name.len > max_type_len) { max_type_len = e.type_name.len; };
+
+    try print.stderr_info(
+        io,
+        "Ambiguous prefix '{s}' matched {d} objects across {d} types — pass --type to drill in:\n",
+        .{ prefix, matches.len, entries.len },
+    );
+
+    var write_buffer: [4096]u8 = undefined;
+    var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &write_buffer);
+    const w = &file_writer.interface;
+    for (entries) |e| {
+        try w.print("{[type]s: <[w]}  |  {[count]d}\n", .{
+            .type = e.type_name,
+            .w = max_type_len,
+            .count = e.count,
+        });
+    }
+    try w.flush();
 }
 
 fn command_types(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Types) !void {

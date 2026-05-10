@@ -83,9 +83,15 @@ When --topology or --ssh is passed, patches from those profiles are shown
 inline alongside the primary object, and new objects from TP (e.g.
 TopologicalNodes) become navigable by mRID.
 
+<mrid> may be a prefix of a full mRID; the leading underscore is optional.
+The prefix is matched against EQ objects and, when --topology is given,
+TP-added objects (e.g. TopologicalNodes). When a prefix matches more than
+one object, browse opens a picker menu — flat list when few candidates,
+grouped by type when many.
+
 Arguments:
   <file>    Primary CIM file (typically EQ; XML or ZIP)
-  <mrid>    mRID of the object to start browsing from
+  <mrid>    Full mRID or a prefix of one
 
 Options:
   -b, --boundary <file>       EQBD boundary profile (XML or ZIP)
@@ -94,6 +100,7 @@ Options:
 
 Examples:
   cimd browse data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
+  cimd browse data/eq.zip be60a3cf                # prefix; underscore optional
   cimd browse data/eq.zip _abc -t tp.zip -s ssh.zip
 ```
 
@@ -103,19 +110,36 @@ $ cimd get --help
 
 Usage: cimd get <file> [<mrid>] [options]
 
-Fetch a CIM object by mRID, or list all objects of a given type.
-Works on any CGMES file (EQ, EQBD, TP, SSH, ...).
+Fetch a CIM object by mRID (or a prefix of one), or list all objects of a
+given type. Works on any CGMES file (EQ, EQBD, TP, SSH, ...).
 At least one of <mrid> or --type must be provided.
-Exits 0 on success, 1 if the mRID is not found.
+Exits 0 on success, 1 if no object is found.
+
+Prefix lookup:
+  <mrid> may be any prefix of a full mRID; the leading underscore is
+  optional, so "_be60" and "be60" are equivalent. When a prefix matches
+  multiple objects, cimd prints the candidates and exits without selecting
+  one — or, if the match list is large, prints a per-type breakdown
+  instead. With --json, an envelope `{"prefix","total","matches","types"}`
+  is emitted regardless of match count. Pass --type to narrow ambiguous
+  prefixes to a single type.
+
+JSON errors:
+  With --json, the not-found / wrong-type paths emit a structured error
+  on stdout and exit 1 instead of printing to stderr:
+    {"error":"not_found", "prefix":...}
+    {"error":"type_mismatch", "prefix":..., "id":..., "actual_type":..., "requested_type":...}
+    {"error":"none_of_type", "prefix":..., "total":..., "requested_type":...}
 
 Arguments:
   <file>    CGMES file (XML or ZIP)
-  <mrid>    mRID of the object to fetch (optional if --type is given)
+  <mrid>    Full mRID or a unique prefix (optional if --type is given)
 
 Options:
   -t, --type <type>          Filter by CIM type (e.g. PowerTransformer)
                              Without <mrid>: list all objects of this type
-                             With <mrid>: verify the object is of this type
+                             With <mrid>: verify the object is of this type,
+                             or narrow an ambiguous prefix to one of this type
   -f, --fields <f1,f2,...>   Properties to include in list output (list mode only)
                              Default: IdentifiedObject.name
   -c, --count                Print only the count of matching objects (list mode only)
@@ -123,8 +147,10 @@ Options:
 
 Examples:
   cimd get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
+  cimd get data/eq.zip be60a3cf                          # prefix; underscore optional
   cimd get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -j
   cimd get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -t PowerTransformer
+  cimd get data/eq.zip be60 -t PowerTransformer          # narrow ambiguous prefix
   cimd get data/eq.zip -t PowerTransformer -j
   cimd get data/eq.zip -t PowerTransformer -c
   cimd get data/eq.zip -t VoltageLevel -f IdentifiedObject.name,VoltageLevel.nominalVoltage
@@ -144,7 +170,7 @@ Arguments:
   <file>                  CGMES file (XML or ZIP)
 
 Options:
-  -j, --json              Output as JSON array of {type, count} objects
+  -j, --json              Output as JSON array of {{type, count}} objects
 
 Examples:
   cimd types data/eq.zip

@@ -12,8 +12,11 @@ const extract_rdf_id = tag_index.extract_rdf_id;
 const strip_hash = @import("cgmes/ids.zig").strip_hash;
 const strip_underscore = @import("cgmes/ids.zig").strip_underscore;
 
-/// Above this referrer count we group by type instead of listing each one.
-const group_threshold: usize = 9;
+/// Above this referrer/match count, list-style views switch to a type-grouped
+/// summary instead of one row per item. Shared between back-refs and the
+/// prefix picker so the interactive UX stays consistent, and also referenced
+/// from `cimd get` so its non-interactive output uses the same cutoff.
+pub const group_threshold: usize = 9;
 
 /// One numbered choice on screen. The renderer pushes these as it draws;
 /// `handle_input` then dispatches purely on the variant, so what each
@@ -220,7 +223,7 @@ pub fn browse(
 
 /// Look up an object by id in the primary model first, then in TP's new objects.
 /// TP and primary are already collision-checked at the command layer.
-fn resolve_object(
+pub fn resolve_object(
     model: *const EQ,
     tp_opt: ?TP,
     id: []const u8,
@@ -568,4 +571,168 @@ fn append_colored_ref_line(writer: *std.Io.Writer, line: []const u8) !void {
     try writer.writeAll(line[dot + 1 .. rdf_marker]);
     try writer.writeAll(cli.ansi_default);
     try writer.writeAll(line[rdf_marker..]);
+}
+
+/// Choice within the prefix-picker menu.
+const PickSel = union(enum) {
+    /// User selected this exact id; the picker returns it to the caller.
+    pick: []const u8,
+    /// User wants to drill into a type group from the grouped overview.
+    drill: []const u8,
+    /// User wants to expand the grouped overview to a flat list of every match.
+    show_all,
+};
+
+/// Interactive picker shown when the user enters a prefix that matches more
+/// than one object. Returns the chosen mRID (a slice into `model.xml` via the
+/// CimObjects in `matches`). Exits the process on `q`.
+///
+/// Layout follows the back-refs menu: grouped-by-type when over
+/// `group_threshold` matches, flat list otherwise. `b` returns to the grouped
+/// overview from a drilled or flat-all view.
+pub fn pick_from_prefix(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    prefix: []const u8,
+    matches: []const tag_index.CimObject,
+) ![]const u8 {
+    assert(matches.len > 1);
+
+    var screen: std.Io.Writer.Allocating = .init(gpa);
+    defer screen.deinit();
+    var selections: std.ArrayList(PickSel) = .empty;
+    defer selections.deinit(gpa);
+
+    var filter_type: ?[]const u8 = null;
+    var show_all_flat: bool = false;
+
+    while (true) {
+        screen.clearRetainingCapacity();
+        selections.clearRetainingCapacity();
+        const writer = &screen.writer;
+
+        const use_grouped = filter_type == null and !show_all_flat and matches.len > group_threshold;
+        const counter: u32 = if (use_grouped)
+            try render_prefix_grouped(writer, gpa, prefix, matches, &selections)
+        else
+            try render_prefix_flat(writer, gpa, prefix, matches, filter_type, &selections);
+
+        const has_back = filter_type != null or show_all_flat;
+        try writer.writeAll("\n\n");
+        if (counter > 1) try writer.print(" [1-{d}]", .{counter - 1});
+        if (has_back) try writer.writeAll("  [b]ack");
+        try writer.writeAll("  [q]uit\n\n");
+        try std.Io.File.stdout().writeStreamingAll(io, screen.written());
+
+        var input_buffer: [64]u8 = undefined;
+        var stdin = std.Io.File.stdin().reader(io, &input_buffer);
+        const input = stdin.interface.takeDelimiterExclusive('\n') catch continue;
+        if (input.len == 0) continue;
+
+        switch (input[0]) {
+            'q' => print.stderr(io, "aborted", .{}),
+            'b' => {
+                if (has_back) {
+                    filter_type = null;
+                    show_all_flat = false;
+                }
+            },
+            else => {
+                const n = std.fmt.parseInt(u32, input, 10) catch continue;
+                if (n == 0 or n > selections.items.len) continue;
+                switch (selections.items[n - 1]) {
+                    .pick => |id| return id,
+                    .drill => |t| filter_type = t,
+                    .show_all => show_all_flat = true,
+                }
+            },
+        }
+    }
+}
+
+fn render_prefix_grouped(
+    writer: *std.Io.Writer,
+    gpa: std.mem.Allocator,
+    prefix: []const u8,
+    matches: []const tag_index.CimObject,
+    selections: *std.ArrayList(PickSel),
+) !u32 {
+    var counts: std.StringHashMapUnmanaged(u32) = .empty;
+    defer counts.deinit(gpa);
+
+    var max_type_len: usize = 0;
+    for (matches) |m| {
+        const gop = try counts.getOrPut(gpa, m.type_name);
+        if (!gop.found_existing) gop.value_ptr.* = 0;
+        gop.value_ptr.* += 1;
+        if (max_type_len < m.type_name.len) max_type_len = m.type_name.len;
+    }
+
+    try writer.print("\n  '{s}' matched {d} objects — pick a type to drill in:\n", .{ prefix, matches.len });
+
+    var counter: u32 = 1;
+    const n_width = std.math.log10_int(counts.size + 1) + 1;
+    var it = counts.iterator();
+    while (it.next()) |entry| {
+        try writer.print("\n| {[n]d: >[e]} |  {[type]s: <[w]}  |  {[c]d}", .{
+            .n = counter,
+            .e = n_width,
+            .type = entry.key_ptr.*,
+            .w = max_type_len,
+            .c = entry.value_ptr.*,
+        });
+        try selections.append(gpa, .{ .drill = entry.key_ptr.* });
+        counter += 1;
+    }
+    if (counter > 2) {
+        try writer.print("\n| {[n]d: >[e]} |  {[type]s: <[w]}  |  {[c]d}", .{
+            .n = counter,
+            .e = n_width,
+            .type = "(All)",
+            .w = max_type_len,
+            .c = matches.len,
+        });
+        try selections.append(gpa, .show_all);
+        counter += 1;
+    }
+    return counter;
+}
+
+fn render_prefix_flat(
+    writer: *std.Io.Writer,
+    gpa: std.mem.Allocator,
+    prefix: []const u8,
+    matches: []const tag_index.CimObject,
+    filter_type: ?[]const u8,
+    selections: *std.ArrayList(PickSel),
+) !u32 {
+    var shown: usize = 0;
+    var max_type_len: usize = 0;
+    for (matches) |m| {
+        if (filter_type) |t| if (!std.mem.eql(u8, t, m.type_name)) continue;
+        if (m.type_name.len > max_type_len) max_type_len = m.type_name.len;
+        shown += 1;
+    }
+
+    if (filter_type) |t| {
+        try writer.print("\n  '{s}' / {s}: {d} matches\n", .{ prefix, t, shown });
+    } else {
+        try writer.print("\n  '{s}' matched {d} objects:\n", .{ prefix, matches.len });
+    }
+
+    var counter: u32 = 1;
+    const n_width = std.math.log10_int(shown + 1) + 1;
+    for (matches) |m| {
+        if (filter_type) |t| if (!std.mem.eql(u8, t, m.type_name)) continue;
+        try writer.print("\n| {[n]d: >[e]} |  {[type]s: <[w]}  |  {[id]s}", .{
+            .n = counter,
+            .e = n_width,
+            .type = m.type_name,
+            .w = max_type_len,
+            .id = m.id,
+        });
+        try selections.append(gpa, .{ .pick = m.id });
+        counter += 1;
+    }
+    return counter;
 }
