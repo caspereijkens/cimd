@@ -146,14 +146,43 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
 
     // Single-object mode
     if (c.mrid) |mrid_val| {
-        const object = model.getObjectById(mrid_val) orelse
-            print.not_found(io, "No object found with id '{s}'", .{mrid_val});
+        const resolution = try model.resolve_by_prefix(gpa, mrid_val, c.type_filter);
+        defer resolution.deinit(gpa);
 
-        if (c.type_filter) |type_name| {
-            if (!std.mem.eql(u8, type_name, object.type_name))
-                print.not_found(io, "Object '{s}' is of type '{s}', not '{s}'", .{ mrid_val, object.type_name, type_name });
-        }
+        const resolved_idx = switch (resolution.outcome) {
+            .unique => |idx| idx,
+            .none => print.not_found(io, "No object found with id '{s}'", .{mrid_val}),
+            .type_mismatch => |idx| blk: {
+                const m = resolution.matches[idx];
+                print.not_found(io, "Object '{s}' is of type '{s}', not '{s}'", .{ mrid_val, m.type_name, c.type_filter.? });
+                break :blk idx;
+            },
+            .none_of_type => print.not_found(
+                io,
+                "Prefix '{s}' matched {d} objects but none of type '{s}'",
+                .{ mrid_val, resolution.matches.len, c.type_filter.? },
+            ),
+            .ambiguous_any => {
+                try print.stderr_info(io, "Ambiguous prefix '{s}' matched {d} objects:\n", .{ mrid_val, resolution.matches.len });
+                for (resolution.matches) |m| try print.stdout(io, "{s} | {s}\n", .{ m.id, m.type_name });
+                return;
+            },
+            .ambiguous_of_type => {
+                const type_name = c.type_filter.?;
+                var hits: usize = 0;
+                for (resolution.matches) |m| {
+                    if (std.mem.eql(u8, m.type_name, type_name)) hits += 1;
+                }
+                try print.stderr_info(io, "Ambiguous prefix '{s}' matched {d} objects of type '{s}':\n", .{ mrid_val, hits, type_name });
+                for (resolution.matches) |m| {
+                    if (std.mem.eql(u8, m.type_name, type_name))
+                        try print.stdout(io, "{s} | {s}\n", .{ m.id, m.type_name });
+                }
+                return;
+            },
+        };
 
+        const object = model.view(resolution.matches[resolved_idx]);
         if (c.json) {
             try print.display_object_json(io, gpa, object);
         } else {
