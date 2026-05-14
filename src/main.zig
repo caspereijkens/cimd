@@ -270,7 +270,7 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
     const fields = fields_buf[0..n_fields];
 
     if (c.json) {
-        try print.display_object_list_json(io, &model, objects, fields);
+        try print.display_object_list_json(io, gpa, &model, objects, fields);
     } else {
         for (objects) |obj| {
             const view = model.view(obj);
