@@ -130,9 +130,12 @@ const help_get = std.fmt.comptimePrint(
     \\                             With <mrid>: verify the object is of this type,
     \\                             or narrow an ambiguous prefix to one of this type
     \\  -f, --fields <f1,f2,...>   Properties to include in list output (list mode only)
-    \\                             Default: IdentifiedObject.name
+    \\                             Text default: IdentifiedObject.name
+    \\                             JSON default: full object (all properties + references)
     \\  -c, --count                Print only the count of matching objects (list mode only)
-    \\  -j, --json                 Output as JSON
+    \\  -j, --json                 Output as JSON. In list mode, each element is
+    \\                             {{"id","type","properties":{{...}},"references":{{...}}}}
+    \\                             unless --fields narrows the projection.
     \\
     \\Examples:
     \\  cimd get data{[s]s}eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221

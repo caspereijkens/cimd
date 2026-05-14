@@ -153,46 +153,87 @@ pub fn display_object_list(io: std.Io, gpa: std.mem.Allocator, model: *const EQ,
 }
 
 pub fn display_object_json(io: std.Io, gpa: std.mem.Allocator, obj: tag_index.CimObjectView) !void {
+    var write_buffer: [16 * 1024]u8 = undefined;
+    var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &write_buffer);
+    const w = &file_writer.interface;
+    try write_object_full_json(w, gpa, obj);
+    try w.writeByte('\n');
+    try w.flush();
+}
+
+pub fn display_object_list_json(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    model: *const EQ,
+    objects: []const tag_index.CimObject,
+    fields: []const []const u8,
+) !void {
+    var write_buffer: [64 * 1024]u8 = undefined;
+    var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &write_buffer);
+    const w = &file_writer.interface;
+
+    try w.writeByte('[');
+    for (objects, 0..) |obj, i| {
+        if (i > 0) try w.writeByte(',');
+        const view = model.view(obj);
+        if (fields.len == 0) {
+            // Full dump: same shape as single-object JSON. Lets callers do
+            // joins and reference resolution in Python without re-fetching.
+            try write_object_full_json(w, gpa, view);
+        } else {
+            // Projection mode: only id, type, and the requested fields.
+            try w.writeAll("{\"id\":");
+            try std.json.Stringify.value(obj.id, .{}, w);
+            try w.writeAll(",\"type\":");
+            try std.json.Stringify.value(obj.type_name, .{}, w);
+            for (fields) |field| {
+                const val = try view.getProperty(field) orelse "";
+                try w.writeByte(',');
+                try std.json.Stringify.value(field, .{}, w);
+                try w.writeByte(':');
+                try std.json.Stringify.value(val, .{}, w);
+            }
+            try w.writeByte('}');
+        }
+    }
+    try w.writeAll("]\n");
+    try w.flush();
+}
+
+fn write_object_full_json(
+    w: *std.Io.Writer,
+    gpa: std.mem.Allocator,
+    obj: tag_index.CimObjectView,
+) !void {
     var props = try obj.getAllProperties(gpa);
     defer props.deinit();
     var refs = try obj.getAllReferences(gpa);
     defer refs.deinit();
 
-    try stdout(io, "{{\"id\":\"{s}\",\"type\":\"{s}\",\"properties\":{{", .{ obj.id, obj.type_name });
+    try w.writeAll("{\"id\":");
+    try std.json.Stringify.value(obj.id, .{}, w);
+    try w.writeAll(",\"type\":");
+    try std.json.Stringify.value(obj.type_name, .{}, w);
+
+    try w.writeAll(",\"properties\":{");
     var first = true;
     var prop_it = props.iterator();
     while (prop_it.next()) |entry| {
-        if (!first) try stdout(io, ",", .{});
-        try stdout(io, "\"{s}\":\"{s}\"", .{ entry.key_ptr.*, entry.value_ptr.* });
+        if (!first) try w.writeByte(',');
+        try std.json.Stringify.value(entry.key_ptr.*, .{}, w);
+        try w.writeByte(':');
+        try std.json.Stringify.value(entry.value_ptr.*, .{}, w);
         first = false;
     }
-    try stdout(io, "}},\"references\":{{", .{});
+    try w.writeAll("},\"references\":{");
     first = true;
     var ref_it = refs.iterator();
     while (ref_it.next()) |entry| {
-        if (!first) try stdout(io, ",", .{});
-        try stdout(io, "\"{s}\":\"{s}\"", .{ entry.key_ptr.*, utils.strip_hash(entry.value_ptr.*) });
+        if (!first) try w.writeByte(',');
+        try std.json.Stringify.value(entry.key_ptr.*, .{}, w);
+        try w.writeByte(':');
+        try std.json.Stringify.value(utils.strip_hash(entry.value_ptr.*), .{}, w);
         first = false;
     }
-    try stdout(io, "}}}}\n", .{});
-}
-
-pub fn display_object_list_json(io: std.Io, model: *const EQ, objects: []const tag_index.CimObject, fields: []const []const u8) !void {
-    try stdout(io, "[", .{});
-    for (objects, 0..) |obj, i| {
-        if (i > 0) try stdout(io, ",", .{});
-        const view = model.view(obj);
-        try stdout(io, "{{\"id\":\"{s}\",\"type\":\"{s}\"", .{ obj.id, obj.type_name });
-        if (fields.len == 0) {
-            const name = try view.getProperty("IdentifiedObject.name") orelse "";
-            try stdout(io, ",\"IdentifiedObject.name\":\"{s}\"", .{name});
-        } else {
-            for (fields) |field| {
-                const val = try view.getProperty(field) orelse "";
-                try stdout(io, ",\"{s}\":\"{s}\"", .{ field, val });
-            }
-        }
-        try stdout(io, "}}", .{});
-    }
-    try stdout(io, "]\n", .{});
+    try w.writeAll("}}");
 }
