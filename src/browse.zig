@@ -136,19 +136,9 @@ pub fn browse(
     }
 }
 
-/// Look up an object by id in the primary model first, then in TP's new objects.
-/// TP and primary are already collision-checked at the command layer.
-pub fn resolve_object(
-    model: *const EQ,
-    tp_opt: ?TP,
-    id: []const u8,
-) ?tag_index.CimObjectView {
-    if (model.getObjectById(id)) |view| return view;
-    if (tp_opt) |tp| {
-        if (tp.get_object_by_id(id)) |view| return view;
-    }
-    return null;
-}
+/// Re-export so internal browse callers keep their short name. The primitive
+/// itself lives in refs.zig next to the other EQ+TP lookup helpers.
+pub const resolve_object = refs.resolve_object;
 
 /// Slice out the XML fragment spanning an opening tag through its closing tag,
 /// extended backwards to the start of the line so original indentation is preserved.

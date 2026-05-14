@@ -141,7 +141,7 @@ fn command_browse(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Browse) !vo
 
     const start_id: []const u8 = blk: {
         // Exact match first for full mRIDs (covers both EQ and TP-added ids).
-        if (browse.resolve_object(&model, tp_opt, c.mrid) != null) break :blk c.mrid;
+        if (refs_api.resolve_object(&model, tp_opt, c.mrid) != null) break :blk c.mrid;
 
         // Prefix lookup spans EQ and TP's new_objects (e.g. TopologicalNodes).
         const eq_matches = try model.get_object_by_id_prefix(gpa, c.mrid);
@@ -187,7 +187,7 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
     // Single-object mode
     if (c.mrid) |mrid_val| {
         const target = try resolve_get_target(io, gpa, &model, tp_opt, mrid_val, c.type_filter, c.json) orelse return;
-        const object = browse.resolve_object(&model, tp_opt, target.id) orelse unreachable;
+        const object = refs_api.resolve_object(&model, tp_opt, target.id) orelse unreachable;
         try display_get_object(io, gpa, object, tp_opt, ssh_opt, c.json);
         return;
     }

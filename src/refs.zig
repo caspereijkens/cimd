@@ -179,6 +179,21 @@ fn source_from_patch_tag(xml: []const u8, tag_start: u32) ?PatchSource {
     return .{ .id = raw_id, .type_name = type_name };
 }
 
+/// Look up a CIM object by exact id across the primary model and (when
+/// present) TP's new objects. Returns null if neither contains the id.
+/// EQ takes precedence; the command layer collision-checks before calling.
+pub fn resolve_object(
+    model: *const EQ,
+    tp_opt: ?TP,
+    id: []const u8,
+) ?tag_index.CimObjectView {
+    if (model.getObjectById(id)) |view| return view;
+    if (tp_opt) |tp| {
+        if (tp.get_object_by_id(id)) |view| return view;
+    }
+    return null;
+}
+
 /// Collect all prefix matches for `mrid_prefix` across the primary model and
 /// (when present) TP's new objects. Returns owned slice.
 ///

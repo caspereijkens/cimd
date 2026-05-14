@@ -50,8 +50,8 @@ Arguments:
   <file>                  EQ profile (XML or ZIP)
 
 Options:
-  -b, --eqbd <file>      EQBD boundary profile (XML or ZIP)
-  -t, --tp <file>        TP topology profile (XML or ZIP)
+  -b, --eqbd <file>       EQBD boundary profile (XML or ZIP)
+  -t, --tp <file>         TP topology profile (XML or ZIP)
   -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
   -o, --output <file>     Write output to file instead of stdout
       --bus-branch        Emit bus-branch JIIDM (one bus per TopologicalNode).
@@ -88,8 +88,8 @@ Arguments:
   <mrid>    Full mRID or a prefix of one
 
 Options:
-  -b, --eqbd <file>          EQBD boundary profile (XML or ZIP)
-  -t, --tp <file>            TP topology profile (XML or ZIP)
+  -b, --eqbd <file>           EQBD boundary profile (XML or ZIP)
+  -t, --tp <file>             TP topology profile (XML or ZIP)
   -s, --ssh <file>            SSH steady-state hypothesis profile (XML or ZIP)
 
 Examples:
