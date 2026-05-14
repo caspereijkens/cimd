@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  ZIG_VERSION: "0.16.0"
+
+jobs:
+  release:
+    runs-on: docker
+    container: docker.io/library/node:24-bookworm-slim
+    steps:
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git jq tar xz-utils zip
+
+      - name: Check out repository
+        uses: https://data.forgejo.org/actions/checkout@v4
+
+      - name: Set up Zig
+        run: |
+          set -euo pipefail
+          curl -fsSLo /tmp/zig.tar.xz \
+            "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          mkdir -p /opt/zig
+          tar -xf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
+          path_file="${FORGEJO_PATH:-${GITHUB_PATH:-}}"
+          test -n "${path_file}"
+          echo /opt/zig >> "${path_file}"
+
+      - name: Build release binaries
+        run: zig build release
+
+      - name: Create archives
+        run: |
+          set -euo pipefail
+          VERSION="${FORGEJO_REF_NAME:-${GITHUB_REF_NAME:-}}"
+          test -n "${VERSION}"
+          cd zig-out/release
+          for target_dir in */; do
+            target="${target_dir%/}"
+            if [ "${target#*windows}" != "${target}" ]; then
+              zip -j "cimd-${VERSION}-${target}.zip" "${target_dir}cimd.exe"
+            else
+              tar czf "cimd-${VERSION}-${target}.tar.gz" -C "${target_dir}" cimd
+            fi
+          done
+
+      - name: Publish Forgejo release
+        run: |
+          set -euo pipefail
+
+          API="${FORGEJO_API_URL:-${GITHUB_API_URL:-${FORGEJO_SERVER_URL:-}/api/v1}}"
+          REPOSITORY="${FORGEJO_REPOSITORY:-${GITHUB_REPOSITORY:-}}"
+          SHA="${FORGEJO_SHA:-${GITHUB_SHA:-}}"
+          TOKEN="${FORGEJO_TOKEN:-${GITHUB_TOKEN:-}}"
+          VERSION="${FORGEJO_REF_NAME:-${GITHUB_REF_NAME:-}}"
+          test -n "${API}"
+          test -n "${REPOSITORY}"
+          test -n "${SHA}"
+          test -n "${TOKEN}"
+          test -n "${VERSION}"
+
+          jq -n \
+            --arg tag "${VERSION}" \
+            --arg sha "${SHA}" \
+            --arg name "${VERSION}" \
+            '{tag_name:$tag,target_commitish:$sha,name:$name,body:"",draft:false,prerelease:false}' \
+            > /tmp/release-request.json
+
+          status="$(
+            curl -sS -o /tmp/release.json -w '%{http_code}' \
+              -X POST "${API}/repos/${REPOSITORY}/releases" \
+              -H "Authorization: token ${TOKEN}" \
+              -H "Content-Type: application/json" \
+              --data @/tmp/release-request.json
+          )"
+
+          if [ "${status}" = "409" ]; then
+            curl -fsS -o /tmp/release.json \
+              -H "Authorization: token ${TOKEN}" \
+              "${API}/repos/${REPOSITORY}/releases/tags/${VERSION}"
+          elif [ "${status}" != "200" ] && [ "${status}" != "201" ]; then
+            cat /tmp/release.json
+            exit 1
+          fi
+
+          release_id="$(jq -r '.id' /tmp/release.json)"
+          test "${release_id}" != "null"
+          test -n "${release_id}"
+
+          for asset in zig-out/release/*.tar.gz zig-out/release/*.zip; do
+            test -e "${asset}" || continue
+            curl -fsS \
+              -X POST "${API}/repos/${REPOSITORY}/releases/${release_id}/assets?name=$(basename "${asset}")" \
+              -H "Authorization: token ${TOKEN}" \
+              -F "attachment=@${asset}"
+          done

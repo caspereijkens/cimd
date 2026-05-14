@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  ZIG_VERSION: "0.16.0"
+
+jobs:
+  test:
+    runs-on: docker
+    container: docker.io/library/node:24-bookworm-slim
+    steps:
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git tar xz-utils
+
+      - name: Check out repository
+        uses: https://data.forgejo.org/actions/checkout@v4
+
+      - name: Set up Zig
+        run: |
+          set -euo pipefail
+          curl -fsSLo /tmp/zig.tar.xz \
+            "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          mkdir -p /opt/zig
+          tar -xf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
+          path_file="${FORGEJO_PATH:-${GITHUB_PATH:-}}"
+          test -n "${path_file}"
+          echo /opt/zig >> "${path_file}"
+
+      - name: Run tests
+        run: zig build test
+
+      - name: Build (debug)
+        run: zig build
