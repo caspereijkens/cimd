@@ -55,6 +55,19 @@ const Nav = union(enum) {
     show_all_refs,
 };
 
+pub const InteractiveIo = struct {
+    input: *std.Io.Reader,
+    output: *std.Io.Writer,
+};
+
+fn take_input_line(input: *std.Io.Reader) ![]const u8 {
+    const line = input.takeDelimiterInclusive('\n') catch |err| switch (err) {
+        error.EndOfStream => return input.takeDelimiterExclusive('\n'),
+        else => return err,
+    };
+    return std.mem.trimEnd(u8, line, "\r\n");
+}
+
 /// Interactively browse CIM objects by following rdf:resource references.
 /// `model` is the primary CIM file (typically EQ, possibly with concatenated EQBD).
 /// `tp_opt` / `ssh_opt`, when present, overlay their patches inline below the
@@ -64,6 +77,7 @@ const Nav = union(enum) {
 pub fn browse(
     io: std.Io,
     gpa: std.mem.Allocator,
+    interactive: InteractiveIo,
     model: *const EQ,
     tp_opt: ?TP,
     ssh_opt: ?SSH,
@@ -101,14 +115,18 @@ pub fn browse(
 
         const has_back = trace_ids.items.len > 0 or mode != .regular;
         try render_footer(writer, trace_types.items, object.type_name, counter, has_back, mode, referrers.len);
-        try std.Io.File.stdout().writeStreamingAll(io, screen.written());
+        try interactive.output.writeAll(screen.written());
+        try interactive.output.flush();
 
-        var input_buffer: [64]u8 = undefined;
-        var stdin = std.Io.File.stdin().reader(io, &input_buffer);
-        const input = stdin.interface.takeDelimiterExclusive('\n') catch continue;
+        const input = take_input_line(interactive.input) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => continue,
+        };
         if (input.len == 0) continue;
 
-        switch (try handle_input(io, input, counter, has_back, selections.items, mode, referrers.len)) {
+        const nav = try handle_input(interactive.output, input, counter, has_back, selections.items, mode, referrers.len);
+        try interactive.output.flush();
+        switch (nav) {
             .stay => {},
             .quit => break,
             .back => switch (mode) {
@@ -385,7 +403,7 @@ fn render_back_refs_grouped(
 /// Parses a single line of user input and returns the navigation action.
 /// Writes error/hint messages directly to stdout for invalid input.
 fn handle_input(
-    io: std.Io,
+    output: *std.Io.Writer,
     input: []const u8,
     counter: u32,
     has_back: bool,
@@ -400,7 +418,7 @@ fn handle_input(
         'q' => return .quit,
         'b' => {
             if (!has_back) {
-                try std.Io.File.stdout().writeStreamingAll(io, "Already at root — [q]uit to exit.\n\n");
+                try output.writeAll("Already at root — [q]uit to exit.\n\n");
                 return .stay;
             }
             return .back;
@@ -408,7 +426,7 @@ fn handle_input(
         'r' => {
             if (mode != .regular) return .stay;
             if (referrer_count == 0) {
-                try std.Io.File.stdout().writeStreamingAll(io, "No referrers.\n\n");
+                try output.writeAll("No referrers.\n\n");
                 return .stay;
             }
             return .show_back_refs;
@@ -416,17 +434,17 @@ fn handle_input(
         else => {
             if (!has_options) {
                 const msg = if (has_back) "No options — [b]ack or [q]uit\n\n" else "No options — [q]uit to exit\n\n";
-                try std.Io.File.stdout().writeStreamingAll(io, msg);
+                try output.writeAll(msg);
                 return .stay;
             }
             const n = std.fmt.parseInt(u32, input, 10) catch {
                 const suffix = if (has_back) ", [b]ack or [q]uit\n" else " or [q]uit\n";
-                try print.stdout(io, "Invalid input — pick 1-{d}{s}", .{ counter - 1, suffix });
+                try output.print("Invalid input — pick 1-{d}{s}", .{ counter - 1, suffix });
                 return .stay;
             };
             if (n == 0 or n > selections.len) {
                 const suffix = if (has_back) ", [b]ack or [q]uit\n" else " or [q]uit\n";
-                try print.stdout(io, "Pick 1-{d}{s}", .{ counter - 1, suffix });
+                try output.print("Pick 1-{d}{s}", .{ counter - 1, suffix });
                 return .stay;
             }
             return switch (selections[n - 1]) {
@@ -498,6 +516,7 @@ const PickSel = union(enum) {
 pub fn pick_from_prefix(
     io: std.Io,
     gpa: std.mem.Allocator,
+    interactive: InteractiveIo,
     prefix: []const u8,
     matches: []const tag_index.CimObject,
 ) ![]const u8 {
@@ -527,11 +546,13 @@ pub fn pick_from_prefix(
         if (counter > 1) try writer.print(" [1-{d}]", .{counter - 1});
         if (has_back) try writer.writeAll("  [b]ack");
         try writer.writeAll("  [q]uit\n\n");
-        try std.Io.File.stdout().writeStreamingAll(io, screen.written());
+        try interactive.output.writeAll(screen.written());
+        try interactive.output.flush();
 
-        var input_buffer: [64]u8 = undefined;
-        var stdin = std.Io.File.stdin().reader(io, &input_buffer);
-        const input = stdin.interface.takeDelimiterExclusive('\n') catch continue;
+        const input = take_input_line(interactive.input) catch |err| switch (err) {
+            error.EndOfStream => return error.EndOfStream,
+            else => continue,
+        };
         if (input.len == 0) continue;
 
         switch (input[0]) {

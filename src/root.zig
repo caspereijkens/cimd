@@ -25,6 +25,7 @@ pub const filter_referrers = @import("refs.zig").filter_referrers;
 comptime {
     _ = @import("cgmes/test_tag_index.zig");
     _ = @import("test_diff.zig");
+    _ = @import("test_browse.zig");
     _ = @import("cgmes/test_eq.zig");
     _ = @import("cgmes/test_ids.zig");
     _ = @import("refs.zig");

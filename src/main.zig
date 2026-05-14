@@ -139,6 +139,16 @@ fn command_browse(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Browse) !vo
         }
     }
 
+    var browse_input_buffer: [64]u8 = undefined;
+    var browse_stdin = std.Io.File.stdin().reader(io, &browse_input_buffer);
+    var browse_output_buffer: [64 * 1024]u8 = undefined;
+    var browse_stdout = std.Io.File.Writer.init(std.Io.File.stdout(), io, &browse_output_buffer);
+    defer browse_stdout.interface.flush() catch {};
+    const interactive: browse.InteractiveIo = .{
+        .input = &browse_stdin.interface,
+        .output = &browse_stdout.interface,
+    };
+
     const start_id: []const u8 = blk: {
         // Exact match first for full mRIDs (covers both EQ and TP-added ids).
         if (refs_api.resolve_object(&model, tp_opt, c.mrid) != null) break :blk c.mrid;
@@ -162,10 +172,10 @@ fn command_browse(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Browse) !vo
         defer gpa.free(combined);
         @memcpy(combined[0..eq_matches.len], eq_matches);
         @memcpy(combined[eq_matches.len..], tp_matches);
-        break :blk try browse.pick_from_prefix(io, gpa, c.mrid, combined);
+        break :blk try browse.pick_from_prefix(io, gpa, interactive, c.mrid, combined);
     };
 
-    try browse.browse(io, gpa, &model, tp_opt, ssh_opt, start_id);
+    try browse.browse(io, gpa, interactive, &model, tp_opt, ssh_opt, start_id);
 }
 
 fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
