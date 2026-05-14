@@ -84,9 +84,9 @@ def time_block(samples: Samples):
 def cimd_convert(binary: Path, eq, eqbd, ssh, tp, output: Path) -> None:
     cmd = [str(binary), "convert", str(eq), "--output", str(output)]
     if eqbd:
-        cmd += ["--boundary", str(eqbd)]
+        cmd += ["--eqbd", str(eqbd)]
     if tp:
-        cmd += ["--topology", str(tp)]
+        cmd += ["--tp", str(tp)]
     if ssh:
         cmd += ["--ssh", str(ssh)]
     result = subprocess.run(cmd, capture_output=True, text=True)
