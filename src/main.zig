@@ -53,15 +53,11 @@ fn command_convert(io: std.Io, parent_gpa: std.mem.Allocator, c: cli.Command.Con
 
     const ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
 
-    if (tp_opt) |tp| {
-        for (tp.new_objects) |obj| {
-            if (model.getObjectById(obj.id) != null) print.stderr(
-                io,
-                "convert: mRID collision: '{s}' is defined in both the primary file and the TP profile",
-                .{obj.id},
-            );
-        }
-    }
+    if (tp_opt) |tp| if (refs_api.find_tp_primary_id_collision(&model, tp)) |id| print.stderr(
+        io,
+        "convert: mRID collision: '{s}' is defined in both the primary file and the TP profile",
+        .{id},
+    );
 
     const network = try converter.convert(gpa, &model, tp_opt, ssh_opt, c.bus_branch);
 
@@ -129,15 +125,11 @@ fn command_browse(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Browse) !vo
     // Safety check: TP's new objects must not collide with primary model IDs.
     // Silent shadowing would make it impossible to tell which file an object
     // came from during navigation; fail loud instead.
-    if (tp_opt) |tp| {
-        for (tp.new_objects) |obj| {
-            if (model.getObjectById(obj.id) != null) print.stderr(
-                io,
-                "browse: mRID collision: '{s}' is defined in both the primary file and the TP profile",
-                .{obj.id},
-            );
-        }
-    }
+    if (tp_opt) |tp| if (refs_api.find_tp_primary_id_collision(&model, tp)) |id| print.stderr(
+        io,
+        "browse: mRID collision: '{s}' is defined in both the primary file and the TP profile",
+        .{id},
+    );
 
     var browse_input_buffer: [64]u8 = undefined;
     var browse_stdin = std.Io.File.stdin().reader(io, &browse_input_buffer);

@@ -194,6 +194,15 @@ pub fn resolve_object(
     return null;
 }
 
+/// Return the first TP-added object id that collides with the primary model, or
+/// null if TP's new objects can be safely unioned with EQ/EQBD objects.
+pub fn find_tp_primary_id_collision(model: *const EQ, tp: TP) ?[]const u8 {
+    for (tp.new_objects) |obj| {
+        if (model.getObjectById(obj.id) != null) return obj.id;
+    }
+    return null;
+}
+
 /// Collect all prefix matches for `mrid_prefix` across the primary model and
 /// (when present) TP's new objects. Returns owned slice.
 ///
@@ -601,4 +610,25 @@ test "collect_target_candidates: EQ and TP matches both included" {
     // EQ matches come first by construction.
     try std.testing.expectEqualStrings("_X1", matches[0].id);
     try std.testing.expectEqualStrings("_X2", matches[1].id);
+}
+
+test "find_tp_primary_id_collision returns first TP-added duplicate id" {
+    const gpa = std.testing.allocator;
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <cim:Terminal rdf:ID="_T1"/>
+        \\</rdf:RDF>
+    ;
+    const tp_xml =
+        \\<rdf:RDF>
+        \\  <cim:TopologicalNode rdf:ID="_T1"/>
+        \\</rdf:RDF>
+    ;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, eq_xml));
+    defer model.deinit(gpa);
+    var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
+    defer tp.deinit(gpa);
+
+    const collision = find_tp_primary_id_collision(&model, tp) orelse return error.TestExpectedCollision;
+    try std.testing.expectEqualStrings("_T1", collision);
 }

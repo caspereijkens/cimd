@@ -11,6 +11,7 @@ const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
 const SSH = cim_ssh.SSH;
+const CimMergedView = cim_ssh.CimMergedView;
 const CrossRef = cross_ref.CrossRef;
 const CimObjectView = tag_index.CimObjectView;
 const CimObject = tag_index.CimObject;
@@ -610,13 +611,16 @@ pub fn is_ssh_terminal_disconnected(ssh_opt: ?SSH, terminal_id: []const u8) bool
     return std.mem.eql(u8, val, "false");
 }
 
-pub fn is_switch_closed(ssh: *const SSH, switch_id: []const u8) !bool {
+pub fn is_switch_closed(model: *const EQ, ssh: *const SSH, switch_id: []const u8) !bool {
     assert(switch_id.len > 0);
-    // SSH patches are keyed by mRID; switch_id is the raw rdf:ID with leading underscore.
-    const mrid = strip_underscore(switch_id);
-    const patch = ssh.find_patch(mrid) orelse return true;
-    const open_str = try ssh.getPropertyFromPatch(patch, "Switch.open") orelse "false";
-    return std.mem.eql(u8, open_str, "false");
+    const eq_view = model.getObjectById(switch_id) orelse return true;
+    const mrid = try eq_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(switch_id);
+    const view = CimMergedView.init(eq_view, mrid, null, ssh.*);
+    const open_str = try view.getProperty("Switch.open") orelse "false";
+    // Property values are returned as raw XML content between tags; pretty-printed
+    // SSH files surround the boolean with whitespace and would otherwise flip
+    // every closed switch to open and break topology resolution.
+    return std.mem.eql(u8, std.mem.trim(u8, open_str, " \t\r\n"), "false");
 }
 
 fn union_closed_switch_conn_nodes(
@@ -643,7 +647,7 @@ fn union_closed_switch_conn_nodes(
             if (std.mem.eql(u8, retained_str, "true")) continue;
 
             // default behavior is closed.
-            const closed = if (ssh_opt) |s| try is_switch_closed(s, @"switch".id) else true;
+            const closed = if (ssh_opt) |s| try is_switch_closed(model, s, @"switch".id) else true;
             if (!closed) continue;
 
             union_smallest_id_wins(parent, conn_node0, conn_node1);
