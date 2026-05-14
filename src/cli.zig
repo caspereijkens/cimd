@@ -126,7 +126,8 @@ const help_get = std.fmt.comptimePrint(
     \\  <mrid>    Full mRID or a unique prefix (optional if --type is given)
     \\
     \\Options:
-    \\  -t, --type <type>          Filter by CIM type (e.g. PowerTransformer)
+    \\  -t, --type <type>          Filter by CIM type (e.g. ConductingEquipment)
+    \\                             Includes subtypes from the CIM inheritance graph.
     \\                             Without <mrid>: list all objects of this type
     \\                             With <mrid>: verify the object is of this type,
     \\                             or narrow an ambiguous prefix to one of this type
@@ -167,6 +168,7 @@ const help_refs = std.fmt.comptimePrint(
     \\
     \\--type narrows the *target* (use it to disambiguate <mrid>). --from
     \\filters the *referrer set* (which kinds of objects point at the target).
+    \\Both filters include subtypes from the CIM inheritance graph.
     \\
     \\Exits 0 on success (including zero referrers), 1 if <mrid> is not found.
     \\
@@ -234,7 +236,7 @@ const help_diff =
     \\Options:
     \\  -b, --eqbd <file>      EQBD boundary profile (applied to both models)
     \\  -i, --mrid <id>         Diff a single object by mRID
-    \\  -t, --type <name>       Restrict diff to a specific CIM type
+    \\  -t, --type <name>       Restrict diff to a specific CIM type, including subtypes
     \\                          With --mrid: verify the object is of this type
     \\  -s, --summary           Print only per-type counts (added/removed/changed)
     \\  -j, --json              Output as NDJSON (one object per change)

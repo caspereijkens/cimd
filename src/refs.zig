@@ -4,6 +4,7 @@ const TP = @import("cgmes/tp.zig").TP;
 const SSH = @import("cgmes/ssh.zig").SSH;
 const tag_index = @import("cgmes/tag_index.zig");
 const ids = @import("cgmes/ids.zig");
+const cim_types = @import("cgmes/cim_types.zig");
 
 const assert = std.debug.assert;
 
@@ -241,9 +242,7 @@ pub fn filter_referrers(
     var selected: std.ArrayList(ReverseRef) = .empty;
     errdefer selected.deinit(gpa);
     for (referrers) |ref| {
-        if (type_filter) |t| {
-            if (!std.mem.eql(u8, ref.referrer_type, t)) continue;
-        }
+        if (!cim_types.matches_filter(ref.referrer_type, type_filter)) continue;
         try selected.append(gpa, ref);
     }
 
@@ -459,6 +458,22 @@ test "filter_referrers: type filter narrows the set" {
     try std.testing.expectEqual(@as(usize, 2), out.len);
     try std.testing.expectEqualStrings("_a", out[0].referrer_id);
     try std.testing.expectEqualStrings("_c", out[1].referrer_id);
+}
+
+test "filter_referrers: type filter includes subtypes" {
+    const gpa = std.testing.allocator;
+    const input = [_]ReverseRef{
+        .{ .referrer_id = "_a", .referrer_type = "ACLineSegment", .reference_name = "x" },
+        .{ .referrer_id = "_b", .referrer_type = "Breaker", .reference_name = "x" },
+        .{ .referrer_id = "_c", .referrer_type = "Substation", .reference_name = "x" },
+    };
+
+    const out = try filter_referrers(gpa, &input, "ConductingEquipment");
+    defer gpa.free(out);
+
+    try std.testing.expectEqual(@as(usize, 2), out.len);
+    try std.testing.expectEqualStrings("_a", out[0].referrer_id);
+    try std.testing.expectEqualStrings("_b", out[1].referrer_id);
 }
 
 test "filter_referrers: empty input and empty result yield empty slice" {

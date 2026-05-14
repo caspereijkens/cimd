@@ -9,6 +9,7 @@ pub const TP = @import("cgmes/tp.zig").TP;
 pub const SSH = @import("cgmes/ssh.zig").SSH;
 pub const CimObject = @import("cgmes/eq.zig").CimObject;
 pub const CimObjectView = @import("cgmes/tag_index.zig").CimObjectView;
+pub const cim_types = @import("cgmes/cim_types.zig");
 
 // Overlay reads — EQ + TP + SSH merged with SSH > TP > EQ precedence.
 pub const CimMergedView = @import("cgmes/ssh.zig").CimMergedView;
@@ -26,6 +27,7 @@ comptime {
     _ = @import("cgmes/test_tag_index.zig");
     _ = @import("test_diff.zig");
     _ = @import("test_browse.zig");
+    _ = @import("cgmes/cim_types.zig");
     _ = @import("cgmes/test_eq.zig");
     _ = @import("cgmes/test_ids.zig");
     _ = @import("refs.zig");

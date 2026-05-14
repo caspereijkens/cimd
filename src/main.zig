@@ -15,6 +15,7 @@ const resolve = @import("topology/resolve.zig");
 const refs_api = @import("refs.zig");
 const tag_index = @import("cgmes/tag_index.zig");
 const ids = @import("cgmes/ids.zig");
+const cim_types = @import("cgmes/cim_types.zig");
 const CimMergedView = @import("cgmes/ssh.zig").CimMergedView;
 
 const assert = std.debug.assert;
@@ -181,7 +182,8 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
 
     // List mode
     const type_name = c.type_filter.?;
-    const objects = model.get_objects_by_type(type_name);
+    const objects = try collect_objects_by_type_filter(gpa, &model, type_name);
+    defer gpa.free(objects);
     if (objects.len == 0)
         print.not_found(io, "No objects of type '{s}' found. Run 'cimd types' to see available types.", .{type_name});
 
@@ -241,12 +243,8 @@ fn resolve_get_target(
 
     var filtered: std.ArrayList(CimObject) = .empty;
     defer filtered.deinit(gpa);
-    if (type_filter) |t| {
-        for (all_matches) |m| {
-            if (std.mem.eql(u8, m.type_name, t)) try filtered.append(gpa, m);
-        }
-    } else {
-        try filtered.appendSlice(gpa, all_matches);
+    for (all_matches) |m| {
+        if (cim_types.matches_filter(m.type_name, type_filter)) try filtered.append(gpa, m);
     }
 
     if (filtered.items.len == 0) {
@@ -431,12 +429,8 @@ fn command_refs(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Refs) !void {
 
     var filtered: std.ArrayList(CimObject) = .empty;
     defer filtered.deinit(gpa);
-    if (c.target_type) |t| {
-        for (all_matches) |m| {
-            if (std.mem.eql(u8, m.type_name, t)) try filtered.append(gpa, m);
-        }
-    } else {
-        try filtered.appendSlice(gpa, all_matches);
+    for (all_matches) |m| {
+        if (cim_types.matches_filter(m.type_name, c.target_type)) try filtered.append(gpa, m);
     }
 
     if (filtered.items.len == 0) {
@@ -492,6 +486,49 @@ fn command_refs(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Refs) !void {
         try refs_api.write_referrers_text(w, target_id, referrers, c.from_type);
     }
     try w.flush();
+}
+
+fn collect_objects_by_type_filter(
+    gpa: std.mem.Allocator,
+    model: *const EQ,
+    requested_type: []const u8,
+) ![]CimObject {
+    var matches: std.ArrayList(CimObject) = .empty;
+    errdefer matches.deinit(gpa);
+    for (model.objects) |obj| {
+        if (cim_types.matches_filter(obj.type_name, requested_type)) try matches.append(gpa, obj);
+    }
+    return matches.toOwnedSlice(gpa);
+}
+
+test "get type filter collector includes CIM subtypes" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:PowerTransformer rdf:ID="_PT1"/>
+        \\  <cim:ACLineSegment rdf:ID="_ACL1"/>
+        \\  <cim:SynchronousMachine rdf:ID="_SM1"/>
+        \\  <cim:Substation rdf:ID="_SS1"/>
+        \\</rdf:RDF>
+    ;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    const objects = try collect_objects_by_type_filter(gpa, &model, "ConductingEquipment");
+    defer gpa.free(objects);
+
+    try std.testing.expectEqual(@as(usize, 3), objects.len);
+    var found_power_transformer = false;
+    var found_line_segment = false;
+    var found_machine = false;
+    for (objects) |obj| {
+        if (std.mem.eql(u8, obj.type_name, "PowerTransformer")) found_power_transformer = true;
+        if (std.mem.eql(u8, obj.type_name, "ACLineSegment")) found_line_segment = true;
+        if (std.mem.eql(u8, obj.type_name, "SynchronousMachine")) found_machine = true;
+    }
+    try std.testing.expect(found_power_transformer);
+    try std.testing.expect(found_line_segment);
+    try std.testing.expect(found_machine);
 }
 
 /// Write `value` as JSON to stdout and exit 1. The exit code matches
