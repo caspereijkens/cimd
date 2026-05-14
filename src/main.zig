@@ -153,26 +153,11 @@ fn command_browse(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Browse) !vo
         // Exact match first for full mRIDs (covers both EQ and TP-added ids).
         if (refs_api.resolve_object(&model, tp_opt, c.mrid) != null) break :blk c.mrid;
 
-        // Prefix lookup spans EQ and TP's new_objects (e.g. TopologicalNodes).
-        const eq_matches = try model.get_object_by_id_prefix(gpa, c.mrid);
-        defer gpa.free(eq_matches);
-        const tp_matches: []const CimObject = if (tp_opt) |tp|
-            try tp.get_object_by_id_prefix(gpa, c.mrid)
-        else
-            &.{};
-        defer if (tp_opt != null) gpa.free(tp_matches);
-
-        const total = eq_matches.len + tp_matches.len;
-        if (total == 0) print.not_found(io, "No object found with id '{s}'", .{c.mrid});
-        if (total == 1) break :blk if (eq_matches.len == 1) eq_matches[0].id else tp_matches[0].id;
-
-        // The picker takes a single slice; concatenate. The returned id points
-        // into the underlying xml buffer, so freeing this temporary is safe.
-        const combined = try gpa.alloc(CimObject, total);
-        defer gpa.free(combined);
-        @memcpy(combined[0..eq_matches.len], eq_matches);
-        @memcpy(combined[eq_matches.len..], tp_matches);
-        break :blk try browse.pick_from_prefix(io, gpa, interactive, c.mrid, combined);
+        const matches = try refs_api.collect_target_candidates(gpa, &model, tp_opt, c.mrid);
+        defer gpa.free(matches);
+        if (matches.len == 0) print.not_found(io, "No object found with id '{s}'", .{c.mrid});
+        if (matches.len == 1) break :blk matches[0].id;
+        break :blk try browse.pick_from_prefix(io, gpa, interactive, c.mrid, matches);
     };
 
     try browse.browse(io, gpa, interactive, &model, tp_opt, ssh_opt, start_id);
