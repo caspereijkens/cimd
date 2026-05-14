@@ -37,67 +37,6 @@ Commands:
 Use 'cimd <command> --help' for more information about a command.
 ```
 
-### Convert
-```
-$ cimd convert --help
-
-Usage: cimd convert <file> [options]
-
-Convert a CGMES EQ profile to JIIDM JSON format.
-Output is written to stdout unless --output is given.
-
-Arguments:
-  <file>                  EQ profile (XML or ZIP)
-
-Options:
-  -b, --eqbd <file>       EQBD boundary profile (XML or ZIP)
-  -t, --tp <file>         TP topology profile (XML or ZIP)
-  -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
-  -o, --output <file>     Write output to file instead of stdout
-      --bus-branch        Emit bus-branch JIIDM (one bus per TopologicalNode).
-                          Requires --tp. Default is node-breaker even
-                          when TP is given (matches pypowsybl).
-
-Examples:
-  cimd convert data/eq.zip
-  cimd convert data/eq.zip --eqbd eqbd.zip
-  cimd convert data/eq.zip --eqbd eqbd.zip -s ssh.zip
-  cimd convert data/eq.zip -o network.json
-  cimd convert data/eq.zip --tp tp.zip --bus-branch
-```
-
-### Browse
-```
-$ cimd browse --help
-
-Usage: cimd browse <file> <mrid> [options]
-
-Interactively browse CIM objects by following rdf:resource references.
-When --tp or --ssh is passed, patches from those profiles are shown
-inline alongside the primary object, and new objects from TP (e.g.
-TopologicalNodes) become navigable by mRID.
-
-<mrid> may be a prefix of a full mRID; the leading underscore is optional.
-The prefix is matched against EQ objects and, when --tp is given,
-TP-added objects (e.g. TopologicalNodes). When a prefix matches more than
-one object, browse opens a picker menu — flat list when few candidates,
-grouped by type when many.
-
-Arguments:
-  <file>    Primary CIM file (typically EQ; XML or ZIP)
-  <mrid>    Full mRID or a prefix of one
-
-Options:
-  -b, --eqbd <file>           EQBD boundary profile (XML or ZIP)
-  -t, --tp <file>             TP topology profile (XML or ZIP)
-  -s, --ssh <file>            SSH steady-state hypothesis profile (XML or ZIP)
-
-Examples:
-  cimd browse data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
-  cimd browse data/eq.zip be60a3cf                # prefix; underscore optional
-  cimd browse data/eq.zip _abc --tp tp.zip -s ssh.zip
-```
-
 ### Get
 ```
 $ cimd get --help
@@ -161,24 +100,79 @@ Examples:
   cimd get data/tp.zip -t TopologicalNode -c
 ```
 
-### Types
+### Refs
 ```
-$ cimd types --help
+$ cimd refs --help
 
-Usage: cimd types <file> [options]
+Usage: cimd refs <file> <mrid> [options]
 
-List all CIM types present in a CGMES file with object counts.
-Works on any CGMES file (EQ, EQBD, TP, SSH, ...).
+List reverse references to a CIM object: every object whose rdf:resource
+points at <mrid>, searched across the primary file plus any EQBD/TP/SSH
+inputs. The <mrid> argument may be a unique prefix; the leading
+underscore is optional.
+
+--type narrows the *target* (use it to disambiguate <mrid>). --from
+filters the *referrer set* (which kinds of objects point at the target).
+Both filters include subtypes from the CIM inheritance graph.
+
+Exits 0 on success (including zero referrers), 1 if <mrid> is not found.
+
+JSON errors:
+  With --json, the not-found path emits a structured error on stdout and
+  exits 1; an ambiguous prefix emits the standard ambiguity envelope on
+  stdout and exits 0:
+    {"error":"not_found", "prefix":...}
+    {"prefix":..., "total":..., "matches":[...], "types":[...]}
 
 Arguments:
-  <file>                  CGMES file (XML or ZIP)
+  <file>    CGMES file (XML or ZIP); typically EQ
+  <mrid>    Full mRID or a unique prefix
 
 Options:
-  -j, --json              Output as JSON array of {{type, count}} objects
+  -t, --type <type>     Narrow target to this CIM type (disambiguates <mrid>)
+      --from <type>     Only show referrers of this CIM type
+  -b, --eqbd <file>     EQBD boundary profile (XML or ZIP)
+      --tp <file>       TP topology profile (XML or ZIP)
+      --ssh <file>      SSH steady-state hypothesis profile (XML or ZIP)
+  -j, --json            Output {"id","type","referrers":[...]}
 
 Examples:
-  cimd types data/eq.zip
-  cimd types data/tp.zip -j
+  cimd refs data/eq.zip _line-mrid
+  cimd refs data/eq.zip _0 -t LinearShuntCompensator
+  cimd refs data/eq.zip line-prefix --from AssessedElement -j
+  cimd refs data/eq.zip _TN1 --tp tp.zip
+```
+
+### Browse
+```
+$ cimd browse --help
+
+Usage: cimd browse <file> <mrid> [options]
+
+Interactively browse CIM objects by following rdf:resource references.
+When --tp or --ssh is passed, patches from those profiles are shown
+inline alongside the primary object, and new objects from TP (e.g.
+TopologicalNodes) become navigable by mRID.
+
+<mrid> may be a prefix of a full mRID; the leading underscore is optional.
+The prefix is matched against EQ objects and, when --tp is given,
+TP-added objects (e.g. TopologicalNodes). When a prefix matches more than
+one object, browse opens a picker menu — flat list when few candidates,
+grouped by type when many.
+
+Arguments:
+  <file>    Primary CIM file (typically EQ; XML or ZIP)
+  <mrid>    Full mRID or a prefix of one
+
+Options:
+  -b, --eqbd <file>           EQBD boundary profile (XML or ZIP)
+  -t, --tp <file>             TP topology profile (XML or ZIP)
+  -s, --ssh <file>            SSH steady-state hypothesis profile (XML or ZIP)
+
+Examples:
+  cimd browse data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
+  cimd browse data/eq.zip be60a3cf                # prefix; underscore optional
+  cimd browse data/eq.zip _abc --tp tp.zip -s ssh.zip
 ```
 
 ### Diff
@@ -242,5 +236,54 @@ Options:
 Examples:
   cimd topology data/eq.zip -s ssh.zip
   cimd topology data/eq.zip --eqbd eqbd.zip -s ssh.zip -o tn.json
+```
+
+### Convert
+```
+$ cimd convert --help
+
+Usage: cimd convert <file> [options]
+
+Convert a CGMES EQ profile to JIIDM JSON format.
+Output is written to stdout unless --output is given.
+
+Arguments:
+  <file>                  EQ profile (XML or ZIP)
+
+Options:
+  -b, --eqbd <file>       EQBD boundary profile (XML or ZIP)
+  -t, --tp <file>         TP topology profile (XML or ZIP)
+  -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
+  -o, --output <file>     Write output to file instead of stdout
+      --bus-branch        Emit bus-branch JIIDM (one bus per TopologicalNode).
+                          Requires --tp. Default is node-breaker even
+                          when TP is given (matches pypowsybl).
+
+Examples:
+  cimd convert data/eq.zip
+  cimd convert data/eq.zip --eqbd eqbd.zip
+  cimd convert data/eq.zip --eqbd eqbd.zip -s ssh.zip
+  cimd convert data/eq.zip -o network.json
+  cimd convert data/eq.zip --tp tp.zip --bus-branch
+```
+
+### Types
+```
+$ cimd types --help
+
+Usage: cimd types <file> [options]
+
+List all CIM types present in a CGMES file with object counts.
+Works on any CGMES file (EQ, EQBD, TP, SSH, ...).
+
+Arguments:
+  <file>                  CGMES file (XML or ZIP)
+
+Options:
+  -j, --json              Output as JSON array of {{type, count}} objects
+
+Examples:
+  cimd types data/eq.zip
+  cimd types data/tp.zip -j
 ```
 <!-- FEATURES_END -->
