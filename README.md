@@ -28,6 +28,7 @@ Commands:
   convert    Convert an EQ profile to JIIDM JSON
   browse     Interactively browse CIM objects (EQ/EQBD/TP/SSH merged view)
   get        Fetch a single object or list by type from any CIM file
+  refs       List objects that reference a CIM object
   types      List CIM types present in a CIM file
   diff       Semantic diff between two EQ profiles
   topology   Generate TopologicalNodes from EQ (+SSH) — TP-equivalent output

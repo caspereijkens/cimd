@@ -30,6 +30,7 @@ const help_main =
     \\  convert    Convert an EQ profile to JIIDM JSON
     \\  browse     Interactively browse CIM objects (EQ/EQBD/TP/SSH merged view)
     \\  get        Fetch a single object or list by type from any CIM file
+    \\  refs       List objects that reference a CIM object
     \\  types      List CIM types present in a CIM file
     \\  diff       Semantic diff between two EQ profiles
     \\  topology   Generate TopologicalNodes from EQ (+SSH) — TP-equivalent output
@@ -150,6 +151,46 @@ const help_get = std.fmt.comptimePrint(
     \\
 , .{ .s = sep });
 
+const help_refs = std.fmt.comptimePrint(
+    \\Usage: cimd refs <file> <mrid> [options]
+    \\
+    \\List reverse references to a CIM object: every object whose rdf:resource
+    \\points at <mrid>, searched across the primary file plus any EQBD/TP/SSH
+    \\inputs. The <mrid> argument may be a unique prefix; the leading
+    \\underscore is optional.
+    \\
+    \\--type narrows the *target* (use it to disambiguate <mrid>). --from
+    \\filters the *referrer set* (which kinds of objects point at the target).
+    \\
+    \\Exits 0 on success (including zero referrers), 1 if <mrid> is not found.
+    \\
+    \\JSON errors:
+    \\  With --json, the not-found path emits a structured error on stdout and
+    \\  exits 1; an ambiguous prefix emits the standard ambiguity envelope on
+    \\  stdout and exits 0:
+    \\    {{"error":"not_found", "prefix":...}}
+    \\    {{"prefix":..., "total":..., "matches":[...], "types":[...]}}
+    \\
+    \\Arguments:
+    \\  <file>    CGMES file (XML or ZIP); typically EQ
+    \\  <mrid>    Full mRID or a unique prefix
+    \\
+    \\Options:
+    \\  -t, --type <type>     Narrow target to this CIM type (disambiguates <mrid>)
+    \\      --from <type>     Only show referrers of this CIM type
+    \\      --eqbd <file>     EQBD boundary profile (XML or ZIP)
+    \\      --tp <file>       TP topology profile (XML or ZIP)
+    \\      --ssh <file>      SSH steady-state hypothesis profile (XML or ZIP)
+    \\  -j, --json            Output {{"id","type","referrers":[...]}}
+    \\
+    \\Examples:
+    \\  cimd refs data{[s]s}eq.zip _line-mrid
+    \\  cimd refs data{[s]s}eq.zip _0 -t LinearShuntCompensator
+    \\  cimd refs data{[s]s}eq.zip line-prefix --from AssessedElement -j
+    \\  cimd refs data{[s]s}eq.zip _TN1 --tp tp.zip
+    \\
+, .{ .s = sep });
+
 const help_types = std.fmt.comptimePrint(
     \\Usage: cimd types <file> [options]
     \\
@@ -248,6 +289,7 @@ pub const Command = union(enum) {
     convert: Convert,
     browse: Browse,
     get: Get,
+    refs: Refs,
     types: Types,
     diff: Diff,
     topology: Topology,
@@ -276,6 +318,17 @@ pub const Command = union(enum) {
         type_filter: ?[]const u8,
         fields: ?[]const u8,
         count: bool,
+        json: bool,
+    };
+
+    pub const Refs = struct {
+        file_path: []const u8,
+        mrid: []const u8,
+        target_type: ?[]const u8,
+        from_type: ?[]const u8,
+        eqbd_path: ?[]const u8,
+        tp_path: ?[]const u8,
+        ssh_path: ?[]const u8,
         json: bool,
     };
 
@@ -329,6 +382,7 @@ pub fn parse_args(io: std.Io, args: *std.process.Args.Iterator) !Command {
     if (std.mem.eql(u8, command_name, "convert")) return parse_convert(io, args);
     if (std.mem.eql(u8, command_name, "browse")) return parse_browse(io, args);
     if (std.mem.eql(u8, command_name, "get")) return parse_get(io, args);
+    if (std.mem.eql(u8, command_name, "refs")) return parse_refs(io, args);
     if (std.mem.eql(u8, command_name, "types")) return parse_types(io, args);
     if (std.mem.eql(u8, command_name, "diff")) return parse_diff(io, args);
     if (std.mem.eql(u8, command_name, "topology")) return parse_topology(io, args);
@@ -480,6 +534,65 @@ fn parse_get(io: std.Io, args: *std.process.Args.Iterator) !Command {
         .type_filter = type_filter,
         .fields = fields,
         .count = count,
+        .json = json,
+    } };
+}
+
+fn parse_refs(io: std.Io, args: *std.process.Args.Iterator) !Command {
+    const context = "refs";
+
+    var file_path: ?[]const u8 = null;
+    var mrid: ?[]const u8 = null;
+    var target_type: ?[]const u8 = null;
+    var from_type: ?[]const u8 = null;
+    var eqbd_path: ?[]const u8 = null;
+    var tp_path: ?[]const u8 = null;
+    var ssh_path: ?[]const u8 = null;
+    var json = false;
+
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            try print.write(io, help_refs);
+            std.process.exit(0);
+        }
+        if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--type")) {
+            target_type = args.next() orelse
+                print.stderr(io, context ++ ": --type requires a CIM type name", .{});
+        } else if (std.mem.eql(u8, arg, "--from")) {
+            from_type = args.next() orelse
+                print.stderr(io, context ++ ": --from requires a CIM type name", .{});
+        } else if (std.mem.eql(u8, arg, "--eqbd")) {
+            eqbd_path = take_path_arg(io, args, context, "--eqbd");
+        } else if (std.mem.eql(u8, arg, "--tp")) {
+            tp_path = take_path_arg(io, args, context, "--tp");
+        } else if (std.mem.eql(u8, arg, "--ssh")) {
+            ssh_path = take_path_arg(io, args, context, "--ssh");
+        } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
+            json = true;
+        } else if (is_flag(arg)) {
+            print.stderr(io, context ++ ": unknown option '{s}'", .{arg});
+        } else if (file_path == null) {
+            validate_path(io, arg, context);
+            validate_cgmes_extension(io, arg, context);
+            file_path = arg;
+        } else if (mrid == null) {
+            mrid = arg;
+        } else {
+            print.stderr(io, context ++ ": unexpected argument '{s}'", .{arg});
+        }
+    }
+
+    if (file_path == null) print.stderr(io, context ++ ": <file> is required", .{});
+    if (mrid == null) print.stderr(io, context ++ ": <mrid> is required", .{});
+
+    return .{ .refs = .{
+        .file_path = file_path.?,
+        .mrid = mrid.?,
+        .target_type = target_type,
+        .from_type = from_type,
+        .eqbd_path = eqbd_path,
+        .tp_path = tp_path,
+        .ssh_path = ssh_path,
         .json = json,
     } };
 }

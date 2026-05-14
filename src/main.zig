@@ -12,6 +12,7 @@ const diff = @import("diff.zig");
 const converter = @import("convert/network.zig");
 const cross_ref = @import("topology/cross_ref.zig");
 const resolve = @import("topology/resolve.zig");
+const refs_api = @import("refs.zig");
 
 const assert = std.debug.assert;
 
@@ -30,6 +31,7 @@ pub fn main(init: std.process.Init) !void {
         .convert => |c| try command_convert(io, gpa, c),
         .browse => |c| try command_browse(io, gpa, c),
         .get => |c| try command_get(io, gpa, c),
+        .refs => |c| try command_refs(io, gpa, c),
         .types => |c| try command_types(io, gpa, c),
         .diff => |c| try command_diff(io, gpa, c),
         .topology => |c| try command_topology(io, gpa, c),
@@ -289,6 +291,84 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
     }
 }
 
+fn command_refs(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Refs) !void {
+    var model = try load_model(io, gpa, c.file_path, c.eqbd_path);
+    defer model.deinit(gpa);
+
+    var tp_opt: ?TP = if (c.tp_path) |path| try load_tp(io, gpa, path) else null;
+    defer if (tp_opt) |*tp| tp.deinit(gpa);
+
+    var ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
+    defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
+
+    const all_matches = try refs_api.collect_target_candidates(gpa, &model, tp_opt, c.mrid);
+    defer gpa.free(all_matches);
+
+    var filtered: std.ArrayList(CimObject) = .empty;
+    defer filtered.deinit(gpa);
+    if (c.target_type) |t| {
+        for (all_matches) |m| {
+            if (std.mem.eql(u8, m.type_name, t)) try filtered.append(gpa, m);
+        }
+    } else {
+        try filtered.appendSlice(gpa, all_matches);
+    }
+
+    if (filtered.items.len == 0) {
+        if (all_matches.len > 0 and c.target_type != null) {
+            const t = c.target_type.?;
+            if (c.json) exit_json_error(io, .{
+                .@"error" = "none_of_type",
+                .prefix = c.mrid,
+                .total = all_matches.len,
+                .requested_type = t,
+            });
+            print.not_found(
+                io,
+                "Prefix '{s}' matched {d} objects but none of type '{s}'",
+                .{ c.mrid, all_matches.len, t },
+            );
+        }
+        if (c.json) exit_json_error(io, .{ .@"error" = "not_found", .prefix = c.mrid });
+        print.not_found(io, "No object found with id '{s}'", .{c.mrid});
+    }
+
+    if (filtered.items.len > 1) {
+        if (c.json) {
+            try render_ambiguous_json(io, gpa, c.mrid, filtered.items);
+        } else if (c.target_type) |t| {
+            try print.stderr_info(io, "Ambiguous prefix '{s}' matched {d} objects of type '{s}':\n", .{ c.mrid, filtered.items.len, t });
+            for (filtered.items) |m| try print.stdout(io, "{s} | {s}\n", .{ m.id, m.type_name });
+        } else if (filtered.items.len > browse.group_threshold) {
+            try render_type_breakdown(io, gpa, c.mrid, filtered.items);
+        } else {
+            try print.stderr_info(io, "Ambiguous prefix '{s}' matched {d} objects:\n", .{ c.mrid, filtered.items.len });
+            for (filtered.items) |m| try print.stdout(io, "{s} | {s}\n", .{ m.id, m.type_name });
+        }
+        return;
+    }
+
+    const target_id = filtered.items[0].id;
+    const target_type_name = filtered.items[0].type_name;
+
+    var index = try refs_api.ReverseRefIndex.build_with_overlays(gpa, &model, tp_opt, ssh_opt);
+    defer index.deinit(gpa);
+
+    const referrers = try refs_api.filter_referrers(gpa, index.lookup(target_id), c.from_type);
+    defer gpa.free(referrers);
+
+    var write_buffer: [16 * 1024]u8 = undefined;
+    var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &write_buffer);
+    const w = &file_writer.interface;
+
+    if (c.json) {
+        try refs_api.write_referrers_json(w, target_id, target_type_name, referrers);
+    } else {
+        try refs_api.write_referrers_text(w, target_id, referrers, c.from_type);
+    }
+    try w.flush();
+}
+
 /// Write `value` as JSON to stdout and exit 1. The exit code matches
 /// `print.not_found`'s text-mode behavior so shell scripts can still detect
 /// failure; tooling parses the JSON envelope on stdout to discriminate.
@@ -384,7 +464,9 @@ fn render_type_breakdown(io: std.Io, gpa: std.mem.Allocator, prefix: []const u8,
     }.lt);
 
     var max_type_len: usize = 0;
-    for (entries) |e| if (e.type_name.len > max_type_len) { max_type_len = e.type_name.len; };
+    for (entries) |e| if (e.type_name.len > max_type_len) {
+        max_type_len = e.type_name.len;
+    };
 
     try print.stderr_info(
         io,

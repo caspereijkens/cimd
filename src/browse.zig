@@ -6,6 +6,7 @@ const EQ = @import("cgmes/eq.zig").EQ;
 const TP = @import("cgmes/tp.zig").TP;
 const SSH = @import("cgmes/ssh.zig").SSH;
 const tag_index = @import("cgmes/tag_index.zig");
+const refs = @import("refs.zig");
 const print = @import("io/print.zig");
 const extract_rdf_resource = tag_index.extract_rdf_resource;
 const extract_rdf_id = tag_index.extract_rdf_id;
@@ -54,92 +55,6 @@ const Nav = union(enum) {
     show_all_refs,
 };
 
-/// Reverse-reference index: target raw id (e.g. "_CN42") → list of raw ids of
-/// objects that mention it via rdf:resource. Built once when entering browse;
-/// answers "what points at me?" in O(1) for any object.
-const BackRefIndex = struct {
-    map: std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)),
-
-    pub const empty: BackRefIndex = .{ .map = .empty };
-
-    pub fn deinit(self: *BackRefIndex, gpa: std.mem.Allocator) void {
-        var it = self.map.valueIterator();
-        while (it.next()) |list| list.deinit(gpa);
-        self.map.deinit(gpa);
-    }
-
-    pub fn lookup(self: *const BackRefIndex, target_id: []const u8) []const []const u8 {
-        const list = self.map.get(target_id) orelse return &.{};
-        return list.items;
-    }
-};
-
-/// Walk every CIM object (EQ, TP new objects, TP patches, SSH patches) and
-/// register each rdf:resource it carries under that target's bucket.
-fn build_back_ref_index(
-    gpa: std.mem.Allocator,
-    model: *const EQ,
-    tp_opt: ?TP,
-    ssh_opt: ?SSH,
-) !BackRefIndex {
-    var index: BackRefIndex = .empty;
-    errdefer index.deinit(gpa);
-
-    for (model.objects) |obj| {
-        try collect_refs_from_range(gpa, &index, model.xml, model.boundaries, obj.object_tag_idx, obj.closing_tag_idx, obj.id);
-    }
-
-    if (tp_opt) |tp| {
-        for (tp.new_objects) |obj| {
-            try collect_refs_from_range(gpa, &index, tp.xml, tp.boundaries, obj.object_tag_idx, obj.closing_tag_idx, obj.id);
-        }
-        for (tp.patches) |patch| {
-            const referrer_id = referrer_from_patch_tag(tp.xml, tp.boundaries[patch.patch_tag_idx].start) orelse continue;
-            try collect_refs_from_range(gpa, &index, tp.xml, tp.boundaries, patch.patch_tag_idx, patch.closing_tag_idx, referrer_id);
-        }
-    }
-
-    if (ssh_opt) |ssh| {
-        for (ssh.patches) |patch| {
-            const referrer_id = referrer_from_patch_tag(ssh.xml, ssh.boundaries[patch.patch_tag_idx].start) orelse continue;
-            try collect_refs_from_range(gpa, &index, ssh.xml, ssh.boundaries, patch.patch_tag_idx, patch.closing_tag_idx, referrer_id);
-        }
-    }
-    return index;
-}
-
-fn collect_refs_from_range(
-    gpa: std.mem.Allocator,
-    index: *BackRefIndex,
-    xml: []const u8,
-    boundaries: []const tag_index.TagBoundary,
-    open_idx: u32,
-    close_idx: u32,
-    referrer_id: []const u8,
-) !void {
-    assert(referrer_id.len > 0);
-    assert(close_idx >= open_idx);
-    if (close_idx <= open_idx + 1) return;
-    for (boundaries[open_idx + 1 .. close_idx]) |tag| {
-        if (xml[tag.start + 1] == '/') continue;
-        const ref = (tag_index.extract_rdf_resource(xml, tag.start) catch continue) orelse continue;
-        const target = strip_hash(ref);
-        if (target.len == 0) continue;
-        const gop = try index.map.getOrPut(gpa, target);
-        if (!gop.found_existing) gop.value_ptr.* = .empty;
-        try gop.value_ptr.append(gpa, referrer_id);
-    }
-}
-
-/// Patch tags carry rdf:about="#_<mrid>"; strip the '#' to get the raw id
-/// that matches the EQ object's rdf:ID.
-fn referrer_from_patch_tag(xml: []const u8, tag_start: u32) ?[]const u8 {
-    const about = tag_index.extract_rdf_about(xml, tag_start) catch return null;
-    const stripped = strip_hash(about);
-    if (stripped.len == 0) return null;
-    return stripped;
-}
-
 /// Interactively browse CIM objects by following rdf:resource references.
 /// `model` is the primary CIM file (typically EQ, possibly with concatenated EQBD).
 /// `tp_opt` / `ssh_opt`, when present, overlay their patches inline below the
@@ -162,7 +77,7 @@ pub fn browse(
     defer screen.deinit();
     var selections: std.ArrayList(Selection) = .empty;
     defer selections.deinit(gpa);
-    var back_refs = try build_back_ref_index(gpa, model, tp_opt, ssh_opt);
+    var back_refs = try refs.ReverseRefIndex.build_with_overlays(gpa, model, tp_opt, ssh_opt);
     defer back_refs.deinit(gpa);
 
     var id = mrid;
@@ -364,7 +279,7 @@ fn render_back_refs(
     model: *const EQ,
     tp_opt: ?TP,
     target: tag_index.CimObjectView,
-    referrers: []const []const u8,
+    referrers: []const refs.ReverseRef,
     view: BackRefsView,
     selections: *std.ArrayList(Selection),
 ) !u32 {
@@ -394,29 +309,29 @@ fn render_back_refs_flat(
     gpa: std.mem.Allocator,
     model: *const EQ,
     tp_opt: ?TP,
-    referrers: []const []const u8,
+    referrers: []const refs.ReverseRef,
     filter_type: ?[]const u8,
     selections: *std.ArrayList(Selection),
 ) !u32 {
     var max_type_len: usize = 0;
-    for (referrers) |raw_id| {
-        const v = resolve_object(model, tp_opt, raw_id) orelse continue;
-        if (max_type_len < v.type_name.len) max_type_len = v.type_name.len;
+    for (referrers) |ref| {
+        _ = resolve_object(model, tp_opt, ref.referrer_id) orelse continue;
+        if (max_type_len < ref.referrer_type.len) max_type_len = ref.referrer_type.len;
     }
 
     try writer.writeAll("\n");
     var counter: u32 = 1;
-    for (referrers) |raw_id| {
-        const v = resolve_object(model, tp_opt, raw_id) orelse continue;
-        if (filter_type) |t| if (!std.mem.eql(u8, t, v.type_name)) continue;
+    for (referrers) |ref| {
+        const v = resolve_object(model, tp_opt, ref.referrer_id) orelse continue;
+        if (filter_type) |t| if (!std.mem.eql(u8, t, ref.referrer_type)) continue;
         try writer.print("\n| {[n]d: >[e]} |  {[type]s: <[w]}  |  {[c]s}", .{
             .n = counter,
             .e = std.math.log10_int(referrers.len) + 1,
-            .type = v.type_name,
+            .type = ref.referrer_type,
             .w = max_type_len,
             .c = strip_underscore(v.id),
         });
-        try selections.append(gpa, .{ .follow = raw_id });
+        try selections.append(gpa, .{ .follow = ref.referrer_id });
         counter += 1;
     }
     assert(selections.items.len == counter - 1);
@@ -430,19 +345,19 @@ fn render_back_refs_grouped(
     gpa: std.mem.Allocator,
     model: *const EQ,
     tp_opt: ?TP,
-    referrers: []const []const u8,
+    referrers: []const refs.ReverseRef,
     selections: *std.ArrayList(Selection),
 ) !u32 {
     var counts: std.StringHashMapUnmanaged(u32) = .empty;
     defer counts.deinit(gpa);
 
     var max_type_len: usize = 0;
-    for (referrers) |raw_id| {
-        const v = resolve_object(model, tp_opt, raw_id) orelse continue;
-        const gop = try counts.getOrPut(gpa, v.type_name);
+    for (referrers) |ref| {
+        _ = resolve_object(model, tp_opt, ref.referrer_id) orelse continue;
+        const gop = try counts.getOrPut(gpa, ref.referrer_type);
         if (!gop.found_existing) gop.value_ptr.* = 0;
         gop.value_ptr.* += 1;
-        if (max_type_len < v.type_name.len) max_type_len = v.type_name.len;
+        if (max_type_len < ref.referrer_type.len) max_type_len = ref.referrer_type.len;
     }
 
     try writer.print("\n\n  {d} referrers — pick a type to drill in:\n", .{referrers.len});
