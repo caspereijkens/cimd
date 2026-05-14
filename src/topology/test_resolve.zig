@@ -280,34 +280,50 @@ const SSH_SWITCH_XML =
     \\</rdf:RDF>
 ;
 
+const EQ_SWITCH_XML =
+    \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:cim="cim:">
+    \\  <cim:Breaker rdf:ID="_BRK_OPEN"/>
+    \\  <cim:Breaker rdf:ID="_BRK_CLOSED"/>
+    \\  <cim:Breaker rdf:ID="_BRK_NO_OPEN_FIELD"/>
+    \\</rdf:RDF>
+;
+
 test "is_switch_closed: open switch returns false" {
     const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_SWITCH_XML));
+    defer model.deinit(gpa);
     var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);
 
-    try std.testing.expectEqual(false, try topology.is_switch_closed(&ssh, "_BRK_OPEN"));
+    try std.testing.expectEqual(false, try topology.is_switch_closed(&model, &ssh, "_BRK_OPEN"));
 }
 
 test "is_switch_closed: closed switch returns true" {
     const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_SWITCH_XML));
+    defer model.deinit(gpa);
     var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);
 
-    try std.testing.expectEqual(true, try topology.is_switch_closed(&ssh, "_BRK_CLOSED"));
+    try std.testing.expectEqual(true, try topology.is_switch_closed(&model, &ssh, "_BRK_CLOSED"));
 }
 
 test "is_switch_closed: no SSH patch defaults to closed" {
     const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_SWITCH_XML));
+    defer model.deinit(gpa);
     var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);
 
-    try std.testing.expectEqual(true, try topology.is_switch_closed(&ssh, "_BRK_UNKNOWN"));
+    try std.testing.expectEqual(true, try topology.is_switch_closed(&model, &ssh, "_BRK_UNKNOWN"));
 }
 
 test "is_switch_closed: patch present without Switch.open defaults to closed" {
     const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_SWITCH_XML));
+    defer model.deinit(gpa);
     var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);
 
-    try std.testing.expectEqual(true, try topology.is_switch_closed(&ssh, "_BRK_NO_OPEN_FIELD"));
+    try std.testing.expectEqual(true, try topology.is_switch_closed(&model, &ssh, "_BRK_NO_OPEN_FIELD"));
 }

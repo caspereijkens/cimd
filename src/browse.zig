@@ -6,6 +6,7 @@ const EQ = @import("cgmes/eq.zig").EQ;
 const TP = @import("cgmes/tp.zig").TP;
 const SSH = @import("cgmes/ssh.zig").SSH;
 const tag_index = @import("cgmes/tag_index.zig");
+const refs = @import("refs.zig");
 const print = @import("io/print.zig");
 const extract_rdf_resource = tag_index.extract_rdf_resource;
 const extract_rdf_id = tag_index.extract_rdf_id;
@@ -54,90 +55,17 @@ const Nav = union(enum) {
     show_all_refs,
 };
 
-/// Reverse-reference index: target raw id (e.g. "_CN42") → list of raw ids of
-/// objects that mention it via rdf:resource. Built once when entering browse;
-/// answers "what points at me?" in O(1) for any object.
-const BackRefIndex = struct {
-    map: std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)),
-
-    pub const empty: BackRefIndex = .{ .map = .empty };
-
-    pub fn deinit(self: *BackRefIndex, gpa: std.mem.Allocator) void {
-        var it = self.map.valueIterator();
-        while (it.next()) |list| list.deinit(gpa);
-        self.map.deinit(gpa);
-    }
-
-    pub fn lookup(self: *const BackRefIndex, target_id: []const u8) []const []const u8 {
-        const list = self.map.get(target_id) orelse return &.{};
-        return list.items;
-    }
+pub const InteractiveIo = struct {
+    input: *std.Io.Reader,
+    output: *std.Io.Writer,
 };
 
-/// Walk every CIM object (EQ, TP new objects, TP patches, SSH patches) and
-/// register each rdf:resource it carries under that target's bucket.
-fn build_back_ref_index(
-    gpa: std.mem.Allocator,
-    model: *const EQ,
-    tp_opt: ?TP,
-    ssh_opt: ?SSH,
-) !BackRefIndex {
-    var index: BackRefIndex = .empty;
-    errdefer index.deinit(gpa);
-
-    for (model.objects) |obj| {
-        try collect_refs_from_range(gpa, &index, model.xml, model.boundaries, obj.object_tag_idx, obj.closing_tag_idx, obj.id);
-    }
-
-    if (tp_opt) |tp| {
-        for (tp.new_objects) |obj| {
-            try collect_refs_from_range(gpa, &index, tp.xml, tp.boundaries, obj.object_tag_idx, obj.closing_tag_idx, obj.id);
-        }
-        for (tp.patches) |patch| {
-            const referrer_id = referrer_from_patch_tag(tp.xml, tp.boundaries[patch.patch_tag_idx].start) orelse continue;
-            try collect_refs_from_range(gpa, &index, tp.xml, tp.boundaries, patch.patch_tag_idx, patch.closing_tag_idx, referrer_id);
-        }
-    }
-
-    if (ssh_opt) |ssh| {
-        for (ssh.patches) |patch| {
-            const referrer_id = referrer_from_patch_tag(ssh.xml, ssh.boundaries[patch.patch_tag_idx].start) orelse continue;
-            try collect_refs_from_range(gpa, &index, ssh.xml, ssh.boundaries, patch.patch_tag_idx, patch.closing_tag_idx, referrer_id);
-        }
-    }
-    return index;
-}
-
-fn collect_refs_from_range(
-    gpa: std.mem.Allocator,
-    index: *BackRefIndex,
-    xml: []const u8,
-    boundaries: []const tag_index.TagBoundary,
-    open_idx: u32,
-    close_idx: u32,
-    referrer_id: []const u8,
-) !void {
-    assert(referrer_id.len > 0);
-    assert(close_idx >= open_idx);
-    if (close_idx <= open_idx + 1) return;
-    for (boundaries[open_idx + 1 .. close_idx]) |tag| {
-        if (xml[tag.start + 1] == '/') continue;
-        const ref = (tag_index.extract_rdf_resource(xml, tag.start) catch continue) orelse continue;
-        const target = strip_hash(ref);
-        if (target.len == 0) continue;
-        const gop = try index.map.getOrPut(gpa, target);
-        if (!gop.found_existing) gop.value_ptr.* = .empty;
-        try gop.value_ptr.append(gpa, referrer_id);
-    }
-}
-
-/// Patch tags carry rdf:about="#_<mrid>"; strip the '#' to get the raw id
-/// that matches the EQ object's rdf:ID.
-fn referrer_from_patch_tag(xml: []const u8, tag_start: u32) ?[]const u8 {
-    const about = tag_index.extract_rdf_about(xml, tag_start) catch return null;
-    const stripped = strip_hash(about);
-    if (stripped.len == 0) return null;
-    return stripped;
+fn take_input_line(input: *std.Io.Reader) ![]const u8 {
+    const line = input.takeDelimiterInclusive('\n') catch |err| switch (err) {
+        error.EndOfStream => return input.takeDelimiterExclusive('\n'),
+        else => return err,
+    };
+    return std.mem.trimEnd(u8, line, "\r\n");
 }
 
 /// Interactively browse CIM objects by following rdf:resource references.
@@ -149,6 +77,7 @@ fn referrer_from_patch_tag(xml: []const u8, tag_start: u32) ?[]const u8 {
 pub fn browse(
     io: std.Io,
     gpa: std.mem.Allocator,
+    interactive: InteractiveIo,
     model: *const EQ,
     tp_opt: ?TP,
     ssh_opt: ?SSH,
@@ -162,7 +91,7 @@ pub fn browse(
     defer screen.deinit();
     var selections: std.ArrayList(Selection) = .empty;
     defer selections.deinit(gpa);
-    var back_refs = try build_back_ref_index(gpa, model, tp_opt, ssh_opt);
+    var back_refs = try refs.ReverseRefIndex.build_with_overlays(gpa, model, tp_opt, ssh_opt);
     defer back_refs.deinit(gpa);
 
     var id = mrid;
@@ -186,14 +115,18 @@ pub fn browse(
 
         const has_back = trace_ids.items.len > 0 or mode != .regular;
         try render_footer(writer, trace_types.items, object.type_name, counter, has_back, mode, referrers.len);
-        try std.Io.File.stdout().writeStreamingAll(io, screen.written());
+        try interactive.output.writeAll(screen.written());
+        try interactive.output.flush();
 
-        var input_buffer: [64]u8 = undefined;
-        var stdin = std.Io.File.stdin().reader(io, &input_buffer);
-        const input = stdin.interface.takeDelimiterExclusive('\n') catch continue;
+        const input = take_input_line(interactive.input) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => continue,
+        };
         if (input.len == 0) continue;
 
-        switch (try handle_input(io, input, counter, has_back, selections.items, mode, referrers.len)) {
+        const nav = try handle_input(interactive.output, input, counter, has_back, selections.items, mode, referrers.len);
+        try interactive.output.flush();
+        switch (nav) {
             .stay => {},
             .quit => break,
             .back => switch (mode) {
@@ -221,19 +154,9 @@ pub fn browse(
     }
 }
 
-/// Look up an object by id in the primary model first, then in TP's new objects.
-/// TP and primary are already collision-checked at the command layer.
-pub fn resolve_object(
-    model: *const EQ,
-    tp_opt: ?TP,
-    id: []const u8,
-) ?tag_index.CimObjectView {
-    if (model.getObjectById(id)) |view| return view;
-    if (tp_opt) |tp| {
-        if (tp.get_object_by_id(id)) |view| return view;
-    }
-    return null;
-}
+/// Re-export so internal browse callers keep their short name. The primitive
+/// itself lives in refs.zig next to the other EQ+TP lookup helpers.
+pub const resolve_object = refs.resolve_object;
 
 /// Slice out the XML fragment spanning an opening tag through its closing tag,
 /// extended backwards to the start of the line so original indentation is preserved.
@@ -364,7 +287,7 @@ fn render_back_refs(
     model: *const EQ,
     tp_opt: ?TP,
     target: tag_index.CimObjectView,
-    referrers: []const []const u8,
+    referrers: []const refs.ReverseRef,
     view: BackRefsView,
     selections: *std.ArrayList(Selection),
 ) !u32 {
@@ -394,29 +317,29 @@ fn render_back_refs_flat(
     gpa: std.mem.Allocator,
     model: *const EQ,
     tp_opt: ?TP,
-    referrers: []const []const u8,
+    referrers: []const refs.ReverseRef,
     filter_type: ?[]const u8,
     selections: *std.ArrayList(Selection),
 ) !u32 {
     var max_type_len: usize = 0;
-    for (referrers) |raw_id| {
-        const v = resolve_object(model, tp_opt, raw_id) orelse continue;
-        if (max_type_len < v.type_name.len) max_type_len = v.type_name.len;
+    for (referrers) |ref| {
+        _ = resolve_object(model, tp_opt, ref.referrer_id) orelse continue;
+        if (max_type_len < ref.referrer_type.len) max_type_len = ref.referrer_type.len;
     }
 
     try writer.writeAll("\n");
     var counter: u32 = 1;
-    for (referrers) |raw_id| {
-        const v = resolve_object(model, tp_opt, raw_id) orelse continue;
-        if (filter_type) |t| if (!std.mem.eql(u8, t, v.type_name)) continue;
+    for (referrers) |ref| {
+        const v = resolve_object(model, tp_opt, ref.referrer_id) orelse continue;
+        if (filter_type) |t| if (!std.mem.eql(u8, t, ref.referrer_type)) continue;
         try writer.print("\n| {[n]d: >[e]} |  {[type]s: <[w]}  |  {[c]s}", .{
             .n = counter,
             .e = std.math.log10_int(referrers.len) + 1,
-            .type = v.type_name,
+            .type = ref.referrer_type,
             .w = max_type_len,
             .c = strip_underscore(v.id),
         });
-        try selections.append(gpa, .{ .follow = raw_id });
+        try selections.append(gpa, .{ .follow = ref.referrer_id });
         counter += 1;
     }
     assert(selections.items.len == counter - 1);
@@ -430,19 +353,19 @@ fn render_back_refs_grouped(
     gpa: std.mem.Allocator,
     model: *const EQ,
     tp_opt: ?TP,
-    referrers: []const []const u8,
+    referrers: []const refs.ReverseRef,
     selections: *std.ArrayList(Selection),
 ) !u32 {
     var counts: std.StringHashMapUnmanaged(u32) = .empty;
     defer counts.deinit(gpa);
 
     var max_type_len: usize = 0;
-    for (referrers) |raw_id| {
-        const v = resolve_object(model, tp_opt, raw_id) orelse continue;
-        const gop = try counts.getOrPut(gpa, v.type_name);
+    for (referrers) |ref| {
+        _ = resolve_object(model, tp_opt, ref.referrer_id) orelse continue;
+        const gop = try counts.getOrPut(gpa, ref.referrer_type);
         if (!gop.found_existing) gop.value_ptr.* = 0;
         gop.value_ptr.* += 1;
-        if (max_type_len < v.type_name.len) max_type_len = v.type_name.len;
+        if (max_type_len < ref.referrer_type.len) max_type_len = ref.referrer_type.len;
     }
 
     try writer.print("\n\n  {d} referrers — pick a type to drill in:\n", .{referrers.len});
@@ -480,7 +403,7 @@ fn render_back_refs_grouped(
 /// Parses a single line of user input and returns the navigation action.
 /// Writes error/hint messages directly to stdout for invalid input.
 fn handle_input(
-    io: std.Io,
+    output: *std.Io.Writer,
     input: []const u8,
     counter: u32,
     has_back: bool,
@@ -495,7 +418,7 @@ fn handle_input(
         'q' => return .quit,
         'b' => {
             if (!has_back) {
-                try std.Io.File.stdout().writeStreamingAll(io, "Already at root — [q]uit to exit.\n\n");
+                try output.writeAll("Already at root — [q]uit to exit.\n\n");
                 return .stay;
             }
             return .back;
@@ -503,7 +426,7 @@ fn handle_input(
         'r' => {
             if (mode != .regular) return .stay;
             if (referrer_count == 0) {
-                try std.Io.File.stdout().writeStreamingAll(io, "No referrers.\n\n");
+                try output.writeAll("No referrers.\n\n");
                 return .stay;
             }
             return .show_back_refs;
@@ -511,17 +434,17 @@ fn handle_input(
         else => {
             if (!has_options) {
                 const msg = if (has_back) "No options — [b]ack or [q]uit\n\n" else "No options — [q]uit to exit\n\n";
-                try std.Io.File.stdout().writeStreamingAll(io, msg);
+                try output.writeAll(msg);
                 return .stay;
             }
             const n = std.fmt.parseInt(u32, input, 10) catch {
                 const suffix = if (has_back) ", [b]ack or [q]uit\n" else " or [q]uit\n";
-                try print.stdout(io, "Invalid input — pick 1-{d}{s}", .{ counter - 1, suffix });
+                try output.print("Invalid input — pick 1-{d}{s}", .{ counter - 1, suffix });
                 return .stay;
             };
             if (n == 0 or n > selections.len) {
                 const suffix = if (has_back) ", [b]ack or [q]uit\n" else " or [q]uit\n";
-                try print.stdout(io, "Pick 1-{d}{s}", .{ counter - 1, suffix });
+                try output.print("Pick 1-{d}{s}", .{ counter - 1, suffix });
                 return .stay;
             }
             return switch (selections[n - 1]) {
@@ -593,6 +516,7 @@ const PickSel = union(enum) {
 pub fn pick_from_prefix(
     io: std.Io,
     gpa: std.mem.Allocator,
+    interactive: InteractiveIo,
     prefix: []const u8,
     matches: []const tag_index.CimObject,
 ) ![]const u8 {
@@ -622,11 +546,13 @@ pub fn pick_from_prefix(
         if (counter > 1) try writer.print(" [1-{d}]", .{counter - 1});
         if (has_back) try writer.writeAll("  [b]ack");
         try writer.writeAll("  [q]uit\n\n");
-        try std.Io.File.stdout().writeStreamingAll(io, screen.written());
+        try interactive.output.writeAll(screen.written());
+        try interactive.output.flush();
 
-        var input_buffer: [64]u8 = undefined;
-        var stdin = std.Io.File.stdin().reader(io, &input_buffer);
-        const input = stdin.interface.takeDelimiterExclusive('\n') catch continue;
+        const input = take_input_line(interactive.input) catch |err| switch (err) {
+            error.EndOfStream => return error.EndOfStream,
+            else => continue,
+        };
         if (input.len == 0) continue;
 
         switch (input[0]) {

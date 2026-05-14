@@ -30,6 +30,7 @@ const help_main =
     \\  convert    Convert an EQ profile to JIIDM JSON
     \\  browse     Interactively browse CIM objects (EQ/EQBD/TP/SSH merged view)
     \\  get        Fetch a single object or list by type from any CIM file
+    \\  refs       List objects that reference a CIM object
     \\  types      List CIM types present in a CIM file
     \\  diff       Semantic diff between two EQ profiles
     \\  topology   Generate TopologicalNodes from EQ (+SSH) — TP-equivalent output
@@ -49,20 +50,20 @@ const help_convert = std.fmt.comptimePrint(
     \\  <file>                  EQ profile (XML or ZIP)
     \\
     \\Options:
-    \\  -b, --boundary <file>   EQBD boundary profile (XML or ZIP)
-    \\  -t, --topology <file>   TP topology profile (XML or ZIP)
+    \\  -b, --eqbd <file>       EQBD boundary profile (XML or ZIP)
+    \\  -t, --tp <file>         TP topology profile (XML or ZIP)
     \\  -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
     \\  -o, --output <file>     Write output to file instead of stdout
     \\      --bus-branch        Emit bus-branch JIIDM (one bus per TopologicalNode).
-    \\                          Requires --topology. Default is node-breaker even
+    \\                          Requires --tp. Default is node-breaker even
     \\                          when TP is given (matches pypowsybl).
     \\
     \\Examples:
     \\  cimd convert data{[s]s}eq.zip
-    \\  cimd convert data{[s]s}eq.zip -b eqbd.zip
-    \\  cimd convert data{[s]s}eq.zip -b eqbd.zip -s ssh.zip
+    \\  cimd convert data{[s]s}eq.zip --eqbd eqbd.zip
+    \\  cimd convert data{[s]s}eq.zip --eqbd eqbd.zip -s ssh.zip
     \\  cimd convert data{[s]s}eq.zip -o network.json
-    \\  cimd convert data{[s]s}eq.zip -t tp.zip --bus-branch
+    \\  cimd convert data{[s]s}eq.zip --tp tp.zip --bus-branch
     \\
 , .{ .s = sep });
 
@@ -70,12 +71,12 @@ const help_browse = std.fmt.comptimePrint(
     \\Usage: cimd browse <file> <mrid> [options]
     \\
     \\Interactively browse CIM objects by following rdf:resource references.
-    \\When --topology or --ssh is passed, patches from those profiles are shown
+    \\When --tp or --ssh is passed, patches from those profiles are shown
     \\inline alongside the primary object, and new objects from TP (e.g.
     \\TopologicalNodes) become navigable by mRID.
     \\
     \\<mrid> may be a prefix of a full mRID; the leading underscore is optional.
-    \\The prefix is matched against EQ objects and, when --topology is given,
+    \\The prefix is matched against EQ objects and, when --tp is given,
     \\TP-added objects (e.g. TopologicalNodes). When a prefix matches more than
     \\one object, browse opens a picker menu — flat list when few candidates,
     \\grouped by type when many.
@@ -85,14 +86,14 @@ const help_browse = std.fmt.comptimePrint(
     \\  <mrid>    Full mRID or a prefix of one
     \\
     \\Options:
-    \\  -b, --boundary <file>       EQBD boundary profile (XML or ZIP)
-    \\  -t, --topology <file>       TP topology profile (XML or ZIP)
+    \\  -b, --eqbd <file>           EQBD boundary profile (XML or ZIP)
+    \\  -t, --tp <file>             TP topology profile (XML or ZIP)
     \\  -s, --ssh <file>            SSH steady-state hypothesis profile (XML or ZIP)
     \\
     \\Examples:
     \\  cimd browse data{[s]s}eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
     \\  cimd browse data{[s]s}eq.zip be60a3cf                # prefix; underscore optional
-    \\  cimd browse data{[s]s}eq.zip _abc -t tp.zip -s ssh.zip
+    \\  cimd browse data{[s]s}eq.zip _abc --tp tp.zip -s ssh.zip
     \\
 , .{ .s = sep });
 
@@ -125,7 +126,8 @@ const help_get = std.fmt.comptimePrint(
     \\  <mrid>    Full mRID or a unique prefix (optional if --type is given)
     \\
     \\Options:
-    \\  -t, --type <type>          Filter by CIM type (e.g. PowerTransformer)
+    \\  -t, --type <type>          Filter by CIM type (e.g. ConductingEquipment)
+    \\                             Includes subtypes from the CIM inheritance graph.
     \\                             Without <mrid>: list all objects of this type
     \\                             With <mrid>: verify the object is of this type,
     \\                             or narrow an ambiguous prefix to one of this type
@@ -133,6 +135,10 @@ const help_get = std.fmt.comptimePrint(
     \\                             Text default: IdentifiedObject.name
     \\                             JSON default: full object (all properties + references)
     \\  -c, --count                Print only the count of matching objects (list mode only)
+    \\  -b, --eqbd <file>          EQBD boundary profile (XML or ZIP)
+    \\      --tp <file>            TP topology profile (XML or ZIP; single-object mode only)
+    \\      --ssh <file>           SSH steady-state hypothesis profile (XML or ZIP;
+    \\                             single-object mode only)
     \\  -j, --json                 Output as JSON. In list mode, each element is
     \\                             {{"id","type","properties":{{...}},"references":{{...}}}}
     \\                             unless --fields narrows the projection.
@@ -143,10 +149,53 @@ const help_get = std.fmt.comptimePrint(
     \\  cimd get data{[s]s}eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -j
     \\  cimd get data{[s]s}eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -t PowerTransformer
     \\  cimd get data{[s]s}eq.zip be60 -t PowerTransformer          # narrow ambiguous prefix
+    \\  cimd get data{[s]s}eq.zip _TN1 --tp tp.zip -j
+    \\  cimd get data{[s]s}eq.zip _switch --ssh ssh.zip -j
     \\  cimd get data{[s]s}eq.zip -t PowerTransformer -j
     \\  cimd get data{[s]s}eq.zip -t PowerTransformer -c
     \\  cimd get data{[s]s}eq.zip -t VoltageLevel -f IdentifiedObject.name,VoltageLevel.nominalVoltage
     \\  cimd get data{[s]s}tp.zip -t TopologicalNode -c
+    \\
+, .{ .s = sep });
+
+const help_refs = std.fmt.comptimePrint(
+    \\Usage: cimd refs <file> <mrid> [options]
+    \\
+    \\List reverse references to a CIM object: every object whose rdf:resource
+    \\points at <mrid>, searched across the primary file plus any EQBD/TP/SSH
+    \\inputs. The <mrid> argument may be a unique prefix; the leading
+    \\underscore is optional.
+    \\
+    \\--type narrows the *target* (use it to disambiguate <mrid>). --from
+    \\filters the *referrer set* (which kinds of objects point at the target).
+    \\Both filters include subtypes from the CIM inheritance graph.
+    \\
+    \\Exits 0 on success (including zero referrers), 1 if <mrid> is not found.
+    \\
+    \\JSON errors:
+    \\  With --json, the not-found path emits a structured error on stdout and
+    \\  exits 1; an ambiguous prefix emits the standard ambiguity envelope on
+    \\  stdout and exits 0:
+    \\    {{"error":"not_found", "prefix":...}}
+    \\    {{"prefix":..., "total":..., "matches":[...], "types":[...]}}
+    \\
+    \\Arguments:
+    \\  <file>    CGMES file (XML or ZIP); typically EQ
+    \\  <mrid>    Full mRID or a unique prefix
+    \\
+    \\Options:
+    \\  -t, --type <type>     Narrow target to this CIM type (disambiguates <mrid>)
+    \\      --from <type>     Only show referrers of this CIM type
+    \\  -b, --eqbd <file>     EQBD boundary profile (XML or ZIP)
+    \\      --tp <file>       TP topology profile (XML or ZIP)
+    \\      --ssh <file>      SSH steady-state hypothesis profile (XML or ZIP)
+    \\  -j, --json            Output {{"id","type","referrers":[...]}}
+    \\
+    \\Examples:
+    \\  cimd refs data{[s]s}eq.zip _line-mrid
+    \\  cimd refs data{[s]s}eq.zip _0 -t LinearShuntCompensator
+    \\  cimd refs data{[s]s}eq.zip line-prefix --from AssessedElement -j
+    \\  cimd refs data{[s]s}eq.zip _TN1 --tp tp.zip
     \\
 , .{ .s = sep });
 
@@ -185,9 +234,9 @@ const help_diff =
     \\  <file2>    Second EQ profile (XML or ZIP)
     \\
     \\Options:
-    \\  -b, --boundary <file>   EQBD boundary profile (applied to both models)
+    \\  -b, --eqbd <file>      EQBD boundary profile (applied to both models)
     \\  -i, --mrid <id>         Diff a single object by mRID
-    \\  -t, --type <name>       Restrict diff to a specific CIM type
+    \\  -t, --type <name>       Restrict diff to a specific CIM type, including subtypes
     \\                          With --mrid: verify the object is of this type
     \\  -s, --summary           Print only per-type counts (added/removed/changed)
     \\  -j, --json              Output as NDJSON (one object per change)
@@ -217,13 +266,13 @@ const help_topology = std.fmt.comptimePrint(
     \\  <file>                  EQ profile (XML or ZIP)
     \\
     \\Options:
-    \\  -b, --boundary <file>   EQBD boundary profile (XML or ZIP)
+    \\  -b, --eqbd <file>      EQBD boundary profile (XML or ZIP)
     \\  -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
     \\  -o, --output <file>     Write output to file instead of stdout
     \\
     \\Examples:
     \\  cimd topology data{[s]s}eq.zip -s ssh.zip
-    \\  cimd topology data{[s]s}eq.zip -b eqbd.zip -s ssh.zip -o tn.json
+    \\  cimd topology data{[s]s}eq.zip --eqbd eqbd.zip -s ssh.zip -o tn.json
     \\
 , .{ .s = sep });
 
@@ -248,6 +297,7 @@ pub const Command = union(enum) {
     convert: Convert,
     browse: Browse,
     get: Get,
+    refs: Refs,
     types: Types,
     diff: Diff,
     topology: Topology,
@@ -275,7 +325,21 @@ pub const Command = union(enum) {
         mrid: ?[]const u8,
         type_filter: ?[]const u8,
         fields: ?[]const u8,
+        eqbd_path: ?[]const u8,
+        tp_path: ?[]const u8,
+        ssh_path: ?[]const u8,
         count: bool,
+        json: bool,
+    };
+
+    pub const Refs = struct {
+        file_path: []const u8,
+        mrid: []const u8,
+        target_type: ?[]const u8,
+        from_type: ?[]const u8,
+        eqbd_path: ?[]const u8,
+        tp_path: ?[]const u8,
+        ssh_path: ?[]const u8,
         json: bool,
     };
 
@@ -329,6 +393,7 @@ pub fn parse_args(io: std.Io, args: *std.process.Args.Iterator) !Command {
     if (std.mem.eql(u8, command_name, "convert")) return parse_convert(io, args);
     if (std.mem.eql(u8, command_name, "browse")) return parse_browse(io, args);
     if (std.mem.eql(u8, command_name, "get")) return parse_get(io, args);
+    if (std.mem.eql(u8, command_name, "refs")) return parse_refs(io, args);
     if (std.mem.eql(u8, command_name, "types")) return parse_types(io, args);
     if (std.mem.eql(u8, command_name, "diff")) return parse_diff(io, args);
     if (std.mem.eql(u8, command_name, "topology")) return parse_topology(io, args);
@@ -352,10 +417,10 @@ fn parse_convert(io: std.Io, args: *std.process.Args.Iterator) !Command {
             try print.write(io, help_convert);
             std.process.exit(0);
         }
-        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--boundary")) {
-            eqbd_path = take_path_arg(io, args, context, "--boundary");
-        } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--topology")) {
-            tp_path = take_path_arg(io, args, context, "--topology");
+        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
+            eqbd_path = take_path_arg(io, args, context, "--eqbd");
+        } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--tp")) {
+            tp_path = take_path_arg(io, args, context, "--tp");
         } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--ssh")) {
             ssh_path = take_path_arg(io, args, context, "--ssh");
         } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
@@ -375,7 +440,7 @@ fn parse_convert(io: std.Io, args: *std.process.Args.Iterator) !Command {
 
     if (eq_path == null) print.stderr(io, context ++ ": <file> is required", .{});
     if (bus_branch and tp_path == null)
-        print.stderr(io, context ++ ": --bus-branch requires --topology", .{});
+        print.stderr(io, context ++ ": --bus-branch requires --tp", .{});
 
     return .{ .convert = .{
         .eq_path = eq_path.?,
@@ -401,10 +466,10 @@ fn parse_browse(io: std.Io, args: *std.process.Args.Iterator) !Command {
             try print.write(io, help_browse);
             std.process.exit(0);
         }
-        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--boundary")) {
-            eqbd_path = take_path_arg(io, args, context, "--boundary");
-        } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--topology")) {
-            tp_path = take_path_arg(io, args, context, "--topology");
+        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
+            eqbd_path = take_path_arg(io, args, context, "--eqbd");
+        } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--tp")) {
+            tp_path = take_path_arg(io, args, context, "--tp");
         } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--ssh")) {
             ssh_path = take_path_arg(io, args, context, "--ssh");
         } else if (is_flag(arg)) {
@@ -439,6 +504,9 @@ fn parse_get(io: std.Io, args: *std.process.Args.Iterator) !Command {
     var mrid: ?[]const u8 = null;
     var type_filter: ?[]const u8 = null;
     var fields: ?[]const u8 = null;
+    var eqbd_path: ?[]const u8 = null;
+    var tp_path: ?[]const u8 = null;
+    var ssh_path: ?[]const u8 = null;
     var count = false;
     var json = false;
 
@@ -455,6 +523,12 @@ fn parse_get(io: std.Io, args: *std.process.Args.Iterator) !Command {
                 print.stderr(io, context ++ ": --fields requires a comma-separated list of property names", .{});
         } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--count")) {
             count = true;
+        } else if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
+            eqbd_path = take_path_arg(io, args, context, "--eqbd");
+        } else if (std.mem.eql(u8, arg, "--tp")) {
+            tp_path = take_path_arg(io, args, context, "--tp");
+        } else if (std.mem.eql(u8, arg, "--ssh")) {
+            ssh_path = take_path_arg(io, args, context, "--ssh");
         } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
             json = true;
         } else if (is_flag(arg)) {
@@ -479,7 +553,69 @@ fn parse_get(io: std.Io, args: *std.process.Args.Iterator) !Command {
         .mrid = mrid,
         .type_filter = type_filter,
         .fields = fields,
+        .eqbd_path = eqbd_path,
+        .tp_path = tp_path,
+        .ssh_path = ssh_path,
         .count = count,
+        .json = json,
+    } };
+}
+
+fn parse_refs(io: std.Io, args: *std.process.Args.Iterator) !Command {
+    const context = "refs";
+
+    var file_path: ?[]const u8 = null;
+    var mrid: ?[]const u8 = null;
+    var target_type: ?[]const u8 = null;
+    var from_type: ?[]const u8 = null;
+    var eqbd_path: ?[]const u8 = null;
+    var tp_path: ?[]const u8 = null;
+    var ssh_path: ?[]const u8 = null;
+    var json = false;
+
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            try print.write(io, help_refs);
+            std.process.exit(0);
+        }
+        if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--type")) {
+            target_type = args.next() orelse
+                print.stderr(io, context ++ ": --type requires a CIM type name", .{});
+        } else if (std.mem.eql(u8, arg, "--from")) {
+            from_type = args.next() orelse
+                print.stderr(io, context ++ ": --from requires a CIM type name", .{});
+        } else if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
+            eqbd_path = take_path_arg(io, args, context, "--eqbd");
+        } else if (std.mem.eql(u8, arg, "--tp")) {
+            tp_path = take_path_arg(io, args, context, "--tp");
+        } else if (std.mem.eql(u8, arg, "--ssh")) {
+            ssh_path = take_path_arg(io, args, context, "--ssh");
+        } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
+            json = true;
+        } else if (is_flag(arg)) {
+            print.stderr(io, context ++ ": unknown option '{s}'", .{arg});
+        } else if (file_path == null) {
+            validate_path(io, arg, context);
+            validate_cgmes_extension(io, arg, context);
+            file_path = arg;
+        } else if (mrid == null) {
+            mrid = arg;
+        } else {
+            print.stderr(io, context ++ ": unexpected argument '{s}'", .{arg});
+        }
+    }
+
+    if (file_path == null) print.stderr(io, context ++ ": <file> is required", .{});
+    if (mrid == null) print.stderr(io, context ++ ": <mrid> is required", .{});
+
+    return .{ .refs = .{
+        .file_path = file_path.?,
+        .mrid = mrid.?,
+        .target_type = target_type,
+        .from_type = from_type,
+        .eqbd_path = eqbd_path,
+        .tp_path = tp_path,
+        .ssh_path = ssh_path,
         .json = json,
     } };
 }
@@ -531,8 +667,8 @@ fn parse_diff(io: std.Io, args: *std.process.Args.Iterator) !Command {
             try print.write(io, help_diff);
             std.process.exit(0);
         }
-        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--boundary")) {
-            eqbd_path = take_path_arg(io, args, context, "--boundary");
+        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
+            eqbd_path = take_path_arg(io, args, context, "--eqbd");
         } else if (std.mem.eql(u8, arg, "-i") or std.mem.eql(u8, arg, "--mrid")) {
             mrid = args.next() orelse
                 print.stderr(io, context ++ ": --mrid requires an mRID value", .{});
@@ -585,8 +721,8 @@ fn parse_topology(io: std.Io, args: *std.process.Args.Iterator) !Command {
             try print.write(io, help_topology);
             std.process.exit(0);
         }
-        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--boundary")) {
-            eqbd_path = take_path_arg(io, args, context, "--boundary");
+        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
+            eqbd_path = take_path_arg(io, args, context, "--eqbd");
         } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--ssh")) {
             ssh_path = take_path_arg(io, args, context, "--ssh");
         } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
@@ -633,7 +769,7 @@ fn parse_version(io: std.Io, args: *std.process.Args.Iterator) !Command {
     return .{ .version = .{ .verbose = verbose, .json = json } };
 }
 
-/// Consume the next argument as a path value for a flag like --boundary, validating it.
+/// Consume the next argument as a path value for a flag like --eqbd, validating it.
 /// Exits with a usage error if the argument is missing or invalid.
 fn take_path_arg(
     io: std.Io,

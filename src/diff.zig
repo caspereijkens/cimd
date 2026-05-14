@@ -17,6 +17,7 @@ const assert = std.debug.assert;
 const EQ = @import("cgmes/eq.zig").EQ;
 
 const tag_index = @import("cgmes/tag_index.zig");
+const cim_types = @import("cgmes/cim_types.zig");
 
 pub const DiffOptions = struct {
     /// When set, only objects of this CIM type are compared.
@@ -85,9 +86,7 @@ pub fn diff_models(
     var it = type_set.keyIterator();
     while (it.next()) |type_name_ptr| {
         const type_name = type_name_ptr.*;
-        if (options.type_filter) |f| {
-            if (!std.mem.eql(u8, type_name, f)) continue;
-        }
+        if (!cim_types.matches_filter(type_name, options.type_filter)) continue;
         const stats = try diff_type(gpa, model1, model2, type_name, options, writer);
         if (stats.any()) {
             had_diffs = true;
@@ -128,10 +127,8 @@ pub fn diff_single(
     if (v1 == null and v2 == null) return .not_found;
 
     // Type verification: check whichever model has the object.
-    if (options.type_filter) |expected| {
-        if (v1) |v| if (!std.mem.eql(u8, v.type_name, expected)) return .{ .type_mismatch = v.type_name };
-        if (v2) |v| if (!std.mem.eql(u8, v.type_name, expected)) return .{ .type_mismatch = v.type_name };
-    }
+    if (v1) |v| if (!cim_types.matches_filter(v.type_name, options.type_filter)) return .{ .type_mismatch = v.type_name };
+    if (v2) |v| if (!cim_types.matches_filter(v.type_name, options.type_filter)) return .{ .type_mismatch = v.type_name };
 
     const type_name = if (v1) |v| v.type_name else v2.?.type_name;
 

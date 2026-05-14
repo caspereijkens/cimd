@@ -694,6 +694,33 @@ test "diff - type filter restricts comparison to one type" {
     try std.testing.expect(!r.contains("OldVL"));
 }
 
+test "diff - type filter includes CIM subtypes" {
+    const xml1 =
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_ACL1">
+        \\    <cim:IdentifiedObject.name>OldLine</cim:IdentifiedObject.name>
+        \\  </cim:ACLineSegment>
+        \\  <cim:Substation rdf:ID="_SS1">
+        \\    <cim:IdentifiedObject.name>OldSub</cim:IdentifiedObject.name>
+        \\  </cim:Substation>
+        \\</rdf:RDF>
+    ;
+    const xml2 =
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_ACL1">
+        \\    <cim:IdentifiedObject.name>NewLine</cim:IdentifiedObject.name>
+        \\  </cim:ACLineSegment>
+        \\  <cim:Substation rdf:ID="_SS1">
+        \\    <cim:IdentifiedObject.name>NewSub</cim:IdentifiedObject.name>
+        \\  </cim:Substation>
+        \\</rdf:RDF>
+    ;
+    const r = try run_diff(std.testing.allocator, xml1, xml2, .{ .type_filter = "ConductingEquipment" });
+    try std.testing.expect(r.had_diffs);
+    try std.testing.expect(r.contains("@@ ACLineSegment @@"));
+    try std.testing.expect(!r.contains("@@ Substation @@"));
+}
+
 test "diff - type filter for nonexistent type returns no diffs" {
     const xml =
         \\<rdf:RDF>
@@ -927,6 +954,28 @@ test "diff single - correct type passes verification" {
         \\</rdf:RDF>
     ;
     const r = try run_diff_single(std.testing.allocator, xml1, xml2, "_SS1", .{ .type_filter = "Substation" });
+    switch (r.status) {
+        .diff => |had| try std.testing.expect(had),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "diff single - base type passes subtype verification" {
+    const xml1 =
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_ACL1">
+        \\    <cim:IdentifiedObject.name>A</cim:IdentifiedObject.name>
+        \\  </cim:ACLineSegment>
+        \\</rdf:RDF>
+    ;
+    const xml2 =
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_ACL1">
+        \\    <cim:IdentifiedObject.name>B</cim:IdentifiedObject.name>
+        \\  </cim:ACLineSegment>
+        \\</rdf:RDF>
+    ;
+    const r = try run_diff_single(std.testing.allocator, xml1, xml2, "_ACL1", .{ .type_filter = "ConductingEquipment" });
     switch (r.status) {
         .diff => |had| try std.testing.expect(had),
         else => return error.TestUnexpectedResult,

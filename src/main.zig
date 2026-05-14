@@ -12,6 +12,11 @@ const diff = @import("diff.zig");
 const converter = @import("convert/network.zig");
 const cross_ref = @import("topology/cross_ref.zig");
 const resolve = @import("topology/resolve.zig");
+const refs_api = @import("refs.zig");
+const tag_index = @import("cgmes/tag_index.zig");
+const ids = @import("cgmes/ids.zig");
+const cim_types = @import("cgmes/cim_types.zig");
+const CimMergedView = @import("cgmes/ssh.zig").CimMergedView;
 
 const assert = std.debug.assert;
 
@@ -30,6 +35,7 @@ pub fn main(init: std.process.Init) !void {
         .convert => |c| try command_convert(io, gpa, c),
         .browse => |c| try command_browse(io, gpa, c),
         .get => |c| try command_get(io, gpa, c),
+        .refs => |c| try command_refs(io, gpa, c),
         .types => |c| try command_types(io, gpa, c),
         .diff => |c| try command_diff(io, gpa, c),
         .topology => |c| try command_topology(io, gpa, c),
@@ -48,15 +54,11 @@ fn command_convert(io: std.Io, parent_gpa: std.mem.Allocator, c: cli.Command.Con
 
     const ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
 
-    if (tp_opt) |tp| {
-        for (tp.new_objects) |obj| {
-            if (model.getObjectById(obj.id) != null) print.stderr(
-                io,
-                "convert: mRID collision: '{s}' is defined in both the primary file and the TP profile",
-                .{obj.id},
-            );
-        }
-    }
+    if (tp_opt) |tp| if (refs_api.find_tp_primary_id_collision(&model, tp)) |id| print.stderr(
+        io,
+        "convert: mRID collision: '{s}' is defined in both the primary file and the TP profile",
+        .{id},
+    );
 
     const network = try converter.convert(gpa, &model, tp_opt, ssh_opt, c.bus_branch);
 
@@ -124,126 +126,64 @@ fn command_browse(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Browse) !vo
     // Safety check: TP's new objects must not collide with primary model IDs.
     // Silent shadowing would make it impossible to tell which file an object
     // came from during navigation; fail loud instead.
-    if (tp_opt) |tp| {
-        for (tp.new_objects) |obj| {
-            if (model.getObjectById(obj.id) != null) print.stderr(
-                io,
-                "browse: mRID collision: '{s}' is defined in both the primary file and the TP profile",
-                .{obj.id},
-            );
-        }
-    }
+    if (tp_opt) |tp| if (refs_api.find_tp_primary_id_collision(&model, tp)) |id| print.stderr(
+        io,
+        "browse: mRID collision: '{s}' is defined in both the primary file and the TP profile",
+        .{id},
+    );
+
+    var browse_input_buffer: [64]u8 = undefined;
+    var browse_stdin = std.Io.File.stdin().reader(io, &browse_input_buffer);
+    var browse_output_buffer: [64 * 1024]u8 = undefined;
+    var browse_stdout = std.Io.File.Writer.init(std.Io.File.stdout(), io, &browse_output_buffer);
+    defer browse_stdout.interface.flush() catch {};
+    const interactive: browse.InteractiveIo = .{
+        .input = &browse_stdin.interface,
+        .output = &browse_stdout.interface,
+    };
 
     const start_id: []const u8 = blk: {
         // Exact match first for full mRIDs (covers both EQ and TP-added ids).
-        if (browse.resolve_object(&model, tp_opt, c.mrid) != null) break :blk c.mrid;
+        if (refs_api.resolve_object(&model, tp_opt, c.mrid) != null) break :blk c.mrid;
 
-        // Prefix lookup spans EQ and TP's new_objects (e.g. TopologicalNodes).
-        const eq_matches = try model.get_object_by_id_prefix(gpa, c.mrid);
-        defer gpa.free(eq_matches);
-        const tp_matches: []const CimObject = if (tp_opt) |tp|
-            try tp.get_object_by_id_prefix(gpa, c.mrid)
-        else
-            &.{};
-        defer if (tp_opt != null) gpa.free(tp_matches);
-
-        const total = eq_matches.len + tp_matches.len;
-        if (total == 0) print.not_found(io, "No object found with id '{s}'", .{c.mrid});
-        if (total == 1) break :blk if (eq_matches.len == 1) eq_matches[0].id else tp_matches[0].id;
-
-        // The picker takes a single slice; concatenate. The returned id points
-        // into the underlying xml buffer, so freeing this temporary is safe.
-        const combined = try gpa.alloc(CimObject, total);
-        defer gpa.free(combined);
-        @memcpy(combined[0..eq_matches.len], eq_matches);
-        @memcpy(combined[eq_matches.len..], tp_matches);
-        break :blk try browse.pick_from_prefix(io, gpa, c.mrid, combined);
+        const matches = try refs_api.collect_target_candidates(gpa, &model, tp_opt, c.mrid);
+        defer gpa.free(matches);
+        if (matches.len == 0) print.not_found(io, "No object found with id '{s}'", .{c.mrid});
+        if (matches.len == 1) break :blk matches[0].id;
+        break :blk try browse.pick_from_prefix(io, gpa, interactive, c.mrid, matches);
     };
 
-    try browse.browse(io, gpa, &model, tp_opt, ssh_opt, start_id);
+    try browse.browse(io, gpa, interactive, &model, tp_opt, ssh_opt, start_id);
 }
 
 fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
     assert(c.mrid != null or c.type_filter != null);
     if (c.mrid != null and c.count) print.stderr(io, "get: --count requires --type without <mrid>", .{});
     if (c.mrid != null and c.fields != null) print.stderr(io, "get: --fields requires --type without <mrid>", .{});
+    if (c.mrid == null and c.tp_path != null) print.stderr(io, "get: --tp requires <mrid> (list mode does not merge TP objects yet)", .{});
+    if (c.mrid == null and c.ssh_path != null) print.stderr(io, "get: --ssh requires <mrid> (list mode does not merge SSH patches yet)", .{});
 
-    var model = try EQ.init(gpa, try read_path(io, gpa, c.file_path));
+    var model = try load_model(io, gpa, c.file_path, c.eqbd_path);
     defer model.deinit(gpa);
+
+    var tp_opt: ?TP = if (c.tp_path) |path| try load_tp(io, gpa, path) else null;
+    defer if (tp_opt) |*tp| tp.deinit(gpa);
+
+    var ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
+    defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
 
     // Single-object mode
     if (c.mrid) |mrid_val| {
-        const resolution = try model.resolve_by_prefix(gpa, mrid_val, c.type_filter);
-        defer resolution.deinit(gpa);
-
-        const resolved_idx = switch (resolution.outcome) {
-            .unique => |idx| idx,
-            .none => if (c.json)
-                exit_json_error(io, .{ .@"error" = "not_found", .prefix = mrid_val })
-            else
-                print.not_found(io, "No object found with id '{s}'", .{mrid_val}),
-            .type_mismatch => |idx| blk: {
-                const m = resolution.matches[idx];
-                if (c.json) exit_json_error(io, .{
-                    .@"error" = "type_mismatch",
-                    .prefix = mrid_val,
-                    .id = m.id,
-                    .actual_type = m.type_name,
-                    .requested_type = c.type_filter.?,
-                });
-                print.not_found(io, "Object '{s}' is of type '{s}', not '{s}'", .{ mrid_val, m.type_name, c.type_filter.? });
-                break :blk idx;
-            },
-            .none_of_type => if (c.json) exit_json_error(io, .{
-                .@"error" = "none_of_type",
-                .prefix = mrid_val,
-                .total = resolution.matches.len,
-                .requested_type = c.type_filter.?,
-            }) else print.not_found(
-                io,
-                "Prefix '{s}' matched {d} objects but none of type '{s}'",
-                .{ mrid_val, resolution.matches.len, c.type_filter.? },
-            ),
-            .ambiguous_any => {
-                if (c.json) {
-                    try render_ambiguous_json(io, gpa, mrid_val, resolution.matches);
-                } else if (resolution.matches.len > browse.group_threshold) {
-                    try render_type_breakdown(io, gpa, mrid_val, resolution.matches);
-                } else {
-                    try print.stderr_info(io, "Ambiguous prefix '{s}' matched {d} objects:\n", .{ mrid_val, resolution.matches.len });
-                    for (resolution.matches) |m| try print.stdout(io, "{s} | {s}\n", .{ m.id, m.type_name });
-                }
-                return;
-            },
-            .ambiguous_of_type => {
-                const type_name = c.type_filter.?;
-                var filtered: std.ArrayList(CimObject) = .empty;
-                defer filtered.deinit(gpa);
-                for (resolution.matches) |m| {
-                    if (std.mem.eql(u8, m.type_name, type_name)) try filtered.append(gpa, m);
-                }
-                if (c.json) {
-                    try render_ambiguous_json(io, gpa, mrid_val, filtered.items);
-                } else {
-                    try print.stderr_info(io, "Ambiguous prefix '{s}' matched {d} objects of type '{s}':\n", .{ mrid_val, filtered.items.len, type_name });
-                    for (filtered.items) |m| try print.stdout(io, "{s} | {s}\n", .{ m.id, m.type_name });
-                }
-                return;
-            },
-        };
-
-        const object = model.view(resolution.matches[resolved_idx]);
-        if (c.json) {
-            try print.display_object_json(io, gpa, object);
-        } else {
-            try print.display_object(io, gpa, object);
-        }
+        const target = try resolve_get_target(io, gpa, &model, tp_opt, mrid_val, c.type_filter, c.json) orelse return;
+        const object = refs_api.resolve_object(&model, tp_opt, target.id) orelse unreachable;
+        try display_get_object(io, gpa, object, tp_opt, ssh_opt, c.json);
         return;
     }
 
     // List mode
     const type_name = c.type_filter.?;
-    const objects = model.get_objects_by_type(type_name);
+    const objects = try collect_objects_by_type_filter(gpa, &model, type_name);
+    defer gpa.free(objects);
     if (objects.len == 0)
         print.not_found(io, "No objects of type '{s}' found. Run 'cimd types' to see available types.", .{type_name});
 
@@ -287,6 +227,308 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
             try print.stdout(io, "\n", .{});
         }
     }
+}
+
+fn resolve_get_target(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    model: *const EQ,
+    tp_opt: ?TP,
+    mrid: []const u8,
+    type_filter: ?[]const u8,
+    json: bool,
+) !?CimObject {
+    const all_matches = try refs_api.collect_target_candidates(gpa, model, tp_opt, mrid);
+    defer gpa.free(all_matches);
+
+    var filtered: std.ArrayList(CimObject) = .empty;
+    defer filtered.deinit(gpa);
+    for (all_matches) |m| {
+        if (cim_types.matches_filter(m.type_name, type_filter)) try filtered.append(gpa, m);
+    }
+
+    if (filtered.items.len == 0) {
+        if (all_matches.len == 0) {
+            if (json) exit_json_error(io, .{ .@"error" = "not_found", .prefix = mrid });
+            print.not_found(io, "No object found with id '{s}'", .{mrid});
+        }
+        const requested_type = type_filter.?;
+        if (all_matches.len == 1) {
+            const m = all_matches[0];
+            if (json) exit_json_error(io, .{
+                .@"error" = "type_mismatch",
+                .prefix = mrid,
+                .id = m.id,
+                .actual_type = m.type_name,
+                .requested_type = requested_type,
+            });
+            print.not_found(io, "Object '{s}' is of type '{s}', not '{s}'", .{ mrid, m.type_name, requested_type });
+        }
+        if (json) exit_json_error(io, .{
+            .@"error" = "none_of_type",
+            .prefix = mrid,
+            .total = all_matches.len,
+            .requested_type = requested_type,
+        });
+        print.not_found(
+            io,
+            "Prefix '{s}' matched {d} objects but none of type '{s}'",
+            .{ mrid, all_matches.len, requested_type },
+        );
+    }
+
+    if (filtered.items.len > 1) {
+        try render_get_ambiguity(io, gpa, mrid, filtered.items, type_filter, json);
+        return null;
+    }
+
+    return filtered.items[0];
+}
+
+fn render_get_ambiguity(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    mrid: []const u8,
+    matches: []const CimObject,
+    type_filter: ?[]const u8,
+    json: bool,
+) !void {
+    if (json) {
+        try render_ambiguous_json(io, gpa, mrid, matches);
+    } else if (type_filter) |t| {
+        try print.stderr_info(io, "Ambiguous prefix '{s}' matched {d} objects of type '{s}':\n", .{ mrid, matches.len, t });
+        for (matches) |m| try print.stdout(io, "{s} | {s}\n", .{ m.id, m.type_name });
+    } else if (matches.len > browse.group_threshold) {
+        try render_type_breakdown(io, gpa, mrid, matches);
+    } else {
+        try print.stderr_info(io, "Ambiguous prefix '{s}' matched {d} objects:\n", .{ mrid, matches.len });
+        for (matches) |m| try print.stdout(io, "{s} | {s}\n", .{ m.id, m.type_name });
+    }
+}
+
+fn display_get_object(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    object: tag_index.CimObjectView,
+    tp_opt: ?TP,
+    ssh_opt: ?SSH,
+    json: bool,
+) !void {
+    if (tp_opt == null and ssh_opt == null) {
+        if (json) {
+            try print.display_object_json(io, gpa, object);
+        } else {
+            try print.display_object(io, gpa, object);
+        }
+        return;
+    }
+
+    const merged = CimMergedView.init(object, ids.strip_underscore(object.id), tp_opt, ssh_opt);
+    var props = try merged.getAllProperties(gpa);
+    defer props.deinit();
+    var refs = try merged.getAllReferences(gpa);
+    defer refs.deinit();
+
+    if (json) {
+        try display_get_object_json(io, object, props, refs);
+    } else {
+        try display_get_object_text(io, gpa, object, props, refs);
+    }
+}
+
+fn display_get_object_text(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    object: tag_index.CimObjectView,
+    props: std.StringHashMap([]const u8),
+    refs: std.StringHashMap([]const u8),
+) !void {
+    try print.stdout(io, "Type: {s}\n", .{object.type_name});
+    try print.stdout(io, "ID: {s}\n", .{object.id});
+    try display_string_map(io, gpa, "Properties", props);
+    try display_string_map(io, gpa, "References", refs);
+    try print.stdout(io, "\n", .{});
+}
+
+fn display_string_map(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    title: []const u8,
+    map: std.StringHashMap([]const u8),
+) !void {
+    if (map.count() == 0) return;
+    try print.stdout(io, "\n{s}:\n", .{title});
+
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(gpa);
+    var it = map.iterator();
+    while (it.next()) |entry| try names.append(gpa, entry.key_ptr.*);
+    std.mem.sort([]const u8, names.items, {}, string_less_than);
+
+    for (names.items) |name| {
+        const value = map.get(name).?;
+        try print.stdout(io, "  {s}: {s}\n", .{ name, value });
+    }
+}
+
+fn display_get_object_json(
+    io: std.Io,
+    object: tag_index.CimObjectView,
+    props: std.StringHashMap([]const u8),
+    refs: std.StringHashMap([]const u8),
+) !void {
+    var write_buffer: [16 * 1024]u8 = undefined;
+    var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &write_buffer);
+    const w = &file_writer.interface;
+
+    try w.writeAll("{\"id\":");
+    try std.json.Stringify.value(object.id, .{}, w);
+    try w.writeAll(",\"type\":");
+    try std.json.Stringify.value(object.type_name, .{}, w);
+    try w.writeAll(",\"properties\":{");
+    try write_string_map_json(w, props, false);
+    try w.writeAll("},\"references\":{");
+    try write_string_map_json(w, refs, true);
+    try w.writeAll("}}\n");
+    try w.flush();
+}
+
+fn write_string_map_json(
+    w: *std.Io.Writer,
+    map: std.StringHashMap([]const u8),
+    strip_reference_hash: bool,
+) !void {
+    var first = true;
+    var it = map.iterator();
+    while (it.next()) |entry| {
+        if (!first) try w.writeByte(',');
+        try std.json.Stringify.value(entry.key_ptr.*, .{}, w);
+        try w.writeByte(':');
+        const value = if (strip_reference_hash) ids.strip_hash(entry.value_ptr.*) else entry.value_ptr.*;
+        try std.json.Stringify.value(value, .{}, w);
+        first = false;
+    }
+}
+
+fn string_less_than(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.order(u8, a, b) == .lt;
+}
+
+fn command_refs(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Refs) !void {
+    var model = try load_model(io, gpa, c.file_path, c.eqbd_path);
+    defer model.deinit(gpa);
+
+    var tp_opt: ?TP = if (c.tp_path) |path| try load_tp(io, gpa, path) else null;
+    defer if (tp_opt) |*tp| tp.deinit(gpa);
+
+    var ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
+    defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
+
+    const all_matches = try refs_api.collect_target_candidates(gpa, &model, tp_opt, c.mrid);
+    defer gpa.free(all_matches);
+
+    var filtered: std.ArrayList(CimObject) = .empty;
+    defer filtered.deinit(gpa);
+    for (all_matches) |m| {
+        if (cim_types.matches_filter(m.type_name, c.target_type)) try filtered.append(gpa, m);
+    }
+
+    if (filtered.items.len == 0) {
+        if (all_matches.len > 0 and c.target_type != null) {
+            const t = c.target_type.?;
+            if (c.json) exit_json_error(io, .{
+                .@"error" = "none_of_type",
+                .prefix = c.mrid,
+                .total = all_matches.len,
+                .requested_type = t,
+            });
+            print.not_found(
+                io,
+                "Prefix '{s}' matched {d} objects but none of type '{s}'",
+                .{ c.mrid, all_matches.len, t },
+            );
+        }
+        if (c.json) exit_json_error(io, .{ .@"error" = "not_found", .prefix = c.mrid });
+        print.not_found(io, "No object found with id '{s}'", .{c.mrid});
+    }
+
+    if (filtered.items.len > 1) {
+        if (c.json) {
+            try render_ambiguous_json(io, gpa, c.mrid, filtered.items);
+        } else if (c.target_type) |t| {
+            try print.stderr_info(io, "Ambiguous prefix '{s}' matched {d} objects of type '{s}':\n", .{ c.mrid, filtered.items.len, t });
+            for (filtered.items) |m| try print.stdout(io, "{s} | {s}\n", .{ m.id, m.type_name });
+        } else if (filtered.items.len > browse.group_threshold) {
+            try render_type_breakdown(io, gpa, c.mrid, filtered.items);
+        } else {
+            try print.stderr_info(io, "Ambiguous prefix '{s}' matched {d} objects:\n", .{ c.mrid, filtered.items.len });
+            for (filtered.items) |m| try print.stdout(io, "{s} | {s}\n", .{ m.id, m.type_name });
+        }
+        return;
+    }
+
+    const target_id = filtered.items[0].id;
+    const target_type_name = filtered.items[0].type_name;
+
+    var index = try refs_api.ReverseRefIndex.build_with_overlays(gpa, &model, tp_opt, ssh_opt);
+    defer index.deinit(gpa);
+
+    const referrers = try refs_api.filter_referrers(gpa, index.lookup(target_id), c.from_type);
+    defer gpa.free(referrers);
+
+    var write_buffer: [16 * 1024]u8 = undefined;
+    var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &write_buffer);
+    const w = &file_writer.interface;
+
+    if (c.json) {
+        try refs_api.write_referrers_json(w, target_id, target_type_name, referrers);
+    } else {
+        try refs_api.write_referrers_text(w, target_id, referrers, c.from_type);
+    }
+    try w.flush();
+}
+
+fn collect_objects_by_type_filter(
+    gpa: std.mem.Allocator,
+    model: *const EQ,
+    requested_type: []const u8,
+) ![]CimObject {
+    var matches: std.ArrayList(CimObject) = .empty;
+    errdefer matches.deinit(gpa);
+    for (model.objects) |obj| {
+        if (cim_types.matches_filter(obj.type_name, requested_type)) try matches.append(gpa, obj);
+    }
+    return matches.toOwnedSlice(gpa);
+}
+
+test "get type filter collector includes CIM subtypes" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:PowerTransformer rdf:ID="_PT1"/>
+        \\  <cim:ACLineSegment rdf:ID="_ACL1"/>
+        \\  <cim:SynchronousMachine rdf:ID="_SM1"/>
+        \\  <cim:Substation rdf:ID="_SS1"/>
+        \\</rdf:RDF>
+    ;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    const objects = try collect_objects_by_type_filter(gpa, &model, "ConductingEquipment");
+    defer gpa.free(objects);
+
+    try std.testing.expectEqual(@as(usize, 3), objects.len);
+    var found_power_transformer = false;
+    var found_line_segment = false;
+    var found_machine = false;
+    for (objects) |obj| {
+        if (std.mem.eql(u8, obj.type_name, "PowerTransformer")) found_power_transformer = true;
+        if (std.mem.eql(u8, obj.type_name, "ACLineSegment")) found_line_segment = true;
+        if (std.mem.eql(u8, obj.type_name, "SynchronousMachine")) found_machine = true;
+    }
+    try std.testing.expect(found_power_transformer);
+    try std.testing.expect(found_line_segment);
+    try std.testing.expect(found_machine);
 }
 
 /// Write `value` as JSON to stdout and exit 1. The exit code matches
@@ -384,7 +626,9 @@ fn render_type_breakdown(io: std.Io, gpa: std.mem.Allocator, prefix: []const u8,
     }.lt);
 
     var max_type_len: usize = 0;
-    for (entries) |e| if (e.type_name.len > max_type_len) { max_type_len = e.type_name.len; };
+    for (entries) |e| if (e.type_name.len > max_type_len) {
+        max_type_len = e.type_name.len;
+    };
 
     try print.stderr_info(
         io,

@@ -28,6 +28,7 @@ Commands:
   convert    Convert an EQ profile to JIIDM JSON
   browse     Interactively browse CIM objects (EQ/EQBD/TP/SSH merged view)
   get        Fetch a single object or list by type from any CIM file
+  refs       List objects that reference a CIM object
   types      List CIM types present in a CIM file
   diff       Semantic diff between two EQ profiles
   topology   Generate TopologicalNodes from EQ (+SSH) — TP-equivalent output
@@ -49,20 +50,20 @@ Arguments:
   <file>                  EQ profile (XML or ZIP)
 
 Options:
-  -b, --boundary <file>   EQBD boundary profile (XML or ZIP)
-  -t, --topology <file>   TP topology profile (XML or ZIP)
+  -b, --eqbd <file>       EQBD boundary profile (XML or ZIP)
+  -t, --tp <file>         TP topology profile (XML or ZIP)
   -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
   -o, --output <file>     Write output to file instead of stdout
       --bus-branch        Emit bus-branch JIIDM (one bus per TopologicalNode).
-                          Requires --topology. Default is node-breaker even
+                          Requires --tp. Default is node-breaker even
                           when TP is given (matches pypowsybl).
 
 Examples:
   cimd convert data/eq.zip
-  cimd convert data/eq.zip -b eqbd.zip
-  cimd convert data/eq.zip -b eqbd.zip -s ssh.zip
+  cimd convert data/eq.zip --eqbd eqbd.zip
+  cimd convert data/eq.zip --eqbd eqbd.zip -s ssh.zip
   cimd convert data/eq.zip -o network.json
-  cimd convert data/eq.zip -t tp.zip --bus-branch
+  cimd convert data/eq.zip --tp tp.zip --bus-branch
 ```
 
 ### Browse
@@ -72,12 +73,12 @@ $ cimd browse --help
 Usage: cimd browse <file> <mrid> [options]
 
 Interactively browse CIM objects by following rdf:resource references.
-When --topology or --ssh is passed, patches from those profiles are shown
+When --tp or --ssh is passed, patches from those profiles are shown
 inline alongside the primary object, and new objects from TP (e.g.
 TopologicalNodes) become navigable by mRID.
 
 <mrid> may be a prefix of a full mRID; the leading underscore is optional.
-The prefix is matched against EQ objects and, when --topology is given,
+The prefix is matched against EQ objects and, when --tp is given,
 TP-added objects (e.g. TopologicalNodes). When a prefix matches more than
 one object, browse opens a picker menu — flat list when few candidates,
 grouped by type when many.
@@ -87,14 +88,14 @@ Arguments:
   <mrid>    Full mRID or a prefix of one
 
 Options:
-  -b, --boundary <file>       EQBD boundary profile (XML or ZIP)
-  -t, --topology <file>       TP topology profile (XML or ZIP)
+  -b, --eqbd <file>           EQBD boundary profile (XML or ZIP)
+  -t, --tp <file>             TP topology profile (XML or ZIP)
   -s, --ssh <file>            SSH steady-state hypothesis profile (XML or ZIP)
 
 Examples:
   cimd browse data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
   cimd browse data/eq.zip be60a3cf                # prefix; underscore optional
-  cimd browse data/eq.zip _abc -t tp.zip -s ssh.zip
+  cimd browse data/eq.zip _abc --tp tp.zip -s ssh.zip
 ```
 
 ### Get
@@ -129,7 +130,8 @@ Arguments:
   <mrid>    Full mRID or a unique prefix (optional if --type is given)
 
 Options:
-  -t, --type <type>          Filter by CIM type (e.g. PowerTransformer)
+  -t, --type <type>          Filter by CIM type (e.g. ConductingEquipment)
+                             Includes subtypes from the CIM inheritance graph.
                              Without <mrid>: list all objects of this type
                              With <mrid>: verify the object is of this type,
                              or narrow an ambiguous prefix to one of this type
@@ -137,6 +139,10 @@ Options:
                              Text default: IdentifiedObject.name
                              JSON default: full object (all properties + references)
   -c, --count                Print only the count of matching objects (list mode only)
+  -b, --eqbd <file>          EQBD boundary profile (XML or ZIP)
+      --tp <file>            TP topology profile (XML or ZIP; single-object mode only)
+      --ssh <file>           SSH steady-state hypothesis profile (XML or ZIP;
+                             single-object mode only)
   -j, --json                 Output as JSON. In list mode, each element is
                              {"id","type","properties":{...},"references":{...}}
                              unless --fields narrows the projection.
@@ -147,6 +153,8 @@ Examples:
   cimd get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -j
   cimd get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -t PowerTransformer
   cimd get data/eq.zip be60 -t PowerTransformer          # narrow ambiguous prefix
+  cimd get data/eq.zip _TN1 --tp tp.zip -j
+  cimd get data/eq.zip _switch --ssh ssh.zip -j
   cimd get data/eq.zip -t PowerTransformer -j
   cimd get data/eq.zip -t PowerTransformer -c
   cimd get data/eq.zip -t VoltageLevel -f IdentifiedObject.name,VoltageLevel.nominalVoltage
@@ -193,9 +201,9 @@ Arguments:
   <file2>    Second EQ profile (XML or ZIP)
 
 Options:
-  -b, --boundary <file>   EQBD boundary profile (applied to both models)
+  -b, --eqbd <file>      EQBD boundary profile (applied to both models)
   -i, --mrid <id>         Diff a single object by mRID
-  -t, --type <name>       Restrict diff to a specific CIM type
+  -t, --type <name>       Restrict diff to a specific CIM type, including subtypes
                           With --mrid: verify the object is of this type
   -s, --summary           Print only per-type counts (added/removed/changed)
   -j, --json              Output as NDJSON (one object per change)
@@ -227,12 +235,12 @@ Arguments:
   <file>                  EQ profile (XML or ZIP)
 
 Options:
-  -b, --boundary <file>   EQBD boundary profile (XML or ZIP)
+  -b, --eqbd <file>      EQBD boundary profile (XML or ZIP)
   -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
   -o, --output <file>     Write output to file instead of stdout
 
 Examples:
   cimd topology data/eq.zip -s ssh.zip
-  cimd topology data/eq.zip -b eqbd.zip -s ssh.zip -o tn.json
+  cimd topology data/eq.zip --eqbd eqbd.zip -s ssh.zip -o tn.json
 ```
 <!-- FEATURES_END -->
