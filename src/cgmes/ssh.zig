@@ -278,6 +278,36 @@ pub const CimMergedView = struct {
         if (self.ssh) |s| apply_overrides(&result, try patch_view(s).getReferences(names), names);
         return result;
     }
+
+    /// Return the union of EQ + TP + SSH properties, with SSH > TP > EQ precedence.
+    /// Caller owns the returned map; values borrow from the underlying XML buffers.
+    pub fn getAllProperties(self: CimMergedView, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
+        var result = try self.eq.getAllProperties(gpa);
+        errdefer result.deinit();
+        if (self.tp) |t| try overlay_into(&result, patch_view(t).getAllProperties(gpa));
+        if (self.ssh) |s| try overlay_into(&result, patch_view(s).getAllProperties(gpa));
+        return result;
+    }
+
+    /// Return the union of EQ + TP + SSH references, with SSH > TP > EQ precedence.
+    /// Caller owns the returned map; values borrow from the underlying XML buffers.
+    pub fn getAllReferences(self: CimMergedView, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
+        var result = try self.eq.getAllReferences(gpa);
+        errdefer result.deinit();
+        if (self.tp) |t| try overlay_into(&result, patch_view(t).getAllReferences(gpa));
+        if (self.ssh) |s| try overlay_into(&result, patch_view(s).getAllReferences(gpa));
+        return result;
+    }
+
+    fn overlay_into(
+        dest: *std.StringHashMap([]const u8),
+        patch_map_result: anytype,
+    ) !void {
+        var patch_map = try patch_map_result;
+        defer patch_map.deinit();
+        var it = patch_map.iterator();
+        while (it.next()) |entry| try dest.put(entry.key_ptr.*, entry.value_ptr.*);
+    }
 };
 
 /// Returns the stripped mRID if this tag is an SSH equipment patch, null otherwise.
@@ -411,4 +441,89 @@ test "SSH.init - rejects duplicate patch mRIDs" {
     ;
 
     try std.testing.expectError(error.DuplicateId, SSH.init(gpa, try gpa.dupe(u8, xml)));
+}
+
+const EQ = @import("eq.zig").EQ;
+
+test "CimMergedView.getAllProperties merges EQ + TP + SSH with SSH precedence" {
+    const gpa = std.testing.allocator;
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <cim:Switch rdf:ID="_SW1">
+        \\    <cim:IdentifiedObject.name>eq-name</cim:IdentifiedObject.name>
+        \\    <cim:Switch.normalOpen>false</cim:Switch.normalOpen>
+        \\  </cim:Switch>
+        \\</rdf:RDF>
+    ;
+    const tp_xml =
+        \\<rdf:RDF>
+        \\  <cim:Switch rdf:about="#_SW1">
+        \\    <cim:Switch.normalOpen>true</cim:Switch.normalOpen>
+        \\    <cim:Switch.retained>false</cim:Switch.retained>
+        \\  </cim:Switch>
+        \\</rdf:RDF>
+    ;
+    const ssh_xml =
+        \\<rdf:RDF>
+        \\  <cim:Switch rdf:about="#_SW1">
+        \\    <cim:Switch.open>true</cim:Switch.open>
+        \\    <cim:Switch.retained>true</cim:Switch.retained>
+        \\  </cim:Switch>
+        \\</rdf:RDF>
+    ;
+    var eq = try EQ.init(gpa, try gpa.dupe(u8, eq_xml));
+    defer eq.deinit(gpa);
+    var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
+    defer tp.deinit(gpa);
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, ssh_xml));
+    defer ssh.deinit(gpa);
+
+    const view = eq.getObjectById("_SW1").?;
+    const merged = CimMergedView.init(view, "SW1", tp, ssh);
+
+    var props = try merged.getAllProperties(gpa);
+    defer props.deinit();
+
+    // EQ-only key preserved.
+    try std.testing.expectEqualStrings("eq-name", props.get("IdentifiedObject.name").?);
+    // TP overrides EQ.
+    try std.testing.expectEqualStrings("true", props.get("Switch.normalOpen").?);
+    // SSH overrides TP (Switch.retained).
+    try std.testing.expectEqualStrings("true", props.get("Switch.retained").?);
+    // SSH-only key included.
+    try std.testing.expectEqualStrings("true", props.get("Switch.open").?);
+}
+
+test "CimMergedView.getAllReferences merges EQ + TP with TP precedence" {
+    const gpa = std.testing.allocator;
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_CE_eq"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+    const tp_xml =
+        \\<rdf:RDF>
+        \\  <cim:Terminal rdf:about="#_T1">
+        \\    <cim:Terminal.TopologicalNode rdf:resource="#_TN1"/>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_CE_tp"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+    var eq = try EQ.init(gpa, try gpa.dupe(u8, eq_xml));
+    defer eq.deinit(gpa);
+    var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
+    defer tp.deinit(gpa);
+
+    const view = eq.getObjectById("_T1").?;
+    const merged = CimMergedView.init(view, "T1", tp, null);
+
+    var refs = try merged.getAllReferences(gpa);
+    defer refs.deinit();
+
+    // TP-added reference visible.
+    try std.testing.expectEqualStrings("#_TN1", refs.get("Terminal.TopologicalNode").?);
+    // TP overrides the EQ value.
+    try std.testing.expectEqualStrings("#_CE_tp", refs.get("Terminal.ConductingEquipment").?);
 }
