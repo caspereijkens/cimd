@@ -9,12 +9,17 @@
 //!   2  usage error (bad flags, missing args, unknown subcommand)
 
 const std = @import("std");
+const builtin = @import("builtin");
 const assert = std.debug.assert;
 const print = @import("io/print.zig");
 
 pub const ansi_green = "\x1b[92m";
 pub const ansi_default = "\x1b[0m";
 pub const ansi_yellow = "\x1b[33m";
+
+/// Native path separator for the target OS. Used in help-text examples so the
+/// commands shown can be copy-pasted on the user's actual platform.
+const sep = if (builtin.os.tag == .windows) "\\" else "/";
 
 const help_main =
     \\Usage: cimd <command> [options]
@@ -34,7 +39,7 @@ const help_main =
     \\
 ;
 
-const help_convert =
+const help_convert = std.fmt.comptimePrint(
     \\Usage: cimd convert <file> [options]
     \\
     \\Convert a CGMES EQ profile to JIIDM JSON format.
@@ -53,15 +58,15 @@ const help_convert =
     \\                          when TP is given (matches pypowsybl).
     \\
     \\Examples:
-    \\  cimd convert data/eq.zip
-    \\  cimd convert data/eq.zip -b eqbd.zip
-    \\  cimd convert data/eq.zip -b eqbd.zip -s ssh.zip
-    \\  cimd convert data/eq.zip -o network.json
-    \\  cimd convert data/eq.zip -t tp.zip --bus-branch
+    \\  cimd convert data{[s]s}eq.zip
+    \\  cimd convert data{[s]s}eq.zip -b eqbd.zip
+    \\  cimd convert data{[s]s}eq.zip -b eqbd.zip -s ssh.zip
+    \\  cimd convert data{[s]s}eq.zip -o network.json
+    \\  cimd convert data{[s]s}eq.zip -t tp.zip --bus-branch
     \\
-;
+, .{ .s = sep });
 
-const help_browse =
+const help_browse = std.fmt.comptimePrint(
     \\Usage: cimd browse <file> <mrid> [options]
     \\
     \\Interactively browse CIM objects by following rdf:resource references.
@@ -85,13 +90,13 @@ const help_browse =
     \\  -s, --ssh <file>            SSH steady-state hypothesis profile (XML or ZIP)
     \\
     \\Examples:
-    \\  cimd browse data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
-    \\  cimd browse data/eq.zip be60a3cf                # prefix; underscore optional
-    \\  cimd browse data/eq.zip _abc -t tp.zip -s ssh.zip
+    \\  cimd browse data{[s]s}eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
+    \\  cimd browse data{[s]s}eq.zip be60a3cf                # prefix; underscore optional
+    \\  cimd browse data{[s]s}eq.zip _abc -t tp.zip -s ssh.zip
     \\
-;
+, .{ .s = sep });
 
-const help_get =
+const help_get = std.fmt.comptimePrint(
     \\Usage: cimd get <file> [<mrid>] [options]
     \\
     \\Fetch a CIM object by mRID (or a prefix of one), or list all objects of a
@@ -104,16 +109,16 @@ const help_get =
     \\  optional, so "_be60" and "be60" are equivalent. When a prefix matches
     \\  multiple objects, cimd prints the candidates and exits without selecting
     \\  one — or, if the match list is large, prints a per-type breakdown
-    \\  instead. With --json, an envelope `{"prefix","total","matches","types"}`
+    \\  instead. With --json, an envelope `{{"prefix","total","matches","types"}}`
     \\  is emitted regardless of match count. Pass --type to narrow ambiguous
     \\  prefixes to a single type.
     \\
     \\JSON errors:
     \\  With --json, the not-found / wrong-type paths emit a structured error
     \\  on stdout and exit 1 instead of printing to stderr:
-    \\    {"error":"not_found", "prefix":...}
-    \\    {"error":"type_mismatch", "prefix":..., "id":..., "actual_type":..., "requested_type":...}
-    \\    {"error":"none_of_type", "prefix":..., "total":..., "requested_type":...}
+    \\    {{"error":"not_found", "prefix":...}}
+    \\    {{"error":"type_mismatch", "prefix":..., "id":..., "actual_type":..., "requested_type":...}}
+    \\    {{"error":"none_of_type", "prefix":..., "total":..., "requested_type":...}}
     \\
     \\Arguments:
     \\  <file>    CGMES file (XML or ZIP)
@@ -130,19 +135,19 @@ const help_get =
     \\  -j, --json                 Output as JSON
     \\
     \\Examples:
-    \\  cimd get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
-    \\  cimd get data/eq.zip be60a3cf                          # prefix; underscore optional
-    \\  cimd get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -j
-    \\  cimd get data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -t PowerTransformer
-    \\  cimd get data/eq.zip be60 -t PowerTransformer          # narrow ambiguous prefix
-    \\  cimd get data/eq.zip -t PowerTransformer -j
-    \\  cimd get data/eq.zip -t PowerTransformer -c
-    \\  cimd get data/eq.zip -t VoltageLevel -f IdentifiedObject.name,VoltageLevel.nominalVoltage
-    \\  cimd get data/tp.zip -t TopologicalNode -c
+    \\  cimd get data{[s]s}eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
+    \\  cimd get data{[s]s}eq.zip be60a3cf                          # prefix; underscore optional
+    \\  cimd get data{[s]s}eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -j
+    \\  cimd get data{[s]s}eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -t PowerTransformer
+    \\  cimd get data{[s]s}eq.zip be60 -t PowerTransformer          # narrow ambiguous prefix
+    \\  cimd get data{[s]s}eq.zip -t PowerTransformer -j
+    \\  cimd get data{[s]s}eq.zip -t PowerTransformer -c
+    \\  cimd get data{[s]s}eq.zip -t VoltageLevel -f IdentifiedObject.name,VoltageLevel.nominalVoltage
+    \\  cimd get data{[s]s}tp.zip -t TopologicalNode -c
     \\
-;
+, .{ .s = sep });
 
-const help_types =
+const help_types = std.fmt.comptimePrint(
     \\Usage: cimd types <file> [options]
     \\
     \\List all CIM types present in a CGMES file with object counts.
@@ -152,13 +157,13 @@ const help_types =
     \\  <file>                  CGMES file (XML or ZIP)
     \\
     \\Options:
-    \\  -j, --json              Output as JSON array of {{type, count}} objects
+    \\  -j, --json              Output as JSON array of {{{{type, count}}}} objects
     \\
     \\Examples:
-    \\  cimd types data/eq.zip
-    \\  cimd types data/tp.zip -j
+    \\  cimd types data{[s]s}eq.zip
+    \\  cimd types data{[s]s}tp.zip -j
     \\
-;
+, .{ .s = sep });
 
 const help_diff =
     \\Usage: cimd diff <file1> <file2> [options]
@@ -194,7 +199,7 @@ const help_diff =
     \\
 ;
 
-const help_topology =
+const help_topology = std.fmt.comptimePrint(
     \\Usage: cimd topology <file> [options]
     \\
     \\Generate TopologicalNodes from an EQ profile (and optional SSH). Each TN is
@@ -214,10 +219,10 @@ const help_topology =
     \\  -o, --output <file>     Write output to file instead of stdout
     \\
     \\Examples:
-    \\  cimd topology data/eq.zip -s ssh.zip
-    \\  cimd topology data/eq.zip -b eqbd.zip -s ssh.zip -o tn.json
+    \\  cimd topology data{[s]s}eq.zip -s ssh.zip
+    \\  cimd topology data{[s]s}eq.zip -b eqbd.zip -s ssh.zip -o tn.json
     \\
-;
+, .{ .s = sep });
 
 const help_version =
     \\Usage: cimd version [options]

@@ -15,13 +15,6 @@ cimd is a **C**ommand line **I**nterface for grid **M**odel **D**ata. It is a hi
 
 *Median of 10 runs after a discarded warm-up. Measured on Apple M4 Pro. Reproduce with `scripts/benchmark/main.py`.*
 
-## Contributing
-`cimd` is alpha software. Using `cimd` today means participating in its development. 
-
-`cimd` is not yet complete. The main functionality is present but it is only tested against the Dutch transmission grid model. We are fully aware that there will be edge cases of other TSO members that are not considered yet. I am working hard to make cimd ENTSOE-complete.
-
-So, using cimd today does imply participating in the development process to some degree, which usually means inquiring about the development status of a feature you need, or reporting a bug by opening a discussion on CodeBerg or Github. You are most welcome to get in touch so we can improve cimd for your usecase.
-
 <!-- FEATURES_START -->
 ## Features
 ```
