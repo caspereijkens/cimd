@@ -11,7 +11,7 @@ env:
 
 jobs:
   test:
-    runs-on: codeberg-small
+    runs-on: codeberg-medium
     container: docker.io/library/node:24-bookworm-slim
     steps:
       - name: Install system dependencies
@@ -29,9 +29,7 @@ jobs:
             "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
           mkdir -p /opt/zig
           tar -xf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
-          path_file="${FORGEJO_PATH:-${GITHUB_PATH:-}}"
-          test -n "${path_file}"
-          echo /opt/zig >> "${path_file}"
+          ln -sf /opt/zig/zig /usr/local/bin/zig
 
       - name: Run tests
         run: zig build test
