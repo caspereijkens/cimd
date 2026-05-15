@@ -10,7 +10,7 @@ env:
 
 jobs:
   release:
-    runs-on: docker
+    runs-on: codeberg-small
     container: docker.io/library/node:24-bookworm-slim
     steps:
       - name: Install system dependencies
