@@ -1765,15 +1765,12 @@ test "voltage level: emits CGMES.normalValue_* and OperationalLimit_* properties
     const op_lo = find_property(vl.properties.items, "CGMES.OperationalLimit_lowVoltageLimit") orelse return error.TestFailed;
     try std.testing.expectEqualStrings("VL_LO_1;VL_LO_2", op_lo.value);
 
-    // NaN placeholders emitted whenever any voltage limit applies to the VL.
-    const nan_hi = find_property(vl.properties.items, "CGMES.highVoltageLimit") orelse return error.TestFailed;
-    try std.testing.expectEqualStrings("NaN", nan_hi.value);
-
-    const nan_lo = find_property(vl.properties.items, "CGMES.lowVoltageLimit") orelse return error.TestFailed;
-    try std.testing.expectEqualStrings("NaN", nan_lo.value);
+    // NaN placeholders are no longer emitted (pypowsybl 1.16+).
+    try std.testing.expect(find_property(vl.properties.items, "CGMES.highVoltageLimit") == null);
+    try std.testing.expect(find_property(vl.properties.items, "CGMES.lowVoltageLimit") == null);
 }
 
-test "voltage level: only NaN placeholders emitted when no voltage limits apply" {
+test "voltage level: no properties emitted when no voltage limits apply" {
     const gpa = std.testing.allocator;
     var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
@@ -1781,10 +1778,5 @@ test "voltage level: only NaN placeholders emitted when no voltage limits apply"
     defer network.deinit(gpa);
 
     const vl = find_root(network, "VL2") orelse return error.TestFailed;
-    // pypowsybl always emits the two NaN placeholders on every VL.
-    try std.testing.expectEqual(@as(usize, 2), vl.properties.items.len);
-    const nan_hi = find_property(vl.properties.items, "CGMES.highVoltageLimit") orelse return error.TestFailed;
-    try std.testing.expectEqualStrings("NaN", nan_hi.value);
-    const nan_lo = find_property(vl.properties.items, "CGMES.lowVoltageLimit") orelse return error.TestFailed;
-    try std.testing.expectEqualStrings("NaN", nan_lo.value);
+    try std.testing.expectEqual(@as(usize, 0), vl.properties.items.len);
 }

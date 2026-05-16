@@ -12,8 +12,7 @@ working hard to make cimd ENTSOE-complete.
 
 So, using cimd today does imply participating in the development process to 
 some degree, which usually means inquiring about the development status of a 
-feature you need, or reporting a bug by opening an issue on CodeBerg or 
-Github. You are most welcome to get in touch so we can improve cimd for your 
+feature you need, or reporting a bug by opening an issue on CodeBerg. You are most welcome to get in touch so we can improve cimd for your 
 usecase.
 
 ## The Critical Rule
@@ -54,7 +53,7 @@ maintainers to figure out important details about your setup.
 ### I have an idea for a feature
 
 Like bug reports, first search through issues and try to find if your feature 
-has already been requested. Otherwise, open a ['enhancement'] issue and explain 
+has already been requested. Otherwise, open an ['enhancement'] issue and explain 
 your desired feature as clear as possible. Also specify why this feature should
 make it to cimd.
 

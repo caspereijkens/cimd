@@ -10,9 +10,9 @@
 <line x1="544.0" y1="12" x2="544.0" y2="82" stroke="#E5E7EB" stroke-width="1"/>
 <text x="544.0" y="104" text-anchor="middle" font-size="11" fill="#6B7280">4s</text>
 <text x="88" y="33.5" text-anchor="end" font-size="13" font-weight="500" fill="#111827">cimd</text>
-<rect x="96" y="18.0" width="42.7" height="22" fill="#F26522" rx="3"/>
-<text x="144.7" y="33.5" font-size="13" fill="#111827">381ms</text>
+<rect x="96" y="18.0" width="40.5" height="22" fill="#F26522" rx="3"/>
+<text x="142.5" y="33.5" font-size="13" fill="#111827">362ms</text>
 <text x="88" y="69.5" text-anchor="end" font-size="13" font-weight="500" fill="#111827">pypowsybl</text>
-<rect x="96" y="54.0" width="401.8" height="22" fill="#8B5CF6" rx="3"/>
-<text x="503.8" y="69.5" font-size="13" fill="#111827">3.588s</text>
+<rect x="96" y="54.0" width="388.9" height="22" fill="#8B5CF6" rx="3"/>
+<text x="490.9" y="69.5" font-size="13" fill="#111827">3.473s</text>
 </svg>
