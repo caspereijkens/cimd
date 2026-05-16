@@ -7,3 +7,4 @@ data/
 *.xml
 *.zip
 *.jiidm
+zig-out-fast
