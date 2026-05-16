@@ -590,6 +590,24 @@ test "tag_index.extract_tag_type - colon before tag (handles start_index)" {
     try std.testing.expectEqualStrings("Substation", tag_type);
 }
 
+test "tag_index.extract_tag_type - multi-line tag with newline after name" {
+    const xml = "<rdf:RDF\n    xmlns:rdf=\"http://example/\">";
+    const tag_type = try tag_index.extract_tag_type(xml, 0);
+    try std.testing.expectEqualStrings("RDF", tag_type);
+}
+
+test "tag_index.extract_tag_type - tab whitespace after name" {
+    const xml = "<cim:Substation\trdf:ID=\"_SS1\">";
+    const tag_type = try tag_index.extract_tag_type(xml, 0);
+    try std.testing.expectEqualStrings("Substation", tag_type);
+}
+
+test "tag_index.extract_tag_type - CRLF after name" {
+    const xml = "<cim:Substation\r\n    rdf:ID=\"_SS1\">";
+    const tag_type = try tag_index.extract_tag_type(xml, 0);
+    try std.testing.expectEqualStrings("Substation", tag_type);
+}
+
 test "tag_index.extract_rdf_id - simple tag" {
     const xml = "<cim:Substation rdf:ID=\"_SS1\">";
     const id = try tag_index.extract_rdf_id(xml, 0);
