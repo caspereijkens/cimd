@@ -931,7 +931,7 @@ pub const VoltageLevel = struct {
             try jws.write(self.loads.items);
         }
         if (self.shunts.items.len > 0) {
-            try jws.objectField("shunts");
+            try jws.objectField("shuntCompensators");
             try jws.write(self.shunts.items);
         }
         if (self.static_var_compensators.items.len > 0) {
@@ -1289,12 +1289,16 @@ pub const TwoWindingsTransformer = struct {
         try jws.write(self.voltage_level_id2);
         try write_terminal(jws, "node2", "bus2", "connectableBus2", self.node2, self.bus2, self.connectable_bus2);
         if (self.selected_op_lims_group1_id) |id| {
-            try jws.objectField("selectedOperationalLimitsGroupId1");
+            try jws.objectField("selectedOperationalLimitsGroupIds1");
+            try jws.beginArray();
             try jws.write(id);
+            try jws.endArray();
         }
         if (self.selected_op_lims_group2_id) |id| {
-            try jws.objectField("selectedOperationalLimitsGroupId2");
+            try jws.objectField("selectedOperationalLimitsGroupIds2");
+            try jws.beginArray();
             try jws.write(id);
+            try jws.endArray();
         }
         if (self.aliases.items.len > 0) {
             try jws.objectField("aliases");
@@ -1438,16 +1442,22 @@ pub const ThreeWindingsTransformer = struct {
         try jws.write(self.voltage_level_id3);
         try write_terminal(jws, "node3", "bus3", "connectableBus3", self.node3, self.bus3, self.connectable_bus3);
         if (self.selected_op_lims_group_id1) |sid| {
-            try jws.objectField("selectedOperationalLimitsGroupId1");
+            try jws.objectField("selectedOperationalLimitsGroupIds1");
+            try jws.beginArray();
             try jws.write(sid);
+            try jws.endArray();
         }
         if (self.selected_op_lims_group_id2) |sid| {
-            try jws.objectField("selectedOperationalLimitsGroupId2");
+            try jws.objectField("selectedOperationalLimitsGroupIds2");
+            try jws.beginArray();
             try jws.write(sid);
+            try jws.endArray();
         }
         if (self.selected_op_lims_group_id3) |sid| {
-            try jws.objectField("selectedOperationalLimitsGroupId3");
+            try jws.objectField("selectedOperationalLimitsGroupIds3");
+            try jws.beginArray();
             try jws.write(sid);
+            try jws.endArray();
         }
         if (self.aliases.items.len > 0) {
             try jws.objectField("aliases");
@@ -1641,12 +1651,16 @@ pub const Line = struct {
         try jws.write(self.voltage_level2_id);
         try write_terminal(jws, "node2", "bus2", "connectableBus2", self.node2, self.bus2, self.connectable_bus2);
         if (self.selected_op_lims_group1_id) |id| {
-            try jws.objectField("selectedOperationalLimitsGroupId1");
+            try jws.objectField("selectedOperationalLimitsGroupIds1");
+            try jws.beginArray();
             try jws.write(id);
+            try jws.endArray();
         }
         if (self.selected_op_lims_group2_id) |id| {
-            try jws.objectField("selectedOperationalLimitsGroupId2");
+            try jws.objectField("selectedOperationalLimitsGroupIds2");
+            try jws.beginArray();
             try jws.write(id);
+            try jws.endArray();
         }
         if (self.aliases.items.len > 0) {
             try jws.objectField("aliases");
@@ -2084,7 +2098,7 @@ pub const Network = struct {
     pub fn jsonStringify(self: @This(), jws: anytype) !void {
         try jws.beginObject();
         try jws.objectField("version");
-        try jws.write("1.15");
+        try jws.write("1.16");
         if (self.extension_versions.items.len > 0) {
             try jws.objectField("extensionVersions");
             try jws.write(self.extension_versions.items);

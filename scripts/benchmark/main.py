@@ -19,6 +19,7 @@ import io
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -127,7 +128,10 @@ def main() -> int:
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    jiidm_path = args.out_dir / "cimd.jiidm"
+    # Intermediate JIIDM is written to a private temp dir and removed on exit
+    # so converted grid data never lingers on disk after the benchmark.
+    jiidm_tempdir = tempfile.TemporaryDirectory(prefix="cimd-bench-")
+    jiidm_path = Path(jiidm_tempdir.name) / "cimd.jiidm"
 
     if args.no_build:
         binary = REPO_ROOT / "zig-out-fast" / "bin" / "cimd"
@@ -201,6 +205,7 @@ def main() -> int:
     svg_path = args.out_dir / "benchmark.svg"
     write_svg(svg_path, cimd_seconds=a_med, pypow_seconds=b_med)
     print(f"\nSVG: {svg_path}")
+    jiidm_tempdir.cleanup()
     return 0
 
 
