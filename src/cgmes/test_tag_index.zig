@@ -566,6 +566,71 @@ test "tag_index.find_tag_boundaries - CGMES-style XML" {
     }
 }
 
+test "tag_index.find_tag_boundaries - comment with angle bracket text" {
+    const gpa = std.testing.allocator;
+
+    const input = "<root><!-- CN_A <-> CN_B --><child/></root>";
+
+    var boundaries = try tag_index.find_tag_boundaries(gpa, input);
+    defer boundaries.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 4), boundaries.items.len);
+    try std.testing.expectEqualStrings("<root>", input[boundaries.items[0].start .. boundaries.items[0].end + 1]);
+    try std.testing.expectEqualStrings("<!-- CN_A <-> CN_B -->", input[boundaries.items[1].start .. boundaries.items[1].end + 1]);
+    try std.testing.expectEqualStrings("<child/>", input[boundaries.items[2].start .. boundaries.items[2].end + 1]);
+    try std.testing.expectEqualStrings("</root>", input[boundaries.items[3].start .. boundaries.items[3].end + 1]);
+}
+
+test "tag_index.find_tag_boundaries - empty comment" {
+    const gpa = std.testing.allocator;
+
+    const input = "<a><!----></a>";
+
+    var boundaries = try tag_index.find_tag_boundaries(gpa, input);
+    defer boundaries.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 3), boundaries.items.len);
+    try std.testing.expectEqualStrings("<a>", input[boundaries.items[0].start .. boundaries.items[0].end + 1]);
+    try std.testing.expectEqualStrings("<!---->", input[boundaries.items[1].start .. boundaries.items[1].end + 1]);
+    try std.testing.expectEqualStrings("</a>", input[boundaries.items[2].start .. boundaries.items[2].end + 1]);
+}
+
+test "tag_index.find_tag_boundaries - multi-line comment" {
+    const gpa = std.testing.allocator;
+
+    const input = "<a><!--\nline1 <foo>\nline2 -->\n</a>";
+
+    var boundaries = try tag_index.find_tag_boundaries(gpa, input);
+    defer boundaries.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 3), boundaries.items.len);
+    try std.testing.expectEqualStrings("<a>", input[boundaries.items[0].start .. boundaries.items[0].end + 1]);
+    try std.testing.expectEqualStrings("<!--\nline1 <foo>\nline2 -->", input[boundaries.items[1].start .. boundaries.items[1].end + 1]);
+    try std.testing.expectEqualStrings("</a>", input[boundaries.items[2].start .. boundaries.items[2].end + 1]);
+}
+
+test "tag_index.find_tag_boundaries - multiple adjacent comments" {
+    const gpa = std.testing.allocator;
+
+    const input = "<!--a--><!--b<x>--><r/>";
+
+    var boundaries = try tag_index.find_tag_boundaries(gpa, input);
+    defer boundaries.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 3), boundaries.items.len);
+    try std.testing.expectEqualStrings("<!--a-->", input[boundaries.items[0].start .. boundaries.items[0].end + 1]);
+    try std.testing.expectEqualStrings("<!--b<x>-->", input[boundaries.items[1].start .. boundaries.items[1].end + 1]);
+    try std.testing.expectEqualStrings("<r/>", input[boundaries.items[2].start .. boundaries.items[2].end + 1]);
+}
+
+test "tag_index.find_tag_boundaries - unterminated comment" {
+    const gpa = std.testing.allocator;
+
+    const input = "<a><!-- never closes";
+
+    try std.testing.expectError(error.MalformedXML, tag_index.find_tag_boundaries(gpa, input));
+}
+
 test "tag_index.extract_tag_type - simple tag" {
     const xml = "<cim:Substation rdf:ID=\"_SS1\">";
     const tag_type = try tag_index.extract_tag_type(xml, 0);

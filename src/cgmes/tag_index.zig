@@ -212,7 +212,9 @@ pub const TagBoundary = struct {
 };
 
 /// Find all XML tag boundaries by pairing '<' and '>' characters.
-/// Uses two SIMD passes (one per delimiter) then zips the results.
+/// Uses two SIMD passes (one per delimiter) then zips the results, skipping
+/// `<` and `>` that appear inside XML comments (`<!-- ... -->`). The comment
+/// itself is emitted as a single boundary spanning the whole section.
 /// Returns ArrayList of TagBoundary in document order.
 pub fn find_tag_boundaries(
     gpa: std.mem.Allocator,
@@ -223,30 +225,61 @@ pub fn find_tag_boundaries(
 
     if (xml.len == 0) return result;
 
-    // Find all '<'
     var lt_positions = try find_byte_simd(gpa, xml, '<');
     defer lt_positions.deinit(gpa);
 
-    // Find all '>'
     var gt_positions = try find_byte_simd(gpa, xml, '>');
     defer gt_positions.deinit(gpa);
 
-    if (lt_positions.items.len == 0 and gt_positions.items.len == 0) return result;
+    const lts = lt_positions.items;
+    const gts = gt_positions.items;
 
-    // Unequal counts mean malformed XML (e.g. unmatched '<' or '>').
-    if (lt_positions.items.len != gt_positions.items.len) {
-        return error.MalformedXML;
-    }
+    if (lts.len == 0 and gts.len == 0) return result;
 
-    try result.ensureTotalCapacity(gpa, lt_positions.items.len);
+    // Upper bound: every '<' opens a tag. Comments only reduce this.
+    try result.ensureTotalCapacity(gpa, lts.len);
 
-    for (lt_positions.items, gt_positions.items) |lt_pos, gt_pos| {
-        // In well-formed XML, '>' must come after '<'.
-        if (gt_pos <= lt_pos) {
-            return error.MalformedXML;
+    var lt_idx: usize = 0;
+    var gt_idx: usize = 0;
+
+    while (lt_idx < lts.len) {
+        const lt = lts[lt_idx];
+
+        // Fast path: most '<' open a normal element. One byte-compare guards
+        // the comment branch; the compiler keeps this in a single predictable
+        // branch since '!' is rare immediately after '<'.
+        const is_comment = lt + 3 < xml.len and
+            xml[lt + 1] == '!' and xml[lt + 2] == '-' and xml[lt + 3] == '-';
+
+        if (!is_comment) {
+            if (gt_idx >= gts.len) return error.MalformedXML;
+            const gt = gts[gt_idx];
+            if (gt <= lt) return error.MalformedXML;
+            result.appendAssumeCapacity(.{ .start = lt, .end = gt });
+            lt_idx += 1;
+            gt_idx += 1;
+            continue;
         }
-        result.appendAssumeCapacity(.{ .start = lt_pos, .end = gt_pos });
+
+        // Comment: walk gt_idx forward to the first '>' preceded by '--',
+        // then skip any '<' positions that fell inside the comment span.
+        // The opening '<!--' occupies lt..lt+3, so any '>' at or before lt+3
+        // can't be the closer (and would already be paired with a prior tag).
+        while (gt_idx < gts.len and gts[gt_idx] <= lt + 3) : (gt_idx += 1) {}
+
+        const close_gt = while (gt_idx < gts.len) : (gt_idx += 1) {
+            const gt = gts[gt_idx];
+            if (xml[gt - 1] == '-' and xml[gt - 2] == '-') break gt;
+        } else return error.MalformedXML;
+
+        result.appendAssumeCapacity(.{ .start = lt, .end = close_gt });
+        gt_idx += 1;
+        lt_idx += 1;
+        while (lt_idx < lts.len and lts[lt_idx] < close_gt) : (lt_idx += 1) {}
     }
+
+    if (gt_idx < gts.len) return error.MalformedXML;
+
     return result;
 }
 
