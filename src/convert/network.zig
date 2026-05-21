@@ -466,12 +466,13 @@ pub fn convert(
         const ssh_full_model_view: ?tag_index.CimObjectView = if (ssh_opt) |ssh| try ssh.getFullModelView() else null;
         const expected_model_count = full_model_count + @as(usize, if (ssh_full_model_view != null) 1 else 0);
 
-        for (0..full_model_count) |round| {
-            const start_i: usize = if (round == 0) 1 else 0;
-            const end_i: usize = if (round == 0) full_model_count else 1;
-            for (full_models[start_i..end_i]) |full_model| {
+        // full_models[0] is the EQ FullModel; full_models[1..] are dependency
+        // FullModels (EQBD). Append dependencies first, then the EQ itself.
+        if (full_model_count > 0) {
+            for (full_models[1..]) |full_model| {
                 try append_metadata_model(gpa, model.view(full_model), &metadata_models);
             }
+            try append_metadata_model(gpa, model.view(full_models[0]), &metadata_models);
         }
         if (ssh_full_model_view) |view| {
             try append_metadata_model(gpa, view, &metadata_models);

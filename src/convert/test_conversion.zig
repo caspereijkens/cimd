@@ -37,7 +37,7 @@ const EQ_XML =
     \\    <md:Model.scenarioTime>2026-01-01T09:00:00Z</md:Model.scenarioTime>
     \\    <md:Model.created>2026-01-01T01:00:00Z</md:Model.created>
     \\  </md:FullModel>
-    \\  <!-- EQBD stub (index 1). The cgmesMetadataModels loop expects 2+ FullModels. -->
+    \\  <!-- EQBD stub (index 1). Exercises dependency-first ordering in cgmesMetadataModels. -->
     \\  <md:FullModel rdf:about="_FM_EQBD">
     \\    <md:Model.scenarioTime>2026-01-01T09:00:00Z</md:Model.scenarioTime>
     \\    <md:Model.created>2026-01-01T01:00:00Z</md:Model.created>
