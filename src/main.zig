@@ -80,6 +80,7 @@ pub fn main(init: std.process.Init) !void {
         .types => |c| try command_types(io, gpa, c),
         .diff => |c| try command_diff(io, gpa, c),
         .topology => |c| try command_topology(io, gpa, c),
+        .validate => |c| try command_validate(io, gpa, c),
         .version => |v| try command_version(io, v.verbose, v.json),
     }
 }
@@ -774,6 +775,12 @@ fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology)
     try std.json.Stringify.value(.{ .topologicalNodes = nodes.items }, .{}, w);
     try w.writeByte('\n');
     try w.flush();
+}
+
+fn command_validate(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Validate) !void {
+    _ = gpa;
+    _ = c;
+    try print.stderr(io, "Not implemented yet!\n", .{});
 }
 
 fn command_version(io: std.Io, verbose: bool, json: bool) !void {
