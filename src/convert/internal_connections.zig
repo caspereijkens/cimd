@@ -44,7 +44,7 @@ pub fn populate_internal_connections(
         gop.value_ptr.* += 1;
     }
 
-    var ic_counts: std.StringHashMapUnmanaged(usize) = .empty;
+    var ic_counts: std.StringHashMapUnmanaged(u32) = .empty;
     defer ic_counts.deinit(gpa);
     try ic_counts.ensureTotalCapacity(gpa, @intCast(voltage_level_map.count()));
 
@@ -55,18 +55,18 @@ pub fn populate_internal_connections(
 
         const other_count = conn_node_other_count.get(conn_node.id) orelse 0;
         const has_busbar_section = index.conn_node_to_busbar_section.contains(conn_node.id);
-        const ic_for_cn: usize = if (has_busbar_section or other_count >= 3) other_count else if (other_count > 0) other_count - 1 else 0;
+        const ic_for_cn: u32 = if (has_busbar_section or other_count >= 3) other_count else if (other_count > 0) other_count - 1 else 0;
         if (ic_for_cn > 0) {
             const gop = ic_counts.getOrPutAssumeCapacity(repr_voltage_level_id);
             if (!gop.found_existing) gop.value_ptr.* = 0;
-            gop.value_ptr.* += ic_for_cn;
+            gop.value_ptr.* = std.math.add(u32, gop.value_ptr.*, ic_for_cn) catch return error.TooManyInternalConnections;
         }
     }
 
     var ic_it = ic_counts.iterator();
     while (ic_it.next()) |entry| {
         const voltage_level = voltage_level_map.get(entry.key_ptr.*) orelse continue;
-        try voltage_level.node_breaker_topology.internal_connections.ensureTotalCapacity(gpa, entry.value_ptr.*);
+        try voltage_level.node_breaker_topology.internal_connections.ensureTotalCapacity(gpa, @intCast(entry.value_ptr.*));
     }
 
     for (topology.phase2_equipment_types) |equipment_type| {

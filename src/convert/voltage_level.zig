@@ -5,9 +5,11 @@ const cross_ref = @import("../topology/cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
 const resolve = @import("../topology/resolve.zig");
+const substation_conv = @import("substation.zig");
 
 const assert = std.debug.assert;
 const Topology = resolve.Topology;
+const SubstationIndex = substation_conv.SubstationIndex;
 
 const CimObject = tag_index.CimObject;
 const CimObjectView = tag_index.CimObjectView;
@@ -33,7 +35,7 @@ fn append_voltage_level(
     index: *const CrossRef,
     voltage_level: CimObjectView,
     network: *iidm.Network,
-    substation_id_map: *std.StringHashMapUnmanaged(usize),
+    substation_id_map: *std.StringHashMapUnmanaged(SubstationIndex),
     repr_to_stub_mrids: *const std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)),
 ) !void {
     assert(std.mem.eql(u8, voltage_level.type_name, "VoltageLevel"));
@@ -58,7 +60,7 @@ fn append_voltage_level(
 
     const substation_ref = try voltage_level.getReference("VoltageLevel.Substation") orelse return;
     const substation_idx = substation_id_map.get(strip_hash(substation_ref)) orelse return;
-    network.substations.items[substation_idx].voltage_levels.appendAssumeCapacity(.{
+    network.substations.items[@intCast(substation_idx)].voltage_levels.appendAssumeCapacity(.{
         .id = mrid,
         .name = name,
         .nominal_voltageoltage = nominal_voltageoltage,
@@ -134,7 +136,7 @@ pub fn convert_voltage_levels(
     index: *const CrossRef,
     topology: *const Topology,
     network: *iidm.Network,
-    substation_id_map: *std.StringHashMapUnmanaged(usize),
+    substation_id_map: *std.StringHashMapUnmanaged(SubstationIndex),
 ) !void {
     assert(network.substations.items.len > 0);
 
@@ -149,7 +151,7 @@ pub fn convert_voltage_levels(
         if (topology.voltage_level_merge.contains(voltage_level.id)) continue;
         const substation_ref = try model.view(voltage_level).getReference("VoltageLevel.Substation") orelse continue;
         const substation_idx = substation_id_map.get(strip_hash(substation_ref)) orelse continue;
-        voltage_level_counts[substation_idx] += 1;
+        voltage_level_counts[@intCast(substation_idx)] += 1;
     }
 
     for (network.substations.items, voltage_level_counts) |*substation, count| {
@@ -194,7 +196,7 @@ pub fn build_voltage_level_map(
     model: *const EQ,
     topology: *const Topology,
     network: *iidm.Network,
-    substation_id_map: *const std.StringHashMapUnmanaged(usize),
+    substation_id_map: *const std.StringHashMapUnmanaged(SubstationIndex),
     substation_map: *std.StringHashMapUnmanaged(*iidm.Substation),
 ) !std.StringHashMapUnmanaged(*iidm.VoltageLevel) {
     assert(network.substations.items.len > 0);
@@ -215,11 +217,12 @@ pub fn build_voltage_level_map(
         if (topology.voltage_level_merge.contains(voltage_level.id)) continue;
         const substation_ref = try model.view(voltage_level).getReference("VoltageLevel.Substation") orelse continue;
         const substation_idx = substation_id_map.get(strip_hash(substation_ref)) orelse continue;
-        substation_map.putAssumeCapacity(voltage_level.id, &network.substations.items[substation_idx]);
+        const substation_item_idx: usize = @intCast(substation_idx);
+        substation_map.putAssumeCapacity(voltage_level.id, &network.substations.items[substation_item_idx]);
 
-        const voltage_level_idx = voltage_level_counters[substation_idx];
-        voltage_level_counters[substation_idx] += 1;
-        voltage_level_map.putAssumeCapacity(voltage_level.id, &network.substations.items[substation_idx].voltage_levels.items[voltage_level_idx]);
+        const voltage_level_idx = voltage_level_counters[substation_item_idx];
+        voltage_level_counters[substation_item_idx] += 1;
+        voltage_level_map.putAssumeCapacity(voltage_level.id, &network.substations.items[substation_item_idx].voltage_levels.items[voltage_level_idx]);
     }
 
     assert(voltage_level_map.count() == representative_count);

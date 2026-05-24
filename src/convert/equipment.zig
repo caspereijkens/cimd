@@ -23,12 +23,12 @@ const NodeMap = resolve.NodeMap;
 const Topology = resolve.Topology;
 
 const VoltageLevelEquipmentCounts = struct {
-    busbar_sections: usize = 0,
-    switches: usize = 0,
-    generators: usize = 0,
-    loads: usize = 0,
-    shunts: usize = 0,
-    static_var_compensators: usize = 0,
+    busbar_sections: u32 = 0,
+    switches: u32 = 0,
+    generators: u32 = 0,
+    loads: u32 = 0,
+    shunts: u32 = 0,
+    static_var_compensators: u32 = 0,
 };
 
 /// Count all objects of a given CIM type and increment the named field in the
@@ -45,7 +45,8 @@ fn count_equipment_for_type(
         const placement = try placer.resolve_equipment(obj.id) orelse continue;
         const gop = equipment_counts.getOrPutAssumeCapacity(placement.repr_voltage_level_id);
         if (!gop.found_existing) gop.value_ptr.* = .{};
-        @field(gop.value_ptr.*, field_name) += 1;
+        const field = &@field(gop.value_ptr.*, field_name);
+        field.* = std.math.add(u32, field.*, 1) catch return error.TooManyVoltageLevelEquipment;
     }
 }
 
@@ -84,12 +85,12 @@ pub fn pre_allocate_equipment(
     while (it.next()) |entry| {
         const voltage_level = placer.voltage_level_map.get(entry.key_ptr.*) orelse continue;
         const counts = entry.value_ptr.*;
-        try voltage_level.node_breaker_topology.busbar_sections.ensureTotalCapacity(gpa, counts.busbar_sections);
-        try voltage_level.node_breaker_topology.switches.ensureTotalCapacity(gpa, counts.switches);
-        try voltage_level.generators.ensureTotalCapacity(gpa, counts.generators);
-        try voltage_level.loads.ensureTotalCapacity(gpa, counts.loads);
-        try voltage_level.shunts.ensureTotalCapacity(gpa, counts.shunts);
-        try voltage_level.static_var_compensators.ensureTotalCapacity(gpa, counts.static_var_compensators);
+        try voltage_level.node_breaker_topology.busbar_sections.ensureTotalCapacity(gpa, @intCast(counts.busbar_sections));
+        try voltage_level.node_breaker_topology.switches.ensureTotalCapacity(gpa, @intCast(counts.switches));
+        try voltage_level.generators.ensureTotalCapacity(gpa, @intCast(counts.generators));
+        try voltage_level.loads.ensureTotalCapacity(gpa, @intCast(counts.loads));
+        try voltage_level.shunts.ensureTotalCapacity(gpa, @intCast(counts.shunts));
+        try voltage_level.static_var_compensators.ensureTotalCapacity(gpa, @intCast(counts.static_var_compensators));
     }
 
     assert(equipment_counts.count() <= placer.voltage_level_map.count());

@@ -279,7 +279,7 @@ pub fn convert(
     };
     errdefer network.deinit(gpa);
 
-    var sub_id_map: std.StringHashMapUnmanaged(usize) = .empty;
+    var sub_id_map: std.StringHashMapUnmanaged(substation_conv.SubstationIndex) = .empty;
     defer sub_id_map.deinit(gpa);
     try substation_conv.convert_substations(gpa, model, &topology_data, &network, &sub_id_map);
 

@@ -547,7 +547,7 @@ fn pre_allocate_transformers(
 ) !void {
     assert(placer.voltage_level_map.count() > 0);
 
-    var transformer_counts: std.AutoHashMapUnmanaged(usize, struct { two: usize, three: usize }) = .empty;
+    var transformer_counts: std.AutoHashMapUnmanaged(*iidm.Substation, struct { two: u32, three: u32 }) = .empty;
     defer transformer_counts.deinit(gpa);
     try transformer_counts.ensureTotalCapacity(gpa, @intCast(ends_by_transformer.count()));
 
@@ -560,16 +560,17 @@ fn pre_allocate_transformers(
         const placement1 = try resolve_end_placement(ends.items[0], placer) orelse continue;
         const substation = substation_map.get(placement1.repr_voltage_level_id) orelse continue;
 
-        const gop = transformer_counts.getOrPutAssumeCapacity(@intFromPtr(substation));
+        const gop = transformer_counts.getOrPutAssumeCapacity(substation);
         if (!gop.found_existing) gop.value_ptr.* = .{ .two = 0, .three = 0 };
-        if (winding_count == 2) gop.value_ptr.two += 1 else gop.value_ptr.three += 1;
+        const field = if (winding_count == 2) &gop.value_ptr.two else &gop.value_ptr.three;
+        field.* = std.math.add(u32, field.*, 1) catch return error.TooManyTransformers;
     }
 
     var counts_it = transformer_counts.iterator();
     while (counts_it.next()) |entry| {
-        const substation: *iidm.Substation = @ptrFromInt(entry.key_ptr.*);
-        try substation.two_winding_transformers.ensureTotalCapacity(gpa, entry.value_ptr.two);
-        try substation.three_winding_transformers.ensureTotalCapacity(gpa, entry.value_ptr.three);
+        const substation = entry.key_ptr.*;
+        try substation.two_winding_transformers.ensureTotalCapacity(gpa, @intCast(entry.value_ptr.two));
+        try substation.three_winding_transformers.ensureTotalCapacity(gpa, @intCast(entry.value_ptr.three));
     }
 
     assert(transformer_counts.count() <= placer.voltage_level_map.count());
