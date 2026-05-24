@@ -514,6 +514,10 @@ fn command_refs(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Refs) !void {
     const target = try resolve_prefix(io, gpa, &inputs.model, inputs.tp, c.mrid, c.target_type, c.json, .{
         .command = .refs,
     }) orelse return;
+    // Pairs with resolve_prefix's final-branch invariants: a target without an
+    // id/type would break the index lookup and the writer's preconditions.
+    assert(target.id.len > 0);
+    assert(target.type_name.len > 0);
 
     var index = try refs.ReverseRefIndex.build_with_overlays(gpa, &inputs.model, inputs.tp, inputs.ssh);
     defer index.deinit(gpa);

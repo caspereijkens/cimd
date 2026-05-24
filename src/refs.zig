@@ -40,6 +40,8 @@ pub const ReverseRefIndex = struct {
         errdefer index.deinit(gpa);
 
         for (model.objects) |obj| {
+            assert(obj.id.len > 0);
+            assert(obj.type_name.len > 0);
             try collect_refs_from_range(
                 gpa,
                 &index,
@@ -54,6 +56,16 @@ pub const ReverseRefIndex = struct {
 
         if (tp_opt) |tp| try index_tp(gpa, &index, tp);
         if (ssh_opt) |ssh| try index_ssh(gpa, &index, ssh);
+
+        // Postcondition pairs with collect_refs_from_range's per-edge invariants:
+        // every key is a non-empty target id, and every bucket holds at least
+        // one edge (an empty bucket would mean we leaked an allocation without a
+        // corresponding append).
+        var it = index.map.iterator();
+        while (it.next()) |entry| {
+            assert(entry.key_ptr.*.len > 0);
+            assert(entry.value_ptr.*.items.len > 0);
+        }
         return index;
     }
 
@@ -64,8 +76,10 @@ pub const ReverseRefIndex = struct {
     }
 
     pub fn lookup(self: *const ReverseRefIndex, target_id: []const u8) []const ReverseRef {
-        assert(target_id.len > 0);
         const list = self.map.get(target_id) orelse return &.{};
+        // Pair with build_with_overlays's invariant: every bucket holds at least
+        // one edge — an empty hit signals index corruption.
+        assert(list.items.len > 0);
         return list.items;
     }
 };
@@ -259,7 +273,7 @@ pub fn filter_referrers(
         try selected.append(gpa, ref);
     }
 
-    std.mem.sort(ReverseRef, selected.items, {}, struct {
+    const lessThan = struct {
         fn lessThan(_: void, a: ReverseRef, b: ReverseRef) bool {
             const type_order = std.mem.order(u8, a.referrer_type, b.referrer_type);
             if (type_order != .eq) return type_order == .lt;
@@ -267,9 +281,18 @@ pub fn filter_referrers(
             if (id_order != .eq) return id_order == .lt;
             return std.mem.order(u8, a.reference_name, b.reference_name) == .lt;
         }
-    }.lessThan);
+    }.lessThan;
+    std.mem.sort(ReverseRef, selected.items, {}, lessThan);
 
-    return selected.toOwnedSlice(gpa);
+    const out = try selected.toOwnedSlice(gpa);
+    // Postcondition pairs with the filter loop above: every retained row must
+    // still satisfy the type filter.
+    if (type_filter != null) for (out) |ref| {
+        assert(cim_types.matches_filter(ref.referrer_type, type_filter));
+    };
+    // Postcondition pairs with std.mem.sort above.
+    if (out.len > 1) for (out[1..], 1..) |ref, i| assert(!lessThan({}, ref, out[i - 1]));
+    return out;
 }
 
 /// Render the human-readable text form: one line per referrer formatted as
@@ -280,6 +303,7 @@ pub fn write_referrers_text(
     referrers: []const ReverseRef,
     type_filter: ?[]const u8,
 ) !void {
+    assert(target_id.len > 0);
     if (referrers.len == 0) {
         if (type_filter) |t| {
             try w.print("No referrers of type '{s}' for {s}\n", .{ t, target_id });
@@ -289,6 +313,11 @@ pub fn write_referrers_text(
         return;
     }
     for (referrers) |ref| {
+        // Pair with collect_refs_from_range's preconditions: a row reaching
+        // the renderer with empty fields would point at an indexer regression.
+        assert(ref.referrer_id.len > 0);
+        assert(ref.referrer_type.len > 0);
+        assert(ref.reference_name.len > 0);
         try w.print("{s} | {s} | {s}\n", .{
             ref.referrer_id,
             ref.referrer_type,
@@ -306,12 +335,19 @@ pub fn write_referrers_json(
     target_type: []const u8,
     referrers: []const ReverseRef,
 ) !void {
+    assert(target_id.len > 0);
+    assert(target_type.len > 0);
     try w.writeAll("{\"id\":");
     try std.json.Stringify.value(target_id, .{}, w);
     try w.writeAll(",\"type\":");
     try std.json.Stringify.value(target_type, .{}, w);
     try w.writeAll(",\"referrers\":[");
     for (referrers, 0..) |ref, i| {
+        // Pair with collect_refs_from_range's preconditions: empty fields here
+        // would point at an indexer regression rather than a renderer bug.
+        assert(ref.referrer_id.len > 0);
+        assert(ref.referrer_type.len > 0);
+        assert(ref.reference_name.len > 0);
         if (i > 0) try w.writeByte(',');
         try w.writeAll("{\"id\":");
         try std.json.Stringify.value(ref.referrer_id, .{}, w);
