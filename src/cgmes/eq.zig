@@ -89,12 +89,22 @@ pub const EQ = struct {
             type_index.putAssumeCapacity(entry.key_ptr.*, .{ .start = pos, .len = entry.value_ptr.* });
             pos += entry.value_ptr.*;
         }
+        // Prefix sums must cover the full object set; pairs with pass 3's writes.
+        assert(pos == @as(u32, @intCast(sorted_objects.len)));
 
         // Pass 3: fill sorted_objects using write cursors.
         for (objects.items) |obj| {
             const cursor = write_cursors.getPtr(obj.type_name).?;
             sorted_objects[cursor.*] = obj;
             cursor.* += 1;
+        }
+
+        // Every cursor must now sit at the end of its type's range — otherwise
+        // pass 1 and pass 3 disagreed on how many objects each type holds.
+        var cursor_it = write_cursors.iterator();
+        while (cursor_it.next()) |entry| {
+            const range = type_index.get(entry.key_ptr.*).?;
+            assert(entry.value_ptr.* == range.start + range.len);
         }
 
         // Free original objects ArrayList (copied into sorted_objects).
@@ -104,8 +114,12 @@ pub const EQ = struct {
         // Build id_to_index from sorted positions.
         try id_to_index.ensureTotalCapacity(@intCast(sorted_objects.len));
         for (sorted_objects, 0..) |obj, index| {
+            assert(obj.id.len > 0);
             id_to_index.putAssumeCapacity(obj.id, @intCast(index));
         }
+        // Pairs with the duplicate-id rejection at line 53: every object must
+        // have produced exactly one id_to_index entry.
+        assert(id_to_index.count() == sorted_objects.len);
 
         return .{
             .objects = sorted_objects,
@@ -126,6 +140,12 @@ pub const EQ = struct {
 
     /// Bind a stored CimObject to this model's XML context for property access.
     pub fn view(self: EQ, obj: CimObject) tag_index.CimObjectView {
+        // Catch the cross-EQ mix-up: passing a CimObject that was indexed against
+        // a different model's boundaries would otherwise slice into the wrong XML.
+        assert(obj.object_tag_idx < self.boundaries.len);
+        assert(obj.closing_tag_idx < self.boundaries.len);
+        assert(obj.closing_tag_idx >= obj.object_tag_idx);
+        assert(obj.id.len > 0);
         return .{
             .xml = self.xml,
             .boundaries = self.boundaries,
@@ -138,7 +158,10 @@ pub const EQ = struct {
 
     pub fn getObjectById(self: EQ, id: []const u8) ?tag_index.CimObjectView {
         const idx = self.id_to_index.get(id) orelse return null;
-        return self.view(self.objects[idx]);
+        const result = self.view(self.objects[idx]);
+        // Pair with the index lookup: the stored object's id must round-trip.
+        assert(std.mem.eql(u8, result.id, id));
+        return result;
     }
 
     /// Returns objects whose mRID starts with `id_prefix`, in storage order
@@ -151,13 +174,18 @@ pub const EQ = struct {
     ) ![]const tag_index.CimObject {
         const needle = try cgmes_ids.with_leading_underscore(gpa, id_prefix);
         defer gpa.free(needle);
+        assert(needle.len > 0);
 
         var matches: std.ArrayList(CimObject) = .empty;
         errdefer matches.deinit(gpa);
         for (self.objects) |obj| {
             if (std.mem.startsWith(u8, obj.id, needle)) try matches.append(gpa, obj);
         }
-        return matches.toOwnedSlice(gpa);
+        const out = try matches.toOwnedSlice(gpa);
+        // Postcondition pairs with the filter loop: a regression in the prefix
+        // check would let foreign ids leak through.
+        for (out) |m| assert(std.mem.startsWith(u8, m.id, needle));
+        return out;
     }
 
     /// Result of resolving a (prefix, optional type) pair to a single object.

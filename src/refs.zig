@@ -188,9 +188,16 @@ pub fn resolve_object(
     tp_opt: ?TP,
     id: []const u8,
 ) ?tag_index.CimObjectView {
-    if (model.getObjectById(id)) |view| return view;
+    if (model.getObjectById(id)) |view| {
+        // Round-trip pair: the EQ index must hand us back the same id.
+        assert(std.mem.eql(u8, view.id, id));
+        return view;
+    }
     if (tp_opt) |tp| {
-        if (tp.get_object_by_id(id)) |view| return view;
+        if (tp.get_object_by_id(id)) |view| {
+            assert(std.mem.eql(u8, view.id, id));
+            return view;
+        }
     }
     return null;
 }
@@ -227,6 +234,12 @@ pub fn collect_target_candidates(
     const out = try gpa.alloc(tag_index.CimObject, eq_matches.len + tp_matches.len);
     @memcpy(out[0..eq_matches.len], eq_matches);
     @memcpy(out[eq_matches.len..], tp_matches);
+    // Downstream consumers (lookup, display, mrid stripping) all require a
+    // non-empty id; any empty here means an upstream parser admitted garbage.
+    for (out) |obj| {
+        assert(obj.id.len > 0);
+        assert(obj.type_name.len > 0);
+    }
     return out;
 }
 

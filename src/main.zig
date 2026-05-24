@@ -194,11 +194,18 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
         const target = try resolve_prefix(io, gpa, &inputs.model, inputs.tp, mrid_val, c.type_filter, c.json, .{
             .command = .get,
         }) orelse return;
+        assert(target.id.len > 0);
+        assert(target.type_name.len > 0);
         const object = refs.resolve_object(&inputs.model, inputs.tp, target.id) orelse unreachable;
+        // Pair the resolution: resolve_prefix already verified the id resolves;
+        // the same lookup here must return the same identity.
+        assert(std.mem.eql(u8, object.id, target.id));
+        assert(std.mem.eql(u8, object.type_name, target.type_name));
         try display_get_object(io, gpa, object, inputs.tp, inputs.ssh, c.json);
         return;
     }
 
+    assert(c.type_filter != null); // command_get_list's contract.
     try command_get_list(io, gpa, &inputs.model, c);
 }
 
@@ -211,6 +218,8 @@ fn validate_get_args(io: std.Io, c: cli.Command.Get) void {
 }
 
 fn command_get_list(io: std.Io, gpa: std.mem.Allocator, model: *const EQ, c: cli.Command.Get) !void {
+    assert(c.type_filter != null);
+    assert(c.mrid == null);
     const type_name = c.type_filter.?;
     const objects = try collect_objects_by_type_filter(gpa, model, type_name);
     defer gpa.free(objects);
@@ -330,12 +339,19 @@ fn resolve_prefix(
             .command => try render_target_ambiguity(io, gpa, mrid, filtered.items, type_filter, json),
             .browse_pick => |interactive| {
                 const id = try browse.pick_from_prefix(io, gpa, interactive, mrid, filtered.items);
+                assert(id.len > 0);
                 return .{ .id = id, .type_name = find_type_name(filtered.items, id) orelse unreachable };
             },
         }
         return null;
     }
 
+    // Down to the unique-match branch — the empty and ambiguous cases above
+    // both returned. The remaining match must carry the identity downstream
+    // expects to render.
+    assert(filtered.items.len == 1);
+    assert(filtered.items[0].id.len > 0);
+    assert(filtered.items[0].type_name.len > 0);
     return .{
         .id = filtered.items[0].id,
         .type_name = filtered.items[0].type_name,
@@ -389,6 +405,8 @@ fn display_get_object(
     ssh_opt: ?SSH,
     json: bool,
 ) !void {
+    assert(object.id.len > 0);
+    assert(object.type_name.len > 0);
     if (tp_opt == null and ssh_opt == null) {
         if (json) {
             try print.display_object_json(io, gpa, object);

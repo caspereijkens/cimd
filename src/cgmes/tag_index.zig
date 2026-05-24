@@ -367,13 +367,14 @@ pub fn find_closing_tag(
     assert(opening_tag_idx < boundaries.len);
 
     const opening_tag = boundaries[opening_tag_idx];
+    assert(opening_tag.start < opening_tag.end);
 
     // Check if self-closing.
     if (xml[opening_tag.end - 1] == '/') return error.SelfClosingTag;
 
     var depth: u32 = 1;
     const opening_tag_type = try extract_tag_type(xml, opening_tag.start);
-    return blk: {
+    const result_idx: u32 = blk: {
         for (boundaries[opening_tag_idx + 1 ..], opening_tag_idx + 1..) |tag, i| {
             if (xml[tag.start + 1] == '/') {
                 const tag_type = extract_tag_type(xml, tag.start + 1) catch continue;
@@ -391,8 +392,13 @@ pub fn find_closing_tag(
                 }
             }
         }
-        break :blk error.NoClosingTag;
+        return error.NoClosingTag;
     };
+    // Postcondition: the closer lies strictly after the opener and within bounds,
+    // pairing with the bounds precondition above.
+    assert(result_idx > opening_tag_idx);
+    assert(result_idx < boundaries.len);
+    return result_idx;
 }
 
 pub fn get_property_from_indices(
@@ -503,6 +509,15 @@ pub fn build_closing_index(
 
     // Every opener must have been matched; a non-empty stack means unclosed tags.
     if (stack.items.len != 0) return error.MalformedXML;
+
+    // Postcondition: every entry either points to itself (self-closing) or to a
+    // boundary strictly after it. A regression in the matching logic above
+    // (e.g. an off-by-one on the closing-tag write) would surface here rather
+    // than silently corrupt downstream property extraction.
+    for (closing_for, 0..) |c, i| {
+        assert(c >= i);
+        assert(c < boundaries.len);
+    }
 
     return closing_for;
 }
