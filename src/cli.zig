@@ -105,13 +105,15 @@ const help_get = std.fmt.comptimePrint(
     \\Exits 0 on success, 1 if no object is found.
     \\
     \\Prefix lookup:
-    \\  <mrid> may be any prefix of a full mRID; the leading underscore is
-    \\  optional, so "_be60" and "be60" are equivalent. When a prefix matches
-    \\  multiple objects, cimd prints the candidates and exits without selecting
-    \\  one — or, if the match list is large, prints a per-type breakdown
-    \\  instead. With --json, an envelope `{{"prefix","total","matches","types"}}`
-    \\  is emitted regardless of match count. Pass --type to narrow ambiguous
-    \\  prefixes to a single type.
+    \\  <mrid> may be any prefix of a full mRID. For the common rdf:ID form
+    \\  the leading underscore is optional, so "_be60" and "be60" are equivalent.
+    \\  For FullModel-style ids carried in rdf:about (e.g. "urn:uuid:484c..."),
+    \\  pass the prefix literally — "urn", "urn:uuid:484c", etc. all work. When
+    \\  a prefix matches multiple objects, cimd prints the candidates and exits
+    \\  without selecting one — or, if the match list is large, prints a per-type
+    \\  breakdown instead. With --json, an envelope
+    \\  `{{"prefix","total","matches","types"}}` is emitted regardless of match
+    \\  count. Pass --type to narrow ambiguous prefixes to a single type.
     \\
     \\JSON errors:
     \\  With --json, the not-found / wrong-type paths emit a structured error

@@ -165,26 +165,23 @@ pub const EQ = struct {
     }
 
     /// Returns objects whose mRID starts with `id_prefix`, in storage order
-    /// (grouped by type). The caller owns the returned slice. The prefix is
-    /// normalised by ensuring a leading `_`, so users may omit it.
+    /// (grouped by type). The caller owns the returned slice. Matching follows
+    /// `ids.id_prefix_matches`: literal startsWith (so FullModel `urn:uuid:...`
+    /// ids resolve) plus a leading-underscore convenience for the rdf:ID form.
     pub fn get_object_by_id_prefix(
         self: EQ,
         gpa: std.mem.Allocator,
         id_prefix: []const u8,
     ) ![]const tag_index.CimObject {
-        const needle = try cgmes_ids.with_leading_underscore(gpa, id_prefix);
-        defer gpa.free(needle);
-        assert(needle.len > 0);
-
         var matches: std.ArrayList(CimObject) = .empty;
         errdefer matches.deinit(gpa);
         for (self.objects) |obj| {
-            if (std.mem.startsWith(u8, obj.id, needle)) try matches.append(gpa, obj);
+            if (cgmes_ids.id_prefix_matches(obj.id, id_prefix)) try matches.append(gpa, obj);
         }
         const out = try matches.toOwnedSlice(gpa);
         // Postcondition pairs with the filter loop: a regression in the prefix
         // check would let foreign ids leak through.
-        for (out) |m| assert(std.mem.startsWith(u8, m.id, needle));
+        for (out) |m| assert(cgmes_ids.id_prefix_matches(m.id, id_prefix));
         return out;
     }
 

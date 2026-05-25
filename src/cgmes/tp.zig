@@ -196,20 +196,18 @@ pub const TP = struct {
     }
 
     /// Returns the TP-added objects whose mRID starts with `id_prefix`, in
-    /// storage order. The caller owns the returned slice. The prefix is
-    /// normalised by ensuring a leading `_`, so users may omit it.
+    /// storage order. The caller owns the returned slice. Matching follows
+    /// `ids.id_prefix_matches`: literal startsWith plus a leading-underscore
+    /// convenience for the rdf:ID form.
     pub fn get_object_by_id_prefix(
         self: TP,
         gpa: std.mem.Allocator,
         id_prefix: []const u8,
     ) ![]const tag_index.CimObject {
-        const needle = try utils.with_leading_underscore(gpa, id_prefix);
-        defer gpa.free(needle);
-
         var matches: std.ArrayList(CimObject) = .empty;
         errdefer matches.deinit(gpa);
         for (self.new_objects) |obj| {
-            if (std.mem.startsWith(u8, obj.id, needle)) try matches.append(gpa, obj);
+            if (utils.id_prefix_matches(obj.id, id_prefix)) try matches.append(gpa, obj);
         }
         return matches.toOwnedSlice(gpa);
     }
