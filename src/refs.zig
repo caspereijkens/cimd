@@ -30,6 +30,9 @@ pub const ReverseRefIndex = struct {
         return build_with_overlays(gpa, model, null, null);
     }
 
+    /// Full reverse index over every referrer's merged (EQ+TP+SSH) references,
+    /// so an overlay retarget moves the edge rather than duplicating it. browse
+    /// reuses this; one-shot refs uses collect_referrers_for_target instead.
     pub fn build_with_overlays(
         gpa: std.mem.Allocator,
         model: *const EQ,
@@ -39,25 +42,10 @@ pub const ReverseRefIndex = struct {
         var index: ReverseRefIndex = .empty;
         errdefer index.deinit(gpa);
 
-        for (model.objects) |obj| {
-            assert(obj.id.len > 0);
-            assert(obj.type_name.len > 0);
-            try collect_refs_from_range(
-                gpa,
-                &index,
-                model.xml,
-                model.boundaries,
-                obj.object_tag_idx,
-                obj.closing_tag_idx,
-                obj.id,
-                obj.type_name,
-            );
-        }
+        const sink: EdgeSink = .{ .index = &index };
+        try iterate_merged_edges(gpa, model, tp_opt, ssh_opt, sink);
 
-        if (tp_opt) |tp| try index_tp(gpa, &index, tp);
-        if (ssh_opt) |ssh| try index_ssh(gpa, &index, ssh);
-
-        // Postcondition pairs with collect_refs_from_range's per-edge invariants:
+        // Postcondition pairs with emit_merged_edges' per-edge invariants:
         // every key is a non-empty target id, and every bucket holds at least
         // one edge (an empty bucket would mean we leaked an allocation without a
         // corresponding append).
@@ -84,114 +72,226 @@ pub const ReverseRefIndex = struct {
     }
 };
 
-fn index_tp(
-    gpa: std.mem.Allocator,
+/// Routes each discovered edge into the full index, or filters it to one target.
+const EdgeSink = union(enum) {
     index: *ReverseRefIndex,
-    tp: TP,
-) !void {
-    for (tp.new_objects) |obj| {
-        try collect_refs_from_range(
-            gpa,
-            index,
-            tp.xml,
-            tp.boundaries,
-            obj.object_tag_idx,
-            obj.closing_tag_idx,
-            obj.id,
-            obj.type_name,
-        );
+    target: TargetCollector,
+
+    const TargetCollector = struct {
+        id: []const u8,
+        out: *std.ArrayListUnmanaged(ReverseRef),
+    };
+
+    fn emit(self: EdgeSink, gpa: std.mem.Allocator, target: []const u8, ref: ReverseRef) !void {
+        assert(target.len > 0);
+        assert(ref.referrer_id.len > 0);
+        assert(ref.referrer_type.len > 0);
+        assert(ref.reference_name.len > 0);
+        switch (self) {
+            .index => |index| {
+                const gop = try index.map.getOrPut(gpa, target);
+                if (!gop.found_existing) gop.value_ptr.* = .empty;
+                try gop.value_ptr.append(gpa, ref);
+            },
+            .target => |collector| {
+                if (std.mem.eql(u8, target, collector.id)) try collector.out.append(gpa, ref);
+            },
+        }
     }
-    for (tp.patches) |patch| {
-        const source = source_from_patch_tag(tp.xml, tp.boundaries[patch.patch_tag_idx].start) orelse continue;
-        try collect_refs_from_range(
-            gpa,
-            index,
-            tp.xml,
-            tp.boundaries,
-            patch.patch_tag_idx,
-            patch.closing_tag_idx,
-            source.id,
-            source.type_name,
-        );
-    }
+};
+
+/// View over a TP-added (rdf:ID) object, mirroring EQ.view.
+fn tp_object_view(tp: TP, obj: tag_index.CimObject) tag_index.CimObjectView {
+    return .{
+        .xml = tp.xml,
+        .boundaries = tp.boundaries,
+        .object_tag_idx = obj.object_tag_idx,
+        .closing_tag_idx = obj.closing_tag_idx,
+        .id = obj.id,
+        .type_name = obj.type_name,
+    };
 }
 
-fn index_ssh(
-    gpa: std.mem.Allocator,
-    index: *ReverseRefIndex,
-    ssh: SSH,
-) !void {
-    for (ssh.patches) |patch| {
-        const source = source_from_patch_tag(ssh.xml, ssh.boundaries[patch.patch_tag_idx].start) orelse continue;
-        try collect_refs_from_range(
-            gpa,
-            index,
-            ssh.xml,
-            ssh.boundaries,
-            patch.patch_tag_idx,
-            patch.closing_tag_idx,
-            source.id,
-            source.type_name,
-        );
-    }
-}
+/// Precedence order for overlay references: SSH shadows TP shadows EQ.
+const Layer = enum { ssh, tp, eq };
 
-fn collect_refs_from_range(
-    gpa: std.mem.Allocator,
-    index: *ReverseRefIndex,
+/// The child-tag span of one object (or patch), as (xml, boundaries, range).
+const RefRange = struct {
     xml: []const u8,
     boundaries: []const tag_index.TagBoundary,
     open_idx: u32,
     close_idx: u32,
+};
+
+/// Streams (reference_name, raw_resource) for each rdf:resource child tag in a
+/// range, tolerating comments/PIs and malformed tags. Unlike a name→value map,
+/// it preserves repeated same-name tags, so multi-valued associations keep
+/// every reverse edge.
+const ReferenceTagIterator = struct {
+    range: RefRange,
+    i: u32,
+
+    const Entry = struct { name: []const u8, resource: []const u8 };
+
+    fn init(range: RefRange) ReferenceTagIterator {
+        assert(range.close_idx >= range.open_idx);
+        return .{ .range = range, .i = range.open_idx + 1 };
+    }
+
+    fn next(self: *ReferenceTagIterator) ?Entry {
+        const xml = self.range.xml;
+        while (self.i < self.range.close_idx) {
+            const tag = self.range.boundaries[self.i];
+            self.i += 1;
+            if (xml[tag.start + 1] == '/') continue;
+            // A comment (<!--) or PI (<?) carrying rdf:resource="#_A" is not a
+            // reference; skip it as getAllProperties does.
+            if (xml[tag.start + 1] == '!' or xml[tag.start + 1] == '?') continue;
+            const resource = (tag_index.extract_rdf_resource(xml, tag.start) catch continue) orelse continue;
+            const name = tag_index.extract_tag_type(xml, tag.start) catch continue;
+            return .{ .name = name, .resource = resource };
+        }
+        return null;
+    }
+};
+
+/// Emit one reverse edge per *effective* reference of `base` after TP/SSH
+/// overlay. The streaming, precedence-aware twin of the merge `get` displays:
+/// a reference name an overlay defines shadows the same name in lower layers,
+/// but every repeated tag within the owning layer still emits its own edge.
+fn emit_merged_edges(
+    gpa: std.mem.Allocator,
+    sink: EdgeSink,
+    base: tag_index.CimObjectView,
+    tp_opt: ?TP,
+    ssh_opt: ?SSH,
+) !void {
+    assert(base.id.len > 0);
+    assert(base.type_name.len > 0);
+
+    const eq_range: RefRange = .{
+        .xml = base.xml,
+        .boundaries = base.boundaries,
+        .open_idx = base.object_tag_idx,
+        .close_idx = base.closing_tag_idx,
+    };
+
+    // No overlay files at all: stream EQ directly, skipping even the mRID scan
+    // a patch lookup would need. The common `cimd refs` path, kept at plain
+    // reverse-scan cost.
+    if (tp_opt == null and ssh_opt == null) {
+        try stream_edges(gpa, sink, eq_range, base.id, base.type_name, null, .eq);
+        return;
+    }
+
+    const mrid = try base.mrid();
+    const tp_range: ?RefRange = if (tp_opt) |tp| if (tp.find_patch(mrid)) |p| .{
+        .xml = tp.xml,
+        .boundaries = tp.boundaries,
+        .open_idx = p.patch_tag_idx,
+        .close_idx = p.closing_tag_idx,
+    } else null else null;
+    const ssh_range: ?RefRange = if (ssh_opt) |s| if (s.find_patch(mrid)) |p| .{
+        .xml = s.xml,
+        .boundaries = s.boundaries,
+        .open_idx = p.patch_tag_idx,
+        .close_idx = p.closing_tag_idx,
+    } else null else null;
+
+    // No overlay touches this object: stream EQ directly, no allocation — the
+    // cost of a plain reverse scan, which is the common path.
+    if (tp_range == null and ssh_range == null) {
+        try stream_edges(gpa, sink, eq_range, base.id, base.type_name, null, .eq);
+        return;
+    }
+
+    // Resolve which layer owns each reference name (highest precedence wins),
+    // then let each layer emit only the names it owns.
+    var owner: std.StringHashMapUnmanaged(Layer) = .empty;
+    defer owner.deinit(gpa);
+    if (ssh_range) |r| try record_owners(gpa, &owner, .ssh, r);
+    if (tp_range) |r| try record_owners(gpa, &owner, .tp, r);
+    try record_owners(gpa, &owner, .eq, eq_range);
+
+    if (ssh_range) |r| try stream_edges(gpa, sink, r, base.id, base.type_name, &owner, .ssh);
+    if (tp_range) |r| try stream_edges(gpa, sink, r, base.id, base.type_name, &owner, .tp);
+    try stream_edges(gpa, sink, eq_range, base.id, base.type_name, &owner, .eq);
+}
+
+/// Claim `layer` as owner of each reference name in `range` unless a
+/// higher-precedence layer already did (callers record SSH→TP→EQ).
+fn record_owners(
+    gpa: std.mem.Allocator,
+    owner: *std.StringHashMapUnmanaged(Layer),
+    layer: Layer,
+    range: RefRange,
+) !void {
+    var it = ReferenceTagIterator.init(range);
+    while (it.next()) |ref| {
+        const gop = try owner.getOrPut(gpa, ref.name);
+        if (!gop.found_existing) gop.value_ptr.* = layer;
+    }
+}
+
+/// Emit a reverse edge per rdf:resource tag in `range`. When `owner` is given,
+/// skip names a higher-precedence layer owns — the shadowing that keeps `refs`
+/// in step with `get` without collapsing multi-valued tags.
+fn stream_edges(
+    gpa: std.mem.Allocator,
+    sink: EdgeSink,
+    range: RefRange,
     referrer_id: []const u8,
     referrer_type: []const u8,
+    owner: ?*const std.StringHashMapUnmanaged(Layer),
+    layer: Layer,
 ) !void {
-    assert(referrer_id.len > 0);
-    assert(referrer_type.len > 0);
-    assert(close_idx >= open_idx);
-    if (close_idx <= open_idx + 1) return;
-
-    for (boundaries[open_idx + 1 .. close_idx]) |tag| {
-        if (xml[tag.start + 1] == '/') continue;
-        const ref = (tag_index.extract_rdf_resource(xml, tag.start) catch continue) orelse continue;
-        const target = ids.strip_hash(ref);
+    var it = ReferenceTagIterator.init(range);
+    while (it.next()) |ref| {
+        if (owner) |o| if (o.get(ref.name).? != layer) continue;
+        const target = ids.strip_hash(ref.resource);
         if (target.len == 0) continue;
-
-        const reference_name = tag_index.extract_tag_type(xml, tag.start) catch continue;
-        const gop = try index.map.getOrPut(gpa, target);
-        if (!gop.found_existing) gop.value_ptr.* = .empty;
-        try gop.value_ptr.append(gpa, .{
+        try sink.emit(gpa, target, .{
             .referrer_id = referrer_id,
             .referrer_type = referrer_type,
-            .reference_name = reference_name,
+            .reference_name = ref.name,
         });
     }
 }
 
-const PatchSource = struct {
-    id: []const u8,
-    type_name: []const u8,
-};
-
-/// Patch tags carry rdf:about="#_<mrid>" for patches (the common path) or
-/// rdf:ID="_<mrid>" for the rare TP/SSH file that uses the rdf:ID form on a
-/// patched object; the latter doesn't fire today because TP new_objects are
-/// indexed via the separate `new_objects` loop and SSH carries patches only,
-/// but the dual lookup keeps us honest if the inputs vary.
-fn source_from_patch_tag(xml: []const u8, tag_start: u32) ?PatchSource {
-    const raw_id = blk: {
-        if (tag_index.extract_rdf_about(xml, tag_start)) |about| {
-            break :blk ids.strip_hash(about);
-        } else |_| {}
-        if (tag_index.extract_rdf_id(xml, tag_start)) |id| {
-            break :blk id;
-        } else |_| {}
-        return null;
+/// Shared spine of the full index and the target scan: hand every referrer's
+/// effective edge to `sink`. Keeps the two paths from disagreeing.
+fn iterate_merged_edges(
+    gpa: std.mem.Allocator,
+    model: *const EQ,
+    tp_opt: ?TP,
+    ssh_opt: ?SSH,
+    sink: EdgeSink,
+) !void {
+    for (model.objects) |obj| {
+        try emit_merged_edges(gpa, sink, model.view(obj), tp_opt, ssh_opt);
+    }
+    // TP-added objects are referrers too; TP can't patch itself, so overlay = SSH.
+    if (tp_opt) |tp| for (tp.new_objects) |obj| {
+        try emit_merged_edges(gpa, sink, tp_object_view(tp, obj), null, ssh_opt);
     };
-    if (raw_id.len == 0) return null;
+}
 
-    const type_name = tag_index.extract_tag_type(xml, tag_start) catch return null;
-    return .{ .id = raw_id, .type_name = type_name };
+/// Effective reverse edges pointing at `target_id`, without building the whole
+/// index. Caller owns the slice (strings borrow the XML); unsorted, so pass it
+/// through `filter_referrers`.
+pub fn collect_referrers_for_target(
+    gpa: std.mem.Allocator,
+    model: *const EQ,
+    tp_opt: ?TP,
+    ssh_opt: ?SSH,
+    target_id: []const u8,
+) ![]ReverseRef {
+    assert(target_id.len > 0);
+    var out: std.ArrayListUnmanaged(ReverseRef) = .empty;
+    errdefer out.deinit(gpa);
+    const sink: EdgeSink = .{ .target = .{ .id = target_id, .out = &out } };
+    try iterate_merged_edges(gpa, model, tp_opt, ssh_opt, sink);
+    return out.toOwnedSlice(gpa);
 }
 
 /// Look up a CIM object by exact id across the primary model and (when
@@ -216,6 +316,25 @@ pub fn resolve_object(
     return null;
 }
 
+/// Exact resolution honoring the underscore-optional full-id convenience: the
+/// literal id first, then — for an id typed without its leading `_` — the
+/// rdf:ID form, so `A` resolves the stored `_A` (cf. ids.id_prefix_matches).
+/// Allocates only on the rare retry; the view's id slices the model, not `buf`.
+pub fn resolve_object_normalized(
+    gpa: std.mem.Allocator,
+    model: *const EQ,
+    tp_opt: ?TP,
+    id: []const u8,
+) !?tag_index.CimObjectView {
+    if (resolve_object(model, tp_opt, id)) |view| return view;
+    if (id.len > 0 and id[0] != '_') {
+        const prefixed = try ids.with_leading_underscore(gpa, id);
+        defer gpa.free(prefixed);
+        return resolve_object(model, tp_opt, prefixed);
+    }
+    return null;
+}
+
 /// Return the first TP-added object id that collides with the primary model, or
 /// null if TP's new objects can be safely unioned with EQ/EQBD objects.
 pub fn find_tp_primary_id_collision(model: *const EQ, tp: TP) ?[]const u8 {
@@ -236,14 +355,14 @@ pub fn collect_target_candidates(
     model: *const EQ,
     tp_opt: ?TP,
     mrid_prefix: []const u8,
-) ![]tag_index.CimObject {
+) ![]const tag_index.CimObject {
     const eq_matches = try model.get_object_by_id_prefix(gpa, mrid_prefix);
+    // No TP: the EQ slice is already owned and complete — no second alloc needed.
+    const tp = tp_opt orelse return eq_matches;
     defer gpa.free(eq_matches);
-    const tp_matches: []const tag_index.CimObject = if (tp_opt) |tp|
-        try tp.get_object_by_id_prefix(gpa, mrid_prefix)
-    else
-        &.{};
-    defer if (tp_opt != null) gpa.free(tp_matches);
+
+    const tp_matches = try tp.get_object_by_id_prefix(gpa, mrid_prefix);
+    defer gpa.free(tp_matches);
 
     const out = try gpa.alloc(tag_index.CimObject, eq_matches.len + tp_matches.len);
     @memcpy(out[0..eq_matches.len], eq_matches);
@@ -471,6 +590,157 @@ test "ReverseRefIndex collects multiple referrers per target (hub case)" {
 
     const refs = index.lookup("_L1");
     try std.testing.expectEqual(@as(usize, 3), refs.len);
+}
+
+test "ReverseRefIndex keeps every edge of a multi-valued reference" {
+    const gpa = std.testing.allocator;
+    // Two child tags share the reference name Foo.Bar. A name->value map would
+    // collapse them to one edge; the streaming scan keeps both targets.
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Foo rdf:ID="_F1">
+        \\    <cim:Foo.Bar rdf:resource="#_A"/>
+        \\    <cim:Foo.Bar rdf:resource="#_B"/>
+        \\  </cim:Foo>
+        \\</rdf:RDF>
+    ;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    var index = try ReverseRefIndex.build(gpa, &model);
+    defer index.deinit(gpa);
+
+    const to_a = index.lookup("_A");
+    try std.testing.expectEqual(@as(usize, 1), to_a.len);
+    try std.testing.expectEqualStrings("_F1", to_a[0].referrer_id);
+    const to_b = index.lookup("_B");
+    try std.testing.expectEqual(@as(usize, 1), to_b.len);
+    try std.testing.expectEqualStrings("_F1", to_b[0].referrer_id);
+}
+
+test "ReverseRefIndex applies overlay precedence to a retargeted reference" {
+    const gpa = std.testing.allocator;
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_CE_eq"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+    const tp_xml =
+        \\<rdf:RDF>
+        \\  <cim:Terminal rdf:about="#_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_CE_tp"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, eq_xml));
+    defer model.deinit(gpa);
+    var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
+    defer tp.deinit(gpa);
+
+    var index = try ReverseRefIndex.build_with_overlays(gpa, &model, tp, null);
+    defer index.deinit(gpa);
+
+    // TP retargets the reference: the new target gains the edge, the shadowed
+    // EQ target keeps none.
+    const to_tp = index.lookup("_CE_tp");
+    try std.testing.expectEqual(@as(usize, 1), to_tp.len);
+    try std.testing.expectEqualStrings("_T1", to_tp[0].referrer_id);
+    try std.testing.expectEqual(@as(usize, 0), index.lookup("_CE_eq").len);
+}
+
+test "collect_referrers_for_target streams multi-valued references" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Foo rdf:ID="_F1">
+        \\    <cim:Foo.Bar rdf:resource="#_A"/>
+        \\    <cim:Foo.Bar rdf:resource="#_B"/>
+        \\  </cim:Foo>
+        \\</rdf:RDF>
+    ;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    // The target scan must see _A even though Foo.Bar also points at _B.
+    const referrers = try collect_referrers_for_target(gpa, &model, null, null, "_A");
+    defer gpa.free(referrers);
+    try std.testing.expectEqual(@as(usize, 1), referrers.len);
+    try std.testing.expectEqualStrings("_F1", referrers[0].referrer_id);
+}
+
+test "ReverseRefIndex ignores rdf:resource inside a comment" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Foo rdf:ID="_F1">
+        \\    <!-- <cim:Foo.Bar rdf:resource="#_A"/> -->
+        \\    <cim:Foo.Bar rdf:resource="#_B"/>
+        \\  </cim:Foo>
+        \\</rdf:RDF>
+    ;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    var index = try ReverseRefIndex.build(gpa, &model);
+    defer index.deinit(gpa);
+
+    // The commented-out reference must not produce an edge to _A.
+    try std.testing.expectEqual(@as(usize, 0), index.lookup("_A").len);
+    try std.testing.expectEqual(@as(usize, 1), index.lookup("_B").len);
+}
+
+test "resolve_object_normalized handles ids longer than any stack buffer" {
+    const gpa = std.testing.allocator;
+    const long = "a" ** 400;
+    const xml = try std.fmt.allocPrint(gpa, "<rdf:RDF><cim:Substation rdf:ID=\"_{s}\"/></rdf:RDF>", .{long});
+    defer gpa.free(xml);
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    const expected = try std.fmt.allocPrint(gpa, "_{s}", .{long});
+    defer gpa.free(expected);
+    const hit = try resolve_object_normalized(gpa, &model, null, long) orelse return error.NotFound;
+    try std.testing.expectEqualStrings(expected, hit.id);
+}
+
+test "resolve_object_normalized resolves a full id typed without its leading underscore" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:ID="_SS1"/>
+        \\</rdf:RDF>
+    ;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    // Literal hit when the underscore is present.
+    const exact = try resolve_object_normalized(gpa, &model, null, "_SS1") orelse return error.NotFound;
+    try std.testing.expectEqualStrings("_SS1", exact.id);
+
+    // Underscore-optional convenience: "SS1" resolves the stored "_SS1".
+    const convenient = try resolve_object_normalized(gpa, &model, null, "SS1") orelse return error.NotFound;
+    try std.testing.expectEqualStrings("_SS1", convenient.id);
+
+    try std.testing.expect(try resolve_object_normalized(gpa, &model, null, "SS9") == null);
+}
+
+test "resolve_object_normalized prefers an exact literal hit over the underscore retry" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:ID="A"/>
+        \\  <cim:VoltageLevel rdf:ID="_A"/>
+        \\</rdf:RDF>
+    ;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    // Literal "A" is authoritative; the "_A" retry must not shadow it.
+    const hit = try resolve_object_normalized(gpa, &model, null, "A") orelse return error.NotFound;
+    try std.testing.expectEqualStrings("A", hit.id);
+    try std.testing.expectEqualStrings("Substation", hit.type_name);
 }
 
 test "filter_referrers: no filter returns all, sorted by (type, id, ref)" {

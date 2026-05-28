@@ -186,17 +186,16 @@ fn render_regular(
     var counter: u32 = 1;
     counter = try render_fragment(writer, gpa, tag_slice(object.xml, object.boundaries, object.object_tag_idx, object.closing_tag_idx), counter, selections);
 
+    const overlay_key = try object.mrid();
     if (tp_opt) |tp| {
-        const stripped = strip_underscore(object.id);
-        if (tp.find_patch(stripped)) |patch| {
+        if (tp.find_patch(overlay_key)) |patch| {
             try writer.writeAll("\n\n--- TP ---");
             const patch_xml = tag_slice(tp.xml, tp.boundaries, patch.patch_tag_idx, patch.closing_tag_idx);
             counter = try render_fragment(writer, gpa, patch_xml, counter, selections);
         }
     }
     if (ssh_opt) |ssh| {
-        const stripped = strip_underscore(object.id);
-        if (ssh.find_patch(stripped)) |patch| {
+        if (ssh.find_patch(overlay_key)) |patch| {
             try writer.writeAll("\n\n--- SSH ---");
             const patch_xml = tag_slice(ssh.xml, ssh.boundaries, patch.patch_tag_idx, patch.closing_tag_idx);
             counter = try render_fragment(writer, gpa, patch_xml, counter, selections);

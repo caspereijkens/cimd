@@ -1,4 +1,5 @@
 const std = @import("std");
+const ids = @import("ids.zig");
 const assert = std.debug.assert;
 
 /// Vector size for SIMD operations (32 bytes = 256-bit AVX2)
@@ -569,6 +570,13 @@ pub const CimObjectView = struct {
         return get_reference_from_indices(self.xml, self.boundaries, self.object_tag_idx, self.closing_tag_idx, property_name);
     }
 
+    /// The key SSH/TP overlays use to patch this object: explicit
+    /// IdentifiedObject.mRID, else the rdf:ID with its leading underscore
+    /// stripped. Single source of truth for overlay keying across commands.
+    pub fn mrid(self: CimObjectView) error{MalformedTag}![]const u8 {
+        return (try self.getProperty("IdentifiedObject.mRID")) orelse ids.strip_underscore(self.id);
+    }
+
     /// Batch-fetch multiple text properties in a single scan through child tags.
     pub fn getProperties(self: CimObjectView, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
         var result: [names.len]?[]const u8 = .{null} ** names.len;
@@ -631,7 +639,10 @@ pub const CimObjectView = struct {
         for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx], self.object_tag_idx + 1..) |tag, i| {
             // In CIM XML, references are always self-closing; properties never are.
             if (self.xml[tag.start + 1] == '/' or self.xml[tag.end - 1] == '/') continue;
-            const tag_type = try extract_tag_type(self.xml, tag.start);
+            // Tolerate comments (<!--), PIs (<?), and malformed tags so a stray
+            // comment inside an object can't abort the scan (cf. getAllReferences).
+            if (self.xml[tag.start + 1] == '!' or self.xml[tag.start + 1] == '?') continue;
+            const tag_type = extract_tag_type(self.xml, tag.start) catch continue;
             const content = self.xml[tag.end + 1 .. self.boundaries[i + 1].start];
             try result.put(tag_type, content);
         }

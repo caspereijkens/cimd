@@ -274,7 +274,7 @@ fn build_connectivity(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef
         }
         const conn_node_id = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
 
-        const busbar_section_mrid = try model.view(busbar_section).getProperty("IdentifiedObject.mRID") orelse strip_underscore(busbar_section.id);
+        const busbar_section_mrid = try model.view(busbar_section).mrid();
         index.conn_node_to_busbar_section.putAssumeCapacity(conn_node_id, busbar_section_mrid);
     }
 
@@ -449,8 +449,7 @@ pub fn build_voltage_limits(gpa: std.mem.Allocator, model: *const EQ, index: *Cr
             .low_mrids = .empty,
         };
 
-        const voltage_limit_mrid = try voltage_limit_view.getProperty("IdentifiedObject.mRID") orelse
-            utils.strip_underscore(voltage_limit_view.id);
+        const voltage_limit_mrid = try voltage_limit_view.mrid();
 
         if (std.mem.endsWith(u8, direction, "high")) {
             try gop.value_ptr.high_mrids.append(gpa, voltage_limit_mrid);

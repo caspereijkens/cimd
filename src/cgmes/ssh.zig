@@ -193,12 +193,9 @@ pub const CimMergedView = struct {
     ) CimMergedView {
         assert(mrid.len > 0);
         assert(eq.id.len > 0);
-        // NOTE: mrid is not required to equal strip_underscore(eq.id). In CGMES,
-        // IdentifiedObject.mRID may legitimately differ from rdf:ID, and overlays
-        // (SSH/TP) key patches by the IdentifiedObject.mRID. Callers like
-        // convert/equipment.zig pass that explicit mrid; main.zig's get path
-        // happens to pass strip_underscore(eq.id) only because the get command
-        // doesn't read IdentifiedObject.mRID upfront.
+        // mrid need not equal strip_underscore(eq.id): in CGMES the mRID may
+        // differ from rdf:ID, and overlays key by mRID. Callers resolve it via
+        // CimObjectView.mrid, so such models merge consistently across commands.
         var tp: ?TpContext = null;
         if (tp_opt) |t| {
             if (t.find_patch(mrid)) |patch| {

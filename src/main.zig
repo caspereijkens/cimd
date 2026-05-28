@@ -17,6 +17,7 @@ const tag_index = @import("cgmes/tag_index.zig");
 const ids = @import("cgmes/ids.zig");
 const cim_types = @import("cgmes/cim_types.zig");
 const CimMergedView = @import("cgmes/ssh.zig").CimMergedView;
+// const validate = @import("validate.zig").validate;
 
 const assert = std.debug.assert;
 
@@ -221,19 +222,23 @@ fn command_get_list(io: std.Io, gpa: std.mem.Allocator, model: *const EQ, c: cli
     assert(c.type_filter != null);
     assert(c.mrid == null);
     const type_name = c.type_filter.?;
+
+    if (c.count) {
+        const count = count_objects_by_type_filter(model, type_name);
+        if (count == 0)
+            print.not_found(io, "No objects of type '{s}' found. Run 'cimd types' to see available types.", .{type_name});
+        if (c.json) {
+            try print.stdout(io, "{{\"type\":\"{s}\",\"count\":{d}}}\n", .{ type_name, count });
+        } else {
+            try print.stdout(io, "{d}\n", .{count});
+        }
+        return;
+    }
+
     const objects = try collect_objects_by_type_filter(gpa, model, type_name);
     defer gpa.free(objects);
     if (objects.len == 0)
         print.not_found(io, "No objects of type '{s}' found. Run 'cimd types' to see available types.", .{type_name});
-
-    if (c.count) {
-        if (c.json) {
-            try print.stdout(io, "{{\"type\":\"{s}\",\"count\":{d}}}\n", .{ type_name, objects.len });
-        } else {
-            try print.stdout(io, "{d}\n", .{objects.len});
-        }
-        return;
-    }
 
     var fields_buf: [max_get_fields][]const u8 = undefined;
     var fields: std.ArrayList([]const u8) = .initBuffer(&fields_buf);
@@ -258,7 +263,10 @@ fn parse_get_fields(
 
     var it = std.mem.splitScalar(u8, fs, ',');
     while (it.next()) |f| {
-        fields.appendBounded(std.mem.trim(u8, f, " ")) catch
+        const name = std.mem.trim(u8, f, " ");
+        // An empty entry (e.g. a doubled comma) would reach getProperty("")'s assert.
+        if (name.len == 0) print.stderr(io, "get: --fields: empty field name", .{});
+        fields.appendBounded(name) catch
             print.stderr(io, "get: --fields: too many fields (max 32)", .{});
     }
 }
@@ -290,12 +298,25 @@ fn resolve_prefix(
     json: bool,
     mode: ResolvePrefixMode,
 ) !?PrefixTarget {
-    if (mode == .browse_pick) {
-        if (refs.resolve_object(model, tp_opt, mrid)) |object| return .{
-            .id = object.id,
-            .type_name = object.type_name,
-        };
-    }
+    // Exact-id fast path: the literal id is authoritative. The O(1) hit dodges
+    // the false ambiguity a prefix scan raises when a full id prefixes a longer
+    // one, and a wrong-typed exact hit stops here as a type_mismatch rather than
+    // falling through to surface a prefix sibling of the requested type.
+    if (try refs.resolve_object_normalized(gpa, model, tp_opt, mrid)) |object| switch (mode) {
+        .browse_pick => return .{ .id = object.id, .type_name = object.type_name },
+        .command => {
+            if (cim_types.matches_filter(object.type_name, type_filter))
+                return .{ .id = object.id, .type_name = object.type_name };
+            const requested_type = type_filter.?;
+            exit_not_found(
+                io,
+                json,
+                .{ .@"error" = "type_mismatch", .prefix = mrid, .id = object.id, .actual_type = object.type_name, .requested_type = requested_type },
+                "Object '{s}' is of type '{s}', not '{s}'",
+                .{ mrid, object.type_name, requested_type },
+            );
+        },
+    };
 
     const all_matches = try refs.collect_target_candidates(gpa, model, tp_opt, mrid);
     defer gpa.free(all_matches);
@@ -416,7 +437,7 @@ fn display_get_object(
         return;
     }
 
-    const merged = CimMergedView.init(object, ids.strip_underscore(object.id), tp_opt, ssh_opt);
+    const merged = CimMergedView.init(object, try object.mrid(), tp_opt, ssh_opt);
     var props = try merged.getAllProperties(gpa);
     defer props.deinit();
     var references = try merged.getAllReferences(gpa);
@@ -519,10 +540,11 @@ fn command_refs(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Refs) !void {
     assert(target.id.len > 0);
     assert(target.type_name.len > 0);
 
-    var index = try refs.ReverseRefIndex.build_with_overlays(gpa, &inputs.model, inputs.tp, inputs.ssh);
-    defer index.deinit(gpa);
+    // One-shot refs needs only this target's edges; browse keeps the full index.
+    const candidates = try refs.collect_referrers_for_target(gpa, &inputs.model, inputs.tp, inputs.ssh, target.id);
+    defer gpa.free(candidates);
 
-    const referrers = try refs.filter_referrers(gpa, index.lookup(target.id), c.from_type);
+    const referrers = try refs.filter_referrers(gpa, candidates, c.from_type);
     defer gpa.free(referrers);
 
     var write_buffer: [16 * 1024]u8 = undefined;
@@ -535,6 +557,15 @@ fn command_refs(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Refs) !void {
         try refs.write_referrers_text(w, target.id, referrers, c.from_type);
     }
     try w.flush();
+}
+
+/// Allocation-free count of objects matching `requested_type` (incl. subtypes).
+fn count_objects_by_type_filter(model: *const EQ, requested_type: []const u8) usize {
+    var count: usize = 0;
+    for (model.objects) |obj| {
+        if (cim_types.matches_filter(obj.type_name, requested_type)) count += 1;
+    }
+    return count;
 }
 
 fn collect_objects_by_type_filter(
@@ -803,6 +834,7 @@ fn command_validate(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Validate)
     _ = gpa;
     _ = c;
     try print.stderr(io, "Not implemented yet!\n", .{});
+    // try validate(io, c.eq_path);
 }
 
 fn command_version(io: std.Io, verbose: bool, json: bool) !void {
