@@ -17,7 +17,7 @@ const tag_index = @import("cgmes/tag_index.zig");
 const ids = @import("cgmes/ids.zig");
 const cim_types = @import("cgmes/cim_types.zig");
 const CimMergedView = @import("cgmes/ssh.zig").CimMergedView;
-// const validate = @import("validate.zig").validate;
+const validate = @import("validate.zig").validate;
 
 const assert = std.debug.assert;
 
@@ -190,6 +190,7 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
 
     var inputs = try Inputs.load(io, gpa, c.file_path, c.eqbd_path, c.tp_path, c.ssh_path);
     defer inputs.deinit(gpa);
+    reject_tp_primary_id_collision(io, "get", &inputs.model, inputs.tp);
 
     if (c.mrid) |mrid_val| {
         const target = try resolve_prefix(io, gpa, &inputs.model, inputs.tp, mrid_val, c.type_filter, c.json, .{
@@ -212,6 +213,7 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
 
 fn validate_get_args(io: std.Io, c: cli.Command.Get) void {
     assert(c.mrid != null or c.type_filter != null);
+    if (c.mrid) |mrid| if (mrid.len == 0) print.stderr(io, "get: <mrid> must not be empty", .{});
     if (c.mrid != null and c.count) print.stderr(io, "get: --count requires --type without <mrid>", .{});
     if (c.mrid != null and c.fields != null) print.stderr(io, "get: --fields requires --type without <mrid>", .{});
     if (c.mrid == null and c.tp_path != null) print.stderr(io, "get: --tp requires <mrid> (list mode does not merge TP objects yet)", .{});
@@ -277,15 +279,20 @@ fn display_get_list_text(
     objects: []const CimObject,
     fields: []const []const u8,
 ) !void {
+    var write_buffer: [64 * 1024]u8 = undefined;
+    var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &write_buffer);
+    const w = &file_writer.interface;
+
     for (objects) |obj| {
         const view = model.view(obj);
-        try print.stdout(io, "{s}", .{obj.id});
+        try w.print("{s}", .{obj.id});
         for (fields) |field| {
             const val = try view.getProperty(field) orelse "N/A";
-            try print.stdout(io, " | {s}", .{val});
+            try w.print(" | {s}", .{val});
         }
-        try print.stdout(io, "\n", .{});
+        try w.writeByte('\n');
     }
+    try w.flush();
 }
 
 fn resolve_prefix(
@@ -321,13 +328,16 @@ fn resolve_prefix(
     const all_matches = try refs.collect_target_candidates(gpa, model, tp_opt, mrid);
     defer gpa.free(all_matches);
 
-    var filtered: std.ArrayList(CimObject) = .empty;
-    defer filtered.deinit(gpa);
-    for (all_matches) |m| {
-        if (cim_types.matches_filter(m.type_name, type_filter)) try filtered.append(gpa, m);
-    }
+    var filtered_list: std.ArrayList(CimObject) = .empty;
+    defer filtered_list.deinit(gpa);
+    const filtered_matches: []const CimObject = if (type_filter == null) all_matches else blk: {
+        for (all_matches) |m| {
+            if (cim_types.matches_filter(m.type_name, type_filter)) try filtered_list.append(gpa, m);
+        }
+        break :blk filtered_list.items;
+    };
 
-    if (filtered.items.len == 0) {
+    if (filtered_matches.len == 0) {
         if (all_matches.len == 0) exit_not_found(
             io,
             json,
@@ -355,13 +365,13 @@ fn resolve_prefix(
         );
     }
 
-    if (filtered.items.len > 1) {
+    if (filtered_matches.len > 1) {
         switch (mode) {
-            .command => try render_target_ambiguity(io, gpa, mrid, filtered.items, type_filter, json),
+            .command => try render_target_ambiguity(io, gpa, mrid, filtered_matches, type_filter, json),
             .browse_pick => |interactive| {
-                const id = try browse.pick_from_prefix(io, gpa, interactive, mrid, filtered.items);
+                const id = try browse.pick_from_prefix(io, gpa, interactive, mrid, filtered_matches);
                 assert(id.len > 0);
-                return .{ .id = id, .type_name = find_type_name(filtered.items, id) orelse unreachable };
+                return .{ .id = id, .type_name = find_type_name(filtered_matches, id) orelse unreachable };
             },
         }
         return null;
@@ -370,12 +380,12 @@ fn resolve_prefix(
     // Down to the unique-match branch — the empty and ambiguous cases above
     // both returned. The remaining match must carry the identity downstream
     // expects to render.
-    assert(filtered.items.len == 1);
-    assert(filtered.items[0].id.len > 0);
-    assert(filtered.items[0].type_name.len > 0);
+    assert(filtered_matches.len == 1);
+    assert(filtered_matches[0].id.len > 0);
+    assert(filtered_matches[0].type_name.len > 0);
     return .{
-        .id = filtered.items[0].id,
-        .type_name = filtered.items[0].type_name,
+        .id = filtered_matches[0].id,
+        .type_name = filtered_matches[0].type_name,
     };
 }
 
@@ -529,8 +539,11 @@ fn string_less_than(_: void, a: []const u8, b: []const u8) bool {
 }
 
 fn command_refs(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Refs) !void {
+    if (c.mrid.len == 0) print.stderr(io, "refs: <mrid> must not be empty", .{});
+
     var inputs = try Inputs.load(io, gpa, c.file_path, c.eqbd_path, c.tp_path, c.ssh_path);
     defer inputs.deinit(gpa);
+    reject_tp_primary_id_collision(io, "refs", &inputs.model, inputs.tp);
 
     const target = try resolve_prefix(io, gpa, &inputs.model, inputs.tp, c.mrid, c.target_type, c.json, .{
         .command = .refs,
@@ -559,13 +572,22 @@ fn command_refs(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Refs) !void {
     try w.flush();
 }
 
+fn reject_tp_primary_id_collision(
+    io: std.Io,
+    command_name: []const u8,
+    model: *const EQ,
+    tp_opt: ?TP,
+) void {
+    if (tp_opt) |tp| if (refs.find_tp_primary_id_collision(model, tp)) |id| print.stderr(
+        io,
+        "{s}: mRID collision: '{s}' is defined in both the primary file and the TP profile",
+        .{ command_name, id },
+    );
+}
+
 /// Allocation-free count of objects matching `requested_type` (incl. subtypes).
 fn count_objects_by_type_filter(model: *const EQ, requested_type: []const u8) usize {
-    var count: usize = 0;
-    for (model.objects) |obj| {
-        if (cim_types.matches_filter(obj.type_name, requested_type)) count += 1;
-    }
-    return count;
+    return model.count_objects_by_type_filter(requested_type);
 }
 
 fn collect_objects_by_type_filter(
@@ -573,12 +595,7 @@ fn collect_objects_by_type_filter(
     model: *const EQ,
     requested_type: []const u8,
 ) ![]CimObject {
-    var matches: std.ArrayList(CimObject) = .empty;
-    errdefer matches.deinit(gpa);
-    for (model.objects) |obj| {
-        if (cim_types.matches_filter(obj.type_name, requested_type)) try matches.append(gpa, obj);
-    }
-    return matches.toOwnedSlice(gpa);
+    return model.collect_objects_by_type_filter(gpa, requested_type);
 }
 
 test "get type filter collector includes CIM subtypes" {
@@ -593,6 +610,8 @@ test "get type filter collector includes CIM subtypes" {
     ;
     var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 3), count_objects_by_type_filter(&model, "ConductingEquipment"));
 
     const objects = try collect_objects_by_type_filter(gpa, &model, "ConductingEquipment");
     defer gpa.free(objects);
@@ -832,7 +851,6 @@ fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology)
 
 fn command_validate(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Validate) !void {
     _ = gpa;
-    _ = c;
     try print.stderr(io, "Not implemented yet!\n", .{});
     // try validate(io, c.eq_path);
 }

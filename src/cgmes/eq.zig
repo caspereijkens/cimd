@@ -3,6 +3,7 @@ const tag_index = @import("tag_index.zig");
 pub const CimObject = tag_index.CimObject;
 const TagBoundary = tag_index.TagBoundary;
 const cgmes_ids = @import("ids.zig");
+const cim_types = @import("cim_types.zig");
 
 const assert = std.debug.assert;
 
@@ -256,6 +257,43 @@ pub const EQ = struct {
     pub fn get_objects_by_type(self: EQ, type_name: []const u8) []const CimObject {
         const range = self.type_index.get(type_name) orelse return &[_]CimObject{};
         return self.objects[range.start .. range.start + range.len];
+    }
+
+    /// Count objects matching `requested_type`, including CIM subtypes.
+    /// Uses the compact type index, so count-mode does not scan every object.
+    pub fn count_objects_by_type_filter(self: EQ, requested_type: []const u8) usize {
+        var count: usize = 0;
+        var it = self.type_index.iterator();
+        while (it.next()) |entry| {
+            if (cim_types.matches_filter(entry.key_ptr.*, requested_type)) {
+                count += entry.value_ptr.*.len;
+            }
+        }
+        assert(count <= self.objects.len);
+        return count;
+    }
+
+    /// Return objects matching `requested_type`, including CIM subtypes.
+    /// Caller owns the returned slice. Output order follows `self.objects`.
+    pub fn collect_objects_by_type_filter(
+        self: EQ,
+        gpa: std.mem.Allocator,
+        requested_type: []const u8,
+    ) ![]CimObject {
+        const count = self.count_objects_by_type_filter(requested_type);
+        const out = try gpa.alloc(CimObject, count);
+        errdefer gpa.free(out);
+
+        var i: usize = 0;
+        for (self.objects) |obj| {
+            if (!cim_types.matches_filter(obj.type_name, requested_type)) continue;
+            assert(i < out.len);
+            out[i] = obj;
+            i += 1;
+        }
+        assert(i == out.len);
+        for (out) |obj| assert(cim_types.matches_filter(obj.type_name, requested_type));
+        return out;
     }
 
     pub fn getTypeCounts(self: EQ, gpa: std.mem.Allocator) !std.StringHashMap(u32) {

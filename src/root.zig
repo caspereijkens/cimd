@@ -35,10 +35,12 @@ comptime {
     _ = @import("convert/test_conversion.zig");
     _ = @import("topology/cross_ref.zig");
     _ = @import("cgmes/ssh.zig");
+    _ = @import("io/zip.zig");
     _ = @import("cgmes/tp.zig");
     _ = @import("convert/network.zig");
     _ = @import("convert/transformer.zig");
     _ = @import("convert/placement.zig");
     _ = @import("convert/equipment.zig");
     _ = @import("convert/line.zig");
+    _ = @import("validate.zig");
 }

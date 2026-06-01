@@ -356,17 +356,13 @@ pub fn collect_target_candidates(
     tp_opt: ?TP,
     mrid_prefix: []const u8,
 ) ![]const tag_index.CimObject {
-    const eq_matches = try model.get_object_by_id_prefix(gpa, mrid_prefix);
-    // No TP: the EQ slice is already owned and complete — no second alloc needed.
-    const tp = tp_opt orelse return eq_matches;
-    defer gpa.free(eq_matches);
+    var matches: std.ArrayList(tag_index.CimObject) = .empty;
+    errdefer matches.deinit(gpa);
 
-    const tp_matches = try tp.get_object_by_id_prefix(gpa, mrid_prefix);
-    defer gpa.free(tp_matches);
+    try append_target_candidates(gpa, &matches, model.objects, mrid_prefix);
+    if (tp_opt) |tp| try append_target_candidates(gpa, &matches, tp.new_objects, mrid_prefix);
 
-    const out = try gpa.alloc(tag_index.CimObject, eq_matches.len + tp_matches.len);
-    @memcpy(out[0..eq_matches.len], eq_matches);
-    @memcpy(out[eq_matches.len..], tp_matches);
+    const out = try matches.toOwnedSlice(gpa);
     // Downstream consumers (lookup, display, mrid stripping) all require a
     // non-empty id; any empty here means an upstream parser admitted garbage.
     for (out) |obj| {
@@ -374,6 +370,19 @@ pub fn collect_target_candidates(
         assert(obj.type_name.len > 0);
     }
     return out;
+}
+
+fn append_target_candidates(
+    gpa: std.mem.Allocator,
+    matches: *std.ArrayList(tag_index.CimObject),
+    objects: []const tag_index.CimObject,
+    mrid_prefix: []const u8,
+) !void {
+    const start_len = matches.items.len;
+    for (objects) |obj| {
+        if (ids.id_prefix_matches(obj.id, mrid_prefix)) try matches.append(gpa, obj);
+    }
+    for (matches.items[start_len..]) |obj| assert(ids.id_prefix_matches(obj.id, mrid_prefix));
 }
 
 /// Return a freshly-allocated, sorted slice of referrers filtered by
@@ -385,33 +394,49 @@ pub fn filter_referrers(
     referrers: []const ReverseRef,
     type_filter: ?[]const u8,
 ) ![]ReverseRef {
-    var selected: std.ArrayList(ReverseRef) = .empty;
-    errdefer selected.deinit(gpa);
-    for (referrers) |ref| {
-        if (!cim_types.matches_filter(ref.referrer_type, type_filter)) continue;
-        try selected.append(gpa, ref);
+    if (type_filter == null) {
+        const out = try gpa.dupe(ReverseRef, referrers);
+        sort_referrers(out);
+        return out;
     }
 
-    const lessThan = struct {
-        fn lessThan(_: void, a: ReverseRef, b: ReverseRef) bool {
-            const type_order = std.mem.order(u8, a.referrer_type, b.referrer_type);
-            if (type_order != .eq) return type_order == .lt;
-            const id_order = std.mem.order(u8, a.referrer_id, b.referrer_id);
-            if (id_order != .eq) return id_order == .lt;
-            return std.mem.order(u8, a.reference_name, b.reference_name) == .lt;
-        }
-    }.lessThan;
-    std.mem.sort(ReverseRef, selected.items, {}, lessThan);
+    var count: usize = 0;
+    for (referrers) |ref| {
+        if (cim_types.matches_filter(ref.referrer_type, type_filter)) count += 1;
+    }
 
-    const out = try selected.toOwnedSlice(gpa);
+    const out = try gpa.alloc(ReverseRef, count);
+    errdefer gpa.free(out);
+    var i: usize = 0;
+    for (referrers) |ref| {
+        if (!cim_types.matches_filter(ref.referrer_type, type_filter)) continue;
+        assert(i < out.len);
+        out[i] = ref;
+        i += 1;
+    }
+    assert(i == out.len);
+
     // Postcondition pairs with the filter loop above: every retained row must
     // still satisfy the type filter.
-    if (type_filter != null) for (out) |ref| {
-        assert(cim_types.matches_filter(ref.referrer_type, type_filter));
-    };
-    // Postcondition pairs with std.mem.sort above.
-    if (out.len > 1) for (out[1..], 1..) |ref, i| assert(!lessThan({}, ref, out[i - 1]));
+    for (out) |ref| assert(cim_types.matches_filter(ref.referrer_type, type_filter));
+    sort_referrers(out);
     return out;
+}
+
+fn sort_referrers(referrers: []ReverseRef) void {
+    std.mem.sort(ReverseRef, referrers, {}, reverse_ref_less_than);
+    // Postcondition pairs with std.mem.sort above.
+    if (referrers.len > 1) for (referrers[1..], 1..) |ref, i| {
+        assert(!reverse_ref_less_than({}, ref, referrers[i - 1]));
+    };
+}
+
+fn reverse_ref_less_than(_: void, a: ReverseRef, b: ReverseRef) bool {
+    const type_order = std.mem.order(u8, a.referrer_type, b.referrer_type);
+    if (type_order != .eq) return type_order == .lt;
+    const id_order = std.mem.order(u8, a.referrer_id, b.referrer_id);
+    if (id_order != .eq) return id_order == .lt;
+    return std.mem.order(u8, a.reference_name, b.reference_name) == .lt;
 }
 
 /// Render the human-readable text form: one line per referrer formatted as
