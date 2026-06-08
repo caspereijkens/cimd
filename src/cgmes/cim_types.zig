@@ -140,7 +140,7 @@ const parent_edges = [_]ParentEdge{
 
 pub fn is_a(actual_type: []const u8, requested_type: []const u8) bool {
     if (std.mem.eql(u8, actual_type, requested_type)) return true;
-    return has_ancestor(actual_type, requested_type, 0);
+    return has_ancestor(actual_type, requested_type);
 }
 
 pub fn matches_filter(actual_type: []const u8, type_filter: ?[]const u8) bool {
@@ -148,17 +148,31 @@ pub fn matches_filter(actual_type: []const u8, type_filter: ?[]const u8) bool {
     return is_a(actual_type, requested);
 }
 
-// O(parent_edges * ancestry_depth), which is fine for current CLI filters. If
-// this becomes hot for large library callers, precompute the requested type's
-// subtype set once and test membership per object.
-fn has_ancestor(actual_type: []const u8, requested_type: []const u8, depth: u8) bool {
-    if (depth > 32) return false;
-    for (parent_edges) |edge| {
-        if (!std.mem.eql(u8, edge.child, actual_type)) continue;
-        if (std.mem.eql(u8, edge.parent, requested_type)) return true;
-        if (has_ancestor(edge.parent, requested_type, depth + 1)) return true;
+// Walk the single parent chain from `actual_type` upward, looking for
+// `requested_type`. `parent_edges` is a tree (each child appears once), so
+// every type has at most one parent and this is a linear walk — no recursion.
+// The loop is bounded by the edge count: a well-formed chain terminates via the
+// `orelse return false` long before that, and the bound caps any malformed
+// (cyclic) table at a finite number of steps.
+//
+// O(parent_edges * ancestry_depth). If this becomes hot for large library
+// callers, precompute the requested type's subtype set once and test membership
+// per object.
+fn has_ancestor(actual_type: []const u8, requested_type: []const u8) bool {
+    var current = actual_type;
+    for (0..parent_edges.len) |_| {
+        const parent = parent_of(current) orelse return false;
+        if (std.mem.eql(u8, parent, requested_type)) return true;
+        current = parent;
     }
     return false;
+}
+
+fn parent_of(child: []const u8) ?[]const u8 {
+    for (parent_edges) |edge| {
+        if (std.mem.eql(u8, edge.child, child)) return edge.parent;
+    }
+    return null;
 }
 
 test "is_a matches concrete type to itself" {

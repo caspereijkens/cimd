@@ -287,7 +287,9 @@ fn display_get_list_text(
         const view = model.view(obj);
         try w.print("{s}", .{obj.id});
         for (fields) |field| {
-            const val = try view.getProperty(field) orelse "N/A";
+            // Fall back to a reference when the field isn't a text property, so
+            // rdf:resource fields show their target instead of a bare N/A.
+            const val = (try view.getProperty(field)) orelse (try view.getReference(field)) orelse "N/A";
             try w.print(" | {s}", .{val});
         }
         try w.writeByte('\n');
@@ -643,6 +645,37 @@ fn exit_json_error(io: std.Io, value: anytype) noreturn {
     std.process.exit(1);
 }
 
+const TypeCount = struct { type_name: []const u8, count: u32 };
+
+/// Aggregate `matches` into alphabetically-sorted (type_name, count) pairs.
+/// Caller owns the returned slice. Shared by the ambiguity renderers so the
+/// JSON and text breakdowns can't drift in how they group or order types.
+fn sorted_type_counts_of(gpa: std.mem.Allocator, matches: []const CimObject) ![]TypeCount {
+    var counts: std.StringHashMap(u32) = .init(gpa);
+    defer counts.deinit();
+    for (matches) |m| {
+        const gop = try counts.getOrPut(m.type_name);
+        if (!gop.found_existing) gop.value_ptr.* = 0;
+        gop.value_ptr.* += 1;
+    }
+
+    const out = try gpa.alloc(TypeCount, counts.count());
+    errdefer gpa.free(out);
+    var i: usize = 0;
+    var it = counts.iterator();
+    while (it.next()) |entry| : (i += 1)
+        out[i] = .{ .type_name = entry.key_ptr.*, .count = entry.value_ptr.* };
+    // Pairs with the alloc above: every counted type must have been written.
+    assert(i == out.len);
+
+    std.mem.sort(TypeCount, out, {}, struct {
+        fn lt(_: void, a: TypeCount, b: TypeCount) bool {
+            return std.mem.order(u8, a.type_name, b.type_name) == .lt;
+        }
+    }.lt);
+    return out;
+}
+
 /// JSON envelope for ambiguous `cimd get` lookups. Always emits both the flat
 /// match list and an alphabetically-sorted per-type breakdown so tooling can
 /// pick whichever it needs without re-aggregating.
@@ -652,26 +685,8 @@ fn render_ambiguous_json(
     prefix: []const u8,
     matches: []const CimObject,
 ) !void {
-    var counts: std.StringHashMap(u32) = .init(gpa);
-    defer counts.deinit();
-    for (matches) |m| {
-        const gop = try counts.getOrPut(m.type_name);
-        if (!gop.found_existing) gop.value_ptr.* = 0;
-        gop.value_ptr.* += 1;
-    }
-
-    const TypeCount = struct { type_name: []const u8, count: u32 };
-    const types = try gpa.alloc(TypeCount, counts.count());
+    const types = try sorted_type_counts_of(gpa, matches);
     defer gpa.free(types);
-    var i: usize = 0;
-    var it = counts.iterator();
-    while (it.next()) |entry| : (i += 1)
-        types[i] = .{ .type_name = entry.key_ptr.*, .count = entry.value_ptr.* };
-    std.mem.sort(TypeCount, types, {}, struct {
-        fn lt(_: void, a: TypeCount, b: TypeCount) bool {
-            return std.mem.order(u8, a.type_name, b.type_name) == .lt;
-        }
-    }.lt);
 
     var write_buffer: [4096]u8 = undefined;
     var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &write_buffer);
@@ -702,27 +717,8 @@ fn render_ambiguous_json(
 /// Non-interactive type breakdown for `cimd get` when a prefix is too ambiguous
 /// to list flat. Mirrors the grouped layout the browse picker uses.
 fn render_type_breakdown(io: std.Io, gpa: std.mem.Allocator, prefix: []const u8, matches: []const CimObject) !void {
-    const TypeCount = struct { type_name: []const u8, count: u32 };
-
-    var counts: std.StringHashMap(u32) = .init(gpa);
-    defer counts.deinit();
-    for (matches) |m| {
-        const gop = try counts.getOrPut(m.type_name);
-        if (!gop.found_existing) gop.value_ptr.* = 0;
-        gop.value_ptr.* += 1;
-    }
-
-    const entries = try gpa.alloc(TypeCount, counts.count());
+    const entries = try sorted_type_counts_of(gpa, matches);
     defer gpa.free(entries);
-    var i: usize = 0;
-    var it = counts.iterator();
-    while (it.next()) |entry| : (i += 1)
-        entries[i] = .{ .type_name = entry.key_ptr.*, .count = entry.value_ptr.* };
-    std.mem.sort(TypeCount, entries, {}, struct {
-        fn lt(_: void, a: TypeCount, b: TypeCount) bool {
-            return std.mem.order(u8, a.type_name, b.type_name) == .lt;
-        }
-    }.lt);
 
     var max_type_len: usize = 0;
     for (entries) |e| if (e.type_name.len > max_type_len) {
@@ -851,8 +847,8 @@ fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology)
 
 fn command_validate(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Validate) !void {
     _ = gpa;
-    try print.stderr(io, "Not implemented yet!\n", .{});
-    // try validate(io, c.eq_path);
+    // try print.stderr(io, "Not implemented yet!\n", .{});
+    try validate(io, c.eq_path);
 }
 
 fn command_version(io: std.Io, verbose: bool, json: bool) !void {

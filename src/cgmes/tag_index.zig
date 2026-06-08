@@ -339,15 +339,22 @@ pub fn extract_rdf_about(slice: []const u8, start_idx: u32) error{ NoRdfAbout, M
     return slice[value_start_idx..value_end_idx];
 }
 
-/// Extract rdf:Resource value from an XML tag
-/// Returns error.NoRdfResource if tag doesn't have rdf:Resource
-/// Returns error.MalformedTag if rdf:Resource exists but is malformed
-pub fn extract_rdf_resource(slice: []const u8, start_idx: u32) error{MalformedTag}!?[]const u8 {
-    const gt_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, '>') orelse return error.MalformedTag;
+/// Extract rdf:resource value from an XML tag whose '>' position is already
+/// known (`end_idx`, the boundary's `.end`). Skips the re-scan for '>' that the
+/// start-only `extract_rdf_resource` must do — the hot reference-scanning loops
+/// in `refs`/`get` call this with the boundary they already hold.
+/// Returns null if the tag has no rdf:resource; error.MalformedTag if malformed.
+pub fn extract_rdf_resource_within(
+    slice: []const u8,
+    start_idx: u32,
+    end_idx: u32,
+) error{MalformedTag}!?[]const u8 {
+    assert(end_idx > start_idx);
+    assert(end_idx < slice.len);
 
     const pattern = "rdf:resource=\"";
 
-    const tag_content = slice[start_idx..gt_idx];
+    const tag_content = slice[start_idx..end_idx];
     const pattern_offset = std.mem.indexOf(u8, tag_content, pattern) orelse return null;
     const pattern_start_idx = start_idx + pattern_offset;
 
@@ -355,9 +362,18 @@ pub fn extract_rdf_resource(slice: []const u8, start_idx: u32) error{MalformedTa
     const value_end_idx = std.mem.indexOfScalarPos(u8, slice, value_start_idx, '"') orelse return error.MalformedTag;
 
     // Check if closing quote is within this tag
-    if (value_end_idx >= gt_idx) return error.MalformedTag;
+    if (value_end_idx >= end_idx) return error.MalformedTag;
 
     return slice[value_start_idx..value_end_idx];
+}
+
+/// Extract rdf:resource value from an XML tag, locating the tag's '>' itself.
+/// Use `extract_rdf_resource_within` when the boundary's `.end` is already known.
+/// Returns null if tag doesn't have rdf:resource.
+/// Returns error.MalformedTag if rdf:resource exists but is malformed.
+pub fn extract_rdf_resource(slice: []const u8, start_idx: u32) error{MalformedTag}!?[]const u8 {
+    const gt_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, '>') orelse return error.MalformedTag;
+    return extract_rdf_resource_within(slice, start_idx, @intCast(gt_idx));
 }
 
 pub fn find_closing_tag(
@@ -454,7 +470,7 @@ pub fn get_reference_from_indices(
         }
         const tag_type = extract_tag_type(xml, tag.start) catch continue;
         if (std.mem.eql(u8, tag_type, property_name)) {
-            return extract_rdf_resource(xml, tag.start);
+            return extract_rdf_resource_within(xml, tag.start, tag.end);
         }
     }
     return null;
@@ -619,7 +635,7 @@ pub const CimObjectView = struct {
 
             inline for (names, 0..) |name, idx| {
                 if (result[idx] == null and std.mem.eql(u8, tag_type, name)) {
-                    result[idx] = try extract_rdf_resource(self.xml, tag.start);
+                    result[idx] = try extract_rdf_resource_within(self.xml, tag.start, tag.end);
                     found_count += 1;
                     if (found_count == names.len) return result;
                 }
@@ -661,7 +677,7 @@ pub const CimObjectView = struct {
             if (self.xml[tag.start + 1] == '/') continue;
 
             const tag_type = extract_tag_type(self.xml, tag.start) catch continue;
-            const reference = extract_rdf_resource(self.xml, tag.start) catch continue;
+            const reference = extract_rdf_resource_within(self.xml, tag.start, tag.end) catch continue;
 
             if (reference) |ref_value| {
                 try result.put(tag_type, ref_value);

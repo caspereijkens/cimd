@@ -147,7 +147,7 @@ const ReferenceTagIterator = struct {
             // A comment (<!--) or PI (<?) carrying rdf:resource="#_A" is not a
             // reference; skip it as getAllProperties does.
             if (xml[tag.start + 1] == '!' or xml[tag.start + 1] == '?') continue;
-            const resource = (tag_index.extract_rdf_resource(xml, tag.start) catch continue) orelse continue;
+            const resource = (tag_index.extract_rdf_resource_within(xml, tag.start, tag.end) catch continue) orelse continue;
             const name = tag_index.extract_tag_type(xml, tag.start) catch continue;
             return .{ .name = name, .resource = resource };
         }

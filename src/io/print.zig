@@ -187,7 +187,14 @@ pub fn display_object_list_json(
             try w.writeAll(",\"type\":");
             try std.json.Stringify.value(obj.type_name, .{}, w);
             for (fields) |field| {
-                const val = try view.getProperty(field) orelse "";
+                // Fall back to a reference when the field isn't a text property;
+                // strip the '#' so the value matches the references map shape.
+                const val = if (try view.getProperty(field)) |p|
+                    p
+                else if (try view.getReference(field)) |r|
+                    utils.strip_hash(r)
+                else
+                    "";
                 try w.writeByte(',');
                 try std.json.Stringify.value(field, .{}, w);
                 try w.writeByte(':');
