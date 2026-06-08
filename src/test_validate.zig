@@ -9,6 +9,109 @@ const validate_business_process = validate.validate_business_process;
 const validate_model_part = validate.validate_model_part;
 const validate_file_version = validate.validate_file_version;
 
+fn append_u16_le(out: *std.ArrayList(u8), gpa: std.mem.Allocator, value: u16) !void {
+    var bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, bytes[0..], value, .little);
+    try out.appendSlice(gpa, bytes[0..]);
+}
+
+fn append_u32_le(out: *std.ArrayList(u8), gpa: std.mem.Allocator, value: u32) !void {
+    var bytes: [4]u8 = undefined;
+    std.mem.writeInt(u32, bytes[0..], value, .little);
+    try out.appendSlice(gpa, bytes[0..]);
+}
+
+fn append_local_header(out: *std.ArrayList(u8), gpa: std.mem.Allocator, name: []const u8) !u32 {
+    std.debug.assert(name.len <= std.math.maxInt(u16));
+
+    const offset: u32 = @intCast(out.items.len);
+    try out.appendSlice(gpa, &std.zip.local_file_header_sig);
+    try append_u16_le(out, gpa, 20); // version needed
+    try append_u16_le(out, gpa, 0); // flags
+    try append_u16_le(out, gpa, 0); // compression: stored
+    try append_u16_le(out, gpa, 0); // mod time
+    try append_u16_le(out, gpa, 0); // mod date
+    try append_u32_le(out, gpa, 0); // CRC-32
+    try append_u32_le(out, gpa, 0); // compressed size
+    try append_u32_le(out, gpa, 0); // uncompressed size
+    try append_u16_le(out, gpa, @intCast(name.len));
+    try append_u16_le(out, gpa, 0); // extra field length
+    try out.appendSlice(gpa, name);
+    return offset;
+}
+
+fn append_central_header(
+    out: *std.ArrayList(u8),
+    gpa: std.mem.Allocator,
+    name: []const u8,
+    local_header_offset: u32,
+) !void {
+    std.debug.assert(name.len <= std.math.maxInt(u16));
+
+    try out.appendSlice(gpa, &std.zip.central_file_header_sig);
+    try append_u16_le(out, gpa, 20); // version made by
+    try append_u16_le(out, gpa, 20); // version needed
+    try append_u16_le(out, gpa, 0); // flags
+    try append_u16_le(out, gpa, 0); // compression: stored
+    try append_u16_le(out, gpa, 0); // mod time
+    try append_u16_le(out, gpa, 0); // mod date
+    try append_u32_le(out, gpa, 0); // CRC-32
+    try append_u32_le(out, gpa, 0); // compressed size
+    try append_u32_le(out, gpa, 0); // uncompressed size
+    try append_u16_le(out, gpa, @intCast(name.len));
+    try append_u16_le(out, gpa, 0); // extra field length
+    try append_u16_le(out, gpa, 0); // file comment length
+    try append_u16_le(out, gpa, 0); // disk number start
+    try append_u16_le(out, gpa, 0); // internal file attributes
+    try append_u32_le(out, gpa, 0); // external file attributes
+    try append_u32_le(out, gpa, local_header_offset);
+    try out.appendSlice(gpa, name);
+}
+
+fn create_test_zip(
+    io: std.Io,
+    dir: std.Io.Dir,
+    zip_name: []const u8,
+    entry_names: []const []const u8,
+    out_path: []u8,
+) ![]const u8 {
+    std.debug.assert(entry_names.len > 0);
+    std.debug.assert(entry_names.len <= 8);
+
+    const gpa = std.testing.allocator;
+    var zip_bytes: std.ArrayList(u8) = .empty;
+    defer zip_bytes.deinit(gpa);
+
+    var local_header_offsets: [8]u32 = undefined;
+    for (entry_names, 0..) |entry_name, index| {
+        local_header_offsets[index] = try append_local_header(&zip_bytes, gpa, entry_name);
+    }
+
+    const central_directory_offset_usize = zip_bytes.items.len;
+    const central_directory_offset: u32 = @intCast(central_directory_offset_usize);
+    for (entry_names, 0..) |entry_name, index| {
+        try append_central_header(&zip_bytes, gpa, entry_name, local_header_offsets[index]);
+    }
+    const central_directory_size: u32 = @intCast(zip_bytes.items.len - central_directory_offset_usize);
+    const entry_count: u16 = @intCast(entry_names.len);
+
+    try zip_bytes.appendSlice(gpa, &std.zip.end_record_sig);
+    try append_u16_le(&zip_bytes, gpa, 0); // disk number
+    try append_u16_le(&zip_bytes, gpa, 0); // central directory disk
+    try append_u16_le(&zip_bytes, gpa, entry_count);
+    try append_u16_le(&zip_bytes, gpa, entry_count);
+    try append_u32_le(&zip_bytes, gpa, central_directory_size);
+    try append_u32_le(&zip_bytes, gpa, central_directory_offset);
+    try append_u16_le(&zip_bytes, gpa, 0); // comment length
+
+    var file = try dir.createFile(io, zip_name, .{ .read = true });
+    defer file.close(io);
+    try file.writeStreamingAll(io, zip_bytes.items);
+
+    const path_len = try file.realPath(io, out_path);
+    return out_path[0..path_len];
+}
+
 test "FileNameMD" {
     // Used for EQ (also correct_filename_template2), SSH, TP and SV.
     const correct_filename_template1: []const u8 = "effectiveDateTime_businessProcess_sourcingTSO_modelPart_fileVersion";
@@ -44,79 +147,40 @@ test "FileNameConsistency" {
     var tmpdir = std.testing.tmpDir(.{});
     defer tmpdir.cleanup();
 
-    const empty_zip = [_]u8{
-        // Local file header (30 + 15 = 45 bytes)
-        0x50, 0x4B, 0x03, 0x04, // signature
-        0x14, 0x00, // version needed
-        0x00, 0x00, // flags
-        0x00, 0x00, // compression: stored
-        0x00, 0x00, // mod time
-        0x00, 0x00, // mod date
-        0x00, 0x00, 0x00, 0x00, // CRC-32
-        0x00, 0x00, 0x00, 0x00, // compressed size
-        0x00, 0x00, 0x00, 0x00, // uncompressed size
-        0x0F, 0x00, // filename length = 15
-        0x00, 0x00, // extra field length = 0
-        'm',  'y',
-        '_',  'f',
-        'i',  'l',
-        'e',  'n',
-        'a',  'm',
-        'e',  '.',
-        'z',  'i',
-        'p',
+    const io = std.testing.io;
+    const filename = "my_filename.zip";
+    var out_buffer: [1024]u8 = undefined;
+    const file_path = try create_test_zip(io, tmpdir.dir, filename, &.{"my_filename.xml"}, &out_buffer);
 
-        // Central directory entry (46 + 15 = 61 bytes, starts at offset 45)
-        0x50, 0x4B, 0x01, 0x02, // signature
-        0x14, 0x00, // version made by
-        0x14, 0x00, // version needed
-        0x00, 0x00, // flags
-        0x00, 0x00, // compression
-        0x00, 0x00, // mod time
-        0x00, 0x00, // mod date
-        0x00, 0x00, 0x00, 0x00, // CRC-32
-        0x00, 0x00, 0x00, 0x00, // compressed size
-        0x00, 0x00, 0x00, 0x00, // uncompressed size
-        0x0F, 0x00, // filename length = 15
-        0x00, 0x00, // extra field length = 0
-        0x00, 0x00, // file comment length = 0
-        0x00, 0x00, // disk number start
-        0x00, 0x00, // internal file attributes
-        0x00, 0x00, 0x00, 0x00, // external file attributes
-        0x00, 0x00, 0x00, 0x00, // offset of local header = 0
-        'm',  'y',  '_',  'f',
-        'i',  'l',  'e',  'n',
-        'a',  'm',  'e',  '.',
-        'z',  'i',  'p',
+    try check_filename_consistency(io, file_path);
+}
 
-        // EOCD (starts at offset 106)
-        0x50, 0x4B, 0x05, 0x06, // signature
-        0x00, 0x00, // disk number
-        0x00, 0x00, // disk with CD start
-        0x01, 0x00, // entries this disk = 1
-        0x01, 0x00, // total entries = 1
-        0x3D, 0x00, 0x00, 0x00, // CD size = 61
-        0x2D, 0x00, 0x00, 0x00, // CD offset = 45
-        0x00, 0x00, // comment length = 0
-    };
+test "FileNameConsistency rejects zip containers with multiple files" {
+    var tmpdir = std.testing.tmpDir(.{});
+    defer tmpdir.cleanup();
 
     const io = std.testing.io;
     const filename = "my_filename.zip";
     var out_buffer: [1024]u8 = undefined;
-    var file = try tmpdir.dir.createFile(io, filename, .{ .read = true });
-    defer file.close(io);
-    try file.writeStreamingAll(io, &empty_zip);
+    const file_path = try create_test_zip(
+        io,
+        tmpdir.dir,
+        filename,
+        &.{ "my_filename.xml", "other.xml" },
+        &out_buffer,
+    );
 
-    const length = try file.realPath(io, &out_buffer);
-    const file_path = out_buffer[0..length];
-
-    try check_filename_consistency(io, file_path);
+    try std.testing.expectError(error.FileNameConsistency, check_filename_consistency(io, file_path));
 }
 
 test "EffectiveDateTime" {
     const correct_filename_template1: []const u8 = "20260603T1325Z_businessProcess_sourcingTSO_modelPart_fileVersion";
     const filename1 = try parse_filename(correct_filename_template1);
     try check_effective_datetime(filename1);
+
+    const leap_day: []const u8 = "20240229T1325Z_businessProcess_sourcingTSO_modelPart_fileVersion";
+    const filename_leap_day = try parse_filename(leap_day);
+    try check_effective_datetime(filename_leap_day);
 
     const filename_template_incorrect1: []const u8 = "2026060ET1325Z_businessProcess_sourcingTSO_modelPart_fileVersion";
     const filename2 = try parse_filename(filename_template_incorrect1);
@@ -125,6 +189,22 @@ test "EffectiveDateTime" {
     const filename_template_incorrect2: []const u8 = "20260603T132540Z_businessProcess_sourcingTSO_modelPart_fileVersion";
     const filename3 = try parse_filename(filename_template_incorrect2);
     try std.testing.expectError(error.EffectiveDateTime, check_effective_datetime(filename3));
+
+    const filename_template_incorrect3: []const u8 = "20260603Z1325T_businessProcess_sourcingTSO_modelPart_fileVersion";
+    const filename4 = try parse_filename(filename_template_incorrect3);
+    try std.testing.expectError(error.EffectiveDateTime, check_effective_datetime(filename4));
+
+    const filename_template_incorrect4: []const u8 = "20261303T1325Z_businessProcess_sourcingTSO_modelPart_fileVersion";
+    const filename5 = try parse_filename(filename_template_incorrect4);
+    try std.testing.expectError(error.EffectiveDateTime, check_effective_datetime(filename5));
+
+    const filename_template_incorrect5: []const u8 = "20230229T1325Z_businessProcess_sourcingTSO_modelPart_fileVersion";
+    const filename6 = try parse_filename(filename_template_incorrect5);
+    try std.testing.expectError(error.EffectiveDateTime, check_effective_datetime(filename6));
+
+    const filename_template_incorrect6: []const u8 = "20260603T2460Z_businessProcess_sourcingTSO_modelPart_fileVersion";
+    const filename7 = try parse_filename(filename_template_incorrect6);
+    try std.testing.expectError(error.EffectiveDateTime, check_effective_datetime(filename7));
 }
 
 test "SourcingActor" {
@@ -132,9 +212,13 @@ test "SourcingActor" {
     const filename1 = try parse_filename(correct_filename_template1);
     try validate_sourcing_actor(filename1);
 
-    const correct_filename_template2: []const u8 = "effectiveDateTime_businessProcess_sourcingRSC-cgmRegion_modelPart_fileVersion";
+    const correct_filename_template2: []const u8 = "effectiveDateTime_businessProcess_BALTIC-EU_modelPart_fileVersion";
     const filename2 = try parse_filename(correct_filename_template2);
     try validate_sourcing_actor(filename2);
+
+    const correct_filename_template_case: []const u8 = "effectiveDateTime_businessProcess_baltic-eu-ttn_modelPart_fileVersion";
+    const filename_case = try parse_filename(correct_filename_template_case);
+    try validate_sourcing_actor(filename_case);
 
     const incorrect_filename_template: []const u8 = "effectiveDateTime_businessProcess_doesnotexist_modelPart_fileVersion";
     const filename3 = try parse_filename(incorrect_filename_template);
@@ -155,12 +239,20 @@ test "SourcingActor" {
     const incorrect_filename_template4: []const u8 = "effectiveDateTime_businessProcess_doesnotexit-cgmRegion-TTN_modelPart_fileVersion";
     const filename7 = try parse_filename(incorrect_filename_template4);
     try std.testing.expectError(error.SourcingActor, validate_sourcing_actor(filename7));
+
+    const incorrect_filename_template5: []const u8 = "effectiveDateTime_businessProcess_doesnotexist-EU_modelPart_fileVersion";
+    const filename8 = try parse_filename(incorrect_filename_template5);
+    try std.testing.expectError(error.SourcingActor, validate_sourcing_actor(filename8));
 }
 
 test "CGMRegion" {
     const correct_filename_template1: []const u8 = "effectiveDateTime_businessProcess_sourcingRSC-EU_modelPart_fileVersion";
     const filename1 = try parse_filename(correct_filename_template1);
     try validate_cgm_region(filename1);
+
+    const correct_filename_template2: []const u8 = "effectiveDateTime_businessProcess_baltic-eu-ttn_modelPart_fileVersion";
+    const filename_case = try parse_filename(correct_filename_template2);
+    try validate_cgm_region(filename_case);
 
     const incorrect_filename_template1: []const u8 = "effectiveDateTime_businessProcess_EU-sourcingRSC_modelPart_fileVersion";
     const filename2 = try parse_filename(incorrect_filename_template1);
@@ -172,6 +264,10 @@ test "BusinessProcess" {
     const filename1 = try parse_filename(correct_filename_template1);
     try validate_business_process(filename1);
 
+    const correct_filename_template2: []const u8 = "effectiveDateTime_1d_TTN_modelPart_fileVersion";
+    const filename_case = try parse_filename(correct_filename_template2);
+    try validate_business_process(filename_case);
+
     const incorrect_filename_template1: []const u8 = "effectiveDateTime_8D_TTN_modelPart_fileVersion";
     const filename2 = try parse_filename(incorrect_filename_template1);
     try std.testing.expectError(error.BusinessProcess, validate_business_process(filename2));
@@ -181,6 +277,10 @@ test "ModelPartType" {
     const correct_filename_template1: []const u8 = "effectiveDateTime_businessProcess_sourcingProcess_EQ_fileVersion";
     const filename1 = try parse_filename(correct_filename_template1);
     try validate_model_part(filename1);
+
+    const correct_filename_template2: []const u8 = "effectiveDateTime_businessProcess_sourcingProcess_eq_fileVersion";
+    const filename_case = try parse_filename(correct_filename_template2);
+    try validate_model_part(filename_case);
 
     const incorrect_filename_template1: []const u8 = "effectiveDateTime_businessProcess_sourcingProcess_CO_fileVersion";
     const filename2 = try parse_filename(incorrect_filename_template1);
@@ -199,4 +299,32 @@ test "FileVersionType" {
     const incorrect_filename_template2: []const u8 = "effectiveDateTime_businessProcess_sourcingProcess_modelPart_abc";
     const filename3 = try parse_filename(incorrect_filename_template2);
     try std.testing.expectError(error.FileVersion, validate_file_version(filename3));
+
+    const incorrect_filename_template3: []const u8 = "effectiveDateTime_businessProcess_sourcingProcess_modelPart_000";
+    const filename4 = try parse_filename(incorrect_filename_template3);
+    try std.testing.expectError(error.FileVersion, validate_file_version(filename4));
+}
+
+test "validate accepts zip paths with valid fileVersion" {
+    var tmpdir = std.testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    const io = std.testing.io;
+    const stem = "20260603T1325Z_1D_TTN_EQ_001";
+    var out_buffer: [1024]u8 = undefined;
+    const file_path = try create_test_zip(io, tmpdir.dir, stem ++ ".zip", &.{stem ++ ".xml"}, &out_buffer);
+
+    try validate.validate(io, file_path);
+}
+
+test "validate_filename rejects invalid fileVersion from zip path" {
+    var tmpdir = std.testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    const io = std.testing.io;
+    const stem = "20260603T1325Z_1D_TTN_EQ_000";
+    var out_buffer: [1024]u8 = undefined;
+    const file_path = try create_test_zip(io, tmpdir.dir, stem ++ ".zip", &.{stem ++ ".xml"}, &out_buffer);
+
+    try std.testing.expectError(error.FileVersion, validate.validate_filename(file_path));
 }

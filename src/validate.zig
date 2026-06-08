@@ -4,6 +4,12 @@ const zip = @import("io/zip.zig");
 
 const assert = std.debug.assert;
 
+fn eql_ascii_ignore_case(a: []const u8, b: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(a, b);
+}
+
+const ReferenceStringSet = std.StaticStringMapWithEql(void, eql_ascii_ignore_case);
+
 // QoCDC §5.3 Rules' Constants.
 // const numeric_tolerance_factor: f64 = 0.0005; // NUMERIC_TOLERANCE
 // const ssh_sv_active_power_diff_mw_max: f64 = 10; // SSH_SV_MAX_P_DIFF
@@ -33,7 +39,7 @@ const assert = std.debug.assert;
 /// Transmission System Operators
 /// Sourced from Common Information Model (CIM) and CIM based documents > Common
 /// Grid Model Building Process > Other > QoCDC Reference Data v1.0 > tab 'Region'.
-const allowed_sourcing_tsos = std.StaticStringMap(void).initComptime(.{
+const allowed_sourcing_tsos = ReferenceStringSet.initComptime(.{
     .{ "ENTSOE", {} },
     .{ "DKW", {} },
     .{ "DKE", {} },
@@ -82,7 +88,7 @@ const allowed_sourcing_tsos = std.StaticStringMap(void).initComptime(.{
 /// Common Grid Model Region
 /// Sourced from Common Information Model (CIM) and CIM based documents > Common
 /// Grid Model Building Process > Other > QoCDC Reference Data v1.0 > tab 'Region'.
-const allowed_sourcing_cgm_regions = std.StaticStringMap(void).initComptime(.{
+const allowed_sourcing_cgm_regions = ReferenceStringSet.initComptime(.{
     .{ "MA", {} },
     .{ "IN", {} },
     .{ "NO", {} },
@@ -95,7 +101,7 @@ const allowed_sourcing_cgm_regions = std.StaticStringMap(void).initComptime(.{
 /// Regional Security Coordinators
 /// Sourced from Common Information Model (CIM) and CIM based documents > Common
 /// Grid Model Building Process > Other > QoCDC Reference Data v1.0 > tab 'MergingAgent'.
-const allowed_sourcing_rscs = std.StaticStringMap(void).initComptime(.{
+const allowed_sourcing_rscs = ReferenceStringSet.initComptime(.{
     .{ "BALTIC", {} },
     .{ "CORESO", {} },
     .{ "TSCNET", {} },
@@ -104,7 +110,7 @@ const allowed_sourcing_rscs = std.StaticStringMap(void).initComptime(.{
     .{ "SEleNeCC", {} },
 });
 
-const allowed_business_processes = std.StaticStringMap(void).initComptime(.{
+const allowed_business_processes = ReferenceStringSet.initComptime(.{
     .{ "RT", {} },
     .{ "TY", {} },
     .{ "YR", {} },
@@ -151,7 +157,7 @@ const allowed_business_processes = std.StaticStringMap(void).initComptime(.{
     .{ "7D", {} },
 });
 
-const allowed_model_parts = std.StaticStringMap(void).initComptime(.{
+const allowed_model_parts = ReferenceStringSet.initComptime(.{
     .{ "DL", {} },
     .{ "DY", {} },
     .{ "EQ", {} },
@@ -236,13 +242,21 @@ pub fn check_filename_consistency(io: std.Io, file_path: []const u8) !void {
         }
         const zip_filename = std.fs.path.basename(file_path);
         if (!std.mem.eql(u8, std.fs.path.stem(zip_filename), std.fs.path.stem(filename))) {
-            try print.stderr_info(io, "XML instance file name '{s}' is different from zip container file name '{s}'.\n", .{ filename, zip_filename });
+            return error.FileNameConsistency;
+        }
+        if (try iter.next() != null) {
             return error.FileNameConsistency;
         }
     } else {
-        try print.stderr_info(io, "file '{s}' is not contained in a single zip.", .{file_path});
         return error.FileNameConsistency;
     }
+}
+
+fn is_digits(value: []const u8) bool {
+    for (value) |byte| {
+        if (!std.ascii.isDigit(byte)) return false;
+    }
+    return true;
 }
 
 // The 'effectiveDateTime' in the file name must be a valid datetime in minute
@@ -255,23 +269,39 @@ pub fn check_effective_datetime(filename: Filename) !void {
     if (date_time.len != 14) {
         return error.EffectiveDateTime;
     }
-
-    var iter = std.mem.tokenizeAny(u8, date_time, "TZ");
-    const date = iter.next() orelse return error.EffectiveDateTime;
-    if (date.len != 8) {
+    if (date_time[8] != 'T') {
         return error.EffectiveDateTime;
     }
-    const time = iter.next() orelse return error.EffectiveDateTime;
-    if (time.len != 4) {
+    if (date_time[13] != 'Z') {
+        return error.EffectiveDateTime;
+    }
+    if (!is_digits(date_time[0..8])) {
+        return error.EffectiveDateTime;
+    }
+    if (!is_digits(date_time[9..13])) {
         return error.EffectiveDateTime;
     }
 
-    _ = std.fmt.parseInt(u32, date, 10) catch {
+    const year = std.fmt.parseInt(u16, date_time[0..4], 10) catch return error.EffectiveDateTime;
+    const month = std.fmt.parseInt(u8, date_time[4..6], 10) catch return error.EffectiveDateTime;
+    const day = std.fmt.parseInt(u8, date_time[6..8], 10) catch return error.EffectiveDateTime;
+    const hour = std.fmt.parseInt(u8, date_time[9..11], 10) catch return error.EffectiveDateTime;
+    const minute = std.fmt.parseInt(u8, date_time[11..13], 10) catch return error.EffectiveDateTime;
+
+    if (month < 1 or month > 12) {
         return error.EffectiveDateTime;
-    };
-    _ = std.fmt.parseInt(u32, time[0..4], 10) catch {
+    }
+    const month_enum: std.time.epoch.Month = @enumFromInt(month);
+    const days_in_month: u8 = @intCast(std.time.epoch.getDaysInMonth(year, month_enum));
+    if (day < 1 or day > days_in_month) {
         return error.EffectiveDateTime;
-    };
+    }
+    if (hour > 23) {
+        return error.EffectiveDateTime;
+    }
+    if (minute > 59) {
+        return error.EffectiveDateTime;
+    }
 }
 
 /// The sourcingActor, that appears in the cimxml file name, is composed as
@@ -299,6 +329,8 @@ pub fn validate_sourcing_actor(filename: Filename) !void {
             return;
         },
         2 => {
+            const sourcing_rsc = iter.next() orelse return error.SourcingActor;
+            _ = allowed_sourcing_rscs.get(sourcing_rsc) orelse return error.SourcingActor;
             return;
         },
         3 => {
@@ -368,53 +400,75 @@ pub fn validate_model_part(filename: Filename) !void {
 }
 
 /// The 'fileVersion' in the file name must be positive integer value always
-/// represented by three numeric characters ranging from 000 to 999, i.e. the
-/// first positive integer is 001 and the last 999. Leading zeros are allowed.
+/// represented by three numeric characters ranging from 001 to 999. Leading
+/// zeros are allowed.
 pub fn validate_file_version(filename: Filename) !void {
     if (filename.file_version.len != 3) return error.FileVersion;
     const file_version = std.fmt.parseInt(u16, filename.file_version, 10) catch return error.FileVersion;
+    if (file_version == 0) {
+        return error.FileVersion;
+    }
     if (file_version > 999) {
         return error.FileVersion;
     }
     return;
 }
 
+fn filename_stem_from_path(file_path: []const u8) []const u8 {
+    const filename_with_extension = std.fs.path.basename(file_path);
+    return std.fs.path.stem(filename_with_extension);
+}
+
+pub fn validate_filename(file_path: []const u8) !void {
+    const filename = filename_stem_from_path(file_path);
+    const filename_parsed = try parse_filename(filename);
+    try validate_filename_parts(filename_parsed);
+}
+
+fn validate_filename_parts(filename: Filename) !void {
+    try check_effective_datetime(filename);
+    try validate_sourcing_actor(filename);
+    try validate_cgm_region(filename);
+    try validate_business_process(filename);
+    try validate_model_part(filename);
+    try validate_file_version(filename);
+}
+
 pub fn validate(io: std.Io, file_path: []const u8) !void {
-    const filename = std.fs.path.basename(file_path);
+    const filename = filename_stem_from_path(file_path);
     const filename_parsed = parse_filename(filename) catch |e| {
         try print.stderr_info(io, "The structure of the filename '{s}' does not match the rules.\n", .{filename});
         return e;
     };
 
     check_filename_consistency(io, file_path) catch |e| {
-        try print.stderr_info(io, "XML instance file name is different from zip container file name '{s}'.", .{filename});
+        try print.stderr_info(io, "XML instance file name is different from zip container file name '{s}'.\n", .{filename});
         return e;
     };
 
-    check_effective_datetime(filename_parsed) catch |e| {
-        try print.stderr_info(io, "EffectiveDateTime '{s}' in file name is invalid.", .{filename_parsed.effective_date_time});
-        return e;
-    };
-
-    validate_sourcing_actor(filename_parsed) catch |e| {
-        try print.stderr_info(io, "sourcingRSC or/and sourcingTSO parts '{s}' of the file name has/have value(s) that are not included in the QoCDC Reference Data document.", .{filename_parsed.sourcing_actor});
-        return e;
-    };
-
-    validate_cgm_region(filename_parsed) catch |e| {
-        try print.stderr_info(io, "cgmRegion part '{s}' of the file name has value that is not included in the QoCDC Reference Data document.", .{filename_parsed.sourcing_actor});
-        return e;
-    };
-
-    validate_business_process(filename_parsed) catch |e| {
-        if (filename_parsed.business_process) |business_process| {
-            try print.stderr_info(io, "Unknown business process '{s}'.", .{business_process});
+    validate_filename_parts(filename_parsed) catch |e| {
+        switch (e) {
+            error.EffectiveDateTime => {
+                try print.stderr_info(io, "EffectiveDateTime '{s}' in file name is invalid.\n", .{filename_parsed.effective_date_time});
+            },
+            error.SourcingActor => {
+                try print.stderr_info(io, "sourcingRSC or/and sourcingTSO parts '{s}' of the file name has/have value(s) that are not included in the QoCDC Reference Data document.\n", .{filename_parsed.sourcing_actor});
+            },
+            error.CGMRegion => {
+                try print.stderr_info(io, "cgmRegion part '{s}' of the file name has value that is not included in the QoCDC Reference Data document.\n", .{filename_parsed.sourcing_actor});
+            },
+            error.BusinessProcess => {
+                if (filename_parsed.business_process) |business_process| {
+                    try print.stderr_info(io, "Unknown business process '{s}'.\n", .{business_process});
+                }
+            },
+            error.ModelPartType => {
+                try print.stderr_info(io, "Unknown modelPart type '{s}' in the filename.\n", .{filename_parsed.model_part});
+            },
+            error.FileVersion => {
+                try print.stderr_info(io, "Invalid fileVersion '{s}' in the filename.\n", .{filename_parsed.file_version});
+            },
         }
-        return e;
-    };
-
-    validate_model_part(filename_parsed) catch |e| {
-        try print.stderr_info(io, "Unknown modelPart type '{s}' in the filename.", .{filename_parsed.model_part});
         return e;
     };
 }
