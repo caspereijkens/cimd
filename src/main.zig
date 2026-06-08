@@ -97,11 +97,7 @@ fn command_convert(io: std.Io, parent_gpa: std.mem.Allocator, c: cli.Command.Con
 
     const ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
 
-    if (tp_opt) |tp| if (refs.find_tp_primary_id_collision(&model, tp)) |id| print.stderr(
-        io,
-        "convert: mRID collision: '{s}' is defined in both the primary file and the TP profile",
-        .{id},
-    );
+    reject_tp_primary_id_collision(io, "convert", &model, tp_opt);
 
     const network = try converter.convert(gpa, &model, tp_opt, ssh_opt, c.bus_branch);
 

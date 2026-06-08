@@ -6,6 +6,7 @@ const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
 const resolve = @import("../topology/resolve.zig");
 const substation_conv = @import("substation.zig");
+const parse = @import("../cgmes/parse.zig");
 
 const assert = std.debug.assert;
 const Topology = resolve.Topology;
@@ -23,7 +24,7 @@ fn resolve_nominal_voltageoltage(model: *const EQ, voltage_level: CimObjectView)
     const base_voltage_ref = try voltage_level.getReference("VoltageLevel.BaseVoltage") orelse return null;
     const base_voltage = model.getObjectById(strip_hash(base_voltage_ref)) orelse return null;
     const nominal_voltageoltage_str = try base_voltage.getProperty("BaseVoltage.nominalVoltage") orelse return null;
-    return try std.fmt.parseFloat(f64, nominal_voltageoltage_str);
+    return try parse.float_req(nominal_voltageoltage_str);
 }
 
 // Append one IIDM VoltageLevel to the Network. Assumes capacity has been pre-allocated.
@@ -201,6 +202,16 @@ pub fn build_voltage_level_map(
 ) !std.StringHashMapUnmanaged(*iidm.VoltageLevel) {
     assert(network.substations.items.len > 0);
 
+    // Pointer-stability contract: the maps built here hand out interior pointers
+    // into network.substations and into each substation's voltage_levels backing
+    // array. convert_substations and convert_voltage_levels must have fully
+    // populated both before this runs; nothing afterwards may append to them, or
+    // the next reallocation would dangle every pointer. (Equipment converters
+    // only append to the *inner* arrays — loads, switches, … — which is safe.)
+    // We snapshot the substations backing pointer and assert it is unchanged on
+    // exit, so a future edit that appends here fails loudly instead of silently.
+    const substations_ptr = network.substations.items.ptr;
+
     const voltage_levels = model.get_objects_by_type("VoltageLevel");
     const representative_count = voltage_levels.len - topology.voltage_level_merge.count();
 
@@ -226,6 +237,9 @@ pub fn build_voltage_level_map(
     }
 
     assert(voltage_level_map.count() == representative_count);
+    // Pairs with the snapshot above: building the maps must not have grown
+    // network.substations (which would invalidate the pointers just stored).
+    assert(network.substations.items.ptr == substations_ptr);
 
     return voltage_level_map;
 }

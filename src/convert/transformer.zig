@@ -5,6 +5,7 @@ const cross_ref = @import("../topology/cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
 const topology = @import("../topology/resolve.zig");
+const parse = @import("../cgmes/parse.zig");
 
 const assert = std.debug.assert;
 const testing = std.testing;
@@ -74,8 +75,7 @@ fn read_tap_changer_regulating(
             (try control_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(control_id))
         else
             strip_underscore(control_id);
-        const enabled = try ssh.getProperty(control_mrid, "RegulatingCondEq.controlEnabled") orelse "false";
-        return std.mem.eql(u8, enabled, "true");
+        return parse.flag(try ssh.getProperty(control_mrid, "RegulatingCondEq.controlEnabled"));
     }
     return false;
 }
@@ -86,12 +86,9 @@ fn read_tap_changer_common(tap_changer: CimObjectView) !?TapChangerCommon {
         "TapChanger.normalStep",
         "TapChanger.ltcFlag",
     });
-    const low_step_str = props[0] orelse return null;
-    const low_step = try std.fmt.parseInt(i32, low_step_str, 10);
-    const normal_step_str = props[1] orelse return null;
-    const normal_step = try std.fmt.parseInt(i32, normal_step_str, 10);
-    const ltc_flag_str = props[2] orelse return null;
-    const ltc_flag = std.mem.eql(u8, ltc_flag_str, "true");
+    const low_step = try parse.int_req(i32, props[0] orelse return null);
+    const normal_step = try parse.int_req(i32, props[1] orelse return null);
+    const ltc_flag = parse.flag(props[2] orelse return null);
     return .{ .low_step = low_step, .normal_step = normal_step, .ltc_flag = ltc_flag };
 }
 
@@ -132,12 +129,11 @@ fn read_tap_changer_base_step(point: CimObjectView) !?TapChangerBaseStep {
         "TapChangerTablePoint.b",
         "TapChangerTablePoint.ratio",
     });
-    const r = try std.fmt.parseFloat(f64, props[0] orelse "0.0");
-    const x = try std.fmt.parseFloat(f64, props[1] orelse "0.0");
-    const g = try std.fmt.parseFloat(f64, props[2] orelse "0.0");
-    const b = try std.fmt.parseFloat(f64, props[3] orelse "0.0");
-    const ratio_str = props[4] orelse return null;
-    const cgmes_ratio = try std.fmt.parseFloat(f64, ratio_str);
+    const r = try parse.float_strict(props[0], 0.0);
+    const x = try parse.float_strict(props[1], 0.0);
+    const g = try parse.float_strict(props[2], 0.0);
+    const b = try parse.float_strict(props[3], 0.0);
+    const cgmes_ratio = try parse.float_req(props[4] orelse return null);
     return .{ .r = r, .x = x, .g = g, .b = b, .cgmes_ratio = cgmes_ratio };
 }
 
@@ -162,7 +158,7 @@ fn build_ratio_table_points(
         const table_ref = try point_view.getReference("RatioTapChangerTablePoint.RatioTapChangerTable") orelse continue;
         const base = try read_tap_changer_base_step(point_view) orelse continue;
         const step_num_str = try point_view.getProperty("TapChangerTablePoint.step") orelse continue;
-        const step_num = try std.fmt.parseInt(i32, step_num_str, 10);
+        const step_num = try parse.int_req(i32, step_num_str);
         // pypowsybl inverts cgmes_ratio for ratio tap changers.
         const rho = if (base.cgmes_ratio != 0.0) 1.0 / base.cgmes_ratio else 1.0;
         const gop = points_by_table.getOrPutAssumeCapacity(strip_hash(table_ref));
@@ -185,11 +181,11 @@ fn build_linear_ratio_steps(
     low_step: i32,
 ) !?std.ArrayListUnmanaged(iidm.RatioTapChangerStep) {
     const high_step_str = try tap_changer.getProperty("TapChanger.highStep") orelse return null;
-    const high_step = try std.fmt.parseInt(i32, high_step_str, 10);
+    const high_step = try parse.int_req(i32, high_step_str);
     const neutral_step_str = try tap_changer.getProperty("TapChanger.neutralStep") orelse return null;
-    const neutral_step = try std.fmt.parseInt(i32, neutral_step_str, 10);
+    const neutral_step = try parse.int_req(i32, neutral_step_str);
     const increment_str = try tap_changer.getProperty("RatioTapChanger.stepVoltageIncrement") orelse return null;
-    const increment = try std.fmt.parseFloat(f64, increment_str);
+    const increment = try parse.float_req(increment_str);
 
     if (high_step < low_step) return error.InvalidTapStepRange;
     const step_count_i64 = @as(i64, high_step) - @as(i64, low_step) + 1;
@@ -314,10 +310,9 @@ fn build_phase_tap_changer_map(
         const table_id = strip_hash(table_ref);
 
         const base = try read_tap_changer_base_step(point_view) orelse continue;
-        const alpha_str = try point_view.getProperty("PhaseTapChangerTablePoint.angle") orelse "0.0";
-        const alpha = try std.fmt.parseFloat(f64, alpha_str);
+        const alpha = try parse.float_strict(try point_view.getProperty("PhaseTapChangerTablePoint.angle"), 0.0);
         const step_num_str = try point_view.getProperty("TapChangerTablePoint.step") orelse continue;
-        const step_num = try std.fmt.parseInt(i32, step_num_str, 10);
+        const step_num = try parse.int_req(i32, step_num_str);
 
         const gop = points_by_table.getOrPutAssumeCapacity(table_id);
         if (!gop.found_existing) gop.value_ptr.* = .empty;
@@ -365,8 +360,7 @@ fn build_phase_tap_changer_map(
         //       step.r = 100 * ((1 + cgmes_r/100) * a² - 1)
         //       step.g = 100 * ((1 + cgmes_g/100) / a² - 1)
         const end_obj = model.getObjectById(end_id) orelse continue;
-        const end_number_str = try end_obj.getProperty("TransformerEnd.endNumber") orelse "0";
-        const end_number = std.fmt.parseInt(u32, end_number_str, 10) catch 0;
+        const end_number = parse.int_or(u32, try end_obj.getProperty("TransformerEnd.endNumber"), 0);
         const move = end_number == 1;
 
         var owned_steps: std.ArrayListUnmanaged(iidm.PhaseTapChangerStep) = .empty;
@@ -405,12 +399,8 @@ fn build_phase_tap_changer_map(
 }
 
 fn view_less_than(_: void, a: CimObjectView, b: CimObjectView) bool {
-    const end_number0_str = a.getProperty("TransformerEnd.endNumber") catch "0" orelse "0";
-    const end_number0 = std.fmt.parseInt(u32, end_number0_str, 10) catch 0;
-
-    const end_number1_str = b.getProperty("TransformerEnd.endNumber") catch "0" orelse "0";
-    const end_number1 = std.fmt.parseInt(u32, end_number1_str, 10) catch 0;
-
+    const end_number0 = parse.int_or(u32, a.getProperty("TransformerEnd.endNumber") catch null, 0);
+    const end_number1 = parse.int_or(u32, b.getProperty("TransformerEnd.endNumber") catch null, 0);
     return end_number0 < end_number1;
 }
 
@@ -516,15 +506,12 @@ fn read_end_electrical(end: CimObjectView) !?EndElectrical {
         "PowerTransformerEnd.b",
         "PowerTransformerEnd.ratedS",
     });
-    const rated_u = try std.fmt.parseFloat(f64, props[0] orelse return null);
-    const r = try std.fmt.parseFloat(f64, props[1] orelse "0.0");
-    const x = try std.fmt.parseFloat(f64, props[2] orelse "0.0");
-    const g = try std.fmt.parseFloat(f64, props[3] orelse "0.0");
-    const b = try std.fmt.parseFloat(f64, props[4] orelse "0.0");
-    const rated_s: ?f64 = blk: {
-        const s = props[5] orelse break :blk null;
-        break :blk try std.fmt.parseFloat(f64, s);
-    };
+    const rated_u = try parse.float_req(props[0] orelse return null);
+    const r = try parse.float_strict(props[1], 0.0);
+    const x = try parse.float_strict(props[2], 0.0);
+    const g = try parse.float_strict(props[3], 0.0);
+    const b = try parse.float_strict(props[4], 0.0);
+    const rated_s: ?f64 = if (props[5]) |s| try parse.float_req(s) else null;
     return .{ .r = r, .x = x, .g = g, .b = b, .rated_u = rated_u, .rated_s = rated_s };
 }
 

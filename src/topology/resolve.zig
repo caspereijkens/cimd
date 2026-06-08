@@ -4,6 +4,7 @@ const EQ = @import("../cgmes/eq.zig").EQ;
 const cross_ref = @import("cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const cim_ssh = @import("../cgmes/ssh.zig");
+const parse = @import("../cgmes/parse.zig");
 
 const assert = std.debug.assert;
 
@@ -608,7 +609,8 @@ pub fn is_ssh_terminal_disconnected(ssh_opt: ?SSH, terminal_id: []const u8) bool
     const mrid = strip_underscore(terminal_id);
     const connected = ssh.getProperty(mrid, "ACDCTerminal.connected") catch return false;
     const val = connected orelse return false;
-    return std.mem.eql(u8, val, "false");
+    // Trim like is_switch_closed: pretty-printed SSH wraps the value in whitespace.
+    return std.mem.eql(u8, std.mem.trim(u8, val, " \t\r\n"), "false");
 }
 
 pub fn is_switch_closed(model: *const EQ, ssh: *const SSH, switch_id: []const u8) !bool {
@@ -642,8 +644,7 @@ fn union_closed_switch_conn_nodes(
 
             // Retained closed switches become SwitchBranches in the IIDM bus-branch view —
             // each end stays its own TopologicalNode, so do not union across them.
-            const retained_str = try model.view(@"switch").getProperty("Switch.retained") orelse "false";
-            if (std.mem.eql(u8, retained_str, "true")) continue;
+            if (parse.flag(try model.view(@"switch").getProperty("Switch.retained"))) continue;
 
             // default behavior is closed.
             const closed = if (ssh_opt) |s| try is_switch_closed(model, s, @"switch".id) else true;

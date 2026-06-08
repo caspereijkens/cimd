@@ -5,6 +5,7 @@ const cross_ref = @import("../topology/cross_ref.zig");
 const utils = @import("../cgmes/ids.zig");
 const placement_mod = @import("placement.zig");
 const resolve = @import("../topology/resolve.zig");
+const parse = @import("../cgmes/parse.zig");
 
 const assert = std.debug.assert;
 
@@ -129,9 +130,7 @@ pub fn convert_lines(
                     if (try segment_view.getReference("ConductingEquipment.BaseVoltage")) |base_voltage_ref| {
                         const base_voltage_id = strip_hash(base_voltage_ref);
                         if (model.getObjectById(base_voltage_id)) |base_voltage_object| {
-                            if (try base_voltage_object.getProperty("BaseVoltage.nominalVoltage")) |nominal_voltage_str| {
-                                nominal_voltage = std.fmt.parseFloat(f64, std.mem.trim(u8, nominal_voltage_str, " \t\r\n")) catch null;
-                            }
+                            nominal_voltage = parse.float_opt(try base_voltage_object.getProperty("BaseVoltage.nominalVoltage"));
                         }
                     }
                     boundary_conn_node_entry.value_ptr.* = .{
@@ -224,14 +223,14 @@ pub fn convert_lines(
         // SSH EquivalentInjection.p/q — load convention (negative = injecting) → negate for targetP/Q.
         const target_p: ?f64 = if (ssh_opt) |ssh|
             if (try ssh.getProperty(mrid, "EquivalentInjection.p")) |v|
-                -(std.fmt.parseFloat(f64, v) catch 0.0)
+                -parse.float_or(v, 0.0)
             else
                 null
         else
             null;
         const target_q: ?f64 = if (ssh_opt) |ssh|
             if (try ssh.getProperty(mrid, "EquivalentInjection.q")) |v|
-                -(std.fmt.parseFloat(f64, v) catch 0.0)
+                -parse.float_or(v, 0.0)
             else
                 null
         else
@@ -275,10 +274,10 @@ pub fn convert_lines(
         const mrid = props[0] orelse strip_underscore(line.id);
         const name = props[1];
 
-        const r = try std.fmt.parseFloat(f64, props[2] orelse "0.0");
-        const x = try std.fmt.parseFloat(f64, props[3] orelse "0.0");
-        const charging_conductance = try std.fmt.parseFloat(f64, props[4] orelse "0.0");
-        const charging_susceptance = try std.fmt.parseFloat(f64, props[5] orelse "0.0");
+        const r = try parse.float_strict(props[2], 0.0);
+        const x = try parse.float_strict(props[3], 0.0);
+        const charging_conductance = try parse.float_strict(props[4], 0.0);
+        const charging_susceptance = try parse.float_strict(props[5], 0.0);
 
         const terminals = index.equipment_terminals.get(line.id) orelse continue;
         if (terminals.items.len != 2) continue;
@@ -369,8 +368,8 @@ pub fn convert_lines(
         const mrid = props[0] orelse strip_underscore(series_compensator.id);
         const name = props[1];
 
-        const r = try std.fmt.parseFloat(f64, props[2] orelse "0.0");
-        const x = try std.fmt.parseFloat(f64, props[3] orelse "0.0");
+        const r = try parse.float_strict(props[2], 0.0);
+        const x = try parse.float_strict(props[3], 0.0);
 
         const terminals = index.equipment_terminals.get(series_compensator.id) orelse continue;
         if (terminals.items.len != 2) continue;

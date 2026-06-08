@@ -1780,3 +1780,110 @@ test "voltage level: no properties emitted when no voltage limits apply" {
     const vl = find_root(network, "VL2") orelse return error.TestFailed;
     try std.testing.expectEqual(@as(usize, 0), vl.properties.items.len);
 }
+
+// ── Whitespace-wrapped property values (pretty-printed CGMES) ──────────────────
+//
+// Goal: prove the convert pathway tolerates property values that carry the
+// surrounding indentation whitespace a pretty-printed CGMES exporter produces,
+// e.g. `<cim:...bPerSection>\n  0.5\n</cim:...>`. Before parsing was routed
+// through cgmes/parse.zig, `try std.fmt.parseFloat` on such a value aborted the
+// whole conversion (error.InvalidCharacter) and `std.mem.eql(x, "true")`
+// silently read false. Methodology: a minimal model whose numeric/boolean
+// values are each wrapped in newlines+spaces; convert must succeed and every
+// value must parse to its trimmed meaning.
+const PRETTY_PRINTED_EQ_XML =
+    \\<rdf:RDF>
+    \\  <cim:Substation rdf:ID="_SS1">
+    \\    <cim:IdentifiedObject.name>Sub 1</cim:IdentifiedObject.name>
+    \\  </cim:Substation>
+    \\  <cim:BaseVoltage rdf:ID="_BV1">
+    \\    <cim:BaseVoltage.nominalVoltage>
+    \\      220.0
+    \\    </cim:BaseVoltage.nominalVoltage>
+    \\  </cim:BaseVoltage>
+    \\  <cim:VoltageLevel rdf:ID="_VL1">
+    \\    <cim:IdentifiedObject.name>VL 1</cim:IdentifiedObject.name>
+    \\    <cim:VoltageLevel.Substation rdf:resource="#_SS1"/>
+    \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#_BV1"/>
+    \\  </cim:VoltageLevel>
+    \\  <cim:ConnectivityNode rdf:ID="_CN1">
+    \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#_VL1"/>
+    \\  </cim:ConnectivityNode>
+    \\  <cim:ConnectivityNode rdf:ID="_CN2">
+    \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#_VL1"/>
+    \\  </cim:ConnectivityNode>
+    \\  <cim:ConnectivityNode rdf:ID="_CN3">
+    \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#_VL1"/>
+    \\  </cim:ConnectivityNode>
+    \\  <cim:BusbarSection rdf:ID="_BB1">
+    \\    <cim:IdentifiedObject.name>BB1</cim:IdentifiedObject.name>
+    \\  </cim:BusbarSection>
+    \\  <cim:Terminal rdf:ID="_T_BB1">
+    \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+    \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BB1"/>
+    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN1"/>
+    \\  </cim:Terminal>
+    \\  <cim:LinearShuntCompensator rdf:ID="_SH1">
+    \\    <cim:IdentifiedObject.name>SH1</cim:IdentifiedObject.name>
+    \\    <cim:ShuntCompensator.sections>2</cim:ShuntCompensator.sections>
+    \\    <cim:ShuntCompensator.maximumSections>10</cim:ShuntCompensator.maximumSections>
+    \\    <cim:LinearShuntCompensator.bPerSection>
+    \\      0.5
+    \\    </cim:LinearShuntCompensator.bPerSection>
+    \\    <cim:LinearShuntCompensator.gPerSection>
+    \\      0.25
+    \\    </cim:LinearShuntCompensator.gPerSection>
+    \\  </cim:LinearShuntCompensator>
+    \\  <cim:Terminal rdf:ID="_T_SH1">
+    \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+    \\    <cim:Terminal.ConductingEquipment rdf:resource="#_SH1"/>
+    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN2"/>
+    \\  </cim:Terminal>
+    \\  <cim:SynchronousMachine rdf:ID="_GEN1">
+    \\    <cim:IdentifiedObject.name>GEN1</cim:IdentifiedObject.name>
+    \\    <cim:RegulatingCondEq.controlEnabled>
+    \\      true
+    \\    </cim:RegulatingCondEq.controlEnabled>
+    \\    <cim:SynchronousMachine.minQ>
+    \\      -50.0
+    \\    </cim:SynchronousMachine.minQ>
+    \\    <cim:SynchronousMachine.maxQ>
+    \\      60.0
+    \\    </cim:SynchronousMachine.maxQ>
+    \\  </cim:SynchronousMachine>
+    \\  <cim:Terminal rdf:ID="_T_GEN1">
+    \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+    \\    <cim:Terminal.ConductingEquipment rdf:resource="#_GEN1"/>
+    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN3"/>
+    \\  </cim:Terminal>
+    \\</rdf:RDF>
+;
+
+test "whitespace: pretty-printed numeric and boolean values parse correctly" {
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, PRETTY_PRINTED_EQ_XML));
+    defer model.deinit(gpa);
+    // Pre-fix, the wrapped floats made converter.convert return
+    // error.InvalidCharacter here; reaching the assertions at all is the headline.
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    // BaseVoltage.nominalVoltage wrapped in whitespace → 220.0 (voltage_level.zig).
+    const vl = find_root(network, "VL1") orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(?f64, 220.0), vl.nominal_voltageoltage);
+
+    // LinearShuntCompensator electrical values (equipment.zig float_strict / int_strict).
+    const shunt = find_shunt(network, "SH1") orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(u32, 2), shunt.section_count);
+    try std.testing.expectEqual(@as(u32, 10), shunt.shunt_linear_model.max_section_count);
+    try std.testing.expectEqual(@as(f64, 0.5), shunt.shunt_linear_model.b_per_section);
+    try std.testing.expectEqual(@as(f64, 0.25), shunt.shunt_linear_model.g_per_section);
+
+    // SynchronousMachine: wrapped boolean must read true (parse.flag), and the
+    // wrapped minQ/maxQ must parse rather than abort or silently null out.
+    const gen = find_generator(network, "GEN1") orelse return error.TestFailed;
+    try std.testing.expect(gen.voltage_regulator_on);
+    const limits = gen.min_max_reactive_limits orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(f64, -50.0), limits.min_q);
+    try std.testing.expectEqual(@as(f64, 60.0), limits.max_q);
+}

@@ -30,6 +30,7 @@ comptime {
     _ = @import("cgmes/cim_types.zig");
     _ = @import("cgmes/test_eq.zig");
     _ = @import("cgmes/test_ids.zig");
+    _ = @import("cgmes/parse.zig");
     _ = @import("refs.zig");
     _ = @import("topology/test_resolve.zig");
     _ = @import("convert/test_conversion.zig");
