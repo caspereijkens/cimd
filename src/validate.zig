@@ -30,6 +30,140 @@ const assert = std.debug.assert;
 // const imbalance_distribution_active_power_mw_threshold: f64 = 2; // THRESHOLD_ACTIVE_P_IMBALANCE_DISTR
 // const zero_impedance_pu_max: f64 = 0.00001; // ZERO_IMPEDANCE_THRESHOLD
 
+/// Transmission System Operators
+/// Sourced from Common Information Model (CIM) and CIM based documents > Common
+/// Grid Model Building Process > Other > QoCDC Reference Data v1.0 > tab 'Region'.
+const allowed_sourcing_tsos = std.StaticStringMap(void).initComptime(.{
+    .{ "ENTSOE", {} },
+    .{ "DKW", {} },
+    .{ "DKE", {} },
+    .{ "SONI", {} },
+    .{ "ELERING", {} },
+    .{ "DK", {} },
+    .{ "KOSTT", {} },
+    .{ "OST", {} },
+    .{ "APG", {} },
+    .{ "NOSBIH", {} },
+    .{ "ELIA", {} },
+    .{ "ESO", {} },
+    .{ "SWISSGRID", {} },
+    .{ "CGES", {} },
+    .{ "EMS", {} },
+    .{ "CEPS", {} },
+    .{ "D4", {} },
+    .{ "TTG", {} },
+    .{ "D7", {} },
+    .{ "50hertz", {} },
+    .{ "REE", {} },
+    .{ "FI", {} },
+    .{ "RTEFRANCE", {} },
+    .{ "NG", {} },
+    .{ "IPTO", {} },
+    .{ "HOPS", {} },
+    .{ "MAVIR", {} },
+    .{ "EIRGRID", {} },
+    .{ "TERNA", {} },
+    .{ "LITGRID", {} },
+    .{ "CREOS", {} },
+    .{ "AST", {} },
+    .{ "MEPSO", {} },
+    .{ "TTN", {} },
+    .{ "NO", {} },
+    .{ "PSE", {} },
+    .{ "REN", {} },
+    .{ "TRANSELECTRICA", {} },
+    .{ "SVK", {} },
+    .{ "ELES", {} },
+    .{ "SEPS", {} },
+    .{ "TEIAS", {} },
+    .{ "Ukrenergo", {} },
+});
+
+/// Common Grid Model Region
+/// Sourced from Common Information Model (CIM) and CIM based documents > Common
+/// Grid Model Building Process > Other > QoCDC Reference Data v1.0 > tab 'Region'.
+const allowed_sourcing_cgm_regions = std.StaticStringMap(void).initComptime(.{
+    .{ "MA", {} },
+    .{ "IN", {} },
+    .{ "NO", {} },
+    .{ "UK", {} },
+    .{ "BA", {} },
+    .{ "CE", {} },
+    .{ "EU", {} },
+});
+
+/// Regional Security Coordinators
+/// Sourced from Common Information Model (CIM) and CIM based documents > Common
+/// Grid Model Building Process > Other > QoCDC Reference Data v1.0 > tab 'MergingAgent'.
+const allowed_sourcing_rscs = std.StaticStringMap(void).initComptime(.{
+    .{ "BALTIC", {} },
+    .{ "CORESO", {} },
+    .{ "TSCNET", {} },
+    .{ "SCC", {} },
+    .{ "NORDIC", {} },
+    .{ "SEleNeCC", {} },
+});
+
+const allowed_business_processes = std.StaticStringMap(void).initComptime(.{
+    .{ "RT", {} },
+    .{ "TY", {} },
+    .{ "YR", {} },
+    .{ "MO", {} },
+    .{ "WK", {} },
+    .{ "2D", {} },
+    .{ "1D", {} },
+    .{ "ID", {} },
+    .{ "1", {} },
+    .{ "2", {} },
+    .{ "3", {} },
+    .{ "4", {} },
+    .{ "5", {} },
+    .{ "6", {} },
+    .{ "7", {} },
+    .{ "8", {} },
+    .{ "9", {} },
+    .{ "10", {} },
+    .{ "11", {} },
+    .{ "12", {} },
+    .{ "13", {} },
+    .{ "14", {} },
+    .{ "15", {} },
+    .{ "16", {} },
+    .{ "17", {} },
+    .{ "18", {} },
+    .{ "19", {} },
+    .{ "20", {} },
+    .{ "21", {} },
+    .{ "22", {} },
+    .{ "23", {} },
+    .{ "24", {} },
+    .{ "25", {} },
+    .{ "26", {} },
+    .{ "27", {} },
+    .{ "28", {} },
+    .{ "29", {} },
+    .{ "30", {} },
+    .{ "31", {} },
+    .{ "3D", {} },
+    .{ "4D", {} },
+    .{ "5D", {} },
+    .{ "6D", {} },
+    .{ "7D", {} },
+});
+
+const allowed_model_parts = std.StaticStringMap(void).initComptime(.{
+    .{ "DL", {} },
+    .{ "DY", {} },
+    .{ "EQ", {} },
+    .{ "EQBD", {} },
+    .{ "EQDIFF", {} },
+    .{ "GL", {} },
+    .{ "SSH", {} },
+    .{ "SV", {} },
+    .{ "TP", {} },
+    .{ "TPBD", {} },
+});
+
 const Filename = struct {
     effective_date_time: []const u8,
     business_process: ?[]const u8,
@@ -38,38 +172,7 @@ const Filename = struct {
     file_version: []const u8,
 };
 
-test "FileNameMD" {
-    // Used for EQ (also correct_filename_template2), SSH, TP and SV.
-    const correct_filename_template1: []const u8 = "effectiveDateTime_businessProcess_sourcingTSO_modelPart_fileVersion";
-    const filename1 = try parse_filename(correct_filename_template1);
-    try std.testing.expectEqualStrings(filename1.business_process.?, "businessProcess");
-
-    // Used for EQ(also correct_filename_template1), EQBD and TPBD.
-    const correct_filename_template2: []const u8 = "effectiveDateTime__sourcingTSO_modelPart_fileVersion";
-    const filename2 = try parse_filename(correct_filename_template2);
-    try std.testing.expectEqual(filename2.business_process, null);
-
-    // Some variations of sourcingActor
-    const correct_filename_template3: []const u8 = "effectiveDateTime__sourcingRSC-cgmRegion_modelPart_fileVersion";
-    const filename3 = try parse_filename(correct_filename_template3);
-    try std.testing.expectEqualStrings(filename3.sourcing_actor, "sourcingRSC-cgmRegion");
-
-    const correct_filename_template4: []const u8 = "effectiveDateTime__sourcingRSC-cgmRegion-sourcingTSO_modelPart_fileVersion";
-    const filename4 = try parse_filename(correct_filename_template4);
-    try std.testing.expectEqualStrings(filename4.sourcing_actor, "sourcingRSC-cgmRegion-sourcingTSO");
-
-    // Unhappy cases
-    const empty_filename: []const u8 = "____";
-    try std.testing.expectError(error.FileNameMD, parse_filename(empty_filename));
-
-    const missing_underscore: []const u8 = "effectiveDateTime_sourcingTSO_modelPart_fileVersion";
-    try std.testing.expectError(error.FileNameMD, parse_filename(missing_underscore));
-
-    const empty_model_part: []const u8 = "effectiveDateTime_sourcingTSO__fileVersion";
-    try std.testing.expectError(error.FileNameMD, parse_filename(empty_model_part));
-}
-
-fn parse_filename(filename: []const u8) !Filename {
+pub fn parse_filename(filename: []const u8) !Filename {
     assert(filename.len > 0);
 
     if (std.mem.countScalar(u8, filename, '_') != 4) {
@@ -112,7 +215,7 @@ fn parse_filename(filename: []const u8) !Filename {
     };
 }
 
-fn check_filename_consistency(io: std.Io, file_path: []const u8) !void {
+pub fn check_filename_consistency(io: std.Io, file_path: []const u8) !void {
     const cwd = std.Io.Dir.cwd();
     const file = try cwd.openFile(io, file_path, .{});
     defer file.close(io);
@@ -133,7 +236,7 @@ fn check_filename_consistency(io: std.Io, file_path: []const u8) !void {
         }
         const zip_filename = std.fs.path.basename(file_path);
         if (!std.mem.eql(u8, std.fs.path.stem(zip_filename), std.fs.path.stem(filename))) {
-            std.debug.print("XML instance file name '{s}' is different from zip container file name '{s}'.\n", .{ filename, zip_filename });
+            try print.stderr_info(io, "XML instance file name '{s}' is different from zip container file name '{s}'.\n", .{ filename, zip_filename });
             return error.FileNameConsistency;
         }
     } else {
@@ -142,17 +245,176 @@ fn check_filename_consistency(io: std.Io, file_path: []const u8) !void {
     }
 }
 
+// The 'effectiveDateTime' in the file name must be a valid datetime in minute
+// resolution in accordance with ISO 8601-2005, basic format with time
+// designator [T] between date and time and ending with UTC designator [Z]. For
+// example, 20180118T1130Z. Use of other date/time specifiers by characters
+// [:.-+YMDHSWP] is not allowed.
+pub fn check_effective_datetime(filename: Filename) !void {
+    const date_time = filename.effective_date_time;
+    if (date_time.len != 14) {
+        return error.EffectiveDateTime;
+    }
+
+    var iter = std.mem.tokenizeAny(u8, date_time, "TZ");
+    const date = iter.next() orelse return error.EffectiveDateTime;
+    if (date.len != 8) {
+        return error.EffectiveDateTime;
+    }
+    const time = iter.next() orelse return error.EffectiveDateTime;
+    if (time.len != 4) {
+        return error.EffectiveDateTime;
+    }
+
+    _ = std.fmt.parseInt(u32, date, 10) catch {
+        return error.EffectiveDateTime;
+    };
+    _ = std.fmt.parseInt(u32, time[0..4], 10) catch {
+        return error.EffectiveDateTime;
+    };
+}
+
+/// The sourcingActor, that appears in the cimxml file name, is composed as
+/// described in rule FileNameMD. The choice on sourcingActor is made by the
+/// responsible TSO and it is recorded in the QoCDC Reference Data document.
+/// Once decided the sourcingActor should comply with the defined names in the
+/// QoCDC Reference Data document. This rule checks if the values of the
+/// following fields "sourcingRSC" and "sourcingTSO" from the sourcingActor
+/// part of the file name is one of the allowed values in the QoCDC Reference
+/// Data document. The rule does not check the field "cgmRegion".
+pub fn validate_sourcing_actor(filename: Filename) !void {
+    const sourcing_actor = filename.sourcing_actor;
+    var iter = std.mem.splitScalar(u8, sourcing_actor, '-');
+
+    var count: u32 = 0;
+    while (iter.next()) |_| {
+        count += 1;
+    }
+    iter.reset();
+    switch (count) {
+        0 => return error.SourcingActor,
+        1 => {
+            const sourcing_tso = iter.next() orelse return error.SourcingActor;
+            _ = allowed_sourcing_tsos.get(sourcing_tso) orelse return error.SourcingActor;
+            return;
+        },
+        2 => {
+            return;
+        },
+        3 => {
+            const sourcing_rsc = iter.next() orelse return error.SourcingActor;
+            _ = allowed_sourcing_rscs.get(sourcing_rsc) orelse return error.SourcingActor;
+            _ = iter.next();
+            const sourcing_tso = iter.next() orelse return error.SourcingActor;
+            _ = allowed_sourcing_tsos.get(sourcing_tso) orelse return error.SourcingActor;
+            return;
+        },
+        else => {
+            return error.SourcingActor;
+        },
+    }
+}
+
+/// The sourcingActor, that appears in the cimxml file name, is composed as
+/// described in rule FileNameMD. This rule checks if the value of the field
+/// "cgmRegion" from the sourcingActor part of the file name is one of the
+/// allowed values in the QoCDC Reference Data document. The rule does not
+/// check the fields "sourcingRSC" and "sourcingTSO".
+pub fn validate_cgm_region(filename: Filename) !void {
+    const sourcing_actor = filename.sourcing_actor;
+    var iter = std.mem.splitScalar(u8, sourcing_actor, '-');
+
+    var count: u32 = 0;
+    while (iter.next()) |_| {
+        count += 1;
+    }
+    iter.reset();
+    switch (count) {
+        0 => return error.CGMRegion,
+        1 => {
+            return;
+        },
+        2, 3 => {
+            _ = iter.next();
+            const cgm_region = iter.next() orelse return error.CGMRegion;
+            _ = allowed_sourcing_cgm_regions.get(cgm_region) orelse return error.CGMRegion;
+            return;
+        },
+        else => {
+            return error.CGMRegion;
+        },
+    }
+}
+
+/// The 'businessProcess' in the file name is restricted according to a list in
+/// the QoCDC Reference Data document. See also level 2 rule ModelDescription
+/// where the BusinessProcess is required in the Model.description attribute.
+pub fn validate_business_process(filename: Filename) !void {
+    const business_process_opt = filename.business_process;
+    if (business_process_opt) |business_process| {
+        _ = allowed_business_processes.get(business_process) orelse return error.BusinessProcess;
+        return;
+    }
+    return;
+}
+
+/// The 'modelPart' in the file name is restricted. Note that the profile
+/// declarations in the file header are leading and shall be used as meta data
+/// to request data. The allowed model part types are as follows: DL, DY, EQ,
+/// EQBD, EQDIFF, GL, SSH, SV, TP, TPBD.
+pub fn validate_model_part(filename: Filename) !void {
+    _ = allowed_model_parts.get(filename.model_part) orelse return error.ModelPartType;
+    return;
+}
+
+/// The 'fileVersion' in the file name must be positive integer value always
+/// represented by three numeric characters ranging from 000 to 999, i.e. the
+/// first positive integer is 001 and the last 999. Leading zeros are allowed.
+pub fn validate_file_version(filename: Filename) !void {
+    if (filename.file_version.len != 3) return error.FileVersion;
+    const file_version = std.fmt.parseInt(u16, filename.file_version, 10) catch return error.FileVersion;
+    if (file_version > 999) {
+        return error.FileVersion;
+    }
+    return;
+}
+
 pub fn validate(io: std.Io, file_path: []const u8) !void {
     const filename = std.fs.path.basename(file_path);
-    _ = parse_filename(filename) catch {
+    const filename_parsed = parse_filename(filename) catch |e| {
         try print.stderr_info(io, "The structure of the filename '{s}' does not match the rules.\n", .{filename});
-        return error.FileNameMD;
+        return e;
     };
 
-    check_filename_consistency(io, file_path) catch |err| switch (err) {
-        error.FileNameConsistency => {
-            try print.stderr_info(io, "XML instance file name is different from zip container file name.", .{});
-        },
-        else => return err,
+    check_filename_consistency(io, file_path) catch |e| {
+        try print.stderr_info(io, "XML instance file name is different from zip container file name '{s}'.", .{filename});
+        return e;
+    };
+
+    check_effective_datetime(filename_parsed) catch |e| {
+        try print.stderr_info(io, "EffectiveDateTime '{s}' in file name is invalid.", .{filename_parsed.effective_date_time});
+        return e;
+    };
+
+    validate_sourcing_actor(filename_parsed) catch |e| {
+        try print.stderr_info(io, "sourcingRSC or/and sourcingTSO parts '{s}' of the file name has/have value(s) that are not included in the QoCDC Reference Data document.", .{filename_parsed.sourcing_actor});
+        return e;
+    };
+
+    validate_cgm_region(filename_parsed) catch |e| {
+        try print.stderr_info(io, "cgmRegion part '{s}' of the file name has value that is not included in the QoCDC Reference Data document.", .{filename_parsed.sourcing_actor});
+        return e;
+    };
+
+    validate_business_process(filename_parsed) catch |e| {
+        if (filename_parsed.business_process) |business_process| {
+            try print.stderr_info(io, "Unknown business process '{s}'.", .{business_process});
+        }
+        return e;
+    };
+
+    validate_model_part(filename_parsed) catch |e| {
+        try print.stderr_info(io, "Unknown modelPart type '{s}' in the filename.", .{filename_parsed.model_part});
+        return e;
     };
 }
