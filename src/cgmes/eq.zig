@@ -3,6 +3,7 @@ const tag_index = @import("tag_index.zig");
 pub const CimObject = tag_index.CimObject;
 const TagBoundary = tag_index.TagBoundary;
 const cgmes_ids = @import("ids.zig");
+const cim_types = @import("cim_types.zig");
 
 const assert = std.debug.assert;
 
@@ -89,12 +90,22 @@ pub const EQ = struct {
             type_index.putAssumeCapacity(entry.key_ptr.*, .{ .start = pos, .len = entry.value_ptr.* });
             pos += entry.value_ptr.*;
         }
+        // Prefix sums must cover the full object set; pairs with pass 3's writes.
+        assert(pos == @as(u32, @intCast(sorted_objects.len)));
 
         // Pass 3: fill sorted_objects using write cursors.
         for (objects.items) |obj| {
             const cursor = write_cursors.getPtr(obj.type_name).?;
             sorted_objects[cursor.*] = obj;
             cursor.* += 1;
+        }
+
+        // Every cursor must now sit at the end of its type's range — otherwise
+        // pass 1 and pass 3 disagreed on how many objects each type holds.
+        var cursor_it = write_cursors.iterator();
+        while (cursor_it.next()) |entry| {
+            const range = type_index.get(entry.key_ptr.*).?;
+            assert(entry.value_ptr.* == range.start + range.len);
         }
 
         // Free original objects ArrayList (copied into sorted_objects).
@@ -104,8 +115,12 @@ pub const EQ = struct {
         // Build id_to_index from sorted positions.
         try id_to_index.ensureTotalCapacity(@intCast(sorted_objects.len));
         for (sorted_objects, 0..) |obj, index| {
+            assert(obj.id.len > 0);
             id_to_index.putAssumeCapacity(obj.id, @intCast(index));
         }
+        // Pairs with the duplicate-id rejection at line 53: every object must
+        // have produced exactly one id_to_index entry.
+        assert(id_to_index.count() == sorted_objects.len);
 
         return .{
             .objects = sorted_objects,
@@ -126,6 +141,12 @@ pub const EQ = struct {
 
     /// Bind a stored CimObject to this model's XML context for property access.
     pub fn view(self: EQ, obj: CimObject) tag_index.CimObjectView {
+        // Catch the cross-EQ mix-up: passing a CimObject that was indexed against
+        // a different model's boundaries would otherwise slice into the wrong XML.
+        assert(obj.object_tag_idx < self.boundaries.len);
+        assert(obj.closing_tag_idx < self.boundaries.len);
+        assert(obj.closing_tag_idx >= obj.object_tag_idx);
+        assert(obj.id.len > 0);
         return .{
             .xml = self.xml,
             .boundaries = self.boundaries,
@@ -138,99 +159,73 @@ pub const EQ = struct {
 
     pub fn getObjectById(self: EQ, id: []const u8) ?tag_index.CimObjectView {
         const idx = self.id_to_index.get(id) orelse return null;
-        return self.view(self.objects[idx]);
+        const result = self.view(self.objects[idx]);
+        // Pair with the index lookup: the stored object's id must round-trip.
+        assert(std.mem.eql(u8, result.id, id));
+        return result;
     }
 
     /// Returns objects whose mRID starts with `id_prefix`, in storage order
-    /// (grouped by type). The caller owns the returned slice. The prefix is
-    /// normalised by ensuring a leading `_`, so users may omit it.
+    /// (grouped by type). The caller owns the returned slice. Matching follows
+    /// `ids.id_prefix_matches`: literal startsWith (so FullModel `urn:uuid:...`
+    /// ids resolve) plus a leading-underscore convenience for the rdf:ID form.
     pub fn get_object_by_id_prefix(
         self: EQ,
         gpa: std.mem.Allocator,
         id_prefix: []const u8,
     ) ![]const tag_index.CimObject {
-        const needle = try cgmes_ids.with_leading_underscore(gpa, id_prefix);
-        defer gpa.free(needle);
-
         var matches: std.ArrayList(CimObject) = .empty;
         errdefer matches.deinit(gpa);
         for (self.objects) |obj| {
-            if (std.mem.startsWith(u8, obj.id, needle)) try matches.append(gpa, obj);
+            if (cgmes_ids.id_prefix_matches(obj.id, id_prefix)) try matches.append(gpa, obj);
         }
-        return matches.toOwnedSlice(gpa);
-    }
-
-    /// Result of resolving a (prefix, optional type) pair to a single object.
-    /// The `matches` slice contains every object whose mRID starts with the prefix
-    /// (in storage order). The caller owns it and must call `deinit`.
-    /// `outcome` tells the caller what to do with `matches`.
-    pub const PrefixResolution = struct {
-        matches: []const CimObject,
-        outcome: Outcome,
-
-        pub const Outcome = union(enum) {
-            /// Zero objects match the prefix.
-            none,
-            /// Exactly one object remains after optional type narrowing. The
-            /// payload indexes into `matches`.
-            unique: usize,
-            /// Exactly one prefix match exists, but its type differs from the
-            /// requested `type_filter`. The payload indexes into `matches`.
-            type_mismatch: usize,
-            /// Multiple prefix matches exist and none are of the requested type.
-            none_of_type,
-            /// Multiple prefix matches exist and no type filter was given.
-            ambiguous_any,
-            /// Multiple prefix matches of the requested type remain after narrowing.
-            ambiguous_of_type,
-        };
-
-        pub fn deinit(self: PrefixResolution, gpa: std.mem.Allocator) void {
-            gpa.free(self.matches);
-        }
-    };
-
-    /// Resolve a prefix (optionally narrowed by `type_filter`) to a single object.
-    /// See `PrefixResolution` for the possible outcomes.
-    pub fn resolve_by_prefix(
-        self: EQ,
-        gpa: std.mem.Allocator,
-        id_prefix: []const u8,
-        type_filter: ?[]const u8,
-    ) !PrefixResolution {
-        const matches = try self.get_object_by_id_prefix(gpa, id_prefix);
-        errdefer gpa.free(matches);
-
-        if (matches.len == 0) return .{ .matches = matches, .outcome = .none };
-
-        if (matches.len == 1) {
-            if (type_filter) |t| {
-                if (!std.mem.eql(u8, matches[0].type_name, t))
-                    return .{ .matches = matches, .outcome = .{ .type_mismatch = 0 } };
-            }
-            return .{ .matches = matches, .outcome = .{ .unique = 0 } };
-        }
-
-        if (type_filter) |t| {
-            var hits: usize = 0;
-            var hit_idx: usize = 0;
-            for (matches, 0..) |m, i| {
-                if (std.mem.eql(u8, m.type_name, t)) {
-                    hits += 1;
-                    hit_idx = i;
-                }
-            }
-            if (hits == 0) return .{ .matches = matches, .outcome = .none_of_type };
-            if (hits == 1) return .{ .matches = matches, .outcome = .{ .unique = hit_idx } };
-            return .{ .matches = matches, .outcome = .ambiguous_of_type };
-        }
-
-        return .{ .matches = matches, .outcome = .ambiguous_any };
+        const out = try matches.toOwnedSlice(gpa);
+        // Postcondition pairs with the filter loop: a regression in the prefix
+        // check would let foreign ids leak through.
+        for (out) |m| assert(cgmes_ids.id_prefix_matches(m.id, id_prefix));
+        return out;
     }
 
     pub fn get_objects_by_type(self: EQ, type_name: []const u8) []const CimObject {
         const range = self.type_index.get(type_name) orelse return &[_]CimObject{};
         return self.objects[range.start .. range.start + range.len];
+    }
+
+    /// Count objects matching `requested_type`, including CIM subtypes.
+    /// Uses the compact type index, so count-mode does not scan every object.
+    pub fn count_objects_by_type_filter(self: EQ, requested_type: []const u8) usize {
+        var count: usize = 0;
+        var it = self.type_index.iterator();
+        while (it.next()) |entry| {
+            if (cim_types.matches_filter(entry.key_ptr.*, requested_type)) {
+                count += entry.value_ptr.*.len;
+            }
+        }
+        assert(count <= self.objects.len);
+        return count;
+    }
+
+    /// Return objects matching `requested_type`, including CIM subtypes.
+    /// Caller owns the returned slice. Output order follows `self.objects`.
+    pub fn collect_objects_by_type_filter(
+        self: EQ,
+        gpa: std.mem.Allocator,
+        requested_type: []const u8,
+    ) ![]CimObject {
+        const count = self.count_objects_by_type_filter(requested_type);
+        const out = try gpa.alloc(CimObject, count);
+        errdefer gpa.free(out);
+
+        var i: usize = 0;
+        for (self.objects) |obj| {
+            if (!cim_types.matches_filter(obj.type_name, requested_type)) continue;
+            assert(i < out.len);
+            out[i] = obj;
+            i += 1;
+        }
+        assert(i == out.len);
+        for (out) |obj| assert(cim_types.matches_filter(obj.type_name, requested_type));
+        return out;
     }
 
     pub fn getTypeCounts(self: EQ, gpa: std.mem.Allocator) !std.StringHashMap(u32) {
@@ -392,120 +387,4 @@ test "get_object_by_id_prefix matches full mRID" {
     defer gpa.free(matches);
     try std.testing.expectEqual(@as(usize, 1), matches.len);
     try std.testing.expectEqualStrings("_abc123", matches[0].id);
-}
-
-const RESOLVE_TEST_XML =
-    \\<rdf:RDF>
-    \\  <cim:BaseVoltage rdf:ID="_abc111">
-    \\    <cim:BaseVoltage.nominalVoltage>110</cim:BaseVoltage.nominalVoltage>
-    \\  </cim:BaseVoltage>
-    \\  <cim:BaseVoltage rdf:ID="_abc222">
-    \\    <cim:BaseVoltage.nominalVoltage>220</cim:BaseVoltage.nominalVoltage>
-    \\  </cim:BaseVoltage>
-    \\  <cim:Substation rdf:ID="_abc333">
-    \\    <cim:IdentifiedObject.name>SS-A</cim:IdentifiedObject.name>
-    \\  </cim:Substation>
-    \\  <cim:Substation rdf:ID="_xyz999">
-    \\    <cim:IdentifiedObject.name>SS-X</cim:IdentifiedObject.name>
-    \\  </cim:Substation>
-    \\</rdf:RDF>
-;
-
-test "resolve_by_prefix: unique match, no type filter" {
-    const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, RESOLVE_TEST_XML));
-    defer model.deinit(gpa);
-
-    const r = try model.resolve_by_prefix(gpa, "xyz", null);
-    defer r.deinit(gpa);
-    try std.testing.expectEqual(@as(usize, 1), r.matches.len);
-    switch (r.outcome) {
-        .unique => |idx| try std.testing.expectEqualStrings("_xyz999", r.matches[idx].id),
-        else => return error.TestExpectedUnique,
-    }
-}
-
-test "resolve_by_prefix: unique match with matching type" {
-    const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, RESOLVE_TEST_XML));
-    defer model.deinit(gpa);
-
-    const r = try model.resolve_by_prefix(gpa, "xyz", "Substation");
-    defer r.deinit(gpa);
-    switch (r.outcome) {
-        .unique => |idx| try std.testing.expectEqualStrings("_xyz999", r.matches[idx].id),
-        else => return error.TestExpectedUnique,
-    }
-}
-
-test "resolve_by_prefix: single match, wrong type" {
-    const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, RESOLVE_TEST_XML));
-    defer model.deinit(gpa);
-
-    const r = try model.resolve_by_prefix(gpa, "xyz", "BaseVoltage");
-    defer r.deinit(gpa);
-    switch (r.outcome) {
-        .type_mismatch => |idx| try std.testing.expectEqualStrings("Substation", r.matches[idx].type_name),
-        else => return error.TestExpectedTypeMismatch,
-    }
-}
-
-test "resolve_by_prefix: no prefix matches" {
-    const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, RESOLVE_TEST_XML));
-    defer model.deinit(gpa);
-
-    const r = try model.resolve_by_prefix(gpa, "nope", null);
-    defer r.deinit(gpa);
-    try std.testing.expectEqual(@as(usize, 0), r.matches.len);
-    try std.testing.expect(r.outcome == .none);
-}
-
-test "resolve_by_prefix: ambiguous prefix without type filter" {
-    const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, RESOLVE_TEST_XML));
-    defer model.deinit(gpa);
-
-    const r = try model.resolve_by_prefix(gpa, "abc", null);
-    defer r.deinit(gpa);
-    try std.testing.expectEqual(@as(usize, 3), r.matches.len);
-    try std.testing.expect(r.outcome == .ambiguous_any);
-}
-
-test "resolve_by_prefix: ambiguous prefix narrowed to unique by type" {
-    const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, RESOLVE_TEST_XML));
-    defer model.deinit(gpa);
-
-    const r = try model.resolve_by_prefix(gpa, "abc", "Substation");
-    defer r.deinit(gpa);
-    try std.testing.expectEqual(@as(usize, 3), r.matches.len);
-    switch (r.outcome) {
-        .unique => |idx| {
-            try std.testing.expectEqualStrings("_abc333", r.matches[idx].id);
-            try std.testing.expectEqualStrings("Substation", r.matches[idx].type_name);
-        },
-        else => return error.TestExpectedUnique,
-    }
-}
-
-test "resolve_by_prefix: ambiguous prefix with no objects of the given type" {
-    const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, RESOLVE_TEST_XML));
-    defer model.deinit(gpa);
-
-    const r = try model.resolve_by_prefix(gpa, "abc", "Terminal");
-    defer r.deinit(gpa);
-    try std.testing.expect(r.outcome == .none_of_type);
-}
-
-test "resolve_by_prefix: ambiguous prefix with multiple of the given type" {
-    const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, RESOLVE_TEST_XML));
-    defer model.deinit(gpa);
-
-    const r = try model.resolve_by_prefix(gpa, "abc", "BaseVoltage");
-    defer r.deinit(gpa);
-    try std.testing.expect(r.outcome == .ambiguous_of_type);
 }

@@ -5,6 +5,7 @@ const cross_ref = @import("../topology/cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
 const resolve = @import("../topology/resolve.zig");
+const parse = @import("../cgmes/parse.zig");
 
 const placement_mod = @import("placement.zig");
 
@@ -17,82 +18,119 @@ const CrossRef = cross_ref.CrossRef;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 const Placement = placement_mod.Placement;
+const PlacementCache = placement_mod.PlacementCache;
 const TerminalPlacer = placement_mod.TerminalPlacer;
 const resolve_terminal_placement = placement_mod.resolve_terminal_placement;
 const NodeMap = resolve.NodeMap;
 const Topology = resolve.Topology;
 
 const VoltageLevelEquipmentCounts = struct {
-    busbar_sections: usize = 0,
-    switches: usize = 0,
-    generators: usize = 0,
-    loads: usize = 0,
-    shunts: usize = 0,
-    static_var_compensators: usize = 0,
+    busbar_sections: u32 = 0,
+    switches: u32 = 0,
+    generators: u32 = 0,
+    loads: u32 = 0,
+    shunts: u32 = 0,
+    static_var_compensators: u32 = 0,
 };
 
 /// Count all objects of a given CIM type and increment the named field in the
 /// per-VL counts map. Uses comptime field name so the compiler resolves the
 /// field access at compile time with no runtime overhead.
+/// When `cache` is non-null, the resolved placement is recorded there (keyed by
+/// equipment id) for the convert pass to reuse — see PlacementCache.
 fn count_equipment_for_type(
     model: *const EQ,
     placer: TerminalPlacer,
     comptime cim_type: []const u8,
     comptime field_name: []const u8,
     equipment_counts: *std.StringHashMapUnmanaged(VoltageLevelEquipmentCounts),
+    cache: ?*PlacementCache,
 ) !void {
     for (model.get_objects_by_type(cim_type)) |obj| {
         const placement = try placer.resolve_equipment(obj.id) orelse continue;
+        if (cache) |c| c.putAssumeCapacityNoClobber(obj.id, placement);
         const gop = equipment_counts.getOrPutAssumeCapacity(placement.repr_voltage_level_id);
         if (!gop.found_existing) gop.value_ptr.* = .{};
-        @field(gop.value_ptr.*, field_name) += 1;
+        const field = &@field(gop.value_ptr.*, field_name);
+        field.* = std.math.add(u32, field.*, 1) catch return error.TooManyVoltageLevelEquipment;
     }
 }
 
-/// Count all equipment per VoltageLevel in one pass, then pre-allocate all
-/// equipment arrays. Call this before any convertX function.
+/// CIM types whose placements are cached for convert reuse: busbar sections and
+/// the four injection kinds (loads/shunts/SVCs/generators). Switches are
+/// excluded — convert_switches resolves nodes directly and never queries the
+/// cache, so caching them would only waste memory.
+const injection_types = [_][]const u8{
+    "EnergyConsumer",
+    "ConformLoad",
+    "NonConformLoad",
+    "LinearShuntCompensator",
+    "StaticVarCompensator",
+    "SynchronousMachine",
+};
+
+/// Count all equipment per VoltageLevel in one pass, pre-allocate all equipment
+/// arrays, and return a PlacementCache of every busbar/injection placement so
+/// the convert pass can skip re-resolving them. Call this before any convertX
+/// function, and point the convert-pass placer at the returned cache.
+/// Caller owns the returned cache and must call .deinit(gpa).
 /// In bus-branch mode the busbar_sections/switches counts remain zero (those
 /// converters are node-breaker only).
 pub fn pre_allocate_equipment(
     gpa: std.mem.Allocator,
     model: *const EQ,
     placer: TerminalPlacer,
-) !void {
+) !PlacementCache {
     assert(placer.voltage_level_map.count() > 0);
+    // `placer` must be the cache-less placer: this function is what populates the
+    // cache, so resolve_equipment has to take its compute path here.
+    assert(placer.placement_cache == null);
 
     var equipment_counts: std.StringHashMapUnmanaged(VoltageLevelEquipmentCounts) = .empty;
     defer equipment_counts.deinit(gpa);
     try equipment_counts.ensureTotalCapacity(gpa, @intCast(placer.voltage_level_map.count()));
 
+    // Size the cache to the number of cached-type objects (busbar + injections).
+    // Switches are not cached, so they are excluded from this bound.
+    var cache_capacity: usize = 0;
+    if (placer.mode == .node_breaker) cache_capacity += model.get_objects_by_type("BusbarSection").len;
+    inline for (injection_types) |t| cache_capacity += model.get_objects_by_type(t).len;
+
+    var cache: PlacementCache = .empty;
+    errdefer cache.deinit(gpa);
+    try cache.ensureTotalCapacity(gpa, @intCast(cache_capacity));
+
     switch (placer.mode) {
         .node_breaker => {
-            try count_equipment_for_type(model, placer, "BusbarSection", "busbar_sections", &equipment_counts);
-            try count_equipment_for_type(model, placer, "Breaker", "switches", &equipment_counts);
-            try count_equipment_for_type(model, placer, "Disconnector", "switches", &equipment_counts);
-            try count_equipment_for_type(model, placer, "LoadBreakSwitch", "switches", &equipment_counts);
+            try count_equipment_for_type(model, placer, "BusbarSection", "busbar_sections", &equipment_counts, &cache);
+            // Switches resolve nodes directly in convert_switches; not cached (null).
+            try count_equipment_for_type(model, placer, "Breaker", "switches", &equipment_counts, null);
+            try count_equipment_for_type(model, placer, "Disconnector", "switches", &equipment_counts, null);
+            try count_equipment_for_type(model, placer, "LoadBreakSwitch", "switches", &equipment_counts, null);
         },
         .bus_branch => {},
     }
-    try count_equipment_for_type(model, placer, "EnergyConsumer", "loads", &equipment_counts);
-    try count_equipment_for_type(model, placer, "ConformLoad", "loads", &equipment_counts);
-    try count_equipment_for_type(model, placer, "NonConformLoad", "loads", &equipment_counts);
-    try count_equipment_for_type(model, placer, "LinearShuntCompensator", "shunts", &equipment_counts);
-    try count_equipment_for_type(model, placer, "StaticVarCompensator", "static_var_compensators", &equipment_counts);
-    try count_equipment_for_type(model, placer, "SynchronousMachine", "generators", &equipment_counts);
+    try count_equipment_for_type(model, placer, "EnergyConsumer", "loads", &equipment_counts, &cache);
+    try count_equipment_for_type(model, placer, "ConformLoad", "loads", &equipment_counts, &cache);
+    try count_equipment_for_type(model, placer, "NonConformLoad", "loads", &equipment_counts, &cache);
+    try count_equipment_for_type(model, placer, "LinearShuntCompensator", "shunts", &equipment_counts, &cache);
+    try count_equipment_for_type(model, placer, "StaticVarCompensator", "static_var_compensators", &equipment_counts, &cache);
+    try count_equipment_for_type(model, placer, "SynchronousMachine", "generators", &equipment_counts, &cache);
 
     var it = equipment_counts.iterator();
     while (it.next()) |entry| {
         const voltage_level = placer.voltage_level_map.get(entry.key_ptr.*) orelse continue;
         const counts = entry.value_ptr.*;
-        try voltage_level.node_breaker_topology.busbar_sections.ensureTotalCapacity(gpa, counts.busbar_sections);
-        try voltage_level.node_breaker_topology.switches.ensureTotalCapacity(gpa, counts.switches);
-        try voltage_level.generators.ensureTotalCapacity(gpa, counts.generators);
-        try voltage_level.loads.ensureTotalCapacity(gpa, counts.loads);
-        try voltage_level.shunts.ensureTotalCapacity(gpa, counts.shunts);
-        try voltage_level.static_var_compensators.ensureTotalCapacity(gpa, counts.static_var_compensators);
+        try voltage_level.node_breaker_topology.busbar_sections.ensureTotalCapacity(gpa, @intCast(counts.busbar_sections));
+        try voltage_level.node_breaker_topology.switches.ensureTotalCapacity(gpa, @intCast(counts.switches));
+        try voltage_level.generators.ensureTotalCapacity(gpa, @intCast(counts.generators));
+        try voltage_level.loads.ensureTotalCapacity(gpa, @intCast(counts.loads));
+        try voltage_level.shunts.ensureTotalCapacity(gpa, @intCast(counts.shunts));
+        try voltage_level.static_var_compensators.ensureTotalCapacity(gpa, @intCast(counts.static_var_compensators));
     }
 
     assert(equipment_counts.count() <= placer.voltage_level_map.count());
+    return cache;
 }
 
 pub fn convert_busbar_sections(
@@ -179,10 +217,8 @@ pub fn convert_switches(
             const name = props[0];
 
             // Switch.open and Switch.retained are SSH attributes — EQ does not carry open state.
-            const open_str = props[1] orelse "false";
-            const open = std.mem.eql(u8, open_str, "true");
-            const retained_str = props[2] orelse "false";
-            const retained = std.mem.eql(u8, retained_str, "true");
+            const open = parse.flag(props[1]);
+            const retained = parse.flag(props[2]);
 
             const kind = iidm.SwitchKind.from_cim_type(sw.type_name);
 
@@ -402,21 +438,18 @@ fn convert_load_type(
                     "LoadResponseCharacteristic.qConstantCurrent",
                     "LoadResponseCharacteristic.qConstantImpedance",
                 });
-                const exp_str = lrc_props[0] orelse "false";
-                if (std.mem.eql(u8, exp_str, "true")) {
-                    const np_str = lrc_props[1] orelse "0";
-                    const nq_str = lrc_props[2] orelse "0";
+                if (parse.flag(lrc_props[0])) {
                     exp_model = .{
-                        .np = std.fmt.parseFloat(f64, np_str) catch 0.0,
-                        .nq = std.fmt.parseFloat(f64, nq_str) catch 0.0,
+                        .np = parse.float_or(lrc_props[1], 0.0),
+                        .nq = parse.float_or(lrc_props[2], 0.0),
                     };
                 } else {
-                    const c0p = std.fmt.parseFloat(f64, lrc_props[3] orelse "0") catch 0.0;
-                    const c1p = std.fmt.parseFloat(f64, lrc_props[4] orelse "0") catch 0.0;
-                    const c2p = std.fmt.parseFloat(f64, lrc_props[5] orelse "0") catch 0.0;
-                    const c0q = std.fmt.parseFloat(f64, lrc_props[6] orelse "0") catch 0.0;
-                    const c1q = std.fmt.parseFloat(f64, lrc_props[7] orelse "0") catch 0.0;
-                    const c2q = std.fmt.parseFloat(f64, lrc_props[8] orelse "0") catch 0.0;
+                    const c0p = parse.float_or(lrc_props[3], 0.0);
+                    const c1p = parse.float_or(lrc_props[4], 0.0);
+                    const c2p = parse.float_or(lrc_props[5], 0.0);
+                    const c0q = parse.float_or(lrc_props[6], 0.0);
+                    const c1q = parse.float_or(lrc_props[7], 0.0);
+                    const c2q = parse.float_or(lrc_props[8], 0.0);
                     zip_model = .{ .c0p = c0p, .c1p = c1p, .c2p = c2p, .c0q = c0q, .c1q = c1q, .c2q = c2q };
                 }
             }
@@ -425,10 +458,10 @@ fn convert_load_type(
         // SSH EnergyConsumer.p/q are in load convention (positive = consuming) — matches IIDM p0/q0.
         // When SSH is not provided, leave p0/q0 null so the fields are omitted from output.
         const p0: ?f64 = if (load_values[1]) |v|
-            (std.fmt.parseFloat(f64, v) catch 0.0)
+            parse.float_or(v, 0.0)
         else if (ssh_opt != null) 0.0 else null;
         const q0: ?f64 = if (load_values[2]) |v|
-            (std.fmt.parseFloat(f64, v) catch 0.0)
+            parse.float_or(v, 0.0)
         else if (ssh_opt != null) 0.0 else null;
 
         // detail extension fixed/variable split:
@@ -437,13 +470,13 @@ fn convert_load_type(
         const fixed_active_power: f64 = if (non_conform)
             (p0 orelse 0.0)
         else if (load_values[3]) |v|
-            std.fmt.parseFloat(f64, v) catch 0.0
+            parse.float_or(v, 0.0)
         else
             0.0;
         const fixed_reactive_power: f64 = if (non_conform)
             (q0 orelse 0.0)
         else if (load_values[4]) |v|
-            std.fmt.parseFloat(f64, v) catch 0.0
+            parse.float_or(v, 0.0)
         else
             0.0;
 
@@ -505,20 +538,11 @@ pub fn convert_shunts(
 
         // ShuntCompensator.sections (current in-service sections) is an SSH attribute.
         // ShuntCompensator.maximumSections and electrical data are EQ attributes.
-        const sections_str = shunt_values[1] orelse "0";
-        const section_count = try std.fmt.parseInt(u32, std.mem.trim(u8, sections_str, " \t\r\n"), 10);
-
-        const max_sections_str = shunt_values[2] orelse "0";
-        const max_section_count = try std.fmt.parseInt(u32, std.mem.trim(u8, max_sections_str, " \t\r\n"), 10);
-
-        const b_per_section_str = shunt_values[3] orelse "0.0";
-        const b_per_section = try std.fmt.parseFloat(f64, b_per_section_str);
-
-        const g_per_section_str = shunt_values[4] orelse "0.0";
-        const g_per_section = try std.fmt.parseFloat(f64, g_per_section_str);
-
-        const control_enabled_str = shunt_values[5] orelse "false";
-        const voltage_regulator_on = std.mem.eql(u8, control_enabled_str, "true");
+        const section_count = try parse.int_strict(u32, shunt_values[1], 0);
+        const max_section_count = try parse.int_strict(u32, shunt_values[2], 0);
+        const b_per_section = try parse.float_strict(shunt_values[3], 0.0);
+        const g_per_section = try parse.float_strict(shunt_values[4], 0.0);
+        const voltage_regulator_on = parse.flag(shunt_values[5]);
 
         // RegulatingControl: resolve RC mRID for targetV, targetDeadband (SSH), regulatingTerminal, and properties.
         var target_v: ?f64 = null;
@@ -548,9 +572,9 @@ pub fn convert_shunts(
             if (rc_mrid) |rm| {
                 if (ssh_opt) |ssh| {
                     if (try ssh.getProperty(rm, "RegulatingControl.targetValue")) |v|
-                        target_v = std.fmt.parseFloat(f64, v) catch null;
+                        target_v = parse.float_opt(v);
                     if (try ssh.getProperty(rm, "RegulatingControl.targetDeadband")) |v|
-                        target_deadband = std.fmt.parseFloat(f64, v) catch null;
+                        target_deadband = parse.float_opt(v);
                 }
             }
         }
@@ -629,14 +653,9 @@ pub fn convert_static_var_compensators(
         });
         const name = svc_values[0];
 
-        const b_min_str = svc_values[1] orelse "0.0";
-        const b_min = try std.fmt.parseFloat(f64, b_min_str);
-
-        const b_max_str = svc_values[2] orelse "0.0";
-        const b_max = try std.fmt.parseFloat(f64, b_max_str);
-
-        const control_enabled_str = svc_values[3] orelse "false";
-        const regulating = std.mem.eql(u8, control_enabled_str, "true");
+        const b_min = try parse.float_strict(svc_values[1], 0.0);
+        const b_max = try parse.float_strict(svc_values[2], 0.0);
+        const regulating = parse.flag(svc_values[3]);
 
         const regulation_mode_ref = svc_refs[0];
         const regulation_mode: iidm.SvcRegulationMode = blk: {
@@ -734,13 +753,9 @@ pub fn convert_generators(
 
         const name = machine_values[0];
 
-        const rated_s: ?f64 = blk: {
-            const s = machine_values[1] orelse break :blk null;
-            break :blk try std.fmt.parseFloat(f64, s);
-        };
+        const rated_s: ?f64 = if (machine_values[1]) |s| try parse.float_req(s) else null;
 
-        const control_enabled_str = machine_values[2] orelse "false";
-        const voltage_regulator_on = std.mem.eql(u8, control_enabled_str, "true");
+        const voltage_regulator_on = parse.flag(machine_values[2]);
 
         // isCondenser is a capability flag from EQ (can this machine act as a condenser?).
         // It is true if EQ SynchronousMachine.type contains "condenser" (either "condenser"
@@ -777,10 +792,8 @@ pub fn convert_generators(
                     "WindGeneratingUnit.windGenUnitType",
                 });
                 energy_source = energy_source_from_cim_type(unit.type_name);
-                if (unit_props[0]) |v|
-                    min_p = try std.fmt.parseFloat(f64, v);
-                if (unit_props[1]) |v|
-                    max_p = try std.fmt.parseFloat(f64, v);
+                if (unit_props[0]) |v| min_p = try parse.float_req(v);
+                if (unit_props[1]) |v| max_p = try parse.float_req(v);
                 unit_mrid = unit_props[2] orelse strip_underscore(unit_id);
                 // WindGeneratingUnit: extract windGenUnitType kind value.
                 if (std.mem.eql(u8, unit.type_name, "WindGeneratingUnit")) {
@@ -800,7 +813,7 @@ pub fn convert_generators(
                 if (ssh_opt) |ssh| {
                     const gu_mrid = unit_mrid orelse strip_underscore(unit_id);
                     if (try ssh.getProperty(gu_mrid, "GeneratingUnit.normalPF")) |v|
-                        participation_factor = std.fmt.parseFloat(f64, v) catch null;
+                        participation_factor = parse.float_opt(v);
                 }
             }
         }
@@ -816,14 +829,8 @@ pub fn convert_generators(
         }
 
         if (curve_points.items.len == 0) {
-            const min_q: ?f64 = if (machine_values[3]) |v|
-                try std.fmt.parseFloat(f64, v)
-            else
-                null;
-            const max_q: ?f64 = if (machine_values[4]) |v|
-                try std.fmt.parseFloat(f64, v)
-            else
-                null;
+            const min_q: ?f64 = if (machine_values[3]) |v| try parse.float_req(v) else null;
+            const max_q: ?f64 = if (machine_values[4]) |v| try parse.float_req(v) else null;
             if (min_q != null and max_q != null) {
                 min_max_reactive_limits = .{ .min_q = min_q.?, .max_q = max_q.? };
             }
@@ -849,7 +856,7 @@ pub fn convert_generators(
                 if (rc_mrid) |rm| {
                     if (ssh_opt) |ssh| {
                         if (try ssh.getProperty(rm, "RegulatingControl.targetValue")) |v|
-                            target_v = std.fmt.parseFloat(f64, v) catch null;
+                            target_v = parse.float_opt(v);
                     }
                 }
                 // CGMES.mode: full URL of RegulatingControl.mode, lowercased.
@@ -900,19 +907,9 @@ pub fn convert_generators(
 
         // SSH RotatingMachine.p/q are in load convention (negative = generating).
         // IIDM targetP/targetQ use generator convention (positive = generating) → negate.
-        const target_p: ?f64 = if (machine_values[5]) |v|
-            -(try std.fmt.parseFloat(f64, v))
-        else
-            null;
-        const target_q: ?f64 = if (machine_values[6]) |v|
-            -(try std.fmt.parseFloat(f64, v))
-        else
-            null;
-
-        const q_percent: ?f64 = blk: {
-            const v = machine_values[7] orelse break :blk null;
-            break :blk std.fmt.parseFloat(f64, std.mem.trim(u8, v, " \t\r\n")) catch null;
-        };
+        const target_p: ?f64 = if (machine_values[5]) |v| -(try parse.float_req(v)) else null;
+        const target_q: ?f64 = if (machine_values[6]) |v| -(try parse.float_req(v)) else null;
+        const q_percent: ?f64 = parse.float_opt(machine_values[7]);
 
         assert(mrid.len > 0);
         voltage_level.generators.appendAssumeCapacity(.{

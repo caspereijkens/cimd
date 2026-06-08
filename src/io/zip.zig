@@ -300,25 +300,29 @@ pub fn extract_first_file_to_memory(
 }
 
 test "is_zip_file" {
+    const io = std.testing.io;
+
     // Happy flow
     var tmpdir = std.testing.tmpDir(.{});
     defer tmpdir.cleanup();
 
-    var file = try tmpdir.dir.createFile("temp", .{ .read = true });
-    defer file.close();
+    var file = try tmpdir.dir.createFile(io, "temp", .{ .read = true });
+    defer file.close(io);
 
     var bytes = [_]u8{ 'P', 'K', 3, 4, 'Z', 'Z', 'Z' };
-    _ = try file.pwrite(&bytes, 0);
+    var buf: [1][]const u8 = .{&bytes};
+    _ = try file.writePositional(io, &buf, 0);
 
-    try std.testing.expect(try is_zip_file(file));
+    try std.testing.expect(try is_zip_file(io, file));
 
     // Unhappy flow 1: file too short
-    try file.setEndPos(3); // this truncates the file.
-    try std.testing.expect(!(try is_zip_file(file)));
+    try file.setLength(io, 3); // this truncates the file.
+    try std.testing.expect(!(try is_zip_file(io, file)));
 
     // Unhappy flow 2: no local file header signature
     bytes = [_]u8{ 'Z', 'Z', 'Z', 'Z', 'Z', 'Z', 'Z' };
-    _ = try file.pwrite(&bytes, 0);
+    buf = [1][]const u8{&bytes};
+    _ = try file.writePositional(io, &buf, 0);
 
-    try std.testing.expect(!(try is_zip_file(file)));
+    try std.testing.expect(!(try is_zip_file(io, file)));
 }

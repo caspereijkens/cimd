@@ -4,6 +4,7 @@ const EQ = @import("../cgmes/eq.zig").EQ;
 const cross_ref = @import("cross_ref.zig");
 const tag_index = @import("../cgmes/tag_index.zig");
 const cim_ssh = @import("../cgmes/ssh.zig");
+const parse = @import("../cgmes/parse.zig");
 
 const assert = std.debug.assert;
 
@@ -608,14 +609,14 @@ pub fn is_ssh_terminal_disconnected(ssh_opt: ?SSH, terminal_id: []const u8) bool
     const mrid = strip_underscore(terminal_id);
     const connected = ssh.getProperty(mrid, "ACDCTerminal.connected") catch return false;
     const val = connected orelse return false;
-    return std.mem.eql(u8, val, "false");
+    // Trim like is_switch_closed: pretty-printed SSH wraps the value in whitespace.
+    return std.mem.eql(u8, std.mem.trim(u8, val, " \t\r\n"), "false");
 }
 
 pub fn is_switch_closed(model: *const EQ, ssh: *const SSH, switch_id: []const u8) !bool {
     assert(switch_id.len > 0);
     const eq_view = model.getObjectById(switch_id) orelse return true;
-    const mrid = try eq_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(switch_id);
-    const view = CimMergedView.init(eq_view, mrid, null, ssh.*);
+    const view = CimMergedView.init(eq_view, try eq_view.mrid(), null, ssh.*);
     const open_str = try view.getProperty("Switch.open") orelse "false";
     // Property values are returned as raw XML content between tags; pretty-printed
     // SSH files surround the boolean with whitespace and would otherwise flip
@@ -643,8 +644,7 @@ fn union_closed_switch_conn_nodes(
 
             // Retained closed switches become SwitchBranches in the IIDM bus-branch view —
             // each end stays its own TopologicalNode, so do not union across them.
-            const retained_str = try model.view(@"switch").getProperty("Switch.retained") orelse "false";
-            if (std.mem.eql(u8, retained_str, "true")) continue;
+            if (parse.flag(try model.view(@"switch").getProperty("Switch.retained"))) continue;
 
             // default behavior is closed.
             const closed = if (ssh_opt) |s| try is_switch_closed(model, s, @"switch".id) else true;
@@ -662,7 +662,7 @@ fn get_base_voltage_mrid(model: *const EQ, voltage_level: CimObjectView) ![]cons
     const base_voltage_id = strip_hash(base_voltage_ref);
     const base_voltage = model.getObjectById(base_voltage_id) orelse return "";
     // TODO prefix a hash.
-    return try base_voltage.getProperty("IdentifiedObject.mRID") orelse strip_underscore(base_voltage_id);
+    return try base_voltage.mrid();
 }
 
 fn append_topological_node(
@@ -681,11 +681,10 @@ fn append_topological_node(
     // Check if container was indeed VoltageLevel.
     if (!std.mem.eql(u8, voltage_level.type_name, "VoltageLevel")) return;
 
-    const mrid = try conn_node.getProperty("IdentifiedObject.mRID") orelse strip_underscore(conn_node.id);
+    const mrid = try conn_node.mrid();
     const name = try conn_node.getProperty("IdentifiedObject.name") orelse "";
     const base_voltage_mrid = try get_base_voltage_mrid(model, voltage_level);
-    const voltage_level_mrid = try voltage_level.getProperty("IdentifiedObject.mRID") orelse
-        strip_underscore(repr_voltage_level_id);
+    const voltage_level_mrid = try voltage_level.mrid();
 
     nodes.appendAssumeCapacity(.{
         .mrid = mrid,

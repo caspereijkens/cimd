@@ -15,6 +15,11 @@ const CrossRef = cross_ref.CrossRef;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
+/// Index into `iidm.Network.substations`. `u32` is intentional — narrower than
+/// `usize` per NASA Power of 10 (explicitly-sized integers); the upper bound is
+/// enforced by `error.TooManySubstations` in `append_substation`.
+pub const SubstationIndex = u32;
+
 // Resolved CGMES region ancestry for a Substation.
 const RegionChain = struct {
     sub_region: ?CimObjectView = null,
@@ -58,7 +63,7 @@ fn append_substation(
     topology: *const Topology,
     substation: CimObjectView,
     network: *iidm.Network,
-    sub_id_map: *std.StringHashMapUnmanaged(usize),
+    sub_id_map: *std.StringHashMapUnmanaged(SubstationIndex),
 ) !void {
     assert(std.mem.eql(u8, substation.type_name, "Substation"));
 
@@ -116,7 +121,9 @@ fn append_substation(
         .three_winding_transformers = .empty,
     });
 
-    const idx = network.substations.items.len - 1;
+    const raw_idx = network.substations.items.len - 1;
+    if (raw_idx > std.math.maxInt(SubstationIndex)) return error.TooManySubstations;
+    const idx: SubstationIndex = @intCast(raw_idx);
     sub_id_map.putAssumeCapacity(substation.id, idx);
     if (topology.substation_merge.get(substation.id)) |stubs| {
         for (stubs.items) |stub_id| sub_id_map.putAssumeCapacity(stub_id, idx);
@@ -128,7 +135,7 @@ pub fn convert_substations(
     model: *const EQ,
     topology: *const Topology,
     network: *iidm.Network,
-    substation_id_map: *std.StringHashMapUnmanaged(usize),
+    substation_id_map: *std.StringHashMapUnmanaged(SubstationIndex),
 ) !void {
     assert(network.substations.items.len == 0);
 

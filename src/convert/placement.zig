@@ -7,6 +7,7 @@ const utils = @import("../cgmes/ids.zig");
 const bus_conv = @import("bus.zig");
 const TP = @import("../cgmes/tp.zig").TP;
 const resolve = @import("../topology/resolve.zig");
+const parse = @import("../cgmes/parse.zig");
 
 const strip_underscore = utils.strip_underscore;
 const strip_hash = utils.strip_hash;
@@ -26,6 +27,14 @@ pub const Placement = struct {
     /// emits bus/connectableBus instead of node.
     bus: ?[]const u8 = null,
 };
+
+/// Equipment raw ID → its resolved Placement. `pre_allocate_equipment` already
+/// resolves every load/shunt/SVC/generator/busbar to count per-VoltageLevel
+/// capacity; it records those resolutions here so the matching convert pass can
+/// look them up (one hashmap probe) instead of re-running the full CN → VL →
+/// node resolution a second time. resolve is a pure function of immutable
+/// indices, so a cache hit is byte-identical to recomputing.
+pub const PlacementCache = std.StringHashMapUnmanaged(Placement);
 
 /// Resolve VoltageLevel and node for a terminal.
 /// Looks up the terminal's CN to find the VL, and the terminal ID to find the node.
@@ -56,6 +65,11 @@ pub const TerminalPlacer = struct {
     index: *const CrossRef,
     topology: *const Topology,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
+    /// Optional memoized equipment-placement lookups (see PlacementCache).
+    /// When set, resolve_equipment returns the cached placement; when null it
+    /// computes from scratch. pre_allocate_equipment runs with a null cache (it
+    /// is the one building it); the convert pass runs with it populated.
+    placement_cache: ?*const PlacementCache = null,
 
     pub const Mode = union(enum) {
         node_breaker: *const resolve.NodeMap,
@@ -89,6 +103,11 @@ pub const TerminalPlacer = struct {
 
     pub fn resolve_equipment(self: TerminalPlacer, equipment_id: []const u8) !?Placement {
         assert(equipment_id.len > 0);
+        // A populated cache holds every placeable equipment of the types that
+        // pre_allocate_equipment resolved; a miss means unplaceable (the same
+        // null the compute path returns), so callers' `orelse continue` is
+        // unchanged.
+        if (self.placement_cache) |cache| return cache.get(equipment_id);
         const terminals = self.index.equipment_terminals.get(equipment_id) orelse return null;
         if (terminals.items.len == 0) return null;
         const term = terminals.items[0];
@@ -147,7 +166,7 @@ pub fn build_op_lims(
         if (patl_cl_mrid) |pm| props.appendAssumeCapacity(.{ .name = "CGMES.OperationalLimit_CurrentLimit_patl", .value = pm });
 
         const current_limits: ?iidm.CurrentLimits = if (patl_value_str) |pv| blk: {
-            const value = std.fmt.parseFloat(f64, std.mem.trim(u8, pv, " \t\r\n")) catch break :blk null;
+            const value = parse.float_opt(pv) orelse break :blk null;
             break :blk .{ .permanent_limit = value };
         } else null;
 

@@ -17,6 +17,7 @@ const tag_index = @import("cgmes/tag_index.zig");
 const ids = @import("cgmes/ids.zig");
 const cim_types = @import("cgmes/cim_types.zig");
 const CimMergedView = @import("cgmes/ssh.zig").CimMergedView;
+const validate = @import("validate.zig").validate;
 
 const assert = std.debug.assert;
 
@@ -80,6 +81,7 @@ pub fn main(init: std.process.Init) !void {
         .types => |c| try command_types(io, gpa, c),
         .diff => |c| try command_diff(io, gpa, c),
         .topology => |c| try command_topology(io, gpa, c),
+        .validate => |c| try command_validate(io, gpa, c),
         .version => |v| try command_version(io, v.verbose, v.json),
     }
 }
@@ -95,11 +97,7 @@ fn command_convert(io: std.Io, parent_gpa: std.mem.Allocator, c: cli.Command.Con
 
     const ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
 
-    if (tp_opt) |tp| if (refs.find_tp_primary_id_collision(&model, tp)) |id| print.stderr(
-        io,
-        "convert: mRID collision: '{s}' is defined in both the primary file and the TP profile",
-        .{id},
-    );
+    reject_tp_primary_id_collision(io, "convert", &model, tp_opt);
 
     const network = try converter.convert(gpa, &model, tp_opt, ssh_opt, c.bus_branch);
 
@@ -188,21 +186,30 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
 
     var inputs = try Inputs.load(io, gpa, c.file_path, c.eqbd_path, c.tp_path, c.ssh_path);
     defer inputs.deinit(gpa);
+    reject_tp_primary_id_collision(io, "get", &inputs.model, inputs.tp);
 
     if (c.mrid) |mrid_val| {
         const target = try resolve_prefix(io, gpa, &inputs.model, inputs.tp, mrid_val, c.type_filter, c.json, .{
             .command = .get,
         }) orelse return;
+        assert(target.id.len > 0);
+        assert(target.type_name.len > 0);
         const object = refs.resolve_object(&inputs.model, inputs.tp, target.id) orelse unreachable;
+        // Pair the resolution: resolve_prefix already verified the id resolves;
+        // the same lookup here must return the same identity.
+        assert(std.mem.eql(u8, object.id, target.id));
+        assert(std.mem.eql(u8, object.type_name, target.type_name));
         try display_get_object(io, gpa, object, inputs.tp, inputs.ssh, c.json);
         return;
     }
 
+    assert(c.type_filter != null); // command_get_list's contract.
     try command_get_list(io, gpa, &inputs.model, c);
 }
 
 fn validate_get_args(io: std.Io, c: cli.Command.Get) void {
     assert(c.mrid != null or c.type_filter != null);
+    if (c.mrid) |mrid| if (mrid.len == 0) print.stderr(io, "get: <mrid> must not be empty", .{});
     if (c.mrid != null and c.count) print.stderr(io, "get: --count requires --type without <mrid>", .{});
     if (c.mrid != null and c.fields != null) print.stderr(io, "get: --fields requires --type without <mrid>", .{});
     if (c.mrid == null and c.tp_path != null) print.stderr(io, "get: --tp requires <mrid> (list mode does not merge TP objects yet)", .{});
@@ -210,20 +217,26 @@ fn validate_get_args(io: std.Io, c: cli.Command.Get) void {
 }
 
 fn command_get_list(io: std.Io, gpa: std.mem.Allocator, model: *const EQ, c: cli.Command.Get) !void {
+    assert(c.type_filter != null);
+    assert(c.mrid == null);
     const type_name = c.type_filter.?;
+
+    if (c.count) {
+        const count = count_objects_by_type_filter(model, type_name);
+        if (count == 0)
+            print.not_found(io, "No objects of type '{s}' found. Run 'cimd types' to see available types.", .{type_name});
+        if (c.json) {
+            try print.stdout(io, "{{\"type\":\"{s}\",\"count\":{d}}}\n", .{ type_name, count });
+        } else {
+            try print.stdout(io, "{d}\n", .{count});
+        }
+        return;
+    }
+
     const objects = try collect_objects_by_type_filter(gpa, model, type_name);
     defer gpa.free(objects);
     if (objects.len == 0)
         print.not_found(io, "No objects of type '{s}' found. Run 'cimd types' to see available types.", .{type_name});
-
-    if (c.count) {
-        if (c.json) {
-            try print.stdout(io, "{{\"type\":\"{s}\",\"count\":{d}}}\n", .{ type_name, objects.len });
-        } else {
-            try print.stdout(io, "{d}\n", .{objects.len});
-        }
-        return;
-    }
 
     var fields_buf: [max_get_fields][]const u8 = undefined;
     var fields: std.ArrayList([]const u8) = .initBuffer(&fields_buf);
@@ -248,7 +261,10 @@ fn parse_get_fields(
 
     var it = std.mem.splitScalar(u8, fs, ',');
     while (it.next()) |f| {
-        fields.appendBounded(std.mem.trim(u8, f, " ")) catch
+        const name = std.mem.trim(u8, f, " ");
+        // An empty entry (e.g. a doubled comma) would reach getProperty("")'s assert.
+        if (name.len == 0) print.stderr(io, "get: --fields: empty field name", .{});
+        fields.appendBounded(name) catch
             print.stderr(io, "get: --fields: too many fields (max 32)", .{});
     }
 }
@@ -259,15 +275,22 @@ fn display_get_list_text(
     objects: []const CimObject,
     fields: []const []const u8,
 ) !void {
+    var write_buffer: [64 * 1024]u8 = undefined;
+    var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &write_buffer);
+    const w = &file_writer.interface;
+
     for (objects) |obj| {
         const view = model.view(obj);
-        try print.stdout(io, "{s}", .{obj.id});
+        try w.print("{s}", .{obj.id});
         for (fields) |field| {
-            const val = try view.getProperty(field) orelse "N/A";
-            try print.stdout(io, " | {s}", .{val});
+            // Fall back to a reference when the field isn't a text property, so
+            // rdf:resource fields show their target instead of a bare N/A.
+            const val = (try view.getProperty(field)) orelse (try view.getReference(field)) orelse "N/A";
+            try w.print(" | {s}", .{val});
         }
-        try print.stdout(io, "\n", .{});
+        try w.writeByte('\n');
     }
+    try w.flush();
 }
 
 fn resolve_prefix(
@@ -280,23 +303,39 @@ fn resolve_prefix(
     json: bool,
     mode: ResolvePrefixMode,
 ) !?PrefixTarget {
-    if (mode == .browse_pick) {
-        if (refs.resolve_object(model, tp_opt, mrid)) |object| return .{
-            .id = object.id,
-            .type_name = object.type_name,
-        };
-    }
+    // Exact-id fast path: the literal id is authoritative. The O(1) hit dodges
+    // the false ambiguity a prefix scan raises when a full id prefixes a longer
+    // one, and a wrong-typed exact hit stops here as a type_mismatch rather than
+    // falling through to surface a prefix sibling of the requested type.
+    if (try refs.resolve_object_normalized(gpa, model, tp_opt, mrid)) |object| switch (mode) {
+        .browse_pick => return .{ .id = object.id, .type_name = object.type_name },
+        .command => {
+            if (cim_types.matches_filter(object.type_name, type_filter))
+                return .{ .id = object.id, .type_name = object.type_name };
+            const requested_type = type_filter.?;
+            exit_not_found(
+                io,
+                json,
+                .{ .@"error" = "type_mismatch", .prefix = mrid, .id = object.id, .actual_type = object.type_name, .requested_type = requested_type },
+                "Object '{s}' is of type '{s}', not '{s}'",
+                .{ mrid, object.type_name, requested_type },
+            );
+        },
+    };
 
     const all_matches = try refs.collect_target_candidates(gpa, model, tp_opt, mrid);
     defer gpa.free(all_matches);
 
-    var filtered: std.ArrayList(CimObject) = .empty;
-    defer filtered.deinit(gpa);
-    for (all_matches) |m| {
-        if (cim_types.matches_filter(m.type_name, type_filter)) try filtered.append(gpa, m);
-    }
+    var filtered_list: std.ArrayList(CimObject) = .empty;
+    defer filtered_list.deinit(gpa);
+    const filtered_matches: []const CimObject = if (type_filter == null) all_matches else blk: {
+        for (all_matches) |m| {
+            if (cim_types.matches_filter(m.type_name, type_filter)) try filtered_list.append(gpa, m);
+        }
+        break :blk filtered_list.items;
+    };
 
-    if (filtered.items.len == 0) {
+    if (filtered_matches.len == 0) {
         if (all_matches.len == 0) exit_not_found(
             io,
             json,
@@ -324,20 +363,27 @@ fn resolve_prefix(
         );
     }
 
-    if (filtered.items.len > 1) {
+    if (filtered_matches.len > 1) {
         switch (mode) {
-            .command => try render_target_ambiguity(io, gpa, mrid, filtered.items, type_filter, json),
+            .command => try render_target_ambiguity(io, gpa, mrid, filtered_matches, type_filter, json),
             .browse_pick => |interactive| {
-                const id = try browse.pick_from_prefix(io, gpa, interactive, mrid, filtered.items);
-                return .{ .id = id, .type_name = find_type_name(filtered.items, id) orelse unreachable };
+                const id = try browse.pick_from_prefix(io, gpa, interactive, mrid, filtered_matches);
+                assert(id.len > 0);
+                return .{ .id = id, .type_name = find_type_name(filtered_matches, id) orelse unreachable };
             },
         }
         return null;
     }
 
+    // Down to the unique-match branch — the empty and ambiguous cases above
+    // both returned. The remaining match must carry the identity downstream
+    // expects to render.
+    assert(filtered_matches.len == 1);
+    assert(filtered_matches[0].id.len > 0);
+    assert(filtered_matches[0].type_name.len > 0);
     return .{
-        .id = filtered.items[0].id,
-        .type_name = filtered.items[0].type_name,
+        .id = filtered_matches[0].id,
+        .type_name = filtered_matches[0].type_name,
     };
 }
 
@@ -388,6 +434,8 @@ fn display_get_object(
     ssh_opt: ?SSH,
     json: bool,
 ) !void {
+    assert(object.id.len > 0);
+    assert(object.type_name.len > 0);
     if (tp_opt == null and ssh_opt == null) {
         if (json) {
             try print.display_object_json(io, gpa, object);
@@ -397,7 +445,7 @@ fn display_get_object(
         return;
     }
 
-    const merged = CimMergedView.init(object, ids.strip_underscore(object.id), tp_opt, ssh_opt);
+    const merged = CimMergedView.init(object, try object.mrid(), tp_opt, ssh_opt);
     var props = try merged.getAllProperties(gpa);
     defer props.deinit();
     var references = try merged.getAllReferences(gpa);
@@ -489,17 +537,25 @@ fn string_less_than(_: void, a: []const u8, b: []const u8) bool {
 }
 
 fn command_refs(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Refs) !void {
+    if (c.mrid.len == 0) print.stderr(io, "refs: <mrid> must not be empty", .{});
+
     var inputs = try Inputs.load(io, gpa, c.file_path, c.eqbd_path, c.tp_path, c.ssh_path);
     defer inputs.deinit(gpa);
+    reject_tp_primary_id_collision(io, "refs", &inputs.model, inputs.tp);
 
     const target = try resolve_prefix(io, gpa, &inputs.model, inputs.tp, c.mrid, c.target_type, c.json, .{
         .command = .refs,
     }) orelse return;
+    // Pairs with resolve_prefix's final-branch invariants: a target without an
+    // id/type would break the index lookup and the writer's preconditions.
+    assert(target.id.len > 0);
+    assert(target.type_name.len > 0);
 
-    var index = try refs.ReverseRefIndex.build_with_overlays(gpa, &inputs.model, inputs.tp, inputs.ssh);
-    defer index.deinit(gpa);
+    // One-shot refs needs only this target's edges; browse keeps the full index.
+    const candidates = try refs.collect_referrers_for_target(gpa, &inputs.model, inputs.tp, inputs.ssh, target.id);
+    defer gpa.free(candidates);
 
-    const referrers = try refs.filter_referrers(gpa, index.lookup(target.id), c.from_type);
+    const referrers = try refs.filter_referrers(gpa, candidates, c.from_type);
     defer gpa.free(referrers);
 
     var write_buffer: [16 * 1024]u8 = undefined;
@@ -514,17 +570,30 @@ fn command_refs(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Refs) !void {
     try w.flush();
 }
 
+fn reject_tp_primary_id_collision(
+    io: std.Io,
+    command_name: []const u8,
+    model: *const EQ,
+    tp_opt: ?TP,
+) void {
+    if (tp_opt) |tp| if (refs.find_tp_primary_id_collision(model, tp)) |id| print.stderr(
+        io,
+        "{s}: mRID collision: '{s}' is defined in both the primary file and the TP profile",
+        .{ command_name, id },
+    );
+}
+
+/// Allocation-free count of objects matching `requested_type` (incl. subtypes).
+fn count_objects_by_type_filter(model: *const EQ, requested_type: []const u8) usize {
+    return model.count_objects_by_type_filter(requested_type);
+}
+
 fn collect_objects_by_type_filter(
     gpa: std.mem.Allocator,
     model: *const EQ,
     requested_type: []const u8,
 ) ![]CimObject {
-    var matches: std.ArrayList(CimObject) = .empty;
-    errdefer matches.deinit(gpa);
-    for (model.objects) |obj| {
-        if (cim_types.matches_filter(obj.type_name, requested_type)) try matches.append(gpa, obj);
-    }
-    return matches.toOwnedSlice(gpa);
+    return model.collect_objects_by_type_filter(gpa, requested_type);
 }
 
 test "get type filter collector includes CIM subtypes" {
@@ -539,6 +608,8 @@ test "get type filter collector includes CIM subtypes" {
     ;
     var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 3), count_objects_by_type_filter(&model, "ConductingEquipment"));
 
     const objects = try collect_objects_by_type_filter(gpa, &model, "ConductingEquipment");
     defer gpa.free(objects);
@@ -570,6 +641,37 @@ fn exit_json_error(io: std.Io, value: anytype) noreturn {
     std.process.exit(1);
 }
 
+const TypeCount = struct { type_name: []const u8, count: u32 };
+
+/// Aggregate `matches` into alphabetically-sorted (type_name, count) pairs.
+/// Caller owns the returned slice. Shared by the ambiguity renderers so the
+/// JSON and text breakdowns can't drift in how they group or order types.
+fn sorted_type_counts_of(gpa: std.mem.Allocator, matches: []const CimObject) ![]TypeCount {
+    var counts: std.StringHashMap(u32) = .init(gpa);
+    defer counts.deinit();
+    for (matches) |m| {
+        const gop = try counts.getOrPut(m.type_name);
+        if (!gop.found_existing) gop.value_ptr.* = 0;
+        gop.value_ptr.* += 1;
+    }
+
+    const out = try gpa.alloc(TypeCount, counts.count());
+    errdefer gpa.free(out);
+    var i: usize = 0;
+    var it = counts.iterator();
+    while (it.next()) |entry| : (i += 1)
+        out[i] = .{ .type_name = entry.key_ptr.*, .count = entry.value_ptr.* };
+    // Pairs with the alloc above: every counted type must have been written.
+    assert(i == out.len);
+
+    std.mem.sort(TypeCount, out, {}, struct {
+        fn lt(_: void, a: TypeCount, b: TypeCount) bool {
+            return std.mem.order(u8, a.type_name, b.type_name) == .lt;
+        }
+    }.lt);
+    return out;
+}
+
 /// JSON envelope for ambiguous `cimd get` lookups. Always emits both the flat
 /// match list and an alphabetically-sorted per-type breakdown so tooling can
 /// pick whichever it needs without re-aggregating.
@@ -579,26 +681,8 @@ fn render_ambiguous_json(
     prefix: []const u8,
     matches: []const CimObject,
 ) !void {
-    var counts: std.StringHashMap(u32) = .init(gpa);
-    defer counts.deinit();
-    for (matches) |m| {
-        const gop = try counts.getOrPut(m.type_name);
-        if (!gop.found_existing) gop.value_ptr.* = 0;
-        gop.value_ptr.* += 1;
-    }
-
-    const TypeCount = struct { type_name: []const u8, count: u32 };
-    const types = try gpa.alloc(TypeCount, counts.count());
+    const types = try sorted_type_counts_of(gpa, matches);
     defer gpa.free(types);
-    var i: usize = 0;
-    var it = counts.iterator();
-    while (it.next()) |entry| : (i += 1)
-        types[i] = .{ .type_name = entry.key_ptr.*, .count = entry.value_ptr.* };
-    std.mem.sort(TypeCount, types, {}, struct {
-        fn lt(_: void, a: TypeCount, b: TypeCount) bool {
-            return std.mem.order(u8, a.type_name, b.type_name) == .lt;
-        }
-    }.lt);
 
     var write_buffer: [4096]u8 = undefined;
     var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &write_buffer);
@@ -629,27 +713,8 @@ fn render_ambiguous_json(
 /// Non-interactive type breakdown for `cimd get` when a prefix is too ambiguous
 /// to list flat. Mirrors the grouped layout the browse picker uses.
 fn render_type_breakdown(io: std.Io, gpa: std.mem.Allocator, prefix: []const u8, matches: []const CimObject) !void {
-    const TypeCount = struct { type_name: []const u8, count: u32 };
-
-    var counts: std.StringHashMap(u32) = .init(gpa);
-    defer counts.deinit();
-    for (matches) |m| {
-        const gop = try counts.getOrPut(m.type_name);
-        if (!gop.found_existing) gop.value_ptr.* = 0;
-        gop.value_ptr.* += 1;
-    }
-
-    const entries = try gpa.alloc(TypeCount, counts.count());
+    const entries = try sorted_type_counts_of(gpa, matches);
     defer gpa.free(entries);
-    var i: usize = 0;
-    var it = counts.iterator();
-    while (it.next()) |entry| : (i += 1)
-        entries[i] = .{ .type_name = entry.key_ptr.*, .count = entry.value_ptr.* };
-    std.mem.sort(TypeCount, entries, {}, struct {
-        fn lt(_: void, a: TypeCount, b: TypeCount) bool {
-            return std.mem.order(u8, a.type_name, b.type_name) == .lt;
-        }
-    }.lt);
 
     var max_type_len: usize = 0;
     for (entries) |e| if (e.type_name.len > max_type_len) {
@@ -774,6 +839,12 @@ fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology)
     try std.json.Stringify.value(.{ .topologicalNodes = nodes.items }, .{}, w);
     try w.writeByte('\n');
     try w.flush();
+}
+
+fn command_validate(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Validate) !void {
+    _ = gpa;
+    // try print.stderr(io, "Not implemented yet!\n", .{});
+    try validate(io, c.eq_path);
 }
 
 fn command_version(io: std.Io, verbose: bool, json: bool) !void {

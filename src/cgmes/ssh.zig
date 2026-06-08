@@ -53,6 +53,8 @@ pub const SSH = struct {
         std.mem.sort(SshPatch, patches, {}, patch_less_than);
         if (patches.len > 1) {
             for (patches[1..], 1..) |patch, i| {
+                // Pairs with std.mem.sort above: the dedup walk relies on it.
+                assert(!patch_less_than({}, patch, patches[i - 1]));
                 if (std.mem.eql(u8, patches[i - 1].mrid, patch.mrid)) return error.DuplicateId;
             }
         }
@@ -83,7 +85,12 @@ pub const SSH = struct {
             switch (std.mem.order(u8, self.patches[mid].mrid, mrid)) {
                 .lt => lo = mid + 1,
                 .gt => hi = mid,
-                .eq => return self.patches[mid],
+                .eq => {
+                    const hit = self.patches[mid];
+                    // Pair the binary search hit with a direct mrid compare.
+                    assert(std.mem.eql(u8, hit.mrid, mrid));
+                    return hit;
+                },
             }
         }
         return null;
@@ -185,6 +192,10 @@ pub const CimMergedView = struct {
         ssh_opt: ?SSH,
     ) CimMergedView {
         assert(mrid.len > 0);
+        assert(eq.id.len > 0);
+        // mrid need not equal strip_underscore(eq.id): in CGMES the mRID may
+        // differ from rdf:ID, and overlays key by mRID. Callers resolve it via
+        // CimObjectView.mrid, so such models merge consistently across commands.
         var tp: ?TpContext = null;
         if (tp_opt) |t| {
             if (t.find_patch(mrid)) |patch| {

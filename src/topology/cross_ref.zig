@@ -4,6 +4,7 @@ const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
 const EQ = @import("../cgmes/eq.zig").EQ;
 const resolve = @import("resolve.zig");
+const parse = @import("../cgmes/parse.zig");
 const Topology = resolve.Topology;
 
 const assert = std.debug.assert;
@@ -194,10 +195,10 @@ fn build_limit_types(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef)
     try index.limit_types.ensureTotalCapacity(gpa, @intCast(objects.len));
     for (objects) |obj| {
         const view = model.view(obj);
-        const is_inf = try view.getProperty("OperationalLimitType.isInfiniteDuration") orelse "false";
+        const is_inf = try view.getProperty("OperationalLimitType.isInfiniteDuration");
         const duration = try view.getProperty("OperationalLimitType.acceptableDuration");
         index.limit_types.putAssumeCapacity(obj.id, .{
-            .is_infinite = std.mem.eql(u8, is_inf, "true"),
+            .is_infinite = parse.flag(is_inf),
             .acceptable_duration = duration,
         });
     }
@@ -222,8 +223,7 @@ fn build_terminals(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef) !
             index.terminal_conn_node.putAssumeCapacity(obj.id, id);
         }
 
-        const sequence_str = try view.getProperty("ACDCTerminal.sequenceNumber") orelse "1";
-        const sequence = try std.fmt.parseInt(u32, sequence_str, 10);
+        const sequence = try parse.int_strict(u32, try view.getProperty("ACDCTerminal.sequenceNumber"), 1);
         index.terminal_sequence.putAssumeCapacity(obj.id, sequence);
 
         const equipment_ref = try view.getReference("Terminal.ConductingEquipment") orelse return error.MalFormedXML;
@@ -274,7 +274,7 @@ fn build_connectivity(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef
         }
         const conn_node_id = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
 
-        const busbar_section_mrid = try model.view(busbar_section).getProperty("IdentifiedObject.mRID") orelse strip_underscore(busbar_section.id);
+        const busbar_section_mrid = try model.view(busbar_section).mrid();
         index.conn_node_to_busbar_section.putAssumeCapacity(conn_node_id, busbar_section_mrid);
     }
 
@@ -351,13 +351,9 @@ fn build_curve_points(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef
         const curve_ref = try view.getReference("CurveData.Curve") orelse return error.MalformedXML;
         const curve_id = strip_hash(curve_ref);
 
-        const x_val = try view.getProperty("CurveData.xvalue") orelse "0.0";
-        const y1_val = try view.getProperty("CurveData.y1value") orelse "0.0";
-        const y2_val = try view.getProperty("CurveData.y2value") orelse "0.0";
-
-        const x = try std.fmt.parseFloat(f64, x_val);
-        const y1 = try std.fmt.parseFloat(f64, y1_val);
-        const y2 = try std.fmt.parseFloat(f64, y2_val);
+        const x = try parse.float_strict(try view.getProperty("CurveData.xvalue"), 0.0);
+        const y1 = try parse.float_strict(try view.getProperty("CurveData.y1value"), 0.0);
+        const y2 = try parse.float_strict(try view.getProperty("CurveData.y2value"), 0.0);
 
         const gop = index.curve_points.getOrPutAssumeCapacity(curve_id);
         if (!gop.found_existing) {
@@ -436,8 +432,10 @@ pub fn build_voltage_limits(gpa: std.mem.Allocator, model: *const EQ, index: *Cr
         const limit_type = model.getObjectById(strip_hash(limit_type_ref)) orelse continue;
         const direction = try limit_type.getReference("OperationalLimitType.direction") orelse continue;
 
+        // value_str is preserved verbatim below for byte-identical output; the
+        // numeric `value` trims so a pretty-printed source still compares correctly.
         const value_str = try voltage_limit_view.getProperty("VoltageLimit.normalValue") orelse continue;
-        const value = try std.fmt.parseFloat(f64, value_str);
+        const value = try parse.float_req(value_str);
 
         const gop = index.voltage_level_limits.getOrPutAssumeCapacity(container_id);
         if (!gop.found_existing) gop.value_ptr.* = .{
@@ -449,8 +447,7 @@ pub fn build_voltage_limits(gpa: std.mem.Allocator, model: *const EQ, index: *Cr
             .low_mrids = .empty,
         };
 
-        const voltage_limit_mrid = try voltage_limit_view.getProperty("IdentifiedObject.mRID") orelse
-            utils.strip_underscore(voltage_limit_view.id);
+        const voltage_limit_mrid = try voltage_limit_view.mrid();
 
         if (std.mem.endsWith(u8, direction, "high")) {
             try gop.value_ptr.high_mrids.append(gpa, voltage_limit_mrid);

@@ -14,6 +14,7 @@ const bus_conv = @import("bus.zig");
 const placement_conv = @import("placement.zig");
 const SSH = @import("../cgmes/ssh.zig").SSH;
 const TP = @import("../cgmes/tp.zig").TP;
+const parse = @import("../cgmes/parse.zig");
 const populate_internal_connections = @import("internal_connections.zig").populate_internal_connections;
 
 const assert = std.debug.assert;
@@ -21,40 +22,38 @@ const assert = std.debug.assert;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
-/// Decode XML character entities in-place into a newly-allocated string.
+/// Decode XML character entities into a newly-allocated string.
 /// Handles &lt; &gt; &amp; &quot; &apos; only (CGMES descriptions use these).
+/// Every entity decodes to a single byte and every other byte is copied as-is,
+/// so the output never exceeds `s.len`: one reservation up front makes every
+/// append infallible (appendAssumeCapacity).
 fn decode_xml_entities(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
     var result: std.ArrayListUnmanaged(u8) = .empty;
     try result.ensureTotalCapacity(gpa, s.len);
     var i: usize = 0;
     while (i < s.len) {
-        if (s[i] == '+') {
-            try result.append(gpa, ' ');
-            i += 1;
-            continue;
-        }
         if (s[i] != '&') {
-            try result.append(gpa, s[i]);
+            result.appendAssumeCapacity(s[i]);
             i += 1;
             continue;
         }
         if (std.mem.startsWith(u8, s[i..], "&lt;")) {
-            try result.append(gpa, '<');
+            result.appendAssumeCapacity('<');
             i += 4;
         } else if (std.mem.startsWith(u8, s[i..], "&gt;")) {
-            try result.append(gpa, '>');
+            result.appendAssumeCapacity('>');
             i += 4;
         } else if (std.mem.startsWith(u8, s[i..], "&amp;")) {
-            try result.append(gpa, '&');
+            result.appendAssumeCapacity('&');
             i += 5;
         } else if (std.mem.startsWith(u8, s[i..], "&quot;")) {
-            try result.append(gpa, '"');
+            result.appendAssumeCapacity('"');
             i += 6;
         } else if (std.mem.startsWith(u8, s[i..], "&apos;")) {
-            try result.append(gpa, '\'');
+            result.appendAssumeCapacity('\'');
             i += 6;
         } else {
-            try result.append(gpa, s[i]);
+            result.appendAssumeCapacity(s[i]);
             i += 1;
         }
     }
@@ -109,8 +108,7 @@ fn append_metadata_model(
     const mas = try view.getProperty("Model.modelingAuthoritySet") orelse "";
     const raw_desc = try view.getProperty("Model.description") orelse "";
     const desc = try decode_xml_entities(gpa, raw_desc);
-    const version_str = try view.getProperty("Model.version") orelse "0";
-    const version = std.fmt.parseInt(u32, std.mem.trim(u8, version_str, " \t\r\n"), 10) catch 0;
+    const version = parse.int_or(u32, try view.getProperty("Model.version"), 0);
 
     var profiles: std.ArrayListUnmanaged(iidm.ModelProfile) = .empty;
     var dependent_on: std.ArrayListUnmanaged(iidm.DependentOnModel) = .empty;
@@ -152,6 +150,10 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const EQ, ssh_opt: ?SSH, networ
 
     try network.areas.ensureTotalCapacity(gpa, control_areas.len);
 
+    // The TieFlow set is the same for every ControlArea; fetch it once rather
+    // than re-looking-it-up per area.
+    const tie_flows = model.get_objects_by_type("TieFlow");
+
     for (control_areas) |control_area| {
         const control_area_view = model.view(control_area);
         const control_area_mrid = try control_area_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(control_area.id);
@@ -165,7 +167,6 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const EQ, ssh_opt: ?SSH, networ
         };
 
         // Collect all TieFlow objects that reference this ControlArea.
-        const tie_flows = model.get_objects_by_type("TieFlow");
         var boundaries: std.ArrayListUnmanaged(iidm.AreaBoundary) = .empty;
         errdefer boundaries.deinit(gpa);
 
@@ -184,8 +185,7 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const EQ, ssh_opt: ?SSH, networ
             const equipment = model.getObjectById(equipment_id) orelse continue;
             const eq_mrid = try equipment.getProperty("IdentifiedObject.mRID") orelse strip_underscore(equipment_id);
 
-            const seq_str = try term_obj.getProperty("ACDCTerminal.sequenceNumber") orelse "1";
-            const seq = std.fmt.parseInt(u32, std.mem.trim(u8, seq_str, " \t\r\n"), 10) catch 1;
+            const seq = parse.int_or(u32, try term_obj.getProperty("ACDCTerminal.sequenceNumber"), 1);
             const side: []const u8 = if (seq == 1) "ONE" else "TWO";
 
             try boundaries.append(gpa, .{ .id = eq_mrid, .side = side });
@@ -193,7 +193,7 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const EQ, ssh_opt: ?SSH, networ
 
         const interchange_target: ?f64 = if (ssh_opt) |ssh| blk: {
             const v = try ssh.getProperty(control_area_mrid, "ControlArea.netInterchange") orelse break :blk null;
-            break :blk std.fmt.parseFloat(f64, std.mem.trim(u8, v, " \t\r\n")) catch null;
+            break :blk parse.float_opt(v);
         } else null;
 
         network.areas.appendAssumeCapacity(.{
@@ -279,7 +279,7 @@ pub fn convert(
     };
     errdefer network.deinit(gpa);
 
-    var sub_id_map: std.StringHashMapUnmanaged(usize) = .empty;
+    var sub_id_map: std.StringHashMapUnmanaged(substation_conv.SubstationIndex) = .empty;
     defer sub_id_map.deinit(gpa);
     try substation_conv.convert_substations(gpa, model, &topology_data, &network, &sub_id_map);
 
@@ -303,14 +303,18 @@ pub fn convert(
         var bus_map = try bus_conv.convert_buses(gpa, tp, &voltage_level_map);
         defer bus_map.deinit(gpa);
 
-        const placer = placement_conv.TerminalPlacer{
+        const placer_uncached = placement_conv.TerminalPlacer{
             .mode = .{ .bus_branch = .{ .tp = tp, .bus_map = &bus_map } },
             .index = &index,
             .topology = &topology_data,
             .voltage_level_map = &voltage_level_map,
         };
 
-        try equipment_conv.pre_allocate_equipment(gpa, model, placer);
+        var placement_cache = try equipment_conv.pre_allocate_equipment(gpa, model, placer_uncached);
+        defer placement_cache.deinit(gpa);
+        var placer = placer_uncached;
+        placer.placement_cache = &placement_cache;
+
         try equipment_conv.convert_loads(gpa, model, placer, ssh_opt);
         try equipment_conv.convert_shunts(gpa, model, placer, ssh_opt);
         try equipment_conv.convert_static_var_compensators(model, placer, ssh_opt);
@@ -329,14 +333,18 @@ pub fn convert(
         try populate_internal_connections(gpa, model, &index, &topology_data, &voltage_level_map, ssh_opt, &nm_result);
         const node_map = &nm_result.node_map;
 
-        const placer = placement_conv.TerminalPlacer{
+        const placer_uncached = placement_conv.TerminalPlacer{
             .mode = .{ .node_breaker = node_map },
             .index = &index,
             .topology = &topology_data,
             .voltage_level_map = &voltage_level_map,
         };
 
-        try equipment_conv.pre_allocate_equipment(gpa, model, placer);
+        var placement_cache = try equipment_conv.pre_allocate_equipment(gpa, model, placer_uncached);
+        defer placement_cache.deinit(gpa);
+        var placer = placer_uncached;
+        placer.placement_cache = &placement_cache;
+
         try equipment_conv.convert_busbar_sections(gpa, model, placer);
         try equipment_conv.convert_switches(gpa, model, placer, ssh_opt);
         try equipment_conv.convert_fictitious_switches(gpa, model, placer, &nm_result.conn_node_has_switch, &nm_result.conn_node_other_count, ssh_opt);
@@ -494,7 +502,7 @@ pub fn convert(
             const base_voltage_view = model.view(base_voltage);
             const base_voltage_mrid = try base_voltage_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(base_voltage.id);
             const nom_v_str = try base_voltage_view.getProperty("BaseVoltage.nominalVoltage") orelse continue;
-            const nom_v = std.fmt.parseFloat(f64, std.mem.trim(u8, nom_v_str, " \t\r\n")) catch continue;
+            const nom_v = parse.float_opt(nom_v_str) orelse continue;
             const xml_pos = base_voltage_view.boundaries[base_voltage_view.object_tag_idx].start;
             const source: []const u8 = if (xml_pos < eq_boundary) "IGM" else "BOUNDARY";
             base_voltage_list.appendAssumeCapacity(.{ .nominal_voltageoltage = nom_v, .source = source, .id = base_voltage_mrid });

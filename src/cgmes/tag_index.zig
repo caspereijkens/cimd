@@ -1,4 +1,5 @@
 const std = @import("std");
+const ids = @import("ids.zig");
 const assert = std.debug.assert;
 
 /// Vector size for SIMD operations (32 bytes = 256-bit AVX2)
@@ -338,15 +339,22 @@ pub fn extract_rdf_about(slice: []const u8, start_idx: u32) error{ NoRdfAbout, M
     return slice[value_start_idx..value_end_idx];
 }
 
-/// Extract rdf:Resource value from an XML tag
-/// Returns error.NoRdfResource if tag doesn't have rdf:Resource
-/// Returns error.MalformedTag if rdf:Resource exists but is malformed
-pub fn extract_rdf_resource(slice: []const u8, start_idx: u32) error{MalformedTag}!?[]const u8 {
-    const gt_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, '>') orelse return error.MalformedTag;
+/// Extract rdf:resource value from an XML tag whose '>' position is already
+/// known (`end_idx`, the boundary's `.end`). Skips the re-scan for '>' that the
+/// start-only `extract_rdf_resource` must do — the hot reference-scanning loops
+/// in `refs`/`get` call this with the boundary they already hold.
+/// Returns null if the tag has no rdf:resource; error.MalformedTag if malformed.
+pub fn extract_rdf_resource_within(
+    slice: []const u8,
+    start_idx: u32,
+    end_idx: u32,
+) error{MalformedTag}!?[]const u8 {
+    assert(end_idx > start_idx);
+    assert(end_idx < slice.len);
 
     const pattern = "rdf:resource=\"";
 
-    const tag_content = slice[start_idx..gt_idx];
+    const tag_content = slice[start_idx..end_idx];
     const pattern_offset = std.mem.indexOf(u8, tag_content, pattern) orelse return null;
     const pattern_start_idx = start_idx + pattern_offset;
 
@@ -354,9 +362,18 @@ pub fn extract_rdf_resource(slice: []const u8, start_idx: u32) error{MalformedTa
     const value_end_idx = std.mem.indexOfScalarPos(u8, slice, value_start_idx, '"') orelse return error.MalformedTag;
 
     // Check if closing quote is within this tag
-    if (value_end_idx >= gt_idx) return error.MalformedTag;
+    if (value_end_idx >= end_idx) return error.MalformedTag;
 
     return slice[value_start_idx..value_end_idx];
+}
+
+/// Extract rdf:resource value from an XML tag, locating the tag's '>' itself.
+/// Use `extract_rdf_resource_within` when the boundary's `.end` is already known.
+/// Returns null if tag doesn't have rdf:resource.
+/// Returns error.MalformedTag if rdf:resource exists but is malformed.
+pub fn extract_rdf_resource(slice: []const u8, start_idx: u32) error{MalformedTag}!?[]const u8 {
+    const gt_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, '>') orelse return error.MalformedTag;
+    return extract_rdf_resource_within(slice, start_idx, @intCast(gt_idx));
 }
 
 pub fn find_closing_tag(
@@ -367,13 +384,14 @@ pub fn find_closing_tag(
     assert(opening_tag_idx < boundaries.len);
 
     const opening_tag = boundaries[opening_tag_idx];
+    assert(opening_tag.start < opening_tag.end);
 
     // Check if self-closing.
     if (xml[opening_tag.end - 1] == '/') return error.SelfClosingTag;
 
     var depth: u32 = 1;
     const opening_tag_type = try extract_tag_type(xml, opening_tag.start);
-    return blk: {
+    const result_idx: u32 = blk: {
         for (boundaries[opening_tag_idx + 1 ..], opening_tag_idx + 1..) |tag, i| {
             if (xml[tag.start + 1] == '/') {
                 const tag_type = extract_tag_type(xml, tag.start + 1) catch continue;
@@ -391,8 +409,13 @@ pub fn find_closing_tag(
                 }
             }
         }
-        break :blk error.NoClosingTag;
+        return error.NoClosingTag;
     };
+    // Postcondition: the closer lies strictly after the opener and within bounds,
+    // pairing with the bounds precondition above.
+    assert(result_idx > opening_tag_idx);
+    assert(result_idx < boundaries.len);
+    return result_idx;
 }
 
 pub fn get_property_from_indices(
@@ -447,7 +470,7 @@ pub fn get_reference_from_indices(
         }
         const tag_type = extract_tag_type(xml, tag.start) catch continue;
         if (std.mem.eql(u8, tag_type, property_name)) {
-            return extract_rdf_resource(xml, tag.start);
+            return extract_rdf_resource_within(xml, tag.start, tag.end);
         }
     }
     return null;
@@ -504,6 +527,15 @@ pub fn build_closing_index(
     // Every opener must have been matched; a non-empty stack means unclosed tags.
     if (stack.items.len != 0) return error.MalformedXML;
 
+    // Postcondition: every entry either points to itself (self-closing) or to a
+    // boundary strictly after it. A regression in the matching logic above
+    // (e.g. an off-by-one on the closing-tag write) would surface here rather
+    // than silently corrupt downstream property extraction.
+    for (closing_for, 0..) |c, i| {
+        assert(c >= i);
+        assert(c < boundaries.len);
+    }
+
     return closing_for;
 }
 
@@ -554,6 +586,13 @@ pub const CimObjectView = struct {
         return get_reference_from_indices(self.xml, self.boundaries, self.object_tag_idx, self.closing_tag_idx, property_name);
     }
 
+    /// The key SSH/TP overlays use to patch this object: explicit
+    /// IdentifiedObject.mRID, else the rdf:ID with its leading underscore
+    /// stripped. Single source of truth for overlay keying across commands.
+    pub fn mrid(self: CimObjectView) error{MalformedTag}![]const u8 {
+        return (try self.getProperty("IdentifiedObject.mRID")) orelse ids.strip_underscore(self.id);
+    }
+
     /// Batch-fetch multiple text properties in a single scan through child tags.
     pub fn getProperties(self: CimObjectView, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
         var result: [names.len]?[]const u8 = .{null} ** names.len;
@@ -596,7 +635,7 @@ pub const CimObjectView = struct {
 
             inline for (names, 0..) |name, idx| {
                 if (result[idx] == null and std.mem.eql(u8, tag_type, name)) {
-                    result[idx] = try extract_rdf_resource(self.xml, tag.start);
+                    result[idx] = try extract_rdf_resource_within(self.xml, tag.start, tag.end);
                     found_count += 1;
                     if (found_count == names.len) return result;
                 }
@@ -616,7 +655,10 @@ pub const CimObjectView = struct {
         for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx], self.object_tag_idx + 1..) |tag, i| {
             // In CIM XML, references are always self-closing; properties never are.
             if (self.xml[tag.start + 1] == '/' or self.xml[tag.end - 1] == '/') continue;
-            const tag_type = try extract_tag_type(self.xml, tag.start);
+            // Tolerate comments (<!--), PIs (<?), and malformed tags so a stray
+            // comment inside an object can't abort the scan (cf. getAllReferences).
+            if (self.xml[tag.start + 1] == '!' or self.xml[tag.start + 1] == '?') continue;
+            const tag_type = extract_tag_type(self.xml, tag.start) catch continue;
             const content = self.xml[tag.end + 1 .. self.boundaries[i + 1].start];
             try result.put(tag_type, content);
         }
@@ -635,7 +677,7 @@ pub const CimObjectView = struct {
             if (self.xml[tag.start + 1] == '/') continue;
 
             const tag_type = extract_tag_type(self.xml, tag.start) catch continue;
-            const reference = extract_rdf_resource(self.xml, tag.start) catch continue;
+            const reference = extract_rdf_resource_within(self.xml, tag.start, tag.end) catch continue;
 
             if (reference) |ref_value| {
                 try result.put(tag_type, ref_value);

@@ -115,6 +115,8 @@ pub const TP = struct {
         std.mem.sort(TpPatch, patches, {}, patch_less_than);
         if (patches.len > 1) {
             for (patches[1..], 1..) |patch, i| {
+                // Pairs with std.mem.sort above: the dedup walk relies on it.
+                assert(!patch_less_than({}, patch, patches[i - 1]));
                 if (std.mem.eql(u8, patches[i - 1].mrid, patch.mrid)) return error.DuplicateId;
             }
         }
@@ -147,7 +149,12 @@ pub const TP = struct {
             switch (std.mem.order(u8, self.patches[mid].mrid, mrid)) {
                 .lt => lo = mid + 1,
                 .gt => hi = mid,
-                .eq => return self.patches[mid],
+                .eq => {
+                    const hit = self.patches[mid];
+                    // Pair the binary search hit with a direct mrid compare.
+                    assert(std.mem.eql(u8, hit.mrid, mrid));
+                    return hit;
+                },
             }
         }
         return null;
@@ -189,20 +196,18 @@ pub const TP = struct {
     }
 
     /// Returns the TP-added objects whose mRID starts with `id_prefix`, in
-    /// storage order. The caller owns the returned slice. The prefix is
-    /// normalised by ensuring a leading `_`, so users may omit it.
+    /// storage order. The caller owns the returned slice. Matching follows
+    /// `ids.id_prefix_matches`: literal startsWith plus a leading-underscore
+    /// convenience for the rdf:ID form.
     pub fn get_object_by_id_prefix(
         self: TP,
         gpa: std.mem.Allocator,
         id_prefix: []const u8,
     ) ![]const tag_index.CimObject {
-        const needle = try utils.with_leading_underscore(gpa, id_prefix);
-        defer gpa.free(needle);
-
         var matches: std.ArrayList(CimObject) = .empty;
         errdefer matches.deinit(gpa);
         for (self.new_objects) |obj| {
-            if (std.mem.startsWith(u8, obj.id, needle)) try matches.append(gpa, obj);
+            if (utils.id_prefix_matches(obj.id, id_prefix)) try matches.append(gpa, obj);
         }
         return matches.toOwnedSlice(gpa);
     }
@@ -212,6 +217,11 @@ pub const TP = struct {
     pub fn get_object_by_id(self: TP, id: []const u8) ?tag_index.CimObjectView {
         const idx = self.id_to_object.get(id) orelse return null;
         const obj = self.new_objects[idx];
+        // The stored object must round-trip — pairs with the id_to_object build.
+        assert(std.mem.eql(u8, obj.id, id));
+        assert(obj.object_tag_idx < self.boundaries.len);
+        assert(obj.closing_tag_idx < self.boundaries.len);
+        assert(obj.closing_tag_idx >= obj.object_tag_idx);
         return .{
             .xml = self.xml,
             .boundaries = self.boundaries,
