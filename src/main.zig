@@ -771,14 +771,17 @@ fn command_diff(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Diff) !void {
         defer buffered.deinit();
 
         const status = switch (c.format) {
-            .eqdiff => try eqdiff.write_single(
+            .eqdiff => eqdiff.write_single(
                 gpa,
                 &model1,
                 &model2,
                 mrid,
                 .{ .type_filter = c.type_filter },
                 &buffered.writer,
-            ),
+            ) catch |err| switch (err) {
+                error.ConflictingNamespaceBindings => conflicting_namespaces(io),
+                else => return err,
+            },
             .patch, .json, .summary => try diff.diff_single(
                 gpa,
                 &model1,
@@ -811,13 +814,16 @@ fn command_diff(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Diff) !void {
         var writer = std.Io.File.Writer.init(output_file, io, &out_buffer);
 
         had_diffs = switch (c.format) {
-            .eqdiff => try eqdiff.write_models(
+            .eqdiff => eqdiff.write_models(
                 gpa,
                 &model1,
                 &model2,
                 .{ .type_filter = c.type_filter },
                 &writer.interface,
-            ),
+            ) catch |err| switch (err) {
+                error.ConflictingNamespaceBindings => conflicting_namespaces(io),
+                else => return err,
+            },
             .patch, .json, .summary => try diff.diff_models(
                 gpa,
                 &model1,
@@ -833,6 +839,18 @@ fn command_diff(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Diff) !void {
 
     // Exit 1 when differences exist so callers can branch on the exit code.
     if (had_diffs) std.process.exit(1);
+}
+
+/// EQDIFF copies statements verbatim, so two inputs binding the same prefix
+/// to different namespaces cannot be merged into one document scope. Real
+/// EQ exports always agree per prefix; anything else is an unsupported input.
+fn conflicting_namespaces(io: std.Io) noreturn {
+    print.stderr(
+        io,
+        "diff: the inputs bind the same namespace prefix to different namespaces; " ++
+            "EQDIFF output cannot represent this — use --patch, --json, or --summary",
+        .{},
+    );
 }
 
 fn diff_output_file(io: std.Io, output_path: ?[]const u8) !std.Io.File {

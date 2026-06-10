@@ -136,11 +136,11 @@ test "eqdiff - FullModel-local xmlns is hoisted to the root" {
     try std.testing.expect(r.contains("<md:Model.version>2</md:Model.version>"));
 }
 
-test "eqdiff - FullModel-local xmlns conflicting with the root is re-declared on header children" {
+test "eqdiff - FullModel-local xmlns conflicting with the root is rejected" {
     // The roots bind md to an unrelated namespace; model2's FullModel rebinds
-    // it locally to the ModelDescription namespace. Copied into the header
-    // without their FullModel parent, the children would silently inherit the
-    // root's binding — each must re-declare the local one.
+    // it locally. Its children are copied into the header without their
+    // declaring parent, so the conflicting binding cannot be represented in
+    // the merged root scope — rejected rather than silently reinterpreted.
     const xml1 =
         \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:cim="http://iec.ch/TC57/CIM100#" xmlns:md="http://example.com/other#">
         \\</rdf:RDF>
@@ -149,28 +149,21 @@ test "eqdiff - FullModel-local xmlns conflicting with the root is re-declared on
         \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:cim="http://iec.ch/TC57/CIM100#" xmlns:md="http://example.com/other#">
         \\  <md:FullModel rdf:about="urn:uuid:22222222-2222-2222-2222-222222222222" xmlns:md="http://iec.ch/TC57/61970-552/ModelDescription/1#">
         \\    <md:Model.version>2</md:Model.version>
-        \\    <md:Model.DependentOn rdf:resource="urn:uuid:33333333-3333-3333-3333-333333333333"/>
         \\  </md:FullModel>
         \\</rdf:RDF>
     ;
-    const r = try run_eqdiff(std.testing.allocator, xml1, xml2, .{});
-    // The root keeps the inputs' binding...
-    try std.testing.expect(r.contains("xmlns:md=\"http://example.com/other#\""));
-    // ...and every copied header child carries the FullModel-local one,
-    // injected right after the element name (also for self-closing children).
-    try std.testing.expect(r.contains("<md:Model.version xmlns:md=\"http://iec.ch/TC57/61970-552/ModelDescription/1#\">2</md:Model.version>"));
-    try std.testing.expect(r.contains("<md:Model.DependentOn xmlns:md=\"http://iec.ch/TC57/61970-552/ModelDescription/1#\" rdf:resource=\"urn:uuid:33333333-3333-3333-3333-333333333333\"/>"));
+    try std.testing.expectError(
+        error.ConflictingNamespaceBindings,
+        run_eqdiff(std.testing.allocator, xml1, xml2, .{}),
+    );
 }
 
-test "eqdiff - conflicting prefix bindings: reverse statements keep model1's namespace" {
-    // The inputs bind cim to different schema versions. model2's binding wins
-    // at the root; statements copied from model1 must re-declare model1's
-    // binding locally or they would be reinterpreted under model2's namespace.
+test "eqdiff - inputs binding one prefix to different namespaces are rejected" {
+    // The inputs bind cim to different schema versions. Statements are copied
+    // verbatim, so a single merged root scope cannot keep both meanings —
+    // EQ-like inputs always agree per prefix, so this is rejected loudly.
     const xml1 =
         \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:cim="http://iec.ch/TC57/2013/CIM-schema-cim16#">
-        \\  <cim:Breaker rdf:ID="_B1">
-        \\    <cim:IdentifiedObject.name>Old breaker</cim:IdentifiedObject.name>
-        \\  </cim:Breaker>
         \\  <cim:Substation rdf:ID="_SS1">
         \\    <cim:IdentifiedObject.name>North</cim:IdentifiedObject.name>
         \\  </cim:Substation>
@@ -183,36 +176,27 @@ test "eqdiff - conflicting prefix bindings: reverse statements keep model1's nam
         \\  </cim:Substation>
         \\</rdf:RDF>
     ;
-    const r = try run_eqdiff(std.testing.allocator, xml1, xml2, .{});
-    try std.testing.expect(r.had_diffs);
-    // Removed object and reverse property statements carry model1's binding.
-    try std.testing.expect(r.section_contains("reverseDifferences", "<cim:Breaker rdf:about=\"#_B1\" xmlns:cim=\"http://iec.ch/TC57/2013/CIM-schema-cim16#\">"));
-    try std.testing.expect(r.section_contains("reverseDifferences", "<rdf:Description rdf:about=\"#_SS1\" xmlns:cim=\"http://iec.ch/TC57/2013/CIM-schema-cim16#\">"));
-    // Forward statements rely on the root binding (model2's) — no local decl.
-    try std.testing.expect(r.section_contains("forwardDifferences", "<rdf:Description rdf:about=\"#_SS1\">"));
-    try std.testing.expect(!r.section_contains("forwardDifferences", "CIM-schema-cim16"));
+    try std.testing.expectError(
+        error.ConflictingNamespaceBindings,
+        run_eqdiff(std.testing.allocator, xml1, xml2, .{}),
+    );
 }
 
-test "eqdiff - conflicting prefix binding yields to an object-local declaration" {
-    // The removed object's own tag already declares cim: the local binding is
-    // inner-most in the source and must win — and an element cannot carry the
-    // same attribute twice.
-    const xml1 =
-        \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:cim="http://iec.ch/TC57/2013/CIM-schema-cim16#">
-        \\  <cim:Breaker rdf:ID="_B1" xmlns:cim="http://example.com/local#">
-        \\    <cim:IdentifiedObject.name>Old breaker</cim:IdentifiedObject.name>
-        \\  </cim:Breaker>
+test "eqdiff - object-local xmlns overriding the root is preserved, not a conflict" {
+    // Conflict detection only applies to the root and FullModel scopes;
+    // a binding local to an ordinary object's tag is re-declared on the
+    // emitted element (emit_local_xmlns) and keeps its source meaning.
+    const xml1 = RDF_OPEN ++
+        \\
+        \\  <ext:Marker rdf:ID="_M1" xmlns:ext="http://example.com/local#">
+        \\    <ext:Marker.note>Old</ext:Marker.note>
+        \\  </ext:Marker>
         \\</rdf:RDF>
     ;
-    const xml2 =
-        \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:cim="http://iec.ch/TC57/CIM100#">
-        \\</rdf:RDF>
-    ;
+    const xml2 = RDF_OPEN ++ "\n</rdf:RDF>";
     const r = try run_eqdiff(std.testing.allocator, xml1, xml2, .{});
     try std.testing.expect(r.had_diffs);
-    // Exactly the local declaration, immediately closed — no second xmlns:cim.
-    try std.testing.expect(r.section_contains("reverseDifferences", "<cim:Breaker rdf:about=\"#_B1\" xmlns:cim=\"http://example.com/local#\">"));
-    try std.testing.expect(!r.section_contains("reverseDifferences", "CIM-schema-cim16"));
+    try std.testing.expect(r.section_contains("reverseDifferences", "<ext:Marker rdf:about=\"#_M1\" xmlns:ext=\"http://example.com/local#\">"));
 }
 
 test "eqdiff - deterministic: same inputs produce byte-identical output" {
@@ -654,7 +638,7 @@ test "eqdiff single - type change with same mrid emits typed remove+add" {
     try std.testing.expect(r.result.section_contains("forwardDifferences", "<cim:Disconnector rdf:about=\"#_SW1\">"));
 }
 
-test "eqdiff single - conflicting prefix binding re-declared on reverse statements" {
+test "eqdiff single - conflicting prefix bindings are rejected" {
     const xml1 =
         \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:cim="http://iec.ch/TC57/2013/CIM-schema-cim16#">
         \\  <cim:Substation rdf:ID="_SS1">
@@ -669,10 +653,10 @@ test "eqdiff single - conflicting prefix binding re-declared on reverse statemen
         \\  </cim:Substation>
         \\</rdf:RDF>
     ;
-    const r = try run_eqdiff_single(std.testing.allocator, xml1, xml2, "_SS1", .{});
-    try std.testing.expect(r.status.diff);
-    try std.testing.expect(r.result.section_contains("reverseDifferences", "<rdf:Description rdf:about=\"#_SS1\" xmlns:cim=\"http://iec.ch/TC57/2013/CIM-schema-cim16#\">"));
-    try std.testing.expect(r.result.section_contains("forwardDifferences", "<rdf:Description rdf:about=\"#_SS1\">"));
+    try std.testing.expectError(
+        error.ConflictingNamespaceBindings,
+        run_eqdiff_single(std.testing.allocator, xml1, xml2, "_SS1", .{}),
+    );
 }
 
 test "eqdiff single - type filter mismatch reports actual type" {
