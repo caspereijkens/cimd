@@ -118,7 +118,7 @@ pub const EQ = struct {
             assert(obj.id.len > 0);
             id_to_index.putAssumeCapacity(obj.id, @intCast(index));
         }
-        // Pairs with the duplicate-id rejection at line 53: every object must
+        // Pairs with the duplicate-id rejection at the seen_ids check: every object must
         // have produced exactly one id_to_index entry.
         assert(id_to_index.count() == sorted_objects.len);
 

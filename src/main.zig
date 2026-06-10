@@ -9,6 +9,7 @@ const EQ = @import("cgmes/eq.zig").EQ;
 const CimObject = @import("cgmes/eq.zig").CimObject;
 const browse = @import("browse.zig");
 const diff = @import("diff.zig");
+const eqdiff = @import("eqdiff.zig");
 const converter = @import("convert/network.zig");
 const cross_ref = @import("topology/cross_ref.zig");
 const resolve = @import("topology/resolve.zig");
@@ -759,28 +760,37 @@ fn command_diff(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Diff) !void {
     var model2 = try load_model(io, gpa, c.file_path2, c.eqbd_path);
     defer model2.deinit(gpa);
 
-    const options = diff.DiffOptions{
-        .type_filter = c.type_filter,
-        .json = c.json,
-        .summary = c.summary,
-    };
+    var out_buffer: [64 * 1024]u8 = undefined;
+    var had_diffs = false;
 
-    // Stream diff output to a buffered stdout writer.
-    var out_buffer: [4096]u8 = undefined;
-    var writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &out_buffer);
+    if (c.mrid) |mrid| {
+        // Buffer single-object output first: the not-found / type-mismatch
+        // error paths exit without producing a diff, and must not have
+        // created or truncated an existing --output file by then.
+        var buffered: std.Io.Writer.Allocating = .init(gpa);
+        defer buffered.deinit();
 
-    const had_diffs = if (c.mrid) |mrid| blk: {
-        const status = try diff.diff_single(
-            gpa,
-            &model1,
-            &model2,
-            mrid,
-            c.file_path1,
-            c.file_path2,
-            options,
-            &writer.interface,
-        );
-        break :blk switch (status) {
+        const status = switch (c.format) {
+            .eqdiff => try eqdiff.write_single(
+                gpa,
+                &model1,
+                &model2,
+                mrid,
+                .{ .type_filter = c.type_filter },
+                &buffered.writer,
+            ),
+            .patch, .json, .summary => try diff.diff_single(
+                gpa,
+                &model1,
+                &model2,
+                mrid,
+                c.file_path1,
+                c.file_path2,
+                diff_options(c),
+                &buffered.writer,
+            ),
+        };
+        had_diffs = switch (status) {
             .not_found => print.not_found(io, "No object found with mRID '{s}' in either file", .{mrid}),
             .type_mismatch => |actual| print.stderr(
                 io,
@@ -789,20 +799,59 @@ fn command_diff(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Diff) !void {
             ),
             .diff => |d| d,
         };
-    } else try diff.diff_models(
-        gpa,
-        &model1,
-        &model2,
-        c.file_path1,
-        c.file_path2,
-        options,
-        &writer.interface,
-    );
 
-    try writer.interface.flush();
+        const output_file = try diff_output_file(io, c.output_path);
+        defer if (c.output_path != null) output_file.close(io);
+        var writer = std.Io.File.Writer.init(output_file, io, &out_buffer);
+        try writer.interface.writeAll(buffered.written());
+        try writer.interface.flush();
+    } else {
+        const output_file = try diff_output_file(io, c.output_path);
+        defer if (c.output_path != null) output_file.close(io);
+        var writer = std.Io.File.Writer.init(output_file, io, &out_buffer);
+
+        had_diffs = switch (c.format) {
+            .eqdiff => try eqdiff.write_models(
+                gpa,
+                &model1,
+                &model2,
+                .{ .type_filter = c.type_filter },
+                &writer.interface,
+            ),
+            .patch, .json, .summary => try diff.diff_models(
+                gpa,
+                &model1,
+                &model2,
+                c.file_path1,
+                c.file_path2,
+                diff_options(c),
+                &writer.interface,
+            ),
+        };
+        try writer.interface.flush();
+    }
 
     // Exit 1 when differences exist so callers can branch on the exit code.
     if (had_diffs) std.process.exit(1);
+}
+
+fn diff_output_file(io: std.Io, output_path: ?[]const u8) !std.Io.File {
+    if (output_path) |path| return std.Io.Dir.cwd().createFile(io, path, .{});
+    return std.Io.File.stdout();
+}
+
+/// Map the CLI's diff format to the report-mode options of diff.zig.
+/// Only valid for the report formats; .eqdiff is dispatched to eqdiff.zig.
+fn diff_options(c: cli.Command.Diff) diff.DiffOptions {
+    return .{
+        .type_filter = c.type_filter,
+        .format = switch (c.format) {
+            .patch => .patch,
+            .json => .json,
+            .summary => .summary,
+            .eqdiff => unreachable,
+        },
+    };
 }
 
 fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology) !void {

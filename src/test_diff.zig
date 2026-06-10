@@ -484,7 +484,7 @@ test "diff - json mode has no file header" {
         \\  </cim:Substation>
         \\</rdf:RDF>
     ;
-    const r = try run_diff(std.testing.allocator, xml, xml, .{ .json = true });
+    const r = try run_diff(std.testing.allocator, xml, xml, .{ .format = .json });
     try std.testing.expect(!r.contains("---"));
     try std.testing.expect(!r.contains("+++"));
 }
@@ -498,7 +498,7 @@ test "diff - json mode added object emits status added" {
         \\  </cim:Substation>
         \\</rdf:RDF>
     ;
-    const r = try run_diff(std.testing.allocator, xml1, xml2, .{ .json = true });
+    const r = try run_diff(std.testing.allocator, xml1, xml2, .{ .format = .json });
     try std.testing.expect(r.contains("\"status\":\"added\""));
     try std.testing.expect(r.contains("\"mrid\":\"_SS1\""));
     try std.testing.expect(r.contains("\"type\":\"Substation\""));
@@ -513,7 +513,7 @@ test "diff - json mode removed object emits status removed" {
         \\</rdf:RDF>
     ;
     const xml2 = "<rdf:RDF></rdf:RDF>";
-    const r = try run_diff(std.testing.allocator, xml1, xml2, .{ .json = true });
+    const r = try run_diff(std.testing.allocator, xml1, xml2, .{ .format = .json });
     try std.testing.expect(r.contains("\"status\":\"removed\""));
     try std.testing.expect(r.contains("\"mrid\":\"_SS1\""));
 }
@@ -533,7 +533,7 @@ test "diff - json mode changed object emits status changed with changes array" {
         \\  </cim:Substation>
         \\</rdf:RDF>
     ;
-    const r = try run_diff(std.testing.allocator, xml1, xml2, .{ .json = true });
+    const r = try run_diff(std.testing.allocator, xml1, xml2, .{ .format = .json });
     try std.testing.expect(r.contains("\"status\":\"changed\""));
     try std.testing.expect(r.contains("\"changes\":["));
     try std.testing.expect(r.contains("\"property\":\"IdentifiedObject.name\""));
@@ -549,7 +549,7 @@ test "diff - json mode identical models produce no output" {
         \\  </cim:Substation>
         \\</rdf:RDF>
     ;
-    const r = try run_diff(std.testing.allocator, xml, xml, .{ .json = true });
+    const r = try run_diff(std.testing.allocator, xml, xml, .{ .format = .json });
     try std.testing.expect(!r.had_diffs);
     try std.testing.expectEqual(@as(usize, 0), r.len);
 }
@@ -570,7 +570,7 @@ test "diff - json mode added property shows from null" {
         \\  </cim:Substation>
         \\</rdf:RDF>
     ;
-    const r = try run_diff(std.testing.allocator, xml1, xml2, .{ .json = true });
+    const r = try run_diff(std.testing.allocator, xml1, xml2, .{ .format = .json });
     try std.testing.expect(r.contains("\"from\":null"));
     try std.testing.expect(r.contains("\"to\":\"Added\""));
 }
@@ -591,9 +591,38 @@ test "diff - json mode removed property shows to null" {
         \\  </cim:Substation>
         \\</rdf:RDF>
     ;
-    const r = try run_diff(std.testing.allocator, xml1, xml2, .{ .json = true });
+    const r = try run_diff(std.testing.allocator, xml1, xml2, .{ .format = .json });
     try std.testing.expect(r.contains("\"to\":null"));
     try std.testing.expect(r.contains("\"from\":\"Removed\""));
+}
+
+test "diff - json mode escapes quotes and backslashes in values" {
+    // XML text content may contain raw quotes/backslashes; unescaped emission
+    // would corrupt the NDJSON stream.
+    const xml1 =
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:ID="_SS1">
+        \\    <cim:IdentifiedObject.name>plain</cim:IdentifiedObject.name>
+        \\  </cim:Substation>
+        \\</rdf:RDF>
+    ;
+    const xml2 =
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:ID="_SS1">
+        \\    <cim:IdentifiedObject.name>say "hi" \now</cim:IdentifiedObject.name>
+        \\  </cim:Substation>
+        \\</rdf:RDF>
+    ;
+    const r = try run_diff(std.testing.allocator, xml1, xml2, .{ .format = .json });
+    try std.testing.expect(r.had_diffs);
+    try std.testing.expect(r.contains("\"to\":\"say \\\"hi\\\" \\\\now\""));
+
+    // Every emitted line must parse as JSON.
+    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, r.output(), "\n"), '\n');
+    while (lines.next()) |line| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line, .{});
+        parsed.deinit();
+    }
 }
 
 // ── Summary mode ──────────────────────────────────────────────────────────────
@@ -620,7 +649,7 @@ test "diff - summary mode shows per-type counts" {
         \\</rdf:RDF>
     ;
     // SS1 changed, SS2 removed, SS3 added → +1 -1 ~1
-    const r = try run_diff(std.testing.allocator, xml1, xml2, .{ .summary = true });
+    const r = try run_diff(std.testing.allocator, xml1, xml2, .{ .format = .summary });
     try std.testing.expect(r.had_diffs);
     try std.testing.expect(r.contains("+1"));
     try std.testing.expect(r.contains("-1"));
@@ -643,7 +672,7 @@ test "diff - summary mode emits no object lines" {
         \\  </cim:Substation>
         \\</rdf:RDF>
     ;
-    const r = try run_diff(std.testing.allocator, xml1, xml2, .{ .summary = true });
+    const r = try run_diff(std.testing.allocator, xml1, xml2, .{ .format = .summary });
     try std.testing.expect(!r.contains("~ _SS1"));
     try std.testing.expect(!r.contains("IdentifiedObject.name"));
     try std.testing.expect(!r.contains("@@ Substation @@"));
@@ -658,7 +687,7 @@ test "diff - summary mode identical models produce no output" {
         \\  </cim:Substation>
         \\</rdf:RDF>
     ;
-    const r = try run_diff(std.testing.allocator, xml, xml, .{ .summary = true });
+    const r = try run_diff(std.testing.allocator, xml, xml, .{ .format = .summary });
     try std.testing.expect(!r.had_diffs);
     try std.testing.expectEqual(@as(usize, 0), r.len);
 }
@@ -924,6 +953,40 @@ test "diff single - object only in model1 returns diff=true (removed)" {
     }
 }
 
+test "diff single - type change with same mrid is reported as removed+added" {
+    // Identical children, only the CIM type differs — must still be a diff,
+    // mirroring diff_models which matches within concrete types.
+    const xml1 =
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_SW1">
+        \\    <cim:IdentifiedObject.name>Bay switch</cim:IdentifiedObject.name>
+        \\  </cim:Breaker>
+        \\</rdf:RDF>
+    ;
+    const xml2 =
+        \\<rdf:RDF>
+        \\  <cim:Disconnector rdf:ID="_SW1">
+        \\    <cim:IdentifiedObject.name>Bay switch</cim:IdentifiedObject.name>
+        \\  </cim:Disconnector>
+        \\</rdf:RDF>
+    ;
+    const r = try run_diff_single(std.testing.allocator, xml1, xml2, "_SW1", .{});
+    switch (r.status) {
+        .diff => |had| try std.testing.expect(had),
+        else => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(r.contains("- _SW1"));
+    try std.testing.expect(r.contains("+ _SW1"));
+
+    const json = try run_diff_single(std.testing.allocator, xml1, xml2, "_SW1", .{ .format = .json });
+    try std.testing.expect(json.contains("{\"type\":\"Breaker\",\"mrid\":\"_SW1\",\"status\":\"removed\"}"));
+    try std.testing.expect(json.contains("{\"type\":\"Disconnector\",\"mrid\":\"_SW1\",\"status\":\"added\"}"));
+
+    const summary = try run_diff_single(std.testing.allocator, xml1, xml2, "_SW1", .{ .format = .summary });
+    try std.testing.expect(summary.contains("Breaker  +0 -1 ~0"));
+    try std.testing.expect(summary.contains("Disconnector  +1 -0 ~0"));
+}
+
 test "diff single - mRID not in either model returns not_found" {
     const xml = "<rdf:RDF></rdf:RDF>";
     const r = try run_diff_single(std.testing.allocator, xml, xml, "_MISSING", .{});
@@ -1167,7 +1230,7 @@ test "diff single - json mode changed object" {
         \\  </cim:Substation>
         \\</rdf:RDF>
     ;
-    const r = try run_diff_single(std.testing.allocator, xml1, xml2, "_SS1", .{ .json = true });
+    const r = try run_diff_single(std.testing.allocator, xml1, xml2, "_SS1", .{ .format = .json });
     try std.testing.expect(r.contains("\"status\":\"changed\""));
     try std.testing.expect(r.contains("\"mrid\":\"_SS1\""));
     try std.testing.expect(!r.contains("---"));
@@ -1182,7 +1245,7 @@ test "diff single - json mode added object" {
         \\  </cim:Substation>
         \\</rdf:RDF>
     ;
-    const r = try run_diff_single(std.testing.allocator, xml1, xml2, "_SS1", .{ .json = true });
+    const r = try run_diff_single(std.testing.allocator, xml1, xml2, "_SS1", .{ .format = .json });
     try std.testing.expect(r.contains("\"status\":\"added\""));
     try std.testing.expect(r.contains("\"mrid\":\"_SS1\""));
 }
@@ -1195,7 +1258,7 @@ test "diff single - json mode identical object produces no output" {
         \\  </cim:Substation>
         \\</rdf:RDF>
     ;
-    const r = try run_diff_single(std.testing.allocator, xml, xml, "_SS1", .{ .json = true });
+    const r = try run_diff_single(std.testing.allocator, xml, xml, "_SS1", .{ .format = .json });
     try std.testing.expectEqual(@as(usize, 0), r.len);
 }
 
@@ -1210,7 +1273,7 @@ test "diff single - summary mode added shows +1 count" {
         \\  </cim:Substation>
         \\</rdf:RDF>
     ;
-    const r = try run_diff_single(std.testing.allocator, xml1, xml2, "_SS1", .{ .summary = true });
+    const r = try run_diff_single(std.testing.allocator, xml1, xml2, "_SS1", .{ .format = .summary });
     try std.testing.expect(r.contains("+1"));
     try std.testing.expect(r.contains("Substation"));
     try std.testing.expect(!r.contains("+ _SS1"));
@@ -1231,7 +1294,7 @@ test "diff single - summary mode changed shows ~1 count" {
         \\  </cim:Substation>
         \\</rdf:RDF>
     ;
-    const r = try run_diff_single(std.testing.allocator, xml1, xml2, "_SS1", .{ .summary = true });
+    const r = try run_diff_single(std.testing.allocator, xml1, xml2, "_SS1", .{ .format = .summary });
     try std.testing.expect(r.contains("~1"));
     try std.testing.expect(!r.contains("~ _SS1"));
 }
@@ -1244,6 +1307,6 @@ test "diff single - summary mode identical produces no output" {
         \\  </cim:Substation>
         \\</rdf:RDF>
     ;
-    const r = try run_diff_single(std.testing.allocator, xml, xml, "_SS1", .{ .summary = true });
+    const r = try run_diff_single(std.testing.allocator, xml, xml, "_SS1", .{ .format = .summary });
     try std.testing.expectEqual(@as(usize, 0), r.len);
 }

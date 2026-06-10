@@ -49,13 +49,15 @@ At least one of <mrid> or --type must be provided.
 Exits 0 on success, 1 if no object is found.
 
 Prefix lookup:
-  <mrid> may be any prefix of a full mRID; the leading underscore is
-  optional, so "_be60" and "be60" are equivalent. When a prefix matches
-  multiple objects, cimd prints the candidates and exits without selecting
-  one — or, if the match list is large, prints a per-type breakdown
-  instead. With --json, an envelope `{"prefix","total","matches","types"}`
-  is emitted regardless of match count. Pass --type to narrow ambiguous
-  prefixes to a single type.
+  <mrid> may be any prefix of a full mRID. For the common rdf:ID form
+  the leading underscore is optional, so "_be60" and "be60" are equivalent.
+  For FullModel-style ids carried in rdf:about (e.g. "urn:uuid:484c..."),
+  pass the prefix literally — "urn", "urn:uuid:484c", etc. all work. When
+  a prefix matches multiple objects, cimd prints the candidates and exits
+  without selecting one — or, if the match list is large, prints a per-type
+  breakdown instead. With --json, an envelope
+  `{"prefix","total","matches","types"}` is emitted regardless of match
+  count. Pass --type to narrow ambiguous prefixes to a single type.
 
 JSON errors:
   With --json, the not-found / wrong-type paths emit a structured error
@@ -185,6 +187,13 @@ Compare two CGMES EQ profiles semantically. Objects are matched by mRID
 across both files; properties are compared field-by-field. XML attribute
 order and whitespace differences are ignored.
 
+By default an EQDIFF difference model (IEC 61970-552) is written to
+stdout (or --output): dm:forwardDifferences holds the statements to add
+going from <file1> to <file2>, dm:reverseDifferences the statements to
+remove. Output is deterministic — the same inputs always produce a
+byte-identical file. Use --patch, --json, or --summary for a
+report-style view instead.
+
 Exit codes:
   0  files are identical (no differences found)
   1  differences found
@@ -195,16 +204,19 @@ Arguments:
   <file2>    Second EQ profile (XML or ZIP)
 
 Options:
-  -b, --eqbd <file>      EQBD boundary profile (applied to both models)
+  -b, --eqbd <file>       EQBD boundary profile (applied to both models)
   -i, --mrid <id>         Diff a single object by mRID
   -t, --type <name>       Restrict diff to a specific CIM type, including subtypes
                           With --mrid: verify the object is of this type
+  -o, --output <file>     Write output to file instead of stdout
+  -p, --patch             Human-readable report modelled after `git diff`
   -s, --summary           Print only per-type counts (added/removed/changed)
   -j, --json              Output as NDJSON (one object per change)
+                          --patch, --summary, and --json are mutually exclusive.
 
 Examples:
-  cimd diff eq_v1.zip eq_v2.zip
-  cimd diff eq_v1.zip eq_v2.zip -i _abc123
+  cimd diff eq_v1.zip eq_v2.zip -o eqdiff.xml
+  cimd diff eq_v1.zip eq_v2.zip -p
   cimd diff eq_v1.zip eq_v2.zip -i _abc123 -t PowerTransformer
   cimd diff eq_v1.zip eq_v2.zip -t PowerTransformer
   cimd diff eq_v1.zip eq_v2.zip -j | jq .
@@ -229,7 +241,7 @@ Arguments:
   <file>                  EQ profile (XML or ZIP)
 
 Options:
-  -b, --eqbd <file>      EQBD boundary profile (XML or ZIP)
+  -b, --eqbd <file>       EQBD boundary profile (XML or ZIP)
   -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
   -o, --output <file>     Write output to file instead of stdout
 
