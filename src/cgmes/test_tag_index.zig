@@ -544,6 +544,24 @@ test "tag_index.find_tag_boundaries - reversed bracket order" {
     try std.testing.expectError(error.MalformedXML, tag_index.find_tag_boundaries(gpa, input));
 }
 
+test "tag_index.find_tag_boundaries - stray '>' in text content is tolerated" {
+    // '>' in XML character data is legal per the XML spec (only '<' and '&' must be escaped).
+    // CGMES tools occasionally emit raw '>' in property values; the scanner must not
+    // reject the file or produce a mis-paired boundary.
+    const gpa = std.testing.allocator;
+    const input = "<cim:Foo rdf:ID=\"_1\"><cim:Foo.name>a>b</cim:Foo.name></cim:Foo>";
+    var boundaries = try tag_index.find_tag_boundaries(gpa, input);
+    defer boundaries.deinit(gpa);
+
+    // Four tags: opening, property opening, property closing, object closing.
+    // The stray '>' inside "a>b" must not create a spurious boundary.
+    try std.testing.expectEqual(@as(usize, 4), boundaries.items.len);
+    for (boundaries.items) |b| {
+        try std.testing.expect(input[b.start] == '<');
+        try std.testing.expect(input[b.end] == '>');
+    }
+}
+
 test "tag_index.find_tag_boundaries - CGMES-style XML" {
     const gpa = std.testing.allocator;
 
@@ -659,6 +677,12 @@ test "tag_index.extract_tag_type - multi-line tag with newline after name" {
     const xml = "<rdf:RDF\n    xmlns:rdf=\"http://example/\">";
     const tag_type = try tag_index.extract_tag_type(xml, 0);
     try std.testing.expectEqualStrings("RDF", tag_type);
+}
+
+test "tag_index.extract_tag_type - attribute-less self-closing tag" {
+    const xml = "<cim:IdentifiedObject.name/>";
+    const tag_type = try tag_index.extract_tag_type(xml, 0);
+    try std.testing.expectEqualStrings("IdentifiedObject.name", tag_type);
 }
 
 test "tag_index.extract_tag_type - tab whitespace after name" {

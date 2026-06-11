@@ -1,11 +1,11 @@
-//! Semantic diff between two CIM models.
+//! Report renderers for the semantic diff between two CIM models.
 //!
-//! Objects are matched by mRID across both models. Properties and references
-//! are then compared field-by-field so that XML attribute order or whitespace
-//! differences are ignored.
-//!
-//! Text output is modelled after `git diff` (grouped by CIM type, +/- lines).
-//! JSON output is NDJSON: one object per change, suitable for piping to jq.
+//! Change detection (mRID matching, statement multiset comparison) lives in
+//! diff_core.zig; this module only renders its results in the report formats:
+//! patch (modelled after `git diff`: grouped by CIM type, +/- lines), NDJSON
+//! (one object per change, suitable for piping to jq), and summary (per-type
+//! counts). The CLI's default output, the IEC 61970-552 difference model,
+//! lives in eqdiff.zig and renders from the same engine.
 //!
 //! Exit-code contract (enforced by main.zig, not here):
 //!   0  identical
@@ -13,42 +13,30 @@
 //!   2  usage error
 
 const std = @import("std");
-const assert = std.debug.assert;
-const EQ = @import("cgmes/eq.zig").EQ;
 
+const EQ = @import("cgmes/eq.zig").EQ;
 const tag_index = @import("cgmes/tag_index.zig");
 const cim_types = @import("cgmes/cim_types.zig");
+const core = @import("diff_core.zig");
+
+pub const SingleDiffStatus = core.SingleDiffStatus;
 
 pub const DiffOptions = struct {
     /// When set, only objects of this CIM type are compared.
     type_filter: ?[]const u8 = null,
-    /// Emit NDJSON instead of human-readable text.
-    json: bool = false,
-    /// Print only per-type counts; skip per-property detail.
-    summary: bool = false,
-};
+    /// Report format. The CLI's default output is the EQDIFF difference model
+    /// (see eqdiff.zig); the report formats here are mutually exclusive by
+    /// construction, so no flag-combination validation is needed downstream.
+    format: Format = .patch,
 
-/// Result of a single-mRID diff. Returned to main.zig so it can emit errors
-/// via print.zig without diff.zig needing to call process.exit directly.
-pub const SingleDiffStatus = union(enum) {
-    /// mRID does not exist in either model.
-    not_found,
-    /// mRID exists but its type does not match the expected --type filter.
-    /// Carries the actual type name found in the model.
-    type_mismatch: []const u8,
-    /// Diff completed normally. True = had diffs, false = identical.
-    diff: bool,
-};
-
-pub const TypeStats = struct {
-    type_name: []const u8,
-    added: u32,
-    removed: u32,
-    changed: u32,
-
-    fn any(self: TypeStats) bool {
-        return self.added > 0 or self.removed > 0 or self.changed > 0;
-    }
+    pub const Format = enum {
+        /// Human-readable text modelled after `git diff`.
+        patch,
+        /// NDJSON: one object per change, suitable for piping to jq.
+        json,
+        /// Per-type counts only; no per-property detail.
+        summary,
+    };
 };
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -62,7 +50,7 @@ pub fn diff_models(
     path1: []const u8,
     path2: []const u8,
     options: DiffOptions,
-    writer: anytype,
+    writer: *std.Io.Writer,
 ) !bool {
     var had_diffs = false;
 
@@ -71,26 +59,19 @@ pub fn diff_models(
     var type_counts2 = try model2.getTypeCounts(gpa);
     defer type_counts2.deinit();
 
-    var type_set = std.StringHashMapUnmanaged(void){};
-    defer type_set.deinit(gpa);
+    const type_names = try core.type_name_union(gpa, &type_counts1, &type_counts2);
+    defer gpa.free(type_names);
 
-    var it1 = type_counts1.keyIterator();
-    while (it1.next()) |key| try type_set.put(gpa, key.*, {});
-    var it2 = type_counts2.keyIterator();
-    while (it2.next()) |key| try type_set.put(gpa, key.*, {});
-
-    if (!options.json and !options.summary) {
+    if (options.format == .patch) {
         try writer.print("--- {s}\n+++ {s}\n", .{ path1, path2 });
     }
 
-    var it = type_set.keyIterator();
-    while (it.next()) |type_name_ptr| {
-        const type_name = type_name_ptr.*;
+    for (type_names) |type_name| {
         if (!cim_types.matches_filter(type_name, options.type_filter)) continue;
         const stats = try diff_type(gpa, model1, model2, type_name, options, writer);
         if (stats.any()) {
             had_diffs = true;
-            if (options.summary) {
+            if (options.format == .summary) {
                 try writer.print("{s}  +{d} -{d} ~{d}\n", .{
                     type_name, stats.added, stats.removed, stats.changed,
                 });
@@ -101,77 +82,6 @@ pub fn diff_models(
     return had_diffs;
 }
 
-// ── Single-mRID diff ──────────────────────────────────────────────────────────
-
-/// Diff a single object identified by `mrid` across the two models.
-/// Bypasses the full type-union loop — O(1) lookups via id_to_index.
-///
-/// If `options.type_filter` is set the object's type is verified in whichever
-/// model(s) it is found; a mismatch returns `.type_mismatch` so the caller
-/// can emit a meaningful error.
-pub fn diff_single(
-    gpa: std.mem.Allocator,
-    model1: *EQ,
-    model2: *EQ,
-    mrid: []const u8,
-    path1: []const u8,
-    path2: []const u8,
-    options: DiffOptions,
-    writer: anytype,
-) !SingleDiffStatus {
-    assert(options.summary == false or options.json == false);
-
-    const v1 = model1.getObjectById(mrid);
-    const v2 = model2.getObjectById(mrid);
-
-    if (v1 == null and v2 == null) return .not_found;
-
-    // Type verification: check whichever model has the object.
-    if (v1) |v| if (!cim_types.matches_filter(v.type_name, options.type_filter)) return .{ .type_mismatch = v.type_name };
-    if (v2) |v| if (!cim_types.matches_filter(v.type_name, options.type_filter)) return .{ .type_mismatch = v.type_name };
-
-    const type_name = if (v1) |v| v.type_name else v2.?.type_name;
-
-    if (!options.json and !options.summary) {
-        try writer.print("--- {s}\n+++ {s}\n", .{ path1, path2 });
-    }
-
-    // Object only in model2 — added.
-    if (v1 == null) {
-        if (options.summary) {
-            try writer.print("{s}  +1 -0 ~0\n", .{type_name});
-        } else if (options.json) {
-            try writer.print("{{\"type\":\"{s}\",\"mrid\":\"{s}\",\"status\":\"added\"}}\n", .{ type_name, mrid });
-        } else {
-            const name = (try v2.?.getProperty("IdentifiedObject.name")) orelse "";
-            try writer.print("+ {s}  \"{s}\"\n", .{ mrid, name });
-        }
-        return .{ .diff = true };
-    }
-
-    // Object only in model1 — removed.
-    if (v2 == null) {
-        if (options.summary) {
-            try writer.print("{s}  +0 -1 ~0\n", .{type_name});
-        } else if (options.json) {
-            try writer.print("{{\"type\":\"{s}\",\"mrid\":\"{s}\",\"status\":\"removed\"}}\n", .{ type_name, mrid });
-        } else {
-            const name = (try v1.?.getProperty("IdentifiedObject.name")) orelse "";
-            try writer.print("- {s}  \"{s}\"\n", .{ mrid, name });
-        }
-        return .{ .diff = true };
-    }
-
-    // Object in both models — compare.
-    const changed = try diff_object(gpa, type_name, mrid, v1.?, v2.?, options, writer);
-    if (changed and options.summary) {
-        try writer.print("{s}  +0 -0 ~1\n", .{type_name});
-    }
-    return .{ .diff = changed };
-}
-
-// ── Per-type comparison ───────────────────────────────────────────────────────
-
 /// In text mode, buffer all object lines so the @@ TypeName @@ header can be
 /// prepended after we know whether this type has any diffs. In JSON/summary
 /// mode write directly to the real writer — no header is needed.
@@ -181,15 +91,16 @@ fn diff_type(
     model2: *EQ,
     type_name: []const u8,
     options: DiffOptions,
-    writer: anytype,
-) !TypeStats {
-    if (options.json or options.summary) {
-        return diff_type_core(gpa, model1, model2, type_name, options, writer);
+    writer: *std.Io.Writer,
+) !core.TypeStats {
+    if (options.format != .patch) {
+        const renderer = Renderer{ .format = options.format, .writer = writer };
+        return core.match_type(gpa, model1, model2, type_name, &renderer);
     }
     var screen: std.Io.Writer.Allocating = .init(gpa);
     defer screen.deinit();
-    const screen_writer = &screen.writer;
-    const stats = try diff_type_core(gpa, model1, model2, type_name, options, screen_writer);
+    const renderer = Renderer{ .format = .patch, .writer = &screen.writer };
+    const stats = try core.match_type(gpa, model1, model2, type_name, &renderer);
     if (stats.any()) {
         try writer.print("\n@@ {s} @@\n", .{type_name});
         try writer.writeAll(screen.written());
@@ -197,188 +108,258 @@ fn diff_type(
     return stats;
 }
 
-fn diff_type_core(
+/// core.match_type emitter for the report formats.
+const Renderer = struct {
+    format: DiffOptions.Format,
+    writer: *std.Io.Writer,
+
+    pub fn added(self: *const Renderer, view: tag_index.CimObjectView) !void {
+        switch (self.format) {
+            .summary => {},
+            .json => try emit_object_status_json(self.writer, view.type_name, view.id, "added"),
+            .patch => {
+                const name = (try view.getProperty("IdentifiedObject.name")) orelse "";
+                try self.writer.print("+ {s}  \"{s}\"\n", .{ view.id, name });
+            },
+        }
+    }
+
+    pub fn removed(self: *const Renderer, view: tag_index.CimObjectView) !void {
+        switch (self.format) {
+            .summary => {},
+            .json => try emit_object_status_json(self.writer, view.type_name, view.id, "removed"),
+            .patch => {
+                const name = (try view.getProperty("IdentifiedObject.name")) orelse "";
+                try self.writer.print("- {s}  \"{s}\"\n", .{ view.id, name });
+            },
+        }
+    }
+
+    pub fn changed(
+        self: *const Renderer,
+        view1: tag_index.CimObjectView,
+        view2: tag_index.CimObjectView,
+        changes: *const core.ChangeSet,
+    ) !void {
+        try render_changed(self.writer, self.format, view1, view2, changes);
+    }
+};
+
+// ── Single-mRID diff ──────────────────────────────────────────────────────────
+
+/// Diff a single object identified by `mrid` across the two models, using
+/// the same classification (core.match_single) and rendering as diff_models.
+pub fn diff_single(
     gpa: std.mem.Allocator,
     model1: *EQ,
     model2: *EQ,
-    type_name: []const u8,
+    mrid: []const u8,
+    path1: []const u8,
+    path2: []const u8,
     options: DiffOptions,
-    writer: anytype,
-) !TypeStats {
-    var stats = TypeStats{ .type_name = type_name, .added = 0, .removed = 0, .changed = 0 };
-
-    const objects1 = model1.get_objects_by_type(type_name);
-    const objects2 = model2.get_objects_by_type(type_name);
-
-    var map = std.StringHashMap(u32).init(gpa);
-    defer map.deinit();
-    for (objects2, 0..) |obj2, idx| try map.put(obj2.id, @intCast(idx));
-
-    var matched = try gpa.alloc(bool, objects2.len);
-    defer gpa.free(matched);
-    @memset(matched, false);
-    assert(matched.len == objects2.len);
-
-    for (objects1) |obj1| {
-        if (map.get(obj1.id)) |idx| {
-            matched[idx] = true;
-            const view1 = model1.view(obj1);
-            const view2 = model2.view(objects2[idx]);
-            if (try diff_object(gpa, type_name, obj1.id, view1, view2, options, writer)) {
-                stats.changed += 1;
-            }
-        } else {
-            stats.removed += 1;
-            if (!options.summary) {
-                const name = (try model1.view(obj1).getProperty("IdentifiedObject.name")) orelse "";
-                if (options.json) {
-                    try writer.print("{{\"type\":\"{s}\",\"mrid\":\"{s}\",\"status\":\"removed\"}}\n", .{ type_name, obj1.id });
-                } else {
-                    try writer.print("- {s}  \"{s}\"\n", .{ obj1.id, name });
-                }
-            }
-        }
+    writer: *std.Io.Writer,
+) !SingleDiffStatus {
+    const match = core.match_single(model1, model2, mrid, options.type_filter);
+    switch (match) {
+        .not_found => return .not_found,
+        .type_mismatch => |actual| return .{ .type_mismatch = actual },
+        else => {},
     }
 
-    for (objects2, matched) |obj2, was_matched| {
-        if (!was_matched) {
-            stats.added += 1;
-            if (!options.summary) {
-                const name = (try model2.view(obj2).getProperty("IdentifiedObject.name")) orelse "";
-                if (options.json) {
-                    try writer.print("{{\"type\":\"{s}\",\"mrid\":\"{s}\",\"status\":\"added\"}}\n", .{ type_name, obj2.id });
-                } else {
-                    try writer.print("+ {s}  \"{s}\"\n", .{ obj2.id, name });
-                }
-            }
-        }
+    if (options.format == .patch) {
+        try writer.print("--- {s}\n+++ {s}\n", .{ path1, path2 });
     }
 
-    return stats;
+    switch (match) {
+        .not_found, .type_mismatch => unreachable,
+        .added => |view| {
+            switch (options.format) {
+                .summary => try writer.print("{s}  +1 -0 ~0\n", .{view.type_name}),
+                .json => try emit_object_status_json(writer, view.type_name, view.id, "added"),
+                .patch => {
+                    const name = (try view.getProperty("IdentifiedObject.name")) orelse "";
+                    try writer.print("+ {s}  \"{s}\"\n", .{ view.id, name });
+                },
+            }
+            return .{ .diff = true };
+        },
+        .removed => |view| {
+            switch (options.format) {
+                .summary => try writer.print("{s}  +0 -1 ~0\n", .{view.type_name}),
+                .json => try emit_object_status_json(writer, view.type_name, view.id, "removed"),
+                .patch => {
+                    const name = (try view.getProperty("IdentifiedObject.name")) orelse "";
+                    try writer.print("- {s}  \"{s}\"\n", .{ view.id, name });
+                },
+            }
+            return .{ .diff = true };
+        },
+        .replaced => |r| {
+            switch (options.format) {
+                .summary => {
+                    try writer.print("{s}  +0 -1 ~0\n", .{r.old.type_name});
+                    try writer.print("{s}  +1 -0 ~0\n", .{r.new.type_name});
+                },
+                .json => {
+                    try emit_object_status_json(writer, r.old.type_name, r.old.id, "removed");
+                    try emit_object_status_json(writer, r.new.type_name, r.new.id, "added");
+                },
+                .patch => {
+                    const name1 = (try r.old.getProperty("IdentifiedObject.name")) orelse "";
+                    const name2 = (try r.new.getProperty("IdentifiedObject.name")) orelse "";
+                    try writer.print("- {s}  \"{s}\"\n", .{ r.old.id, name1 });
+                    try writer.print("+ {s}  \"{s}\"\n", .{ r.new.id, name2 });
+                },
+            }
+            return .{ .diff = true };
+        },
+        .matched => |m| {
+            var changes = (try core.object_changes(gpa, m.old, m.new)) orelse
+                return .{ .diff = false };
+            defer changes.deinit(gpa);
+            try render_changed(writer, options.format, m.old, m.new, &changes);
+            if (options.format == .summary) {
+                try writer.print("{s}  +0 -0 ~1\n", .{m.old.type_name});
+            }
+            return .{ .diff = true };
+        },
+    }
 }
 
-// ── Per-object property comparison ───────────────────────────────────────────
+// ── Changed-object rendering ──────────────────────────────────────────────────
 
-/// Diff properties and references of two views of the same mRID.
-/// Emits output only when changes are found. Returns true if any field differed.
-fn diff_object(
-    gpa: std.mem.Allocator,
-    type_name: []const u8,
-    mrid: []const u8,
+/// One field-level change, paired from the ChangeSet's two sides: both values
+/// present = changed, from-only = removed, to-only = added.
+const FieldChange = struct {
+    property: []const u8,
+    from: ?[]const u8,
+    to: ?[]const u8,
+};
+
+/// Pair the (name-sorted) reverse and forward statements of a ChangeSet into
+/// from/to field changes. Repeated names pair up in document order; an
+/// unbalanced repetition yields a from-only or to-only change.
+const FieldChangeIterator = struct {
+    reverse: []const core.Statement,
+    forward: []const core.Statement,
+    i: usize = 0,
+    j: usize = 0,
+
+    fn next(self: *FieldChangeIterator) ?FieldChange {
+        const old: ?core.Statement = if (self.i < self.reverse.len) self.reverse[self.i] else null;
+        const new: ?core.Statement = if (self.j < self.forward.len) self.forward[self.j] else null;
+
+        if (old != null and new != null) {
+            switch (std.mem.order(u8, old.?.name, new.?.name)) {
+                .eq => {
+                    // A literal/reference kind flip is a removal plus an
+                    // addition, not a value change — pairing it would render
+                    // a misleading from == to entry.
+                    if (old.?.kind != new.?.kind) {
+                        self.i += 1;
+                        return .{ .property = old.?.name, .from = old.?.value, .to = null };
+                    }
+                    self.i += 1;
+                    self.j += 1;
+                    return .{ .property = old.?.name, .from = old.?.value, .to = new.?.value };
+                },
+                .lt => {
+                    self.i += 1;
+                    return .{ .property = old.?.name, .from = old.?.value, .to = null };
+                },
+                .gt => {
+                    self.j += 1;
+                    return .{ .property = new.?.name, .from = null, .to = new.?.value };
+                },
+            }
+        }
+        if (old) |statement| {
+            self.i += 1;
+            return .{ .property = statement.name, .from = statement.value, .to = null };
+        }
+        if (new) |statement| {
+            self.j += 1;
+            return .{ .property = statement.name, .from = null, .to = statement.value };
+        }
+        return null;
+    }
+};
+
+/// Render an object present in both models whose statements differ.
+fn render_changed(
+    writer: *std.Io.Writer,
+    format: DiffOptions.Format,
     view1: tag_index.CimObjectView,
     view2: tag_index.CimObjectView,
-    options: DiffOptions,
-    writer: anytype,
-) !bool {
-    var props1 = try view1.getAllProperties(gpa);
-    defer props1.deinit();
-    var props2 = try view2.getAllProperties(gpa);
-    defer props2.deinit();
-    var refs1 = try view1.getAllReferences(gpa);
-    defer refs1.deinit();
-    var refs2 = try view2.getAllReferences(gpa);
-    defer refs2.deinit();
-
-    if (!compare_maps(props1, props2) and !compare_maps(refs1, refs2)) return false;
-
-    if (!options.summary) {
-        if (options.json) {
-            try writer.print("{{\"type\":\"{s}\",\"mrid\":\"{s}\",\"status\":\"changed\",\"changes\":[", .{ type_name, mrid });
-            var first = true;
-            first = try emit_field_diff_json(props1, props2, writer, first);
-            _ = try emit_field_diff_json(refs1, refs2, writer, first);
-            try writer.print("]}}\n", .{});
-        } else {
-            const name = props1.get("IdentifiedObject.name") orelse props2.get("IdentifiedObject.name") orelse "";
-            try writer.print("~ {s}  \"{s}\"\n", .{ mrid, name });
-            try emit_field_diff_text(props1, props2, writer);
-            try emit_field_diff_text(refs1, refs2, writer);
-        }
-    }
-
-    return true;
-}
-
-// ── Map comparison helpers ────────────────────────────────────────────────────
-
-/// Returns true if any key was added, removed, or changed between map1 and map2.
-fn compare_maps(
-    map1: std.StringHashMap([]const u8),
-    map2: std.StringHashMap([]const u8),
-) bool {
-    var it = map1.iterator();
-    while (it.next()) |entry| {
-        if (map2.get(entry.key_ptr.*)) |val2| {
-            if (!std.mem.eql(u8, entry.value_ptr.*, val2)) return true;
-        } else {
-            return true;
-        }
-    }
-    var it2 = map2.iterator();
-    while (it2.next()) |entry| {
-        if (!map1.contains(entry.key_ptr.*)) return true;
-    }
-    return false;
-}
-
-fn emit_field_diff_text(
-    map1: std.StringHashMap([]const u8),
-    map2: std.StringHashMap([]const u8),
-    writer: anytype,
+    changes: *const core.ChangeSet,
 ) !void {
-    var it = map1.iterator();
-    while (it.next()) |entry| {
-        const key = entry.key_ptr.*;
-        const val1 = entry.value_ptr.*;
-        if (map2.get(key)) |val2| {
-            if (!std.mem.eql(u8, val1, val2)) {
-                try writer.print("  - {s}: \"{s}\"\n", .{ key, val1 });
-                try writer.print("  + {s}: \"{s}\"\n", .{ key, val2 });
-            }
-        } else {
-            try writer.print("  - {s}: \"{s}\"\n", .{ key, val1 });
-        }
-    }
-    var it2 = map2.iterator();
-    while (it2.next()) |entry| {
-        if (!map1.contains(entry.key_ptr.*)) {
-            try writer.print("  + {s}: \"{s}\"\n", .{ entry.key_ptr.*, entry.value_ptr.* });
-        }
-    }
-}
-
-/// Emits changed fields as JSON objects. Returns updated `first` flag for
-/// correct comma placement in the parent "changes" array.
-fn emit_field_diff_json(
-    map1: std.StringHashMap([]const u8),
-    map2: std.StringHashMap([]const u8),
-    writer: anytype,
-    first_in: bool,
-) !bool {
-    var first = first_in;
-    var it = map1.iterator();
-    while (it.next()) |entry| {
-        const key = entry.key_ptr.*;
-        const val1 = entry.value_ptr.*;
-        if (map2.get(key)) |val2| {
-            if (!std.mem.eql(u8, val1, val2)) {
+    switch (format) {
+        .summary => {},
+        .json => {
+            try writer.writeByte('{');
+            try emit_json_field(writer, "type", view1.type_name);
+            try writer.writeByte(',');
+            try emit_json_field(writer, "mrid", view1.id);
+            try writer.writeAll(",\"status\":\"changed\",\"changes\":[");
+            var it = FieldChangeIterator{ .reverse = changes.reverse.items, .forward = changes.forward.items };
+            var first = true;
+            while (it.next()) |change| {
                 if (!first) try writer.writeByte(',');
-                try writer.print("{{\"property\":\"{s}\",\"from\":\"{s}\",\"to\":\"{s}\"}}", .{ key, val1, val2 });
+                try emit_property_change_json(writer, change.property, change.from, change.to);
                 first = false;
             }
-        } else {
-            if (!first) try writer.writeByte(',');
-            try writer.print("{{\"property\":\"{s}\",\"from\":\"{s}\",\"to\":null}}", .{ key, val1 });
-            first = false;
-        }
+            try writer.writeAll("]}\n");
+        },
+        .patch => {
+            const name = (try view1.getProperty("IdentifiedObject.name")) orelse
+                (try view2.getProperty("IdentifiedObject.name")) orelse "";
+            try writer.print("~ {s}  \"{s}\"\n", .{ view1.id, name });
+            var it = FieldChangeIterator{ .reverse = changes.reverse.items, .forward = changes.forward.items };
+            while (it.next()) |change| {
+                if (change.from) |value| try writer.print("  - {s}: \"{s}\"\n", .{ change.property, value });
+                if (change.to) |value| try writer.print("  + {s}: \"{s}\"\n", .{ change.property, value });
+            }
+        },
     }
-    var it2 = map2.iterator();
-    while (it2.next()) |entry| {
-        if (!map1.contains(entry.key_ptr.*)) {
-            if (!first) try writer.writeByte(',');
-            try writer.print("{{\"property\":\"{s}\",\"from\":null,\"to\":\"{s}\"}}", .{ entry.key_ptr.*, entry.value_ptr.* });
-            first = false;
-        }
-    }
-    return first;
+}
+
+// ── JSON emission helpers ─────────────────────────────────────────────────────
+
+/// Write `"key":"value"` with the value JSON-escaped. XML text content may
+/// contain quotes, backslashes, or control bytes; emitting it raw would
+/// corrupt the NDJSON stream. Keys are comptime literals and need no escaping.
+fn emit_json_field(writer: *std.Io.Writer, comptime key: []const u8, value: []const u8) !void {
+    try writer.writeAll("\"" ++ key ++ "\":");
+    try std.json.Stringify.value(value, .{}, writer);
+}
+
+/// One NDJSON line for an added/removed object.
+fn emit_object_status_json(
+    writer: *std.Io.Writer,
+    type_name: []const u8,
+    mrid: []const u8,
+    comptime status: []const u8,
+) !void {
+    try writer.writeByte('{');
+    try emit_json_field(writer, "type", type_name);
+    try writer.writeByte(',');
+    try emit_json_field(writer, "mrid", mrid);
+    try writer.writeAll(",\"status\":\"" ++ status ++ "\"}\n");
+}
+
+/// One element of the "changes" array: {"property":..,"from":..,"to":..}.
+/// All payloads are JSON-escaped; absent sides emit null.
+fn emit_property_change_json(
+    writer: *std.Io.Writer,
+    property: []const u8,
+    from: ?[]const u8,
+    to: ?[]const u8,
+) !void {
+    try writer.writeByte('{');
+    try emit_json_field(writer, "property", property);
+    try writer.writeAll(",\"from\":");
+    if (from) |v| try std.json.Stringify.value(v, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"to\":");
+    if (to) |v| try std.json.Stringify.value(v, .{}, writer) else try writer.writeAll("null");
+    try writer.writeByte('}');
 }

@@ -145,7 +145,8 @@ fn extract_entry_to_memory(
     options: std.zip.ExtractOptions,
 ) !ExtractedFile {
     const filename = try read_entry_filename(entry, gpa, stream, options);
-    errdefer gpa.free(filename);
+    // No errdefer here: extract_entry_with_filename takes ownership of filename
+    // and frees it on any error path via its own errdefer.
     return extract_entry_with_filename(entry, gpa, stream, filename);
 }
 
@@ -276,23 +277,30 @@ pub fn extract_first_file_to_memory(
 
     while (try iter.next()) |entry| {
         const filename = try read_entry_filename(entry, gpa, stream, options.extract);
-        errdefer gpa.free(filename);
+        // filename_owned tracks whether this scope still owns the filename so that
+        // errdefer only fires for early-return errors (e.g. FileTooLarge), not
+        // after ownership is transferred to extract_entry_with_filename.
+        var filename_owned = true;
+        errdefer if (filename_owned) gpa.free(filename);
 
         if (filename[filename.len - 1] == '/') {
             gpa.free(filename);
+            filename_owned = false;
             continue;
         }
 
         const ext = std.fs.path.extension(filename);
         if (!std.ascii.eqlIgnoreCase(ext, ".xml")) {
             gpa.free(filename);
+            filename_owned = false;
             continue;
         }
 
         if (entry.uncompressed_size > options.max_uncompressed_bytes) {
-            return error.FileTooLarge;
+            return error.FileTooLarge; // errdefer fires here (filename_owned = true)
         }
 
+        filename_owned = false; // ownership transfers to extract_entry_with_filename
         return try extract_entry_with_filename(entry, gpa, stream, filename);
     }
 

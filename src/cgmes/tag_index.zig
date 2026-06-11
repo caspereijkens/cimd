@@ -216,6 +216,8 @@ pub const TagBoundary = struct {
 /// Uses two SIMD passes (one per delimiter) then zips the results, skipping
 /// `<` and `>` that appear inside XML comments (`<!-- ... -->`). The comment
 /// itself is emitted as a single boundary spanning the whole section.
+/// Stray '>' characters in text content (legal per the XML spec — only '<'
+/// and '&' must be escaped in character data) are skipped silently.
 /// Returns ArrayList of TagBoundary in document order.
 pub fn find_tag_boundaries(
     gpa: std.mem.Allocator,
@@ -253,9 +255,11 @@ pub fn find_tag_boundaries(
             xml[lt + 1] == '!' and xml[lt + 2] == '-' and xml[lt + 3] == '-';
 
         if (!is_comment) {
+            // Skip any stray '>' positions that appear in text content before
+            // this tag's '<'. Such '>' are legal XML character data.
+            while (gt_idx < gts.len and gts[gt_idx] < lt) : (gt_idx += 1) {}
             if (gt_idx >= gts.len) return error.MalformedXML;
             const gt = gts[gt_idx];
-            if (gt <= lt) return error.MalformedXML;
             result.appendAssumeCapacity(.{ .start = lt, .end = gt });
             lt_idx += 1;
             gt_idx += 1;
@@ -279,7 +283,7 @@ pub fn find_tag_boundaries(
         while (lt_idx < lts.len and lts[lt_idx] < close_gt) : (lt_idx += 1) {}
     }
 
-    if (gt_idx < gts.len) return error.MalformedXML;
+    // Any remaining '>' entries are stray (text content after the last tag) — ignore them.
 
     return result;
 }
@@ -287,11 +291,12 @@ pub fn find_tag_boundaries(
 /// Extract tag type from XML tag, stripping namespace
 /// Example: "<cim:Substation rdf:ID="_SS1">" → "Substation"
 /// Tag-name terminator set includes all XML whitespace (space, tab, CR, LF)
-/// plus '>', so multi-line opening tags like `<rdf:RDF\n  xmlns=...>` are
-/// handled correctly. Scan stays bounded to a single tag at the call sites.
+/// plus '>' and '/', so multi-line opening tags like `<rdf:RDF\n  xmlns=...>`
+/// and attribute-less self-closing tags like `<cim:X/>` are handled
+/// correctly. Scan stays bounded to a single tag at the call sites.
 pub fn extract_tag_type(slice: []const u8, start_idx: u32) error{MalformedTag}![]const u8 {
     const colon_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, ':') orelse return error.MalformedTag;
-    const end_idx = std.mem.indexOfAnyPos(u8, slice, colon_idx, " \t\r\n>") orelse return error.MalformedTag;
+    const end_idx = std.mem.indexOfAnyPos(u8, slice, colon_idx, " \t\r\n>/") orelse return error.MalformedTag;
     return slice[colon_idx + 1 .. end_idx];
 }
 
@@ -575,6 +580,17 @@ pub const CimObjectView = struct {
     closing_tag_idx: u32,
     id: []const u8,
     type_name: []const u8,
+
+    /// The object's raw XML slice, from its opening '<' to its closing '>'
+    /// (inclusive). Byte-equal slices are semantically equal objects, which
+    /// diff uses as a fast path, and eqdiff emission copies child elements
+    /// verbatim out of this region.
+    pub fn raw_xml(self: CimObjectView) []const u8 {
+        const start = self.boundaries[self.object_tag_idx].start;
+        const end = self.boundaries[self.closing_tag_idx].end;
+        assert(end > start);
+        return self.xml[start .. end + 1];
+    }
 
     /// Get a text property value by name.
     pub fn getProperty(self: CimObjectView, property_name: []const u8) error{MalformedTag}!?[]const u8 {

@@ -225,6 +225,13 @@ const help_diff =
     \\across both files; properties are compared field-by-field. XML attribute
     \\order and whitespace differences are ignored.
     \\
+    \\By default an EQDIFF difference model (IEC 61970-552) is written to
+    \\stdout (or --output): dm:forwardDifferences holds the statements to add
+    \\going from <file1> to <file2>, dm:reverseDifferences the statements to
+    \\remove. Output is deterministic — the same inputs always produce a
+    \\byte-identical file. Use --patch, --json, or --summary for a
+    \\report-style view instead.
+    \\
     \\Exit codes:
     \\  0  files are identical (no differences found)
     \\  1  differences found
@@ -235,16 +242,19 @@ const help_diff =
     \\  <file2>    Second EQ profile (XML or ZIP)
     \\
     \\Options:
-    \\  -b, --eqbd <file>      EQBD boundary profile (applied to both models)
+    \\  -b, --eqbd <file>       EQBD boundary profile (applied to both models)
     \\  -i, --mrid <id>         Diff a single object by mRID
     \\  -t, --type <name>       Restrict diff to a specific CIM type, including subtypes
     \\                          With --mrid: verify the object is of this type
+    \\  -o, --output <file>     Write output to file instead of stdout
+    \\  -p, --patch             Human-readable report modelled after `git diff`
     \\  -s, --summary           Print only per-type counts (added/removed/changed)
     \\  -j, --json              Output as NDJSON (one object per change)
+    \\                          --patch, --summary, and --json are mutually exclusive.
     \\
     \\Examples:
-    \\  cimd diff eq_v1.zip eq_v2.zip
-    \\  cimd diff eq_v1.zip eq_v2.zip -i _abc123
+    \\  cimd diff eq_v1.zip eq_v2.zip -o eqdiff.xml
+    \\  cimd diff eq_v1.zip eq_v2.zip -p
     \\  cimd diff eq_v1.zip eq_v2.zip -i _abc123 -t PowerTransformer
     \\  cimd diff eq_v1.zip eq_v2.zip -t PowerTransformer
     \\  cimd diff eq_v1.zip eq_v2.zip -j | jq .
@@ -380,10 +390,21 @@ pub const Command = union(enum) {
         /// Restrict comparison to this CIM type.
         /// With mrid: verifies the object is of this type.
         type_filter: ?[]const u8,
-        /// Print only per-type counts, no per-property detail.
-        summary: bool,
-        /// Output as NDJSON instead of human-readable text.
-        json: bool,
+        /// Write output to this file instead of stdout.
+        output_path: ?[]const u8,
+        /// Output format; flags are validated to be mutually exclusive.
+        format: DiffFormat,
+    };
+
+    pub const DiffFormat = enum {
+        /// IEC 61970-552 difference model XML (the default).
+        eqdiff,
+        /// Human-readable report modelled after `git diff` (--patch).
+        patch,
+        /// NDJSON, one object per change (--json).
+        json,
+        /// Per-type counts only (--summary).
+        summary,
     };
 
     pub const Topology = struct {
@@ -689,6 +710,8 @@ fn parse_diff(io: std.Io, args: *std.process.Args.Iterator) !Command {
     var eqbd_path: ?[]const u8 = null;
     var mrid: ?[]const u8 = null;
     var type_filter: ?[]const u8 = null;
+    var output_path: ?[]const u8 = null;
+    var patch = false;
     var summary = false;
     var json = false;
 
@@ -705,6 +728,11 @@ fn parse_diff(io: std.Io, args: *std.process.Args.Iterator) !Command {
         } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--type")) {
             type_filter = args.next() orelse
                 print.stderr(io, command_name ++ ": --type requires a CIM type name", .{});
+        } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
+            output_path = args.next() orelse
+                print.stderr(io, command_name ++ ": --output requires a file path", .{});
+        } else if (std.mem.eql(u8, arg, "-p") or std.mem.eql(u8, arg, "--patch")) {
+            patch = true;
         } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--summary")) {
             summary = true;
         } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
@@ -727,14 +755,21 @@ fn parse_diff(io: std.Io, args: *std.process.Args.Iterator) !Command {
     if (file_path1 == null) print.stderr(io, command_name ++ ": <file1> is required", .{});
     if (file_path2 == null) print.stderr(io, command_name ++ ": <file2> is required", .{});
 
+    // The format flags select one output format; combinations are ambiguous.
+    const format_flags = @as(u8, @intFromBool(patch)) + @as(u8, @intFromBool(summary)) + @as(u8, @intFromBool(json));
+    if (format_flags > 1) {
+        print.stderr(io, command_name ++ ": --patch, --summary, and --json are mutually exclusive", .{});
+    }
+    const format: Command.DiffFormat = if (patch) .patch else if (summary) .summary else if (json) .json else .eqdiff;
+
     return .{ .diff = .{
         .file_path1 = file_path1.?,
         .file_path2 = file_path2.?,
         .eqbd_path = eqbd_path,
         .mrid = mrid,
         .type_filter = type_filter,
-        .summary = summary,
-        .json = json,
+        .output_path = output_path,
+        .format = format,
     } };
 }
 
