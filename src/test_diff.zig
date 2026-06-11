@@ -828,6 +828,103 @@ test "diff - reference change detected alongside unchanged properties" {
     try std.testing.expect(r.contains("VoltageLevel.Substation"));
 }
 
+test "diff - property flipped to a reference with the same value is detected" {
+    // <cim:X>#_A</cim:X> vs <cim:X rdf:resource="#_A"/>: same name and
+    // lexical value, different statement kind. The CIM schema fixes each
+    // property's kind, so the flip is a removal plus an addition — it must
+    // not silently match.
+    const xml1 =
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:ID="_SS1">
+        \\    <cim:Substation.Region>#_R1</cim:Substation.Region>
+        \\  </cim:Substation>
+        \\</rdf:RDF>
+    ;
+    const xml2 =
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:ID="_SS1">
+        \\    <cim:Substation.Region rdf:resource="#_R1"/>
+        \\  </cim:Substation>
+        \\</rdf:RDF>
+    ;
+    const r = try run_diff(std.testing.allocator, xml1, xml2, .{});
+    try std.testing.expect(r.had_diffs);
+    try std.testing.expect(r.contains("  - Substation.Region: \"#_R1\""));
+    try std.testing.expect(r.contains("  + Substation.Region: \"#_R1\""));
+
+    const json = try run_diff(std.testing.allocator, xml1, xml2, .{ .format = .json });
+    try std.testing.expect(json.had_diffs);
+    try std.testing.expect(json.contains("\"property\":\"Substation.Region\",\"from\":\"#_R1\",\"to\":null"));
+    try std.testing.expect(json.contains("\"property\":\"Substation.Region\",\"from\":null,\"to\":\"#_R1\""));
+}
+
+test "diff - empty self-closing literal equals explicit empty literal" {
+    // Without rdf:resource, <cim:X/> is just XML empty-element syntax for an
+    // empty literal — the kind follows the attribute, not the syntax, so the
+    // two spellings must not produce a false difference.
+    const xml1 =
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:ID="_SS1">
+        \\    <cim:IdentifiedObject.name/>
+        \\  </cim:Substation>
+        \\</rdf:RDF>
+    ;
+    const xml2 =
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:ID="_SS1">
+        \\    <cim:IdentifiedObject.name></cim:IdentifiedObject.name>
+        \\  </cim:Substation>
+        \\</rdf:RDF>
+    ;
+    const r = try run_diff(std.testing.allocator, xml1, xml2, .{});
+    try std.testing.expect(!r.had_diffs);
+
+    // An actual rdf:resource — even an empty one — is still a reference,
+    // so against the empty literal the kinds differ.
+    const xml3 =
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:ID="_SS1">
+        \\    <cim:IdentifiedObject.name rdf:resource=""/>
+        \\  </cim:Substation>
+        \\</rdf:RDF>
+    ;
+    const r2 = try run_diff(std.testing.allocator, xml2, xml3, .{});
+    try std.testing.expect(r2.had_diffs);
+}
+
+test "diff - expanded reference equals self-closing reference" {
+    // <cim:X rdf:resource="#_A"></cim:X> is the expanded serialization of
+    // <cim:X rdf:resource="#_A"/>: kind and value follow the attribute in
+    // both element forms.
+    const xml1 =
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:ID="_SS1">
+        \\    <cim:Substation.Region rdf:resource="#_R1"></cim:Substation.Region>
+        \\  </cim:Substation>
+        \\</rdf:RDF>
+    ;
+    const xml2 =
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:ID="_SS1">
+        \\    <cim:Substation.Region rdf:resource="#_R1"/>
+        \\  </cim:Substation>
+        \\</rdf:RDF>
+    ;
+    const r = try run_diff(std.testing.allocator, xml1, xml2, .{});
+    try std.testing.expect(!r.had_diffs);
+
+    // Against an empty literal the expanded reference is still a reference.
+    const xml3 =
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:ID="_SS1">
+        \\    <cim:Substation.Region></cim:Substation.Region>
+        \\  </cim:Substation>
+        \\</rdf:RDF>
+    ;
+    const r2 = try run_diff(std.testing.allocator, xml1, xml3, .{});
+    try std.testing.expect(r2.had_diffs);
+}
+
 // ── Single-mRID diff helper ───────────────────────────────────────────────────
 
 const SingleResult = struct {

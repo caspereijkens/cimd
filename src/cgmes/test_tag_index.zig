@@ -679,6 +679,12 @@ test "tag_index.extract_tag_type - multi-line tag with newline after name" {
     try std.testing.expectEqualStrings("RDF", tag_type);
 }
 
+test "tag_index.extract_tag_type - attribute-less self-closing tag" {
+    const xml = "<cim:IdentifiedObject.name/>";
+    const tag_type = try tag_index.extract_tag_type(xml, 0);
+    try std.testing.expectEqualStrings("IdentifiedObject.name", tag_type);
+}
+
 test "tag_index.extract_tag_type - tab whitespace after name" {
     const xml = "<cim:Substation\trdf:ID=\"_SS1\">";
     const tag_type = try tag_index.extract_tag_type(xml, 0);

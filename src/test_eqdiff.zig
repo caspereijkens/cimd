@@ -320,6 +320,29 @@ test "eqdiff - changed reference is copied verbatim per side" {
     try std.testing.expect(r.section_contains("reverseDifferences", "<cim:VoltageLevel.Substation rdf:resource=\"#_SS1\"/>"));
 }
 
+test "eqdiff - property flipped to a reference with the same value is a statement change" {
+    // Same name and lexical value, different statement kind (literal text vs
+    // rdf:resource) — a real change that must appear in both sections.
+    const xml1 = RDF_OPEN ++
+        \\
+        \\  <cim:Substation rdf:ID="_SS1">
+        \\    <cim:Substation.Region>#_R1</cim:Substation.Region>
+        \\  </cim:Substation>
+        \\</rdf:RDF>
+    ;
+    const xml2 = RDF_OPEN ++
+        \\
+        \\  <cim:Substation rdf:ID="_SS1">
+        \\    <cim:Substation.Region rdf:resource="#_R1"/>
+        \\  </cim:Substation>
+        \\</rdf:RDF>
+    ;
+    const r = try run_eqdiff(std.testing.allocator, xml1, xml2, .{});
+    try std.testing.expect(r.had_diffs);
+    try std.testing.expect(r.section_contains("forwardDifferences", "<cim:Substation.Region rdf:resource=\"#_R1\"/>"));
+    try std.testing.expect(r.section_contains("reverseDifferences", "<cim:Substation.Region>#_R1</cim:Substation.Region>"));
+}
+
 test "eqdiff - property added to existing object appears only forward" {
     const xml1 = RDF_OPEN ++
         \\
@@ -542,6 +565,30 @@ test "eqdiff - FullModel-only update still counts as a difference" {
     try std.testing.expect(!r.section_contains("reverseDifferences", "<md:"));
     try std.testing.expect(!r.section_contains("forwardDifferences", "<cim:"));
     try std.testing.expect(!r.section_contains("reverseDifferences", "<cim:"));
+}
+
+test "eqdiff - model1 FullModel-local xmlns conflicting with the root is not rejected" {
+    // model1's FullModel rebinds md locally, conflicting with the roots' md —
+    // but nothing of it is copied verbatim: only its id, inside a generated
+    // rdf:resource attribute. The diff must stay representable.
+    const xml1 =
+        \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:cim="http://iec.ch/TC57/CIM100#" xmlns:md="http://example.com/other#">
+        \\  <md:FullModel rdf:about="urn:uuid:11111111-1111-1111-1111-111111111111" xmlns:md="http://iec.ch/TC57/61970-552/ModelDescription/1#">
+        \\    <md:Model.version>1</md:Model.version>
+        \\  </md:FullModel>
+        \\</rdf:RDF>
+    ;
+    const xml2 =
+        \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:cim="http://iec.ch/TC57/CIM100#" xmlns:md="http://example.com/other#">
+        \\</rdf:RDF>
+    ;
+    const r = try run_eqdiff(std.testing.allocator, xml1, xml2, .{});
+    try std.testing.expect(r.had_diffs);
+    // The root keeps the inputs' binding; the generated Model.Supersedes
+    // resolves a fallback prefix for the real ModelDescription namespace.
+    try std.testing.expect(r.contains("xmlns:md=\"http://example.com/other#\""));
+    try std.testing.expect(r.contains("xmlns:md0=\"http://iec.ch/TC57/61970-552/ModelDescription/1#\""));
+    try std.testing.expect(r.contains("<md0:Model.Supersedes rdf:resource=\"urn:uuid:11111111-1111-1111-1111-111111111111\"/>"));
 }
 
 test "eqdiff - identical models with identical FullModel report no diff" {

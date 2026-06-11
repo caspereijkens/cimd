@@ -252,6 +252,13 @@ const FieldChangeIterator = struct {
         if (old != null and new != null) {
             switch (std.mem.order(u8, old.?.name, new.?.name)) {
                 .eq => {
+                    // A literal/reference kind flip is a removal plus an
+                    // addition, not a value change — pairing it would render
+                    // a misleading from == to entry.
+                    if (old.?.kind != new.?.kind) {
+                        self.i += 1;
+                        return .{ .property = old.?.name, .from = old.?.value, .to = null };
+                    }
                     self.i += 1;
                     self.j += 1;
                     return .{ .property = old.?.name, .from = old.?.value, .to = new.?.value };

@@ -27,8 +27,20 @@ pub const Statement = struct {
     /// Text content for property elements, rdf:resource for references —
     /// the comparison value.
     value: []const u8,
+    /// Part of the match key alongside name and value: the CIM schema fixes
+    /// each property's kind, so a flip between <cim:X>#_A</cim:X> and
+    /// <cim:X rdf:resource="#_A"/> is a real change even when name and value
+    /// coincide lexically.
+    kind: Kind,
     /// The complete element slice, for renderers that copy it verbatim.
     raw: []const u8,
+
+    pub const Kind = enum {
+        /// Literal text content (including empty, in either syntax).
+        property,
+        /// Carries an rdf:resource attribute.
+        reference,
+    };
 };
 
 /// Walk the child elements of an object in document order. Skips comments,
@@ -61,24 +73,33 @@ pub const StatementIterator = struct {
             }
             const name = tag_index.extract_tag_type(self.xml, tag.start) catch continue;
 
-            // Self-closing: a reference (rdf:resource) in CIM XML.
+            // Self-closing: a reference when it carries rdf:resource. The
+            // kind follows the attribute, not the syntax — a self-closing
+            // element without rdf:resource is an empty literal, equivalent
+            // to <name></name>.
             if (self.xml[tag.end - 1] == '/') {
                 const resource = tag_index.extract_rdf_resource_within(self.xml, tag.start, tag.end) catch null;
                 return .{
                     .name = name,
                     .value = resource orelse "",
+                    .kind = if (resource != null) .reference else .property,
                     .raw = self.xml[tag.start .. tag.end + 1],
                 };
             }
 
-            // Property element: text content, closed by the next boundary.
-            // CIM properties never nest — the same assumption getAllProperties
-            // makes when slicing content up to the following tag.
+            // Expanded element, closed by the next boundary. CIM properties
+            // never nest — the same assumption getAllProperties makes when
+            // slicing content up to the following tag. As above, the kind
+            // follows the rdf:resource attribute, not the element form:
+            // <name rdf:resource="#_A"></name> is the expanded serialization
+            // of the self-closing reference, not a literal.
             const closing = self.boundaries[i + 1];
             self.next_idx = i + 2;
+            const resource = tag_index.extract_rdf_resource_within(self.xml, tag.start, tag.end) catch null;
             return .{
                 .name = name,
-                .value = self.xml[tag.end + 1 .. closing.start],
+                .value = resource orelse self.xml[tag.end + 1 .. closing.start],
+                .kind = if (resource != null) .reference else .property,
                 .raw = self.xml[tag.start .. closing.end + 1],
             };
         }
@@ -130,6 +151,7 @@ pub fn change_set(
     outer: while (it2.next()) |new_statement| {
         for (statements1.items, matched) |old_statement, *was_matched| {
             if (!was_matched.* and
+                old_statement.kind == new_statement.kind and
                 std.mem.eql(u8, old_statement.name, new_statement.name) and
                 std.mem.eql(u8, old_statement.value, new_statement.value))
             {

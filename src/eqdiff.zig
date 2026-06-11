@@ -349,8 +349,12 @@ fn resolve_namespace_prefix(
 }
 
 /// Merge the xmlns declarations of both inputs' root elements (the first
-/// declaration of a prefix wins) plus their FullModel-local ones — FullModel
+/// declaration of a prefix wins) plus model2's FullModel-local ones — its
 /// children are copied into the header without their declaring parent.
+/// model1's FullModel is not merged: it contributes only its id, inside a
+/// generated rdf:resource attribute where prefix bindings are irrelevant,
+/// so its local declarations are needed by nothing in the output and must
+/// not cause rejection.
 ///
 /// Statements are copied verbatim, so a prefix bound to two different
 /// namespaces cannot be represented in the single merged scope: rejected with
@@ -368,10 +372,6 @@ fn merge_xmlns(gpa: std.mem.Allocator, model1: *const EQ, model2: *const EQ) !st
         try merge_tag_xmlns(gpa, model1.xml[root.start..root.end], &declarations);
     }
     if (core.full_model(model2)) |fm| {
-        const tag = fm.boundaries[fm.object_tag_idx];
-        try merge_tag_xmlns(gpa, fm.xml[tag.start..tag.end], &declarations);
-    }
-    if (core.full_model(model1)) |fm| {
         const tag = fm.boundaries[fm.object_tag_idx];
         try merge_tag_xmlns(gpa, fm.xml[tag.start..tag.end], &declarations);
     }

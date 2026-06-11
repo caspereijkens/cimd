@@ -291,11 +291,12 @@ pub fn find_tag_boundaries(
 /// Extract tag type from XML tag, stripping namespace
 /// Example: "<cim:Substation rdf:ID="_SS1">" → "Substation"
 /// Tag-name terminator set includes all XML whitespace (space, tab, CR, LF)
-/// plus '>', so multi-line opening tags like `<rdf:RDF\n  xmlns=...>` are
-/// handled correctly. Scan stays bounded to a single tag at the call sites.
+/// plus '>' and '/', so multi-line opening tags like `<rdf:RDF\n  xmlns=...>`
+/// and attribute-less self-closing tags like `<cim:X/>` are handled
+/// correctly. Scan stays bounded to a single tag at the call sites.
 pub fn extract_tag_type(slice: []const u8, start_idx: u32) error{MalformedTag}![]const u8 {
     const colon_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, ':') orelse return error.MalformedTag;
-    const end_idx = std.mem.indexOfAnyPos(u8, slice, colon_idx, " \t\r\n>") orelse return error.MalformedTag;
+    const end_idx = std.mem.indexOfAnyPos(u8, slice, colon_idx, " \t\r\n>/") orelse return error.MalformedTag;
     return slice[colon_idx + 1 .. end_idx];
 }
 
