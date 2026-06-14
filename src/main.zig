@@ -672,7 +672,9 @@ fn exit_json_error(io: std.Io, value: anytype) noreturn {
     std.process.exit(1);
 }
 
-const TypeCount = struct { type_name: []const u8, count: u32 };
+/// The canonical (type_name, count) pair and its ordering live on EQ; alias it
+/// so the get-ambiguity breakdown sorts and renders identically to `cimd types`.
+const TypeCount = EQ.TypeCount;
 
 /// Aggregate `matches` into alphabetically-sorted (type_name, count) pairs.
 /// Caller owns the returned slice. Shared by the ambiguity renderers so the
@@ -695,11 +697,7 @@ fn sorted_type_counts_of(gpa: std.mem.Allocator, matches: []const CimObject) ![]
     // Pairs with the alloc above: every counted type must have been written.
     assert(i == out.len);
 
-    std.mem.sort(TypeCount, out, {}, struct {
-        fn lt(_: void, a: TypeCount, b: TypeCount) bool {
-            return std.mem.order(u8, a.type_name, b.type_name) == .lt;
-        }
-    }.lt);
+    std.mem.sort(TypeCount, out, {}, TypeCount.less_than);
     return out;
 }
 

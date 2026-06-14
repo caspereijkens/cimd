@@ -19,6 +19,13 @@ pub const EQ = struct {
     pub const TypeCount = struct {
         type_name: []const u8,
         count: u32,
+
+        /// Alphabetical by type name. The single ordering shared by every
+        /// type-count display (the `types` command, the get-ambiguity
+        /// breakdown, and its JSON envelope), so they can't sort differently.
+        pub fn less_than(_: void, a: TypeCount, b: TypeCount) bool {
+            return std.mem.order(u8, a.type_name, b.type_name) == .lt;
+        }
     };
 
     /// Takes ownership of `xml`: on success the model owns it (freed by deinit),
@@ -258,11 +265,7 @@ pub const EQ = struct {
         }
         assert(i == n);
 
-        std.mem.sort(TypeCount, out, {}, struct {
-            fn lessThan(_: void, a: TypeCount, b: TypeCount) bool {
-                return std.mem.order(u8, a.type_name, b.type_name) == .lt;
-            }
-        }.lessThan);
+        std.mem.sort(TypeCount, out, {}, TypeCount.less_than);
 
         return out;
     }
