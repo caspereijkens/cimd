@@ -358,6 +358,25 @@ pub fn convert_fictitious_switches(
     }
 }
 
+/// Append the `CGMES.Terminal1` alias for an injection's first terminal, if it has one.
+/// Injections (loads, shunts, generators) derive the terminal mRID by stripping the
+/// terminal id's leading underscore. Busbar sections and switches instead resolve the
+/// real terminal mRID through the model, so they build their aliases inline, not here.
+fn append_injection_terminal_alias(
+    gpa: std.mem.Allocator,
+    index: *const CrossRef,
+    equipment_id: []const u8,
+    aliases: *std.ArrayListUnmanaged(iidm.Alias),
+) !void {
+    const terminals = index.equipment_terminals.get(equipment_id) orelse return;
+    if (terminals.items.len == 0) return;
+    try aliases.ensureTotalCapacity(gpa, 1);
+    aliases.appendAssumeCapacity(.{
+        .type_info = .{ .static_string = "CGMES.Terminal1" },
+        .content = strip_underscore(terminals.items[0].id),
+    });
+}
+
 pub fn convert_loads(
     gpa: std.mem.Allocator,
     model: *const EQ,
@@ -403,16 +422,9 @@ fn convert_load_type(
         });
         const name = load_values[0];
 
-        // alias: CGMES.Terminal1 = terminal mRID
         var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
         errdefer aliases.deinit(gpa);
-        if (index.equipment_terminals.get(load.id)) |terminals| {
-            if (terminals.items.len > 0) {
-                const t_mrid = strip_underscore(terminals.items[0].id);
-                try aliases.ensureTotalCapacity(gpa, 1);
-                aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal1" }, .content = t_mrid });
-            }
-        }
+        try append_injection_terminal_alias(gpa, index, load.id, &aliases);
 
         // properties: CGMES.pFixed, CGMES.originalClass, CGMES.qFixed
         var props: std.ArrayListUnmanaged(iidm.Property) = .empty;
@@ -592,16 +604,9 @@ pub fn convert_shunts(
             if (normal_sections_str) |ns| props.appendAssumeCapacity(.{ .name = "CGMES.normalSections", .value = ns });
         }
 
-        // alias: CGMES.Terminal1 = terminal mRID
         var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
         errdefer aliases.deinit(gpa);
-        if (index.equipment_terminals.get(shunt.id)) |terminals| {
-            if (terminals.items.len > 0) {
-                const t_mrid = strip_underscore(terminals.items[0].id);
-                try aliases.ensureTotalCapacity(gpa, 1);
-                aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal1" }, .content = t_mrid });
-            }
-        }
+        try append_injection_terminal_alias(gpa, index, shunt.id, &aliases);
 
         assert(mrid.len > 0);
         voltage_level.shunts.appendAssumeCapacity(.{
@@ -880,16 +885,9 @@ pub fn convert_generators(
                 }
             }
         }
-        // alias: CGMES.Terminal1 = terminal mRID
         var gen_aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
         errdefer gen_aliases.deinit(gpa);
-        if (index.equipment_terminals.get(machine.id)) |terminals| {
-            if (terminals.items.len > 0) {
-                const t_mrid = strip_underscore(terminals.items[0].id);
-                try gen_aliases.ensureTotalCapacity(gpa, 1);
-                gen_aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal1" }, .content = t_mrid });
-            }
-        }
+        try append_injection_terminal_alias(gpa, index, machine.id, &gen_aliases);
 
         // properties in pypow order:
         //   fuelType, synchronousMachineType, mode, originalClass, GeneratingUnit,
