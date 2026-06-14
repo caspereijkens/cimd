@@ -55,6 +55,112 @@ fn resolve_line_terminal(
     };
 }
 
+/// One ACLineSegment or SeriesCompensator's data, ready to become an IIDM Line.
+/// `g`/`b` are the per-side shunt admittance: an ACLineSegment splits its charging
+/// gch/bch evenly across both ends, while a SeriesCompensator has none (both 0).
+const LineSegment = struct {
+    object: eq.CimObject,
+    mrid: []const u8,
+    name: ?[]const u8,
+    r: f64,
+    x: f64,
+    g: f64,
+    b: f64,
+    original_class: []const u8,
+};
+
+/// Convert one 2-terminal segment to an IIDM Line and append it to the network.
+/// pypowsybl emits both ACLineSegments and SeriesCompensators as Lines; they differ
+/// only in electrical data and originalClass (captured in `segment`), so the terminal
+/// placement, CGMES.Terminal1/2 aliases, and per-terminal operational limits are shared
+/// here. Does nothing when the segment lacks exactly two placeable terminals.
+fn append_line_segment(
+    gpa: std.mem.Allocator,
+    model: *const EQ,
+    network: *iidm.Network,
+    placer: TerminalPlacer,
+    boundary_conn_node_voltage_level_map: *const std.StringHashMapUnmanaged(u32),
+    terminal_node_map: *const std.StringHashMapUnmanaged(u32),
+    segment: LineSegment,
+) !void {
+    const index = placer.index;
+
+    const terminals = index.equipment_terminals.get(segment.object.id) orelse return;
+    if (terminals.items.len != 2) return;
+
+    const placement_1 = try resolve_line_terminal(
+        terminals.items[0],
+        placer,
+        boundary_conn_node_voltage_level_map,
+        terminal_node_map,
+        network,
+    ) orelse return;
+    const placement_2 = try resolve_line_terminal(
+        terminals.items[1],
+        placer,
+        boundary_conn_node_voltage_level_map,
+        terminal_node_map,
+        network,
+    ) orelse return;
+
+    // aliases: CGMES.Terminal1 and CGMES.Terminal2, always in sequence order.
+    var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
+    errdefer aliases.deinit(gpa);
+    try aliases.ensureTotalCapacity(gpa, 2);
+    aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal1" }, .content = strip_underscore(terminals.items[0].id) });
+    aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal2" }, .content = strip_underscore(terminals.items[1].id) });
+
+    // properties: CGMES.originalClass
+    var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
+    errdefer properties.deinit(gpa);
+    try properties.ensureTotalCapacity(gpa, 1);
+    properties.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = segment.original_class });
+
+    // operational limits groups for each terminal
+    var op_lims_groups_1 = try placement_mod.build_op_lims(gpa, model, index, terminals.items[0].id);
+    errdefer {
+        for (op_lims_groups_1.items) |*group| group.deinit(gpa);
+        op_lims_groups_1.deinit(gpa);
+    }
+    var op_lims_groups_2 = try placement_mod.build_op_lims(gpa, model, index, terminals.items[1].id);
+    errdefer {
+        for (op_lims_groups_2.items) |*group| group.deinit(gpa);
+        op_lims_groups_2.deinit(gpa);
+    }
+
+    const selected_op_lims_group_id_1: ?[]const u8 = if (op_lims_groups_1.items.len > 0) op_lims_groups_1.items[0].id else null;
+    const selected_op_lims_group_id_2: ?[]const u8 = if (op_lims_groups_2.items.len > 0) op_lims_groups_2.items[0].id else null;
+
+    network.lines.appendAssumeCapacity(.{
+        .id = segment.mrid,
+        .name = segment.name,
+        .r = segment.r,
+        .x = segment.x,
+        .g1 = segment.g,
+        .g2 = segment.g,
+        .b1 = segment.b,
+        .b2 = segment.b,
+        .voltage_level1_id = placement_1.voltage_level_id,
+        .node1 = placement_1.node,
+        .bus1 = placement_1.bus,
+        .connectable_bus1 = placement_1.bus,
+        .voltage_level2_id = placement_2.voltage_level_id,
+        .node2 = placement_2.node,
+        .bus2 = placement_2.bus,
+        .connectable_bus2 = placement_2.bus,
+        .selected_op_lims_group1_id = selected_op_lims_group_id_1,
+        .selected_op_lims_group2_id = selected_op_lims_group_id_2,
+        .aliases = aliases,
+        .properties = properties,
+        .op_lims_groups1 = op_lims_groups_1,
+        .op_lims_groups2 = op_lims_groups_2,
+    });
+    aliases = .empty;
+    properties = .empty;
+    op_lims_groups_1 = .empty;
+    op_lims_groups_2 = .empty;
+}
+
 pub fn convert_lines(
     gpa: std.mem.Allocator,
     model: *const EQ,
@@ -271,88 +377,17 @@ pub fn convert_lines(
             "ACLineSegment.gch",
             "ACLineSegment.bch",
         });
-        const mrid = props[0] orelse strip_underscore(line.id);
-        const name = props[1];
-
-        const r = try parse.float_strict(props[2], 0.0);
-        const x = try parse.float_strict(props[3], 0.0);
-        const charging_conductance = try parse.float_strict(props[4], 0.0);
-        const charging_susceptance = try parse.float_strict(props[5], 0.0);
-
-        const terminals = index.equipment_terminals.get(line.id) orelse continue;
-        if (terminals.items.len != 2) continue;
-
-        const placement_1 = try resolve_line_terminal(
-            terminals.items[0],
-            placer,
-            &boundary_conn_node_voltage_level_map,
-            &terminal_node_map,
-            network,
-        ) orelse continue;
-        const placement_2 = try resolve_line_terminal(
-            terminals.items[1],
-            placer,
-            &boundary_conn_node_voltage_level_map,
-            &terminal_node_map,
-            network,
-        ) orelse continue;
-
-        // aliases: CGMES.Terminal1 and CGMES.Terminal2, always in sequence order.
-        var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
-        errdefer aliases.deinit(gpa);
-        try aliases.ensureTotalCapacity(gpa, 2);
-        aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal1" }, .content = strip_underscore(terminals.items[0].id) });
-        aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal2" }, .content = strip_underscore(terminals.items[1].id) });
-
-        // properties: CGMES.originalClass
-        var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
-        errdefer properties.deinit(gpa);
-        try properties.ensureTotalCapacity(gpa, 1);
-        properties.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = "ACLineSegment" });
-
-        // operational limits groups for each terminal
-        var op_lims_groups_1 = try placement_mod.build_op_lims(gpa, model, index, terminals.items[0].id);
-        errdefer {
-            for (op_lims_groups_1.items) |*group| group.deinit(gpa);
-            op_lims_groups_1.deinit(gpa);
-        }
-        var op_lims_groups_2 = try placement_mod.build_op_lims(gpa, model, index, terminals.items[1].id);
-        errdefer {
-            for (op_lims_groups_2.items) |*group| group.deinit(gpa);
-            op_lims_groups_2.deinit(gpa);
-        }
-
-        const selected_op_lims_group_id_1: ?[]const u8 = if (op_lims_groups_1.items.len > 0) op_lims_groups_1.items[0].id else null;
-        const selected_op_lims_group_id_2: ?[]const u8 = if (op_lims_groups_2.items.len > 0) op_lims_groups_2.items[0].id else null;
-
-        network.lines.appendAssumeCapacity(.{
-            .id = mrid,
-            .name = name,
-            .r = r,
-            .x = x,
-            .g1 = charging_conductance / 2.0,
-            .g2 = charging_conductance / 2.0,
-            .b1 = charging_susceptance / 2.0,
-            .b2 = charging_susceptance / 2.0,
-            .voltage_level1_id = placement_1.voltage_level_id,
-            .node1 = placement_1.node,
-            .bus1 = placement_1.bus,
-            .connectable_bus1 = placement_1.bus,
-            .voltage_level2_id = placement_2.voltage_level_id,
-            .node2 = placement_2.node,
-            .bus2 = placement_2.bus,
-            .connectable_bus2 = placement_2.bus,
-            .selected_op_lims_group1_id = selected_op_lims_group_id_1,
-            .selected_op_lims_group2_id = selected_op_lims_group_id_2,
-            .aliases = aliases,
-            .properties = properties,
-            .op_lims_groups1 = op_lims_groups_1,
-            .op_lims_groups2 = op_lims_groups_2,
+        // ACLineSegment shunt admittance (gch/bch) is split evenly across both ends.
+        try append_line_segment(gpa, model, network, placer, &boundary_conn_node_voltage_level_map, &terminal_node_map, .{
+            .object = line,
+            .mrid = props[0] orelse strip_underscore(line.id),
+            .name = props[1],
+            .r = try parse.float_strict(props[2], 0.0),
+            .x = try parse.float_strict(props[3], 0.0),
+            .g = (try parse.float_strict(props[4], 0.0)) / 2.0,
+            .b = (try parse.float_strict(props[5], 0.0)) / 2.0,
+            .original_class = "ACLineSegment",
         });
-        aliases = .empty;
-        properties = .empty;
-        op_lims_groups_1 = .empty;
-        op_lims_groups_2 = .empty;
     }
 
     // ---- Convert SeriesCompensators (pypowsybl treats them as IIDM Lines) ----
@@ -365,85 +400,15 @@ pub fn convert_lines(
             "SeriesCompensator.r",
             "SeriesCompensator.x",
         });
-        const mrid = props[0] orelse strip_underscore(series_compensator.id);
-        const name = props[1];
-
-        const r = try parse.float_strict(props[2], 0.0);
-        const x = try parse.float_strict(props[3], 0.0);
-
-        const terminals = index.equipment_terminals.get(series_compensator.id) orelse continue;
-        if (terminals.items.len != 2) continue;
-
-        const placement_1 = try resolve_line_terminal(
-            terminals.items[0],
-            placer,
-            &boundary_conn_node_voltage_level_map,
-            &terminal_node_map,
-            network,
-        ) orelse continue;
-        const placement_2 = try resolve_line_terminal(
-            terminals.items[1],
-            placer,
-            &boundary_conn_node_voltage_level_map,
-            &terminal_node_map,
-            network,
-        ) orelse continue;
-
-        // aliases: CGMES.Terminal1 and CGMES.Terminal2, always in sequence order.
-        var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
-        errdefer aliases.deinit(gpa);
-        try aliases.ensureTotalCapacity(gpa, 2);
-        aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal1" }, .content = strip_underscore(terminals.items[0].id) });
-        aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal2" }, .content = strip_underscore(terminals.items[1].id) });
-
-        // properties: CGMES.originalClass
-        var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
-        errdefer properties.deinit(gpa);
-        try properties.ensureTotalCapacity(gpa, 1);
-        properties.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = "SeriesCompensator" });
-
-        // operational limits groups for each terminal
-        var op_lims_groups_1 = try placement_mod.build_op_lims(gpa, model, index, terminals.items[0].id);
-        errdefer {
-            for (op_lims_groups_1.items) |*group| group.deinit(gpa);
-            op_lims_groups_1.deinit(gpa);
-        }
-        var op_lims_groups_2 = try placement_mod.build_op_lims(gpa, model, index, terminals.items[1].id);
-        errdefer {
-            for (op_lims_groups_2.items) |*group| group.deinit(gpa);
-            op_lims_groups_2.deinit(gpa);
-        }
-
-        const selected_op_lims_group_id_1: ?[]const u8 = if (op_lims_groups_1.items.len > 0) op_lims_groups_1.items[0].id else null;
-        const selected_op_lims_group_id_2: ?[]const u8 = if (op_lims_groups_2.items.len > 0) op_lims_groups_2.items[0].id else null;
-
-        network.lines.appendAssumeCapacity(.{
-            .id = mrid,
-            .name = name,
-            .r = r,
-            .x = x,
-            .g1 = 0.0,
-            .g2 = 0.0,
-            .b1 = 0.0,
-            .b2 = 0.0,
-            .voltage_level1_id = placement_1.voltage_level_id,
-            .node1 = placement_1.node,
-            .bus1 = placement_1.bus,
-            .connectable_bus1 = placement_1.bus,
-            .voltage_level2_id = placement_2.voltage_level_id,
-            .node2 = placement_2.node,
-            .bus2 = placement_2.bus,
-            .connectable_bus2 = placement_2.bus,
-            .selected_op_lims_group1_id = selected_op_lims_group_id_1,
-            .selected_op_lims_group2_id = selected_op_lims_group_id_2,
-            .aliases = aliases,
-            .properties = properties,
-            .op_lims_groups1 = op_lims_groups_1,
-            .op_lims_groups2 = op_lims_groups_2,
+        try append_line_segment(gpa, model, network, placer, &boundary_conn_node_voltage_level_map, &terminal_node_map, .{
+            .object = series_compensator,
+            .mrid = props[0] orelse strip_underscore(series_compensator.id),
+            .name = props[1],
+            .r = try parse.float_strict(props[2], 0.0),
+            .x = try parse.float_strict(props[3], 0.0),
+            .g = 0.0,
+            .b = 0.0,
+            .original_class = "SeriesCompensator",
         });
-        aliases = .empty;
-        properties = .empty;
-        op_lims_groups_1 = .empty;
-        op_lims_groups_2 = .empty;
     }
 }
