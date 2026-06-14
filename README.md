@@ -4,10 +4,6 @@
 cimd is a **C**ommand line **I**nterface for grid **M**odel **D**ata. It is a high-performance tool for working with CGMES (Common Grid Model Exchange Standard) data. See https://cimd.eu for more information.
 
 ## Performance
-### Benchmark on synthetic data
-![CGMES EQ → JIIDM conversion benchmark](docs/benchmark_classic.svg)
-*Conversion to JIIDM on synthetic data for eq sizes up to 1GB (unzipped).*
-
 ### Comparison on real data
 ![CGMES EQ → JIIDM conversion benchmark: cimd vs pypowsybl](scripts/benchmark/output/benchmark.svg)
 

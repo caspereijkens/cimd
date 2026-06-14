@@ -256,6 +256,27 @@ test "eqdiff - removed object goes to reverseDifferences" {
     try std.testing.expect(!r.section_contains("forwardDifferences", "_SS1"));
 }
 
+test "eqdiff - type change with same mrid emits old type reverse and new type forward" {
+    const xml1 = RDF_OPEN ++
+        \\
+        \\  <cim:Breaker rdf:ID="_SW1">
+        \\    <cim:IdentifiedObject.name>Bay switch</cim:IdentifiedObject.name>
+        \\  </cim:Breaker>
+        \\</rdf:RDF>
+    ;
+    const xml2 = RDF_OPEN ++
+        \\
+        \\  <cim:Disconnector rdf:ID="_SW1">
+        \\    <cim:IdentifiedObject.name>Bay switch</cim:IdentifiedObject.name>
+        \\  </cim:Disconnector>
+        \\</rdf:RDF>
+    ;
+    const r = try run_eqdiff(std.testing.allocator, xml1, xml2, .{});
+    try std.testing.expect(r.had_diffs);
+    try std.testing.expect(r.section_contains("reverseDifferences", "<cim:Breaker rdf:about=\"#_SW1\">"));
+    try std.testing.expect(r.section_contains("forwardDifferences", "<cim:Disconnector rdf:about=\"#_SW1\">"));
+}
+
 test "eqdiff - added object with repeated child elements preserves all of them" {
     const xml1 = RDF_OPEN ++ "\n</rdf:RDF>";
     const xml2 = RDF_OPEN ++

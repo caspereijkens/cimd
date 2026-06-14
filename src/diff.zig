@@ -54,12 +54,7 @@ pub fn diff_models(
 ) !bool {
     var had_diffs = false;
 
-    var type_counts1 = try model1.getTypeCounts(gpa);
-    defer type_counts1.deinit();
-    var type_counts2 = try model2.getTypeCounts(gpa);
-    defer type_counts2.deinit();
-
-    const type_names = try core.type_name_union(gpa, &type_counts1, &type_counts2);
+    const type_names = try core.type_name_union(gpa, model1, model2);
     defer gpa.free(type_names);
 
     if (options.format == .patch) {
