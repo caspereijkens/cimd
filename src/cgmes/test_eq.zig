@@ -100,7 +100,7 @@ test "EQ.get_objects_by_type - returns all objects of given type" {
     try std.testing.expectEqual(0, missing.len);
 }
 
-test "EQ.getTypeCounts - returns count of each object type" {
+test "EQ.sorted_type_counts - returns sorted counts for each object type" {
     const xml =
         \\<rdf:RDF>
         \\  <cim:Substation rdf:ID="_SS1"/>
@@ -109,6 +109,11 @@ test "EQ.getTypeCounts - returns count of each object type" {
         \\  <cim:ACLineSegment rdf:ID="_L1"/>
         \\  <cim:ACLineSegment rdf:ID="_L2"/>
         \\  <cim:ACLineSegment rdf:ID="_L3"/>
+        \\  <cim:Zone rdf:ID="_Z1"/>
+        \\  <cim:Zone rdf:ID="_Z2"/>
+        \\  <cim:Zone rdf:ID="_Z3"/>
+        \\  <cim:Zone rdf:ID="_Z4"/>
+        \\  <cim:Zone rdf:ID="_Z5"/>
         \\</rdf:RDF>
     ;
 
@@ -117,16 +122,18 @@ test "EQ.getTypeCounts - returns count of each object type" {
     var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
-    var counts = try model.getTypeCounts(gpa);
-    defer counts.deinit();
+    const counts = try model.sorted_type_counts(gpa);
+    defer gpa.free(counts);
 
-    // Should have exactly 3 types
-    try std.testing.expectEqual(3, counts.count());
-
-    // Check specific counts
-    try std.testing.expectEqual(2, counts.get("Substation").?);
-    try std.testing.expectEqual(1, counts.get("VoltageLevel").?);
-    try std.testing.expectEqual(3, counts.get("ACLineSegment").?);
+    try std.testing.expectEqual(@as(usize, 4), counts.len);
+    try std.testing.expectEqualStrings("ACLineSegment", counts[0].type_name);
+    try std.testing.expectEqual(@as(u32, 3), counts[0].count);
+    try std.testing.expectEqualStrings("Substation", counts[1].type_name);
+    try std.testing.expectEqual(@as(u32, 2), counts[1].count);
+    try std.testing.expectEqualStrings("VoltageLevel", counts[2].type_name);
+    try std.testing.expectEqual(@as(u32, 1), counts[2].count);
+    try std.testing.expectEqualStrings("Zone", counts[3].type_name);
+    try std.testing.expectEqual(@as(u32, 5), counts[3].count);
 }
 
 test "EQ.init - handles empty XML" {

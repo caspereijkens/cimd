@@ -805,6 +805,35 @@ test "diff - multiple types, mixed changes" {
     try std.testing.expect(!r.contains("@@ Substation @@"));
 }
 
+test "diff - type change with same mrid is removed from old type and added to new type" {
+    const xml1 =
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_SW1">
+        \\    <cim:IdentifiedObject.name>Bay switch</cim:IdentifiedObject.name>
+        \\  </cim:Breaker>
+        \\</rdf:RDF>
+    ;
+    const xml2 =
+        \\<rdf:RDF>
+        \\  <cim:Disconnector rdf:ID="_SW1">
+        \\    <cim:IdentifiedObject.name>Bay switch</cim:IdentifiedObject.name>
+        \\  </cim:Disconnector>
+        \\</rdf:RDF>
+    ;
+
+    const patch = try run_diff(std.testing.allocator, xml1, xml2, .{});
+    try std.testing.expect(patch.had_diffs);
+    try std.testing.expect(patch.contains("@@ Breaker @@"));
+    try std.testing.expect(patch.contains("- _SW1  \"Bay switch\""));
+    try std.testing.expect(patch.contains("@@ Disconnector @@"));
+    try std.testing.expect(patch.contains("+ _SW1  \"Bay switch\""));
+
+    const summary = try run_diff(std.testing.allocator, xml1, xml2, .{ .format = .summary });
+    try std.testing.expect(summary.had_diffs);
+    try std.testing.expect(summary.contains("Breaker  +0 -1 ~0"));
+    try std.testing.expect(summary.contains("Disconnector  +1 -0 ~0"));
+}
+
 test "diff - reference change detected alongside unchanged properties" {
     // Name is the same, but the VL's parent substation reference changed.
     const xml1 =

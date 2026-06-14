@@ -212,6 +212,24 @@ pub const TypeStats = struct {
     }
 };
 
+/// CIM type equality is the boundary between a matched object and a typed
+/// remove+add replacement. Keep the rule shared by bulk and single-mRID diff.
+fn same_cim_type(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+
+/// Return the counterpart only when it has the same mRID and CIM type.
+/// Missing or retyped objects both fall through to bulk remove/add handling.
+fn same_type_counterpart(
+    model: *EQ,
+    id: []const u8,
+    type_name: []const u8,
+) ?tag_index.CimObjectView {
+    const other = model.getObjectById(id) orelse return null;
+    if (!same_cim_type(other.type_name, type_name)) return null;
+    return other;
+}
+
 /// Match one type's objects by mRID across the two models and report every
 /// difference to `emitter`, which must provide:
 ///   added(view)               — object only in model2
@@ -230,36 +248,25 @@ pub fn match_type(
     const objects1 = model1.get_objects_by_type(type_name);
     const objects2 = model2.get_objects_by_type(type_name);
 
-    var map = std.StringHashMap(u32).init(gpa);
-    defer map.deinit();
-    try map.ensureTotalCapacity(@intCast(objects2.len));
-    for (objects2, 0..) |obj2, idx| map.putAssumeCapacity(obj2.id, @intCast(idx));
-
-    const matched = try gpa.alloc(bool, objects2.len);
-    defer gpa.free(matched);
-    @memset(matched, false);
-
     for (objects1) |obj1| {
-        if (map.get(obj1.id)) |idx| {
-            matched[idx] = true;
+        if (same_type_counterpart(model2, obj1.id, type_name)) |other| {
             const view1 = model1.view(obj1);
-            const view2 = model2.view(objects2[idx]);
-            if (try object_changes(gpa, view1, view2)) |changes_owned| {
+            if (try object_changes(gpa, view1, other)) |changes_owned| {
                 var changes = changes_owned;
                 defer changes.deinit(gpa);
-                try emitter.changed(view1, view2, &changes);
+                try emitter.changed(view1, other, &changes);
                 stats.changed += 1;
             }
-        } else {
-            try emitter.removed(model1.view(obj1));
-            stats.removed += 1;
+            continue;
         }
+        try emitter.removed(model1.view(obj1));
+        stats.removed += 1;
     }
-    for (objects2, matched) |obj2, was_matched| {
-        if (!was_matched) {
-            try emitter.added(model2.view(obj2));
-            stats.added += 1;
-        }
+
+    for (objects2) |obj2| {
+        if (same_type_counterpart(model1, obj2.id, type_name) != null) continue;
+        try emitter.added(model2.view(obj2));
+        stats.added += 1;
     }
     return stats;
 }
@@ -270,32 +277,41 @@ pub fn match_type(
 /// workflows. Caller owns the returned slice (names are borrowed).
 pub fn type_name_union(
     gpa: std.mem.Allocator,
-    type_counts1: *const std.StringHashMap(u32),
-    type_counts2: *const std.StringHashMap(u32),
+    model1: *const EQ,
+    model2: *const EQ,
 ) ![][]const u8 {
-    var type_set = std.StringHashMapUnmanaged(void){};
-    defer type_set.deinit(gpa);
+    const types1 = try model1.sorted_type_counts(gpa);
+    defer gpa.free(types1);
+    const types2 = try model2.sorted_type_counts(gpa);
+    defer gpa.free(types2);
 
-    var it1 = type_counts1.keyIterator();
-    while (it1.next()) |key| try type_set.put(gpa, key.*, {});
-    var it2 = type_counts2.keyIterator();
-    while (it2.next()) |key| try type_set.put(gpa, key.*, {});
-
-    const type_names = try gpa.alloc([]const u8, type_set.count());
-    errdefer gpa.free(type_names);
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.ensureTotalCapacity(gpa, types1.len + types2.len);
 
     var i: usize = 0;
-    var it = type_set.keyIterator();
-    while (it.next()) |key| : (i += 1) type_names[i] = key.*;
-    assert(i == type_names.len);
-
-    std.mem.sort([]const u8, type_names, {}, struct {
-        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.order(u8, a, b) == .lt;
+    var j: usize = 0;
+    while (i < types1.len and j < types2.len) {
+        switch (std.mem.order(u8, types1[i].type_name, types2[j].type_name)) {
+            .lt => {
+                out.appendAssumeCapacity(types1[i].type_name);
+                i += 1;
+            },
+            .gt => {
+                out.appendAssumeCapacity(types2[j].type_name);
+                j += 1;
+            },
+            .eq => {
+                out.appendAssumeCapacity(types1[i].type_name);
+                i += 1;
+                j += 1;
+            },
         }
-    }.lessThan);
+    }
+    while (i < types1.len) : (i += 1) out.appendAssumeCapacity(types1[i].type_name);
+    while (j < types2.len) : (j += 1) out.appendAssumeCapacity(types2[j].type_name);
 
-    return type_names;
+    return out.toOwnedSlice(gpa);
 }
 
 // ── Single-object matching ────────────────────────────────────────────────────
@@ -349,7 +365,7 @@ pub fn match_single(
 
     if (v1 == null) return .{ .added = v2.? };
     if (v2 == null) return .{ .removed = v1.? };
-    if (!std.mem.eql(u8, v1.?.type_name, v2.?.type_name)) {
+    if (!same_cim_type(v1.?.type_name, v2.?.type_name)) {
         return .{ .replaced = .{ .old = v1.?, .new = v2.? } };
     }
     return .{ .matched = .{ .old = v1.?, .new = v2.? } };

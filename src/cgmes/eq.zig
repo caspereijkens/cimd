@@ -235,18 +235,6 @@ pub const EQ = struct {
         return out;
     }
 
-    pub fn getTypeCounts(self: EQ, gpa: std.mem.Allocator) !std.StringHashMap(u32) {
-        var result = std.StringHashMap(u32).init(gpa);
-        errdefer result.deinit();
-        var it = self.type_index.iterator();
-        while (it.next()) |entry| {
-            const type_name = entry.key_ptr.*;
-            const count: u32 = entry.value_ptr.*.len;
-            try result.put(type_name, count);
-        }
-        return result;
-    }
-
     /// Return a heap-allocated, alphabetically sorted type-count list.
     /// Caller owns the returned slice and must free it with gpa.free().
     pub fn sorted_type_counts(self: EQ, gpa: std.mem.Allocator) ![]TypeCount {
