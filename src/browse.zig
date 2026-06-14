@@ -33,16 +33,27 @@ const Selection = union(enum) {
 
 const Mode = union(enum) {
     regular,
-    back_refs: BackRefsView,
+    back_refs: ListView,
 };
 
-const BackRefsView = union(enum) {
+/// How a groupable list (back-refs or the prefix picker) is currently shown.
+/// The three variants are mutually exclusive by construction, so the "flat,
+/// type-filtered, and show-all" states can never be encoded inconsistently.
+const ListView = union(enum) {
     /// Default: grouped if over threshold, flat otherwise.
     auto,
-    /// User chose "(All)" from the grouped view — show every referrer.
+    /// User chose "(All)" from the grouped view — show every item flat.
     all,
-    /// User chose a type — show only referrers of that type.
+    /// User chose a type — show only items of that type.
     filtered: []const u8,
+
+    /// The type to restrict a flat render to, or null to show everything.
+    fn filter(self: ListView) ?[]const u8 {
+        return switch (self) {
+            .filtered => |t| t,
+            else => null,
+        };
+    }
 };
 
 const Nav = union(enum) {
@@ -53,6 +64,13 @@ const Nav = union(enum) {
     show_back_refs,
     filter_type: []const u8,
     show_all_refs,
+};
+
+/// One step of the navigation history. Stored as a single struct (rather than
+/// two parallel arrays) so the id and the type label can never drift apart.
+const Breadcrumb = struct {
+    id: []const u8,
+    type_name: []const u8,
 };
 
 pub const InteractiveIo = struct {
@@ -83,10 +101,8 @@ pub fn browse(
     ssh_opt: ?SSH,
     mrid: []const u8,
 ) !void {
-    var trace_ids: std.ArrayList([]const u8) = .empty;
-    defer trace_ids.deinit(gpa);
-    var trace_types: std.ArrayList([]const u8) = .empty;
-    defer trace_types.deinit(gpa);
+    var trace: std.ArrayList(Breadcrumb) = .empty;
+    defer trace.deinit(gpa);
     var screen: std.Io.Writer.Allocating = .init(gpa);
     defer screen.deinit();
     var selections: std.ArrayList(Selection) = .empty;
@@ -97,8 +113,6 @@ pub fn browse(
     var id = mrid;
     var mode: Mode = .regular;
     while (true) {
-        assert(trace_ids.items.len == trace_types.items.len);
-
         const object = resolve_object(model, tp_opt, id) orelse
             print.not_found(io, "{s}", .{id});
 
@@ -113,8 +127,8 @@ pub fn browse(
             .back_refs => |view| try render_back_refs(writer, gpa, model, tp_opt, object, referrers, view, &selections),
         };
 
-        const has_back = trace_ids.items.len > 0 or mode != .regular;
-        try render_footer(writer, trace_types.items, object.type_name, counter, has_back, mode, referrers.len);
+        const has_back = trace.items.len > 0 or mode != .regular;
+        try render_footer(writer, trace.items, object.type_name, counter, has_back, mode, referrers.len);
         try interactive.output.writeAll(screen.written());
         try interactive.output.flush();
 
@@ -130,10 +144,7 @@ pub fn browse(
             .stay => {},
             .quit => break,
             .back => switch (mode) {
-                .regular => {
-                    id = trace_ids.pop() orelse unreachable;
-                    _ = trace_types.pop();
-                },
+                .regular => id = (trace.pop() orelse unreachable).id,
                 // Back from a drilled view returns to the grouped overview;
                 // back from the overview returns to the regular object view.
                 .back_refs => |view| switch (view) {
@@ -142,8 +153,7 @@ pub fn browse(
                 },
             },
             .follow => |new_id| {
-                try trace_ids.append(gpa, id);
-                try trace_types.append(gpa, object.type_name);
+                try trace.append(gpa, .{ .id = id, .type_name = object.type_name });
                 id = new_id;
                 mode = .regular;
             },
@@ -247,7 +257,7 @@ fn render_fragment(
 /// Writes the breadcrumb trail, type name, and keyboard hint line.
 fn render_footer(
     writer: *std.Io.Writer,
-    trace_types: []const []const u8,
+    trace: []const Breadcrumb,
     type_name: []const u8,
     counter: u32,
     has_back: bool,
@@ -257,7 +267,7 @@ fn render_footer(
     assert(counter >= 1);
     assert(type_name.len > 0);
     try writer.writeAll("\n\n");
-    for (trace_types) |past_type| try writer.print("{s} -> ", .{past_type});
+    for (trace) |crumb| try writer.print("{s} -> ", .{crumb.type_name});
     try writer.print("{s}", .{type_name});
     switch (mode) {
         .regular => {},
@@ -287,7 +297,7 @@ fn render_back_refs(
     tp_opt: ?TP,
     target: tag_index.CimObjectView,
     referrers: []const refs.ReverseRef,
-    view: BackRefsView,
+    view: ListView,
     selections: *std.ArrayList(Selection),
 ) !u32 {
     assert(target.type_name.len > 0);
@@ -304,11 +314,7 @@ fn render_back_refs(
     const auto_groups = view == .auto and referrers.len > group_threshold;
     if (auto_groups) return render_back_refs_grouped(writer, gpa, model, tp_opt, referrers, selections);
 
-    const filter: ?[]const u8 = switch (view) {
-        .filtered => |t| t,
-        else => null,
-    };
-    return render_back_refs_flat(writer, gpa, model, tp_opt, referrers, filter, selections);
+    return render_back_refs_flat(writer, gpa, model, tp_opt, referrers, view.filter(), selections);
 }
 
 fn render_back_refs_flat(
@@ -526,21 +532,20 @@ pub fn pick_from_prefix(
     var selections: std.ArrayList(PickSel) = .empty;
     defer selections.deinit(gpa);
 
-    var filter_type: ?[]const u8 = null;
-    var show_all_flat: bool = false;
+    var view: ListView = .auto;
 
     while (true) {
         screen.clearRetainingCapacity();
         selections.clearRetainingCapacity();
         const writer = &screen.writer;
 
-        const use_grouped = filter_type == null and !show_all_flat and matches.len > group_threshold;
+        const use_grouped = view == .auto and matches.len > group_threshold;
         const counter: u32 = if (use_grouped)
             try render_prefix_grouped(writer, gpa, prefix, matches, &selections)
         else
-            try render_prefix_flat(writer, gpa, prefix, matches, filter_type, &selections);
+            try render_prefix_flat(writer, gpa, prefix, matches, view.filter(), &selections);
 
-        const has_back = filter_type != null or show_all_flat;
+        const has_back = view != .auto;
         try writer.writeAll("\n\n");
         if (counter > 1) try writer.print(" [1-{d}]", .{counter - 1});
         if (has_back) try writer.writeAll("  [b]ack");
@@ -556,19 +561,14 @@ pub fn pick_from_prefix(
 
         switch (input[0]) {
             'q' => print.stderr(io, "aborted", .{}),
-            'b' => {
-                if (has_back) {
-                    filter_type = null;
-                    show_all_flat = false;
-                }
-            },
+            'b' => view = .auto,
             else => {
                 const n = std.fmt.parseInt(u32, input, 10) catch continue;
                 if (n == 0 or n > selections.items.len) continue;
                 switch (selections.items[n - 1]) {
                     .pick => |id| return id,
-                    .drill => |t| filter_type = t,
-                    .show_all => show_all_flat = true,
+                    .drill => |t| view = .{ .filtered = t },
+                    .show_all => view = .all,
                 }
             },
         }
