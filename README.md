@@ -28,9 +28,31 @@ Commands:
   types      List CIM types present in a CIM file
   diff       Semantic diff between two EQ profiles
   topology   Generate TopologicalNodes from EQ (+SSH) — TP-equivalent output
+  validate   Validate a CGMES file against a SHACL rule set
+  qocdc      Validate grid model according to the 'Quality of CGMES Datasets and Calculations'
   version    Print version information
 
 Use 'cimd <command> --help' for more information about a command.
+```
+
+### Types
+```
+$ cimd types --help
+
+Usage: cimd types <file> [options]
+
+List all CIM types present in a CGMES file with object counts.
+Works on any CGMES file (EQ, EQBD, TP, SSH, ...).
+
+Arguments:
+  <file>                  CGMES file (XML or ZIP)
+
+Options:
+  -j, --json              Output as JSON array of {{type, count}} objects
+
+Examples:
+  cimd types data/eq.zip
+  cimd types data/tp.zip -j
 ```
 
 ### Get
@@ -219,6 +241,44 @@ Examples:
   cimd diff eq_v1.zip eq_v2.zip -s
 ```
 
+### Validate
+```
+$ cimd validate --help
+
+Usage: cimd validate <file> --rules <ttl|zip> [options]
+
+Validate a CGMES instance file against a SHACL rule set (e.g. the
+ENTSO-E application-profile constraints). Any profile works — EQ, SSH,
+TP, SV — supply the rule sets published for that profile. Rule sets
+are external inputs: point --rules at any SHACL/Turtle file, or a zip
+containing one. Rules the engine cannot execute (sh:sparql above all)
+are counted and named in the report, never silently dropped.
+
+Every violation reports the data file name, the line number of the
+object, the rule code, and the rule's own message. Load errors in the
+rules file report file and line the same way.
+
+Exit codes:
+  0  no violations (warnings and info findings do not fail the run)
+  1  violations found
+  2  usage error, or the rule set failed to load
+
+Arguments:
+  <file>                  CGMES instance file, any profile (XML or ZIP)
+
+Options:
+  -r, --rules <file>      SHACL rule set, Turtle or zipped Turtle
+                          (repeatable, up to 16 rule sets per run)
+  -b, --eqbd <file>       EQBD boundary profile merged into the model
+                          before validation (XML or ZIP)
+  -o, --output <file>     Write the report to a file instead of stdout
+      --list-skipped      List every rule the engine cannot execute
+
+Examples:
+  cimd validate data/eq.zip --rules rules/AssessedElement-SHACL.ttl
+  cimd validate data/eq.zip -b eqbd.zip -r a.ttl -r b.ttl --list-skipped
+```
+
 ### Topology
 ```
 $ cimd topology --help
@@ -273,25 +333,5 @@ Examples:
   cimd convert data/eq.zip --eqbd eqbd.zip -s ssh.zip
   cimd convert data/eq.zip -o network.json
   cimd convert data/eq.zip --tp tp.zip --bus-branch
-```
-
-### Types
-```
-$ cimd types --help
-
-Usage: cimd types <file> [options]
-
-List all CIM types present in a CGMES file with object counts.
-Works on any CGMES file (EQ, EQBD, TP, SSH, ...).
-
-Arguments:
-  <file>                  CGMES file (XML or ZIP)
-
-Options:
-  -j, --json              Output as JSON array of {{type, count}} objects
-
-Examples:
-  cimd types data/eq.zip
-  cimd types data/tp.zip -j
 ```
 <!-- FEATURES_END -->
