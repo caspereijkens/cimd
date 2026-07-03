@@ -167,6 +167,29 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 
+    // CIM type-table generator: regenerates the `parent_edges` body of
+    // src/cgmes/cim_types.zig from CGMES RDFS profile files, reusing the same
+    // tag scanner cimd parses CIM with at runtime. Run with:
+    //   zig build gen-cim-types -- Equipment-AP.rdf StateVariables-AP.rdf ...
+    const gen_cim_types_mod = b.createModule(.{
+        .root_source_file = b.path("src/gen_cim_types.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const gen_cim_types_exe = b.addExecutable(.{
+        .name = "gen-cim-types",
+        .root_module = gen_cim_types_mod,
+    });
+    const gen_cim_types_step = b.step("gen-cim-types", "Regenerate the CIM parent_edges table from RDFS profile files");
+    const gen_cim_types_cmd = b.addRunArtifact(gen_cim_types_exe);
+    gen_cim_types_step.dependOn(&gen_cim_types_cmd.step);
+    if (b.args) |args| gen_cim_types_cmd.addArgs(args);
+
+    // Keep the tool's unit tests in `zig build test`.
+    const gen_cim_types_tests = b.addTest(.{ .root_module = gen_cim_types_mod });
+    const run_gen_cim_types_tests = b.addRunArtifact(gen_cim_types_tests);
+    test_step.dependOn(&run_gen_cim_types_tests.step);
+
     // Release step: build for all supported platforms at ReleaseSafe.
     // Outputs to zig-out/release/<target>/cimd[.exe].
     // Run with: zig build release

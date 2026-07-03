@@ -7,4 +7,6 @@ data/
 *.xml
 *.zip
 *.jiidm
+*.ttl
 zig-out-fast
+testdata

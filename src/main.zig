@@ -18,7 +18,10 @@ const tag_index = @import("cgmes/tag_index.zig");
 const ids = @import("cgmes/ids.zig");
 const cim_types = @import("cgmes/cim_types.zig");
 const CimMergedView = @import("cgmes/ssh.zig").CimMergedView;
-const validate = @import("validate.zig").validate;
+const qocdc = @import("qocdc.zig").validate;
+const validate = @import("validate.zig");
+const rule_set = @import("shacl/rule_set.zig");
+const RuleSet = rule_set.RuleSet;
 
 const assert = std.debug.assert;
 
@@ -76,6 +79,7 @@ pub fn main(init: std.process.Init) !void {
         .diff => |c| try command_diff(io, gpa, c),
         .topology => |c| try command_topology(io, gpa, c),
         .validate => |c| try command_validate(io, gpa, c),
+        .qocdc => |c| try command_qocdc(io, gpa, c),
         .version => |v| try command_version(io, v.verbose, v.json),
     }
 }
@@ -329,7 +333,7 @@ fn resolve_prefix(
             .{mrid},
         );
         const requested_type = type_filter.?;
-        // A prefix that pinned exactly one object — of the wrong type — gets the
+        // A prefix that pinned exactly one object of the wrong type gets the
         // specific type_mismatch message rather than the generic none_of_type.
         if (all_matches.len == 1) {
             const m = all_matches[0];
@@ -360,7 +364,7 @@ fn resolve_prefix(
         return null;
     }
 
-    // Down to the unique-match branch — the empty and ambiguous cases above
+    // Down to the unique-match branch; the empty and ambiguous cases above
     // both returned. The remaining match must carry the identity downstream
     // expects to render.
     assert(filtered_matches.len == 1);
@@ -937,9 +941,91 @@ fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology)
 }
 
 fn command_validate(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Validate) !void {
+    // Rule sets load first: a bad rules file should not cost a model parse.
+    var rule_sets: [cli.Command.Validate.rules_count_max]RuleSet = undefined;
+    var rule_sets_count: usize = 0;
+    defer for (rule_sets[0..rule_sets_count]) |*rules| rules.deinit(gpa);
+    for (c.rules()) |path| {
+        const bytes = read_rules_path(io, gpa, path) catch |err|
+            print.stderr(io, "validate: {s}: {t}", .{ path, err });
+        var diagnostics: RuleSet.Diagnostics = .{};
+        // QoCDC requires constant references in rule messages to reach
+        // users as value and unit; NC messages contain none, so the table
+        // costs nothing there.
+        rule_sets[rule_sets_count] = RuleSet.load(
+            gpa,
+            bytes,
+            path,
+            &validate.qocdc_substitutions,
+            &diagnostics,
+        ) catch |err| {
+            // Rule load errors name the rules input and offending line.
+            print.stderr(io, "validate: {s}:{d}: {t}", .{ path, diagnostics.line, err });
+        };
+        rule_sets_count += 1;
+    }
+
+    // Load the model directly (not via load_model) to remember the EQ/EQBD
+    // split, so violation lines resolve to the file they actually sit in.
+    var segments: [2]validate.DataSegment = undefined;
+    segments[0] = .{ .name = c.eq_path, .start = 0 };
+    var segments_count: usize = 1;
+    const xml = blk: {
+        var x = try read_path(io, gpa, c.eq_path);
+        errdefer gpa.free(x);
+        if (c.eqbd_path) |path| {
+            const eqbd_xml = try read_path(io, gpa, path);
+            defer gpa.free(eqbd_xml);
+            if (x.len > max_in_memory_input_bytes - eqbd_xml.len) return error.FileTooLarge;
+            segments[1] = .{ .name = path, .start = @intCast(x.len) };
+            segments_count = 2;
+            const combined = try std.mem.concat(gpa, u8, &.{ x, eqbd_xml });
+            gpa.free(x);
+            x = combined;
+        }
+        break :blk x;
+    };
+    var model = try EQ.init(gpa, xml);
+    defer model.deinit(gpa);
+
+    var evaluations: [cli.Command.Validate.rules_count_max]validate.Evaluation = undefined;
+    var entries: [cli.Command.Validate.rules_count_max]validate.ReportEntry = undefined;
+    var evaluations_count: usize = 0;
+    defer for (evaluations[0..evaluations_count]) |*evaluation| evaluation.deinit(gpa);
+    for (rule_sets[0..rule_sets_count], 0..) |*rules, i| {
+        evaluations[i] = try validate.evaluate(gpa, &model, rules);
+        evaluations_count += 1;
+        entries[i] = .{ .rules = rules, .evaluation = &evaluations[i] };
+    }
+
+    const cwd = std.Io.Dir.cwd();
+    const output_file = if (c.output_path) |path|
+        try cwd.createFile(io, path, .{})
+    else
+        std.Io.File.stdout();
+    defer if (c.output_path != null) output_file.close(io);
+
+    var write_buffer: [64 * 1024]u8 = undefined;
+    var file_writer = std.Io.File.Writer.init(output_file, io, &write_buffer);
+    const totals = try validate.write_report(
+        gpa,
+        &file_writer.interface,
+        &model,
+        segments[0..segments_count],
+        entries[0..evaluations_count],
+        .{ .list_skipped = c.list_skipped },
+    );
+    try file_writer.interface.flush();
+
+    // Exit codes follow the diff precedent: violations are the failure
+    // signal; warnings and info findings do not fail the run.
+    if (totals.violations > 0) std.process.exit(1);
+}
+
+fn command_qocdc(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Qocdc) !void {
     _ = gpa;
     // try print.stderr(io, "Not implemented yet!\n", .{});
-    try validate(io, c.eq_path);
+    try qocdc(io, c.eq_path);
 }
 
 fn command_version(io: std.Io, verbose: bool, json: bool) !void {
@@ -1006,6 +1092,23 @@ fn load_tp(io: std.Io, gpa: std.mem.Allocator, tp_path: []const u8) !TP {
 }
 
 fn read_path(io: std.Io, gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
+    return read_path_extension(io, gpa, file_path, ".xml", max_in_memory_input_bytes);
+}
+
+/// SHACL rule bundles are zips of Turtle, not XML. A .zip rule bundle reuses
+/// io/zip.zig exactly as data files do. The rules size limit applies before
+/// the file is read or decompressed, not only at RuleSet.load.
+fn read_rules_path(io: std.Io, gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
+    return read_path_extension(io, gpa, file_path, ".ttl", rule_set.rules_bytes_max);
+}
+
+fn read_path_extension(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    file_path: []const u8,
+    extension: []const u8,
+    max_bytes: u64,
+) ![]const u8 {
     const cwd = std.Io.Dir.cwd();
     const file = try cwd.openFile(io, file_path, .{});
     defer file.close(io);
@@ -1015,19 +1118,25 @@ fn read_path(io: std.Io, gpa: std.mem.Allocator, file_path: []const u8) ![]const
         var file_reader = file.reader(io, &zip_buffer);
         const extracted = try zip.extract_first_file_to_memory(gpa, &file_reader, .{
             .extract = .{},
-            .max_uncompressed_bytes = max_in_memory_input_bytes,
+            .max_uncompressed_bytes = max_bytes,
+            .extension = extension,
         });
         const data = extracted.data;
         gpa.free(extracted.filename);
         return data;
     } else {
-        return try read_file_to_memory(io, gpa, file);
+        return try read_file_to_memory(io, gpa, file, max_bytes);
     }
 }
 
-fn read_file_to_memory(io: std.Io, gpa: std.mem.Allocator, file: std.Io.File) ![]u8 {
+fn read_file_to_memory(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    file: std.Io.File,
+    max_bytes: u64,
+) ![]u8 {
     const file_size = try file.length(io);
-    if (file_size > max_in_memory_input_bytes) return error.FileTooLarge;
+    if (file_size > max_bytes) return error.FileTooLarge;
 
     var file_reader = file.reader(io, &.{});
     // +1 so the reader can observe EOF without tripping StreamTooLong on exact-size files.

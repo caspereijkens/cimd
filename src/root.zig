@@ -3,7 +3,7 @@
 //! Public surface for embedding cimd as a CIM-model library. Keep this list
 //! curated: every export here is something a downstream caller can rely on.
 
-// Model types — load a CGMES file and walk its contents.
+// Model types: load a CGMES file and walk its contents.
 pub const EQ = @import("cgmes/eq.zig").EQ;
 pub const TP = @import("cgmes/tp.zig").TP;
 pub const SSH = @import("cgmes/ssh.zig").SSH;
@@ -11,7 +11,7 @@ pub const CimObject = @import("cgmes/eq.zig").CimObject;
 pub const CimObjectView = @import("cgmes/tag_index.zig").CimObjectView;
 pub const cim_types = @import("cgmes/cim_types.zig");
 
-// Overlay reads — EQ + TP + SSH merged with SSH > TP > EQ precedence.
+// Overlay reads: EQ + TP + SSH merged with SSH > TP > EQ precedence.
 pub const CimMergedView = @import("cgmes/ssh.zig").CimMergedView;
 
 // Lookups across EQ + TP.
@@ -28,7 +28,7 @@ comptime {
     _ = @import("test_diff.zig");
     _ = @import("test_eqdiff.zig");
     _ = @import("test_browse.zig");
-    _ = @import("test_validate.zig");
+    _ = @import("test_qocdc.zig");
     _ = @import("cgmes/cim_types.zig");
     _ = @import("cgmes/test_eq.zig");
     _ = @import("cgmes/test_ids.zig");
@@ -45,5 +45,8 @@ comptime {
     _ = @import("convert/placement.zig");
     _ = @import("convert/equipment.zig");
     _ = @import("convert/line.zig");
-    _ = @import("validate.zig");
+    _ = @import("qocdc.zig");
+    _ = @import("shacl/test_turtle.zig");
+    _ = @import("shacl/test_rule_set.zig");
+    _ = @import("test_validate.zig");
 }

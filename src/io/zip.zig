@@ -264,10 +264,14 @@ pub const FirstFileOptions = struct {
     extract: std.zip.ExtractOptions = .{},
     /// Maximum uncompressed size allowed for the selected archive entry.
     max_uncompressed_bytes: u64 = std.math.maxInt(u32),
+    /// Extension (with dot, matched case-insensitively) selecting the entry
+    /// to extract: ".xml" for data files, ".ttl" for SHACL rule bundles.
+    extension: []const u8 = ".xml",
 };
 
-/// Extract the first regular XML file (skipping directory and non-XML entries) from a ZIP archive.
-/// Returns error.ZipArchiveHasNoXmlFiles when the archive has no XML file entries.
+/// Extract the first regular file with the selected extension (skipping
+/// directory and other entries) from a ZIP archive.
+/// Returns error.ZipArchiveHasNoMatchingFiles when no entry matches.
 pub fn extract_first_file_to_memory(
     gpa: std.mem.Allocator,
     stream: *std.Io.File.Reader,
@@ -290,7 +294,7 @@ pub fn extract_first_file_to_memory(
         }
 
         const ext = std.fs.path.extension(filename);
-        if (!std.ascii.eqlIgnoreCase(ext, ".xml")) {
+        if (!std.ascii.eqlIgnoreCase(ext, options.extension)) {
             gpa.free(filename);
             filename_owned = false;
             continue;
@@ -304,7 +308,7 @@ pub fn extract_first_file_to_memory(
         return try extract_entry_with_filename(entry, gpa, stream, filename);
     }
 
-    return error.ZipArchiveHasNoXmlFiles;
+    return error.ZipArchiveHasNoMatchingFiles;
 }
 
 test "is_zip_file" {

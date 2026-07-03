@@ -32,7 +32,8 @@ const help_main =
     \\  types      List CIM types present in a CIM file
     \\  diff       Semantic diff between two EQ profiles
     \\  topology   Generate TopologicalNodes from EQ (+SSH) — TP-equivalent output
-    //    \\  validate   Validate grid model according to the 'Quality of CGMES Datasets and Calculations'
+    \\  validate   Validate a CGMES file against a SHACL rule set
+    \\  qocdc      Validate grid model according to the 'Quality of CGMES Datasets and Calculations'
     \\  version    Print version information
     \\
     \\Use 'cimd <command> --help' for more information about a command.
@@ -288,7 +289,43 @@ const help_topology = std.fmt.comptimePrint(
 , .{ .sep = path_separator });
 
 const help_validate = std.fmt.comptimePrint(
-    \\Usage: cimd validate <file> [options]
+    \\Usage: cimd validate <file> --rules <ttl|zip> [options]
+    \\
+    \\Validate a CGMES instance file against a SHACL rule set (e.g. the
+    \\ENTSO-E application-profile constraints). Any profile works — EQ, SSH,
+    \\TP, SV — supply the rule sets published for that profile. Rule sets
+    \\are external inputs: point --rules at any SHACL/Turtle file, or a zip
+    \\containing one. Rules the engine cannot execute (sh:sparql above all)
+    \\are counted and named in the report, never silently dropped.
+    \\
+    \\Every violation reports the data file name, the line number of the
+    \\object, the rule code, and the rule's own message. Load errors in the
+    \\rules file report file and line the same way.
+    \\
+    \\Exit codes:
+    \\  0  no violations (warnings and info findings do not fail the run)
+    \\  1  violations found
+    \\  2  usage error, or the rule set failed to load
+    \\
+    \\Arguments:
+    \\  <file>                  CGMES instance file, any profile (XML or ZIP)
+    \\
+    \\Options:
+    \\  -r, --rules <file>      SHACL rule set, Turtle or zipped Turtle
+    \\                          (repeatable, up to {[rules_max]d} rule sets per run)
+    \\  -b, --eqbd <file>       EQBD boundary profile merged into the model
+    \\                          before validation (XML or ZIP)
+    \\  -o, --output <file>     Write the report to a file instead of stdout
+    \\      --list-skipped      List every rule the engine cannot execute
+    \\
+    \\Examples:
+    \\  cimd validate data{[sep]s}eq.zip --rules rules{[sep]s}AssessedElement-SHACL.ttl
+    \\  cimd validate data{[sep]s}eq.zip -b eqbd.zip -r a.ttl -r b.ttl --list-skipped
+    \\
+, .{ .sep = path_separator, .rules_max = Command.Validate.rules_count_max });
+
+const help_qocdc = std.fmt.comptimePrint(
+    \\Usage: cimd qocdc <file> [options]
     \\
     \\Validate a grid model against to the 'Quality of CGMES Datasets and
     \\Calculations'.
@@ -302,8 +339,8 @@ const help_validate = std.fmt.comptimePrint(
     \\  -o, --output <file>     Write output to file instead of stdout
     \\
     \\Examples:
-    \\  cimd validate data{[sep]s}eq.zip -s ssh.zip
-    \\  cimd validate data{[sep]s}eq.zip --eqbd eqbd.zip -s ssh.zip -o tn.json
+    \\  cimd qocdc data{[sep]s}eq.zip -s ssh.zip
+    \\  cimd qocdc data{[sep]s}eq.zip --eqbd eqbd.zip -s ssh.zip -o tn.json
     \\
 , .{ .sep = path_separator });
 
@@ -333,6 +370,7 @@ pub const Command = union(enum) {
     diff: Diff,
     topology: Topology,
     validate: Validate,
+    qocdc: Qocdc,
     version: Version,
 
     pub const Convert = struct {
@@ -414,11 +452,29 @@ pub const Command = union(enum) {
         output_path: ?[]const u8,
     };
 
-    pub const Validate = struct {
+    pub const Qocdc = struct {
         eq_path: []const u8,
         eqbd_path: ?[]const u8,
         ssh_path: ?[]const u8,
         output_path: ?[]const u8,
+    };
+
+    pub const Validate = struct {
+        eq_path: []const u8,
+        eqbd_path: ?[]const u8,
+        output_path: ?[]const u8,
+        list_skipped: bool,
+        rules_count: u32,
+        rules_paths: [rules_count_max][]const u8,
+
+        /// Publishers split rules per CGMES profile; one run may validate
+        /// against several sets. The bound keeps the Command allocation-free.
+        pub const rules_count_max = 16;
+
+        pub fn rules(self: *const Validate) []const []const u8 {
+            assert(self.rules_count <= rules_count_max);
+            return self.rules_paths[0..self.rules_count];
+        }
     };
 
     pub const Version = struct {
@@ -448,6 +504,7 @@ pub fn parse_args(io: std.Io, args: *std.process.Args.Iterator) !Command {
     if (std.mem.eql(u8, command_name, "diff")) return parse_diff(io, args);
     if (std.mem.eql(u8, command_name, "topology")) return parse_topology(io, args);
     if (std.mem.eql(u8, command_name, "validate")) return parse_validate(io, args);
+    if (std.mem.eql(u8, command_name, "qocdc")) return parse_qocdc(io, args);
     if (std.mem.eql(u8, command_name, "version")) return parse_version(io, args);
 
     print.stderr(io, "unknown command '{s}'\n\n" ++ help_main, .{command_name});
@@ -818,12 +875,69 @@ fn parse_validate(io: std.Io, args: *std.process.Args.Iterator) !Command {
 
     var eq_path: ?[]const u8 = null;
     var eqbd_path: ?[]const u8 = null;
+    var output_path: ?[]const u8 = null;
+    var list_skipped = false;
+    var rules_count: u32 = 0;
+    var rules_paths: [Command.Validate.rules_count_max][]const u8 = undefined;
+
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            try print.write(io, help_validate);
+            std.process.exit(0);
+        }
+        if (std.mem.eql(u8, arg, "-r") or std.mem.eql(u8, arg, "--rules")) {
+            const path = args.next() orelse
+                print.stderr(io, command_name ++ ": --rules requires a file path", .{});
+            validate_path(io, path, command_name);
+            validate_rules_extension(io, path, command_name);
+            if (rules_count >= Command.Validate.rules_count_max) {
+                print.stderr(io, command_name ++ ": too many --rules (max {d})", .{
+                    Command.Validate.rules_count_max,
+                });
+            }
+            rules_paths[rules_count] = path;
+            rules_count += 1;
+        } else if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
+            eqbd_path = take_path_arg(io, args, command_name, "--eqbd");
+        } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
+            output_path = args.next() orelse
+                print.stderr(io, command_name ++ ": --output requires a file path", .{});
+        } else if (std.mem.eql(u8, arg, "--list-skipped")) {
+            list_skipped = true;
+        } else if (is_flag(arg)) {
+            print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
+        } else {
+            if (eq_path != null) print.stderr(io, command_name ++ ": unexpected argument '{s}'", .{arg});
+            validate_path(io, arg, command_name);
+            validate_cgmes_extension(io, arg, command_name);
+            eq_path = arg;
+        }
+    }
+
+    if (eq_path == null) print.stderr(io, command_name ++ ": <file> is required", .{});
+    if (rules_count == 0) print.stderr(io, command_name ++ ": at least one --rules <ttl|zip> is required", .{});
+
+    return .{ .validate = .{
+        .eq_path = eq_path.?,
+        .eqbd_path = eqbd_path,
+        .output_path = output_path,
+        .list_skipped = list_skipped,
+        .rules_count = rules_count,
+        .rules_paths = rules_paths,
+    } };
+}
+
+fn parse_qocdc(io: std.Io, args: *std.process.Args.Iterator) !Command {
+    const command_name = "qocdc";
+
+    var eq_path: ?[]const u8 = null;
+    var eqbd_path: ?[]const u8 = null;
     var ssh_path: ?[]const u8 = null;
     var output_path: ?[]const u8 = null;
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            try print.write(io, help_validate);
+            try print.write(io, help_qocdc);
             std.process.exit(0);
         }
         if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
@@ -845,7 +959,7 @@ fn parse_validate(io: std.Io, args: *std.process.Args.Iterator) !Command {
 
     if (eq_path == null) print.stderr(io, command_name ++ ": <file> is required", .{});
 
-    return .{ .validate = .{
+    return .{ .qocdc = .{
         .eq_path = eq_path.?,
         .eqbd_path = eqbd_path,
         .ssh_path = ssh_path,
@@ -906,5 +1020,13 @@ fn validate_cgmes_extension(io: std.Io, path: []const u8, comptime command_name:
     const ext = std.fs.path.extension(path);
     if (!std.ascii.eqlIgnoreCase(ext, ".xml") and !std.ascii.eqlIgnoreCase(ext, ".zip")) {
         print.stderr(io, command_name ++ ": file must be .xml or .zip (got '{s}')", .{path});
+    }
+}
+
+fn validate_rules_extension(io: std.Io, path: []const u8, comptime command_name: []const u8) void {
+    if (path.len < 4) print.stderr(io, command_name ++ ": rules file must be .ttl or .zip (got '{s}')", .{path});
+    const ext = std.fs.path.extension(path);
+    if (!std.ascii.eqlIgnoreCase(ext, ".ttl") and !std.ascii.eqlIgnoreCase(ext, ".zip")) {
+        print.stderr(io, command_name ++ ": rules file must be .ttl or .zip (got '{s}')", .{path});
     }
 }

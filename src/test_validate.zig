@@ -1,330 +1,499 @@
+//! End-to-end tests for SHACL validation (validate.zig): small EQ fixtures
+//! with known violations, asserting rule code, message, file name, and line
+//! number. Covers the corpus idioms beyond plain property checks: a
+//! closed-shape violation, a forbidden-inverse (maxCount 0) hit, a
+//! class-whitelist hit, and inverse-path cardinality via the referrer-count
+//! pass.
+
 const std = @import("std");
-const parse_filename = @import("validate.zig").parse_filename;
+const EQ = @import("cgmes/eq.zig").EQ;
+const RuleSet = @import("shacl/rule_set.zig").RuleSet;
 const validate = @import("validate.zig");
-const check_filename_consistency = validate.check_filename_consistency;
-const check_effective_datetime = validate.check_effective_datetime;
-const validate_sourcing_actor = validate.validate_sourcing_actor;
-const validate_cgm_region = validate.validate_cgm_region;
-const validate_business_process = validate.validate_business_process;
-const validate_model_part = validate.validate_model_part;
-const validate_file_version = validate.validate_file_version;
 
-fn append_u16_le(out: *std.ArrayList(u8), gpa: std.mem.Allocator, value: u16) !void {
-    var bytes: [2]u8 = undefined;
-    std.mem.writeInt(u16, bytes[0..], value, .little);
-    try out.appendSlice(gpa, bytes[0..]);
-}
+const testing = std.testing;
 
-fn append_u32_le(out: *std.ArrayList(u8), gpa: std.mem.Allocator, value: u32) !void {
-    var bytes: [4]u8 = undefined;
-    std.mem.writeInt(u32, bytes[0..], value, .little);
-    try out.appendSlice(gpa, bytes[0..]);
-}
+// Line numbers below are asserted; keep the layout stable.
+// _line1 opens on line 2, _line2 on line 7, _t1 on line 10,
+// _b1 on line 14, _u1 on line 18.
+const fixture_xml =
+    \\<rdf:RDF>
+    \\  <cim:ACLineSegment rdf:ID="_line1">
+    \\    <cim:IdentifiedObject.name>L1</cim:IdentifiedObject.name>
+    \\    <cim:ACLineSegment.r>abc</cim:ACLineSegment.r>
+    \\    <cim:ACLineSegment.evil>1</cim:ACLineSegment.evil>
+    \\  </cim:ACLineSegment>
+    \\  <cim:ACLineSegment rdf:ID="_line2">
+    \\    <cim:ACLineSegment.r>1.5</cim:ACLineSegment.r>
+    \\  </cim:ACLineSegment>
+    \\  <cim:Terminal rdf:ID="_t1">
+    \\    <cim:Terminal.ConductingEquipment rdf:resource="#_line1"/>
+    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_missing"/>
+    \\  </cim:Terminal>
+    \\  <cim:Breaker rdf:ID="_b1">
+    \\    <cim:IdentifiedObject.name>B1</cim:IdentifiedObject.name>
+    \\    <cim:Switch.kind rdf:resource="http://ex#SwitchKind.weird"/>
+    \\  </cim:Breaker>
+    \\  <cim:UnknownThing rdf:ID="_u1">
+    \\    <cim:ACLineSegment.evil rdf:resource="#_line1"/>
+    \\  </cim:UnknownThing>
+    \\</rdf:RDF>
+;
 
-fn append_local_header(out: *std.ArrayList(u8), gpa: std.mem.Allocator, name: []const u8) !u32 {
-    std.debug.assert(name.len <= std.math.maxInt(u16));
+const fixture_rules =
+    \\@prefix sh:  <http://www.w3.org/ns/shacl#> .
+    \\@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+    \\@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+    \\@prefix owl: <http://www.w3.org/2002/07/owl#> .
+    \\@prefix cim: <https://cim.ucaiug.io/ns#> .
+    \\@prefix ex:  <http://example.org/rules#> .
+    \\
+    \\ex:Ontology a owl:Ontology ; owl:versionInfo "1.0.0-fixture" .
+    \\
+    \\# Datatype + cardinality on ACLineSegment: _line1 has a non-float r,
+    \\# _line2 misses the required name.
+    \\ex:LineShape a sh:NodeShape ;
+    \\    sh:targetClass cim:ACLineSegment ;
+    \\    sh:property [ sh:path cim:ACLineSegment.r ; sh:nodeKind sh:Literal ;
+    \\                  sh:datatype xsd:float ; sh:name "ACLineSegment.r-datatype" ;
+    \\                  sh:message "r violates xsd:float." ] ;
+    \\    sh:property [ sh:path cim:IdentifiedObject.name ; sh:minCount 1 ;
+    \\                  sh:name "IdentifiedObject.name-cardinality" ;
+    \\                  sh:message "Missing required name." ] .
+    \\
+    \\# Closed shape: ACLineSegment.evil is not part of the profile.
+    \\ex:LineClosed a sh:NodeShape ;
+    \\    sh:targetClass cim:ACLineSegment ;
+    \\    sh:closed true ;
+    \\    sh:ignoredProperties ( rdf:type ) ;
+    \\    sh:severity sh:Info ;
+    \\    sh:name "PropertyNotInProfile" ;
+    \\    sh:message "This property is not part of the profile." ;
+    \\    sh:property [ sh:path cim:IdentifiedObject.name ] ;
+    \\    sh:property [ sh:path cim:ACLineSegment.r ] .
+    \\
+    \\# Enumeration on Switch.kind, targeting the parent class: Breaker must
+    \\# match via the CIM subtype walk. Warning severity.
+    \\ex:SwitchKindShape a sh:NodeShape ;
+    \\    sh:targetClass cim:Switch ;
+    \\    sh:property [ sh:path cim:Switch.kind ; sh:nodeKind sh:IRI ;
+    \\                  sh:in ( cim:SwitchKind.breaker cim:SwitchKind.disconnector ) ;
+    \\                  sh:severity sh:Warning ; sh:name "Switch.kind-enum" ;
+    \\                  sh:message "Not a known SwitchKind." ] .
+    \\
+    \\# Association checks on Terminal: sh:class (dangling => violation) and
+    \\# the (P rdf:type) + sh:in idiom (dangling => vacuous).
+    \\ex:TerminalShape a sh:NodeShape ;
+    \\    sh:targetClass cim:Terminal ;
+    \\    sh:property [ sh:path cim:Terminal.ConnectivityNode ;
+    \\                  sh:class cim:ConnectivityNode ;
+    \\                  sh:name "Terminal.ConnectivityNode-class" ;
+    \\                  sh:message "Must resolve to a ConnectivityNode." ] ;
+    \\    sh:property [ sh:path ( cim:Terminal.ConnectivityNode rdf:type ) ;
+    \\                  sh:in ( cim:ConnectivityNode ) ;
+    \\                  sh:name "Terminal.ConnectivityNode-refType" ;
+    \\                  sh:message "Referenced object has the wrong class." ] ;
+    \\    sh:property [ sh:path ( cim:Terminal.ConductingEquipment rdf:type ) ;
+    \\                  sh:in ( cim:ACLineSegment cim:Breaker ) ;
+    \\                  sh:name "Terminal.ConductingEquipment-refType" ;
+    \\                  sh:message "Referenced object has the wrong class." ] .
+    \\
+    \\# Class whitelist: UnknownThing is not in the profile.
+    \\ex:AllowedClasses-property a sh:PropertyShape ;
+    \\    sh:path rdf:type ;
+    \\    sh:in ( cim:ACLineSegment cim:Terminal cim:Breaker ) ;
+    \\    sh:severity sh:Info ;
+    \\    sh:name "ClassNotInProfile" ;
+    \\    sh:message "This class is not part of the profile." .
+    \\ex:AllowedClasses a sh:NodeShape ;
+    \\    sh:property ex:AllowedClasses-property ;
+    \\    sh:targetSubjectsOf rdf:type .
+    \\
+    \\# Forbidden inverse association: both _line1 (text form) and _u1
+    \\# (reference form) carry the forbidden property.
+    \\ex:Inverse a sh:NodeShape ;
+    \\    sh:targetSubjectsOf cim:ACLineSegment.evil ;
+    \\    sh:property [ sh:path cim:ACLineSegment.evil ; sh:maxCount 0 ;
+    \\                  sh:name "InverseAssociationPresent" ;
+    \\                  sh:message "Inverse association is present." ] .
+    \\
+    \\# Inverse-path cardinality: _t1's Terminal.ConductingEquipment
+    \\# references _line1; nobody references _line2.
+    \\ex:LineTerminated a sh:NodeShape ;
+    \\    sh:targetClass cim:ACLineSegment ;
+    \\    sh:property [ sh:path [ sh:inversePath cim:Terminal.ConductingEquipment ] ;
+    \\                  sh:minCount 1 ; sh:name "ACLineSegment.Terminal-inverseMin" ;
+    \\                  sh:message "Conducting equipment needs a terminal." ] ;
+    \\    sh:property [ sh:path [ sh:inversePath cim:Terminal.ConductingEquipment ] ;
+    \\                  sh:maxCount 0 ; sh:severity sh:Warning ;
+    \\                  sh:name "ACLineSegment.Terminal-inverseMax" ;
+    \\                  sh:message "No terminal allowed here." ] .
+    \\
+    \\# One inert sparql rule, to exercise the honesty note.
+    \\ex:SparqlShape a sh:NodeShape ;
+    \\    sh:targetClass cim:Terminal ;
+    \\    sh:name "C:FIXTURE:sparql" ;
+    \\    sh:sparql ex:SparqlBody .
+;
 
-    const offset: u32 = @intCast(out.items.len);
-    try out.appendSlice(gpa, &std.zip.local_file_header_sig);
-    try append_u16_le(out, gpa, 20); // version needed
-    try append_u16_le(out, gpa, 0); // flags
-    try append_u16_le(out, gpa, 0); // compression: stored
-    try append_u16_le(out, gpa, 0); // mod time
-    try append_u16_le(out, gpa, 0); // mod date
-    try append_u32_le(out, gpa, 0); // CRC-32
-    try append_u32_le(out, gpa, 0); // compressed size
-    try append_u32_le(out, gpa, 0); // uncompressed size
-    try append_u16_le(out, gpa, @intCast(name.len));
-    try append_u16_le(out, gpa, 0); // extra field length
-    try out.appendSlice(gpa, name);
-    return offset;
-}
+const Fixture = struct {
+    model: EQ,
+    rules: RuleSet,
+    evaluation: validate.Evaluation,
 
-fn append_central_header(
-    out: *std.ArrayList(u8),
-    gpa: std.mem.Allocator,
-    name: []const u8,
-    local_header_offset: u32,
-) !void {
-    std.debug.assert(name.len <= std.math.maxInt(u16));
-
-    try out.appendSlice(gpa, &std.zip.central_file_header_sig);
-    try append_u16_le(out, gpa, 20); // version made by
-    try append_u16_le(out, gpa, 20); // version needed
-    try append_u16_le(out, gpa, 0); // flags
-    try append_u16_le(out, gpa, 0); // compression: stored
-    try append_u16_le(out, gpa, 0); // mod time
-    try append_u16_le(out, gpa, 0); // mod date
-    try append_u32_le(out, gpa, 0); // CRC-32
-    try append_u32_le(out, gpa, 0); // compressed size
-    try append_u32_le(out, gpa, 0); // uncompressed size
-    try append_u16_le(out, gpa, @intCast(name.len));
-    try append_u16_le(out, gpa, 0); // extra field length
-    try append_u16_le(out, gpa, 0); // file comment length
-    try append_u16_le(out, gpa, 0); // disk number start
-    try append_u16_le(out, gpa, 0); // internal file attributes
-    try append_u32_le(out, gpa, 0); // external file attributes
-    try append_u32_le(out, gpa, local_header_offset);
-    try out.appendSlice(gpa, name);
-}
-
-fn create_test_zip(
-    io: std.Io,
-    dir: std.Io.Dir,
-    zip_name: []const u8,
-    entry_names: []const []const u8,
-    out_path: []u8,
-) ![]const u8 {
-    std.debug.assert(entry_names.len > 0);
-    std.debug.assert(entry_names.len <= 8);
-
-    const gpa = std.testing.allocator;
-    var zip_bytes: std.ArrayList(u8) = .empty;
-    defer zip_bytes.deinit(gpa);
-
-    var local_header_offsets: [8]u32 = undefined;
-    for (entry_names, 0..) |entry_name, index| {
-        local_header_offsets[index] = try append_local_header(&zip_bytes, gpa, entry_name);
+    fn init(gpa: std.mem.Allocator) !Fixture {
+        var model = try EQ.init(gpa, try gpa.dupe(u8, fixture_xml));
+        errdefer model.deinit(gpa);
+        var rules = try RuleSet.load(gpa, try gpa.dupe(u8, fixture_rules), "fixture.ttl", &.{}, null);
+        errdefer rules.deinit(gpa);
+        const evaluation = try validate.evaluate(gpa, &model, &rules);
+        return .{ .model = model, .rules = rules, .evaluation = evaluation };
     }
 
-    const central_directory_offset_usize = zip_bytes.items.len;
-    const central_directory_offset: u32 = @intCast(central_directory_offset_usize);
-    for (entry_names, 0..) |entry_name, index| {
-        try append_central_header(&zip_bytes, gpa, entry_name, local_header_offsets[index]);
+    fn deinit(self: *Fixture, gpa: std.mem.Allocator) void {
+        self.evaluation.deinit(gpa);
+        self.rules.deinit(gpa);
+        self.model.deinit(gpa);
     }
-    const central_directory_size: u32 = @intCast(zip_bytes.items.len - central_directory_offset_usize);
-    const entry_count: u16 = @intCast(entry_names.len);
 
-    try zip_bytes.appendSlice(gpa, &std.zip.end_record_sig);
-    try append_u16_le(&zip_bytes, gpa, 0); // disk number
-    try append_u16_le(&zip_bytes, gpa, 0); // central directory disk
-    try append_u16_le(&zip_bytes, gpa, entry_count);
-    try append_u16_le(&zip_bytes, gpa, entry_count);
-    try append_u32_le(&zip_bytes, gpa, central_directory_size);
-    try append_u32_le(&zip_bytes, gpa, central_directory_offset);
-    try append_u16_le(&zip_bytes, gpa, 0); // comment length
+    /// Count violations whose rule code is `name`, optionally checking that
+    /// each names the expected object.
+    fn count_named(self: *const Fixture, name: []const u8, object_id: ?[]const u8) u32 {
+        var count: u32 = 0;
+        for (self.evaluation.violations.items) |violation| {
+            const rule_name = if (violation.constraint == validate.constraint_none)
+                self.rules.shapes[violation.shape].name
+            else
+                self.rules.constraints[violation.constraint].name;
+            if (!std.mem.eql(u8, rule_name, name)) continue;
+            if (object_id) |id| {
+                if (!std.mem.eql(u8, violation.object_id, id)) continue;
+            }
+            count += 1;
+        }
+        return count;
+    }
+};
 
-    var file = try dir.createFile(io, zip_name, .{ .read = true });
-    defer file.close(io);
-    try file.writeStreamingAll(io, zip_bytes.items);
+test "evaluate finds exactly the planted violations" {
+    const gpa = testing.allocator;
+    var fixture = try Fixture.init(gpa);
+    defer fixture.deinit(gpa);
 
-    const path_len = try file.realPath(io, out_path);
-    return out_path[0..path_len];
+    // Datatype: only _line1 ("abc" is not a float; 1.5 is).
+    try testing.expectEqual(@as(u32, 1), fixture.count_named("ACLineSegment.r-datatype", "_line1"));
+    try testing.expectEqual(@as(u32, 1), fixture.count_named("ACLineSegment.r-datatype", null));
+    // Cardinality: only _line2 misses the name.
+    try testing.expectEqual(@as(u32, 1), fixture.count_named("IdentifiedObject.name-cardinality", "_line2"));
+    try testing.expectEqual(@as(u32, 1), fixture.count_named("IdentifiedObject.name-cardinality", null));
+    // Closed shape: _line1's evil property, nothing else.
+    try testing.expectEqual(@as(u32, 1), fixture.count_named("PropertyNotInProfile", "_line1"));
+    try testing.expectEqual(@as(u32, 1), fixture.count_named("PropertyNotInProfile", null));
+    // Enumeration via subtype targeting (Breaker is_a Switch).
+    try testing.expectEqual(@as(u32, 1), fixture.count_named("Switch.kind-enum", "_b1"));
+    // sh:class on a dangling reference violates...
+    try testing.expectEqual(@as(u32, 1), fixture.count_named("Terminal.ConnectivityNode-class", "_t1"));
+    // ...but the (P rdf:type) path over the same dangling reference yields
+    // no value, so the in-check passes vacuously.
+    try testing.expectEqual(@as(u32, 0), fixture.count_named("Terminal.ConnectivityNode-refType", null));
+    // The resolvable reference's type is in the allowed set.
+    try testing.expectEqual(@as(u32, 0), fixture.count_named("Terminal.ConductingEquipment-refType", null));
+    // Class whitelist: only UnknownThing.
+    try testing.expectEqual(@as(u32, 1), fixture.count_named("ClassNotInProfile", "_u1"));
+    // Forbidden inverse: _line1 (text form) and _u1 (reference form).
+    try testing.expectEqual(@as(u32, 1), fixture.count_named("InverseAssociationPresent", "_line1"));
+    try testing.expectEqual(@as(u32, 1), fixture.count_named("InverseAssociationPresent", "_u1"));
+    // Inverse-path cardinality: _t1 refers to _line1, nobody to _line2.
+    try testing.expectEqual(@as(u32, 1), fixture.count_named("ACLineSegment.Terminal-inverseMin", "_line2"));
+    try testing.expectEqual(@as(u32, 1), fixture.count_named("ACLineSegment.Terminal-inverseMin", null));
+    try testing.expectEqual(@as(u32, 1), fixture.count_named("ACLineSegment.Terminal-inverseMax", "_line1"));
+    try testing.expectEqual(@as(u32, 1), fixture.count_named("ACLineSegment.Terminal-inverseMax", null));
+
+    // Nothing else fired: the sum of the planted hits is the whole list.
+    try testing.expectEqual(@as(usize, 10), fixture.evaluation.violations.items.len);
+    try testing.expectEqual(@as(u64, 0), fixture.evaluation.truncated);
 }
 
-test "FileNameMD" {
-    // Used for EQ (also correct_filename_template2), SSH, TP and SV.
-    const correct_filename_template1: []const u8 = "effectiveDateTime_businessProcess_sourcingTSO_modelPart_fileVersion";
-    const filename1 = try parse_filename(correct_filename_template1);
-    try std.testing.expectEqualStrings(filename1.business_process.?, "businessProcess");
+test "report carries file:line, rule code, message, and honesty note" {
+    const gpa = testing.allocator;
+    var fixture = try Fixture.init(gpa);
+    defer fixture.deinit(gpa);
 
-    // Used for EQ(also correct_filename_template1), EQBD and TPBD.
-    const correct_filename_template2: []const u8 = "effectiveDateTime__sourcingTSO_modelPart_fileVersion";
-    const filename2 = try parse_filename(correct_filename_template2);
-    try std.testing.expectEqual(filename2.business_process, null);
-
-    // Some variations of sourcingActor
-    const correct_filename_template3: []const u8 = "effectiveDateTime__sourcingRSC-cgmRegion_modelPart_fileVersion";
-    const filename3 = try parse_filename(correct_filename_template3);
-    try std.testing.expectEqualStrings(filename3.sourcing_actor, "sourcingRSC-cgmRegion");
-
-    const correct_filename_template4: []const u8 = "effectiveDateTime__sourcingRSC-cgmRegion-sourcingTSO_modelPart_fileVersion";
-    const filename4 = try parse_filename(correct_filename_template4);
-    try std.testing.expectEqualStrings(filename4.sourcing_actor, "sourcingRSC-cgmRegion-sourcingTSO");
-
-    // Unhappy cases
-    const empty_filename: []const u8 = "____";
-    try std.testing.expectError(error.FileNameMD, parse_filename(empty_filename));
-
-    const missing_underscore: []const u8 = "effectiveDateTime_sourcingTSO_modelPart_fileVersion";
-    try std.testing.expectError(error.FileNameMD, parse_filename(missing_underscore));
-
-    const empty_model_part: []const u8 = "effectiveDateTime_sourcingTSO__fileVersion";
-    try std.testing.expectError(error.FileNameMD, parse_filename(empty_model_part));
-}
-
-test "FileNameConsistency" {
-    var tmpdir = std.testing.tmpDir(.{});
-    defer tmpdir.cleanup();
-
-    const io = std.testing.io;
-    const filename = "my_filename.zip";
-    var out_buffer: [1024]u8 = undefined;
-    const file_path = try create_test_zip(io, tmpdir.dir, filename, &.{"my_filename.xml"}, &out_buffer);
-
-    try check_filename_consistency(io, file_path);
-}
-
-test "FileNameConsistency rejects zip containers with multiple files" {
-    var tmpdir = std.testing.tmpDir(.{});
-    defer tmpdir.cleanup();
-
-    const io = std.testing.io;
-    const filename = "my_filename.zip";
-    var out_buffer: [1024]u8 = undefined;
-    const file_path = try create_test_zip(
-        io,
-        tmpdir.dir,
-        filename,
-        &.{ "my_filename.xml", "other.xml" },
-        &out_buffer,
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const totals = try validate.write_report(
+        gpa,
+        &out.writer,
+        &fixture.model,
+        &.{.{ .name = "eq.xml", .start = 0 }},
+        &.{.{ .rules = &fixture.rules, .evaluation = &fixture.evaluation }},
+        .{},
     );
+    const report = out.written();
 
-    try std.testing.expectError(error.FileNameConsistency, check_filename_consistency(io, file_path));
+    // Severity totals drive the exit code: violations fail the run,
+    // warnings and infos do not.
+    try testing.expectEqual(@as(u64, 6), totals.violations);
+    try testing.expectEqual(@as(u64, 2), totals.warnings);
+    try testing.expectEqual(@as(u64, 2), totals.infos);
+    try testing.expectEqual(@as(u64, 0), totals.truncated);
+
+    // Header with provenance.
+    try testing.expect(std.mem.indexOf(u8, report, "rules: fixture.ttl (version 1.0.0-fixture)") != null);
+
+    // Report entries include data file name, object line number, rule code,
+    // and message.
+    try testing.expect(std.mem.indexOf(u8, report, "eq.xml:2: violation: ACLineSegment.r-datatype: r violates xsd:float. [abc] (object _line1)") != null);
+    try testing.expect(std.mem.indexOf(u8, report, "eq.xml:7: violation: IdentifiedObject.name-cardinality: Missing required name. (object _line2)") != null);
+    try testing.expect(std.mem.indexOf(u8, report, "eq.xml:2: info: PropertyNotInProfile: This property is not part of the profile. [ACLineSegment.evil] (object _line1)") != null);
+    try testing.expect(std.mem.indexOf(u8, report, "eq.xml:14: warning: Switch.kind-enum: Not a known SwitchKind. [SwitchKind.weird] (object _b1)") != null);
+    try testing.expect(std.mem.indexOf(u8, report, "eq.xml:18: info: ClassNotInProfile: This class is not part of the profile. [UnknownThing] (object _u1)") != null);
+    // Inverse cardinality violations carry the same traceability.
+    try testing.expect(std.mem.indexOf(u8, report, "eq.xml:7: violation: ACLineSegment.Terminal-inverseMin: Conducting equipment needs a terminal. (object _line2)") != null);
+    try testing.expect(std.mem.indexOf(u8, report, "eq.xml:2: warning: ACLineSegment.Terminal-inverseMax: No terminal allowed here. (object _line1)") != null);
+
+    // The unchecked sparql rule is counted and named.
+    try testing.expect(std.mem.indexOf(u8, report, "note: 1 rules not checked (1 sh:sparql); see --list-skipped") != null);
+    try testing.expect(std.mem.indexOf(u8, report, "summary: 6 violations, 2 warnings, 2 info") != null);
+    // Without --list-skipped, no per-rule skip lines.
+    try testing.expect(std.mem.indexOf(u8, report, "skipped:") == null);
 }
 
-test "EffectiveDateTime" {
-    const correct_filename_template1: []const u8 = "20260603T1325Z_businessProcess_sourcingTSO_modelPart_fileVersion";
-    const filename1 = try parse_filename(correct_filename_template1);
-    try check_effective_datetime(filename1);
+test "report --list-skipped names each unchecked rule" {
+    const gpa = testing.allocator;
+    var fixture = try Fixture.init(gpa);
+    defer fixture.deinit(gpa);
 
-    const leap_day: []const u8 = "20240229T1325Z_businessProcess_sourcingTSO_modelPart_fileVersion";
-    const filename_leap_day = try parse_filename(leap_day);
-    try check_effective_datetime(filename_leap_day);
-
-    const filename_template_incorrect1: []const u8 = "2026060ET1325Z_businessProcess_sourcingTSO_modelPart_fileVersion";
-    const filename2 = try parse_filename(filename_template_incorrect1);
-    try std.testing.expectError(error.EffectiveDateTime, check_effective_datetime(filename2));
-
-    const filename_template_incorrect2: []const u8 = "20260603T132540Z_businessProcess_sourcingTSO_modelPart_fileVersion";
-    const filename3 = try parse_filename(filename_template_incorrect2);
-    try std.testing.expectError(error.EffectiveDateTime, check_effective_datetime(filename3));
-
-    const filename_template_incorrect3: []const u8 = "20260603Z1325T_businessProcess_sourcingTSO_modelPart_fileVersion";
-    const filename4 = try parse_filename(filename_template_incorrect3);
-    try std.testing.expectError(error.EffectiveDateTime, check_effective_datetime(filename4));
-
-    const filename_template_incorrect4: []const u8 = "20261303T1325Z_businessProcess_sourcingTSO_modelPart_fileVersion";
-    const filename5 = try parse_filename(filename_template_incorrect4);
-    try std.testing.expectError(error.EffectiveDateTime, check_effective_datetime(filename5));
-
-    const filename_template_incorrect5: []const u8 = "20230229T1325Z_businessProcess_sourcingTSO_modelPart_fileVersion";
-    const filename6 = try parse_filename(filename_template_incorrect5);
-    try std.testing.expectError(error.EffectiveDateTime, check_effective_datetime(filename6));
-
-    const filename_template_incorrect6: []const u8 = "20260603T2460Z_businessProcess_sourcingTSO_modelPart_fileVersion";
-    const filename7 = try parse_filename(filename_template_incorrect6);
-    try std.testing.expectError(error.EffectiveDateTime, check_effective_datetime(filename7));
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    _ = try validate.write_report(
+        gpa,
+        &out.writer,
+        &fixture.model,
+        &.{.{ .name = "eq.xml", .start = 0 }},
+        &.{.{ .rules = &fixture.rules, .evaluation = &fixture.evaluation }},
+        .{ .list_skipped = true },
+    );
+    try testing.expect(std.mem.indexOf(u8, out.written(), "skipped: C:FIXTURE:sparql (sh:sparql)") != null);
 }
 
-test "SourcingActor" {
-    const correct_filename_template1: []const u8 = "effectiveDateTime_businessProcess_TTN_modelPart_fileVersion";
-    const filename1 = try parse_filename(correct_filename_template1);
-    try validate_sourcing_actor(filename1);
+test "report resolves offsets into the correct data segment" {
+    const gpa = testing.allocator;
+    // Two concatenated documents, as --eqbd produces: the second segment's
+    // violations must report the second file's name and a line local to it.
+    const eq_part =
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_a">
+        \\    <cim:IdentifiedObject.name>A</cim:IdentifiedObject.name>
+        \\  </cim:ACLineSegment>
+        \\</rdf:RDF>
+        \\
+    ;
+    const eqbd_part =
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_b">
+        \\    <cim:IdentifiedObject.name>B</cim:IdentifiedObject.name>
+        \\  </cim:ACLineSegment>
+        \\</rdf:RDF>
+    ;
+    var model = try EQ.init(gpa, try std.mem.concat(gpa, u8, &.{ eq_part, eqbd_part }));
+    defer model.deinit(gpa);
 
-    const correct_filename_template2: []const u8 = "effectiveDateTime_businessProcess_BALTIC-EU_modelPart_fileVersion";
-    const filename2 = try parse_filename(correct_filename_template2);
-    try validate_sourcing_actor(filename2);
+    const rules_source =
+        \\@prefix sh:  <http://www.w3.org/ns/shacl#> .
+        \\@prefix cim: <https://cim.ucaiug.io/ns#> .
+        \\@prefix ex:  <http://example.org/rules#> .
+        \\ex:Shape a sh:NodeShape ;
+        \\    sh:targetClass cim:ACLineSegment ;
+        \\    sh:property [ sh:path cim:ACLineSegment.r ; sh:minCount 1 ;
+        \\                  sh:name "r-required" ; sh:message "r is required." ] .
+    ;
+    var rules = try RuleSet.load(gpa, try gpa.dupe(u8, rules_source), "rules.ttl", &.{}, null);
+    defer rules.deinit(gpa);
 
-    const correct_filename_template_case: []const u8 = "effectiveDateTime_businessProcess_baltic-eu-ttn_modelPart_fileVersion";
-    const filename_case = try parse_filename(correct_filename_template_case);
-    try validate_sourcing_actor(filename_case);
+    var evaluation = try validate.evaluate(gpa, &model, &rules);
+    defer evaluation.deinit(gpa);
+    try testing.expectEqual(@as(usize, 2), evaluation.violations.items.len);
 
-    const incorrect_filename_template: []const u8 = "effectiveDateTime_businessProcess_doesnotexist_modelPart_fileVersion";
-    const filename3 = try parse_filename(incorrect_filename_template);
-    try std.testing.expectError(error.SourcingActor, validate_sourcing_actor(filename3));
-
-    const incorrect_filename_template1: []const u8 = "effectiveDateTime_businessProcess_TTN2electricboogaloo_modelPart_fileVersion";
-    const filename4 = try parse_filename(incorrect_filename_template1);
-    try std.testing.expectError(error.SourcingActor, validate_sourcing_actor(filename4));
-
-    const correct_filename_template3: []const u8 = "effectiveDateTime_businessProcess_BALTIC-cgmRegion-TTN_modelPart_fileVersion";
-    const filename5 = try parse_filename(correct_filename_template3);
-    try validate_sourcing_actor(filename5);
-
-    const incorrect_filename_template2: []const u8 = "effectiveDateTime_businessProcess_BALTIC-cgmRegion-doesnotexist_modelPart_fileVersion";
-    const filename6 = try parse_filename(incorrect_filename_template2);
-    try std.testing.expectError(error.SourcingActor, validate_sourcing_actor(filename6));
-
-    const incorrect_filename_template4: []const u8 = "effectiveDateTime_businessProcess_doesnotexit-cgmRegion-TTN_modelPart_fileVersion";
-    const filename7 = try parse_filename(incorrect_filename_template4);
-    try std.testing.expectError(error.SourcingActor, validate_sourcing_actor(filename7));
-
-    const incorrect_filename_template5: []const u8 = "effectiveDateTime_businessProcess_doesnotexist-EU_modelPart_fileVersion";
-    const filename8 = try parse_filename(incorrect_filename_template5);
-    try std.testing.expectError(error.SourcingActor, validate_sourcing_actor(filename8));
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    _ = try validate.write_report(
+        gpa,
+        &out.writer,
+        &model,
+        &.{
+            .{ .name = "eq.xml", .start = 0 },
+            .{ .name = "eqbd.xml", .start = @intCast(eq_part.len) },
+        },
+        &.{.{ .rules = &rules, .evaluation = &evaluation }},
+        .{},
+    );
+    const report = out.written();
+    try testing.expect(std.mem.indexOf(u8, report, "eq.xml:2: violation: r-required") != null);
+    try testing.expect(std.mem.indexOf(u8, report, "eqbd.xml:2: violation: r-required") != null);
 }
 
-test "CGMRegion" {
-    const correct_filename_template1: []const u8 = "effectiveDateTime_businessProcess_sourcingRSC-EU_modelPart_fileVersion";
-    const filename1 = try parse_filename(correct_filename_template1);
-    try validate_cgm_region(filename1);
+test "node target evaluates exactly the named object" {
+    const gpa = testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, fixture_xml));
+    defer model.deinit(gpa);
 
-    const correct_filename_template2: []const u8 = "effectiveDateTime_businessProcess_baltic-eu-ttn_modelPart_fileVersion";
-    const filename_case = try parse_filename(correct_filename_template2);
-    try validate_cgm_region(filename_case);
+    const rules_source =
+        \\@prefix sh:  <http://www.w3.org/ns/shacl#> .
+        \\@prefix cim: <https://cim.ucaiug.io/ns#> .
+        \\@prefix ex:  <http://example.org/rules#> .
+        \\ex:NodeShape1 a sh:NodeShape ;
+        \\    sh:targetNode <#_line2> ;
+        \\    sh:property [ sh:path cim:IdentifiedObject.name ; sh:minCount 1 ;
+        \\                  sh:name "node-name-required" ] .
+        \\ex:NodeShape2 a sh:NodeShape ;
+        \\    sh:targetNode <#_does-not-exist> ;
+        \\    sh:property [ sh:path cim:IdentifiedObject.name ; sh:minCount 1 ;
+        \\                  sh:name "node-missing-target" ] .
+    ;
+    var rules = try RuleSet.load(gpa, try gpa.dupe(u8, rules_source), "rules.ttl", &.{}, null);
+    defer rules.deinit(gpa);
 
-    const incorrect_filename_template1: []const u8 = "effectiveDateTime_businessProcess_EU-sourcingRSC_modelPart_fileVersion";
-    const filename2 = try parse_filename(incorrect_filename_template1);
-    try std.testing.expectError(error.CGMRegion, validate_cgm_region(filename2));
+    var evaluation = try validate.evaluate(gpa, &model, &rules);
+    defer evaluation.deinit(gpa);
+
+    // _line2 has no name: one violation. The unresolvable node target
+    // matches nothing; valid, not an error.
+    try testing.expectEqual(@as(usize, 1), evaluation.violations.items.len);
+    const violation = evaluation.violations.items[0];
+    try testing.expectEqualStrings("_line2", violation.object_id);
+    try testing.expectEqualStrings("node-name-required", rules.constraints[violation.constraint].name);
 }
 
-test "BusinessProcess" {
-    const correct_filename_template1: []const u8 = "effectiveDateTime_1D_TTN_modelPart_fileVersion";
-    const filename1 = try parse_filename(correct_filename_template1);
-    try validate_business_process(filename1);
+test "rdf:about instance files (SSH/TP/SV) resolve references and referrers" {
+    const gpa = testing.allocator;
+    // Non-EQ instance files carry rdf:about="#_id" ids; sh:class resolution
+    // and the referrer-count pass must match them against a reference's
+    // hash-stripped local form.
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:SvVoltage rdf:about="#_sv1">
+        \\    <cim:SvVoltage.TopologicalNode rdf:resource="#_tn1"/>
+        \\  </cim:SvVoltage>
+        \\  <cim:TopologicalNode rdf:about="#_tn1">
+        \\  </cim:TopologicalNode>
+        \\  <cim:TopologicalNode rdf:about="#_tn2">
+        \\  </cim:TopologicalNode>
+        \\</rdf:RDF>
+    ;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
 
-    const correct_filename_template2: []const u8 = "effectiveDateTime_1d_TTN_modelPart_fileVersion";
-    const filename_case = try parse_filename(correct_filename_template2);
-    try validate_business_process(filename_case);
+    const rules_source =
+        \\@prefix sh:  <http://www.w3.org/ns/shacl#> .
+        \\@prefix cim: <https://cim.ucaiug.io/ns#> .
+        \\@prefix ex:  <http://example.org/rules#> .
+        \\ex:SvShape a sh:NodeShape ;
+        \\    sh:targetClass cim:SvVoltage ;
+        \\    sh:property [ sh:path cim:SvVoltage.TopologicalNode ;
+        \\                  sh:class cim:TopologicalNode ;
+        \\                  sh:name "SvVoltage.TopologicalNode-class" ;
+        \\                  sh:message "Must resolve to a TopologicalNode." ] .
+        \\ex:TnShape a sh:NodeShape ;
+        \\    sh:targetClass cim:TopologicalNode ;
+        \\    sh:property [ sh:path [ sh:inversePath cim:SvVoltage.TopologicalNode ] ;
+        \\                  sh:minCount 1 ; sh:name "TopologicalNode.SvVoltage-inverse" ;
+        \\                  sh:message "Node lacks a voltage result." ] .
+    ;
+    var rules = try RuleSet.load(gpa, try gpa.dupe(u8, rules_source), "rules.ttl", &.{}, null);
+    defer rules.deinit(gpa);
 
-    const incorrect_filename_template1: []const u8 = "effectiveDateTime_8D_TTN_modelPart_fileVersion";
-    const filename2 = try parse_filename(incorrect_filename_template1);
-    try std.testing.expectError(error.BusinessProcess, validate_business_process(filename2));
+    var evaluation = try validate.evaluate(gpa, &model, &rules);
+    defer evaluation.deinit(gpa);
+
+    // The sh:class reference resolves (no violation); the inverse count
+    // sees _tn1's referrer and misses one for _tn2 only.
+    try testing.expectEqual(@as(usize, 1), evaluation.violations.items.len);
+    const violation = evaluation.violations.items[0];
+    try testing.expectEqualStrings("#_tn2", violation.object_id);
+    try testing.expectEqualStrings(
+        "TopologicalNode.SvVoltage-inverse",
+        rules.constraints[violation.constraint].name,
+    );
 }
 
-test "ModelPartType" {
-    const correct_filename_template1: []const u8 = "effectiveDateTime_businessProcess_sourcingProcess_EQ_fileVersion";
-    const filename1 = try parse_filename(correct_filename_template1);
-    try validate_model_part(filename1);
+test "escape-decoded and substitution-expanded messages flow into the report" {
+    const gpa = testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, fixture_xml));
+    defer model.deinit(gpa);
 
-    const correct_filename_template2: []const u8 = "effectiveDateTime_businessProcess_sourcingProcess_eq_fileVersion";
-    const filename_case = try parse_filename(correct_filename_template2);
-    try validate_model_part(filename_case);
+    const rules_source =
+        \\@prefix sh:  <http://www.w3.org/ns/shacl#> .
+        \\@prefix cim: <https://cim.ucaiug.io/ns#> .
+        \\@prefix ex:  <http://example.org/rules#> .
+        \\ex:Shape a sh:NodeShape ;
+        \\    sh:targetClass cim:ACLineSegment ;
+        \\    sh:property [ sh:path cim:IdentifiedObject.name ; sh:minCount 1 ;
+        \\                  sh:name "name-required" ;
+        \\                  sh:message "\"name\" must be at least EQ_NAME_MIN long." ] .
+    ;
+    const substitutions = [_]RuleSet.Substitution{
+        .{ .name = "EQ_NAME_MIN", .value = "1 character" },
+    };
+    var rules = try RuleSet.load(
+        gpa,
+        try gpa.dupe(u8, rules_source),
+        "rules.ttl",
+        &substitutions,
+        null,
+    );
+    defer rules.deinit(gpa);
 
-    const incorrect_filename_template1: []const u8 = "effectiveDateTime_businessProcess_sourcingProcess_CO_fileVersion";
-    const filename2 = try parse_filename(incorrect_filename_template1);
-    try std.testing.expectError(error.ModelPartType, validate_model_part(filename2));
+    var evaluation = try validate.evaluate(gpa, &model, &rules);
+    defer evaluation.deinit(gpa);
+    // _line1 has a name; only _line2 violates.
+    try testing.expectEqual(@as(usize, 1), evaluation.violations.items.len);
+
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    _ = try validate.write_report(
+        gpa,
+        &out.writer,
+        &model,
+        &.{.{ .name = "eq.xml", .start = 0 }},
+        &.{.{ .rules = &rules, .evaluation = &evaluation }},
+        .{},
+    );
+    const report = out.written();
+    // The Turtle \" escapes decoded and the constant expanded.
+    try testing.expect(std.mem.indexOf(
+        u8,
+        report,
+        "eq.xml:7: violation: name-required: \"name\" must be at least 1 character long.",
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, report, "EQ_NAME_MIN") == null);
 }
 
-test "FileVersionType" {
-    const correct_filename_template1: []const u8 = "effectiveDateTime_businessProcess_sourcingProcess_modelPart_003";
-    const filename1 = try parse_filename(correct_filename_template1);
-    try validate_file_version(filename1);
+test "the QoCDC constant table reaches users as value and unit" {
+    const gpa = testing.allocator;
+    // The exact example from the QoCDC requirement: EQ_BRANCH_X_LIMIT
+    // must report as "0.01 Ohm".
+    const rules_source =
+        \\@prefix sh:  <http://www.w3.org/ns/shacl#> .
+        \\@prefix cim: <https://cim.ucaiug.io/ns#> .
+        \\@prefix ex:  <http://example.org/rules#> .
+        \\ex:Shape a sh:NodeShape ;
+        \\    sh:targetClass cim:ACLineSegment ;
+        \\    sh:property [ sh:path cim:ACLineSegment.x ; sh:minCount 1 ;
+        \\                  sh:name "branch-x" ;
+        \\                  sh:message "x is not >= EQ_BRANCH_X_LIMIT for a two-winding transformer." ] .
+    ;
+    var rules = try RuleSet.load(
+        gpa,
+        try gpa.dupe(u8, rules_source),
+        "rules.ttl",
+        &validate.qocdc_substitutions,
+        null,
+    );
+    defer rules.deinit(gpa);
 
-    const incorrect_filename_template1: []const u8 = "effectiveDateTime_businessProcess_sourcingProcess_modelPart_1000";
-    const filename2 = try parse_filename(incorrect_filename_template1);
-    try std.testing.expectError(error.FileVersion, validate_file_version(filename2));
-
-    const incorrect_filename_template2: []const u8 = "effectiveDateTime_businessProcess_sourcingProcess_modelPart_abc";
-    const filename3 = try parse_filename(incorrect_filename_template2);
-    try std.testing.expectError(error.FileVersion, validate_file_version(filename3));
-
-    const incorrect_filename_template3: []const u8 = "effectiveDateTime_businessProcess_sourcingProcess_modelPart_000";
-    const filename4 = try parse_filename(incorrect_filename_template3);
-    try std.testing.expectError(error.FileVersion, validate_file_version(filename4));
-}
-
-test "validate accepts zip paths with valid fileVersion" {
-    var tmpdir = std.testing.tmpDir(.{});
-    defer tmpdir.cleanup();
-
-    const io = std.testing.io;
-    const stem = "20260603T1325Z_1D_TTN_EQ_001";
-    var out_buffer: [1024]u8 = undefined;
-    const file_path = try create_test_zip(io, tmpdir.dir, stem ++ ".zip", &.{stem ++ ".xml"}, &out_buffer);
-
-    try validate.validate(io, file_path);
-}
-
-test "validate_filename rejects invalid fileVersion from zip path" {
-    var tmpdir = std.testing.tmpDir(.{});
-    defer tmpdir.cleanup();
-
-    const io = std.testing.io;
-    const stem = "20260603T1325Z_1D_TTN_EQ_000";
-    var out_buffer: [1024]u8 = undefined;
-    const file_path = try create_test_zip(io, tmpdir.dir, stem ++ ".zip", &.{stem ++ ".xml"}, &out_buffer);
-
-    try std.testing.expectError(error.FileVersion, validate.validate_filename(file_path));
+    try testing.expectEqual(@as(usize, 1), rules.constraints.len);
+    try testing.expectEqualStrings(
+        "x is not >= 0.01 Ohm for a two-winding transformer.",
+        rules.constraints[0].message,
+    );
 }
