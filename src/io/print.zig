@@ -4,22 +4,69 @@ const EQ = @import("../cgmes/eq.zig").EQ;
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
 
+pub const exit_not_found = 1;
+pub const exit_failure = 70;
+pub const exit_usage = 2;
+
 /// Print a usage error to stderr and exit 2.
 /// Use for invalid arguments, missing flags, bad input — anything the caller did wrong.
 pub fn stderr(io: std.Io, comptime fmt_str: []const u8, args: anytype) noreturn {
+    exit_message(io, exit_usage, "error: ", fmt_str, args);
+}
+
+/// Print an error to stderr and exit with `code`.
+pub fn exit_error(io: std.Io, code: u8, comptime fmt_str: []const u8, args: anytype) noreturn {
+    exit_message(io, code, "error: ", fmt_str, args);
+}
+
+fn exit_message(
+    io: std.Io,
+    code: u8,
+    comptime prefix: []const u8,
+    comptime fmt_str: []const u8,
+    args: anytype,
+) noreturn {
     var buf: [4096]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, "error: " ++ fmt_str ++ "\n", args) catch "error: (message too long)\n";
+    const msg = std.fmt.bufPrint(&buf, prefix ++ fmt_str ++ "\n", args) catch prefix ++ "(message too long)\n";
     _ = std.Io.File.stderr().writeStreamingAll(io, msg) catch {};
-    std.process.exit(2);
+    std.process.exit(code);
 }
 
 /// Print a not-found message to stderr and exit 1.
 /// Use when a requested resource (e.g. mRID) does not exist in the model.
 pub fn not_found(io: std.Io, comptime fmt_str: []const u8, args: anytype) noreturn {
-    var buf: [4096]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, "not found: " ++ fmt_str ++ "\n", args) catch "not found: (message too long)\n";
-    _ = std.Io.File.stderr().writeStreamingAll(io, msg) catch {};
-    std.process.exit(1);
+    exit_message(io, exit_not_found, "not found: ", fmt_str, args);
+}
+
+pub fn unexpected(io: std.Io, command_name: []const u8, err: anyerror) noreturn {
+    exit_error(io, exit_failure, "{s}: unexpected failure: {t}", .{ command_name, err });
+}
+
+pub fn size_limit_text(buf: []u8, actual_bytes: ?u64, max_bytes: u64) []const u8 {
+    const mib = 1024 * 1024;
+    var prefix_buf: [48]u8 = undefined;
+    const prefix = if (actual_bytes) |actual|
+        std.fmt.bufPrint(&prefix_buf, "{d} bytes; ", .{actual}) catch ""
+    else
+        "";
+    var suffix_buf: [32]u8 = undefined;
+    const suffix = if (max_bytes < mib) "" else std.fmt.bufPrint(
+        &suffix_buf,
+        " (~{d} MiB)",
+        .{std.math.divCeil(u64, max_bytes, mib) catch unreachable},
+    ) catch "";
+    return std.fmt.bufPrint(
+        buf,
+        "{s}max supported size is {d} bytes{s}",
+        .{ prefix, max_bytes, suffix },
+    ) catch "(size details unavailable)";
+}
+
+pub fn size_limit_text_comptime(comptime max_bytes: u64) []const u8 {
+    const mib = 1024 * 1024;
+    if (max_bytes < mib) return std.fmt.comptimePrint("max supported size is {d} bytes", .{max_bytes});
+    const max_mib = std.math.divCeil(u64, max_bytes, mib) catch unreachable;
+    return std.fmt.comptimePrint("max supported size is {d} bytes (~{d} MiB)", .{ max_bytes, max_mib });
 }
 
 /// Write informational (non-error) output to stderr. Returns an error on write failure.
@@ -163,4 +210,16 @@ fn write_object_full_json(
         first = false;
     }
     try w.writeAll("}}");
+}
+
+test "size_limit_text includes exact bytes and MiB" {
+    var buf: [128]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "5 bytes; max supported size is 4 bytes",
+        size_limit_text(&buf, 5, 4),
+    );
+    try std.testing.expectEqualStrings(
+        "max supported size is 4294967295 bytes (~4096 MiB)",
+        size_limit_text(&buf, null, std.math.maxInt(u32)),
+    );
 }

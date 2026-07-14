@@ -20,6 +20,10 @@ Usage: cimd <command> [options]
 
 A high-performance CGMES file parser and analysis tool.
 
+Input limits:
+  XML data is capped at 4294967295 bytes (~4096 MiB) after unzip and EQ+EQBD merge.
+  SHACL rule files are capped at 67108864 bytes (64 MiB) after unzip.
+
 Commands:
   convert    Convert an EQ profile to JIIDM JSON
   browse     Interactively browse CIM objects (EQ/EQBD/TP/SSH merged view)

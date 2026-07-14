@@ -20,6 +20,7 @@ const tag_index = @import("tag_index.zig");
 const utils = @import("ids.zig");
 
 const assert = std.debug.assert;
+pub const Diagnostics = @import("diagnostics.zig").Diagnostics;
 
 pub const CimObject = tag_index.CimObject;
 const TagBoundary = tag_index.TagBoundary;
@@ -45,8 +46,12 @@ pub const TP = struct {
     /// Takes ownership of `xml`: on success the TP owns it (freed by deinit),
     /// on error it is freed before returning. Callers never need to clean up `xml`.
     pub fn init(gpa: std.mem.Allocator, xml: []const u8) !TP {
+        return initWithDiagnostics(gpa, xml, null);
+    }
+
+    pub fn initWithDiagnostics(gpa: std.mem.Allocator, xml: []const u8, diagnostics: ?*Diagnostics) !TP {
         errdefer gpa.free(xml);
-        assert(xml.len > 0);
+        if (xml.len == 0) return error.EmptyInput;
 
         var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
         errdefer boundaries.deinit(gpa);
@@ -84,7 +89,10 @@ pub const TP = struct {
                 .new_object => |raw_id| {
                     assert(object_cursor < new_object_count);
                     const gop = id_to_object.getOrPutAssumeCapacity(raw_id);
-                    if (gop.found_existing) return error.DuplicateId;
+                    if (gop.found_existing) {
+                        if (diagnostics) |d| d.record_duplicate_id(xml, raw_id, tag.start);
+                        return error.DuplicateId;
+                    }
 
                     const obj = try CimObject.init(
                         xml,
@@ -117,7 +125,13 @@ pub const TP = struct {
             for (patches[1..], 1..) |patch, i| {
                 // Pairs with std.mem.sort above: the dedup walk relies on it.
                 assert(!patch_less_than({}, patch, patches[i - 1]));
-                if (std.mem.eql(u8, patches[i - 1].mrid, patch.mrid)) return error.DuplicateId;
+                if (std.mem.eql(u8, patches[i - 1].mrid, patch.mrid)) {
+                    const duplicate = if (patches[i - 1].patch_tag_idx > patch.patch_tag_idx) patches[i - 1] else patch;
+                    const tag = boundaries.items[duplicate.patch_tag_idx];
+                    const raw_id = extract_patch_raw_id(xml, tag.start) orelse unreachable;
+                    if (diagnostics) |d| d.record_duplicate_id(xml, raw_id, tag.start);
+                    return error.DuplicateId;
+                }
             }
         }
 
@@ -255,6 +269,13 @@ fn classify_tag(xml: []const u8, tag_start: u32) TagKind {
     } else |_| {}
 
     return .skip;
+}
+
+fn extract_patch_raw_id(xml: []const u8, tag_start: u32) ?[]const u8 {
+    if (tag_index.extract_rdf_about(xml, tag_start)) |raw| {
+        if (raw.len > 1 and raw[0] == '#' and raw[1] == '_') return raw;
+    } else |_| {}
+    return null;
 }
 
 fn patch_less_than(_: void, a: TpPatch, b: TpPatch) bool {
@@ -395,6 +416,24 @@ test "TP.init - rejects duplicate new object IDs" {
     try std.testing.expectError(error.DuplicateId, TP.init(gpa, try gpa.dupe(u8, xml)));
 }
 
+test "TP diagnostics record duplicate new object ID" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:TopologicalNode rdf:ID="_TN1"/>
+        \\  <cim:TopologicalNode rdf:ID="_TN1"/>
+        \\</rdf:RDF>
+    ;
+    var diagnostics: Diagnostics = .{};
+    try std.testing.expectError(
+        error.DuplicateId,
+        TP.initWithDiagnostics(gpa, try gpa.dupe(u8, xml), &diagnostics),
+    );
+    try std.testing.expectEqualStrings("_TN1", diagnostics.duplicate_id());
+    try std.testing.expectEqual(@as(u32, 3), diagnostics.duplicate_line);
+    try std.testing.expect(!diagnostics.duplicate_id_truncated);
+}
+
 test "TP.init - rejects duplicate patch mRIDs" {
     const gpa = std.testing.allocator;
     const xml =
@@ -405,4 +444,22 @@ test "TP.init - rejects duplicate patch mRIDs" {
     ;
 
     try std.testing.expectError(error.DuplicateId, TP.init(gpa, try gpa.dupe(u8, xml)));
+}
+
+test "TP diagnostics record duplicate patch mRID" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Terminal rdf:about="#_T1"/>
+        \\  <cim:Terminal rdf:about="#_T1"/>
+        \\</rdf:RDF>
+    ;
+    var diagnostics: Diagnostics = .{};
+    try std.testing.expectError(
+        error.DuplicateId,
+        TP.initWithDiagnostics(gpa, try gpa.dupe(u8, xml), &diagnostics),
+    );
+    try std.testing.expectEqualStrings("#_T1", diagnostics.duplicate_id());
+    try std.testing.expectEqual(@as(u32, 3), diagnostics.duplicate_line);
+    try std.testing.expect(!diagnostics.duplicate_id_truncated);
 }

@@ -7,11 +7,14 @@
 //!   0  success
 //!   1  not found (requested mRID / resource does not exist)
 //!   2  usage error (bad flags, missing args, unknown subcommand)
+//!  70  unexpected internal failure
 
 const std = @import("std");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
 const print = @import("io/print.zig");
+const io_read = @import("io/read.zig");
+const rule_set = @import("shacl/rule_set.zig");
 
 pub const ansi_green = "\x1b[92m";
 pub const ansi_default = "\x1b[0m";
@@ -19,10 +22,14 @@ pub const ansi_yellow = "\x1b[33m";
 
 const path_separator = if (builtin.os.tag == .windows) "\\" else "/";
 
-const help_main =
+const help_main = std.fmt.comptimePrint(
     \\Usage: cimd <command> [options]
     \\
     \\A high-performance CGMES file parser and analysis tool.
+    \\
+    \\Input limits:
+    \\  XML data: {[xml_limit]s} after unzip and EQ+EQBD merge.
+    \\  SHACL rule files: {[rules_limit]s} after unzip.
     \\
     \\Commands:
     \\  convert    Convert an EQ profile to JIIDM JSON
@@ -38,7 +45,12 @@ const help_main =
     \\
     \\Use 'cimd <command> --help' for more information about a command.
     \\
-;
+,
+    .{
+        .xml_limit = print.size_limit_text_comptime(io_read.max_in_memory_input_bytes),
+        .rules_limit = print.size_limit_text_comptime(rule_set.rules_bytes_max),
+    },
+);
 
 const help_convert = std.fmt.comptimePrint(
     \\Usage: cimd convert <file> [options]

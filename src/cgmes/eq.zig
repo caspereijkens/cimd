@@ -6,6 +6,7 @@ const cgmes_ids = @import("ids.zig");
 const cim_types = @import("cim_types.zig");
 
 const assert = std.debug.assert;
+pub const Diagnostics = @import("diagnostics.zig").Diagnostics;
 
 pub const EQ = struct {
     objects: []CimObject,
@@ -31,6 +32,10 @@ pub const EQ = struct {
     /// Takes ownership of `xml`: on success the model owns it (freed by deinit),
     /// on error it is freed before returning. Callers never need to clean up `xml`.
     pub fn init(gpa: std.mem.Allocator, xml: []const u8) !EQ {
+        return initWithDiagnostics(gpa, xml, null);
+    }
+
+    pub fn initWithDiagnostics(gpa: std.mem.Allocator, xml: []const u8, diagnostics: ?*Diagnostics) !EQ {
         errdefer gpa.free(xml);
         if (xml.len == 0) return error.EmptyInput;
 
@@ -58,7 +63,10 @@ pub const EQ = struct {
             const tag = boundaries.items[i];
             const id = extract_object_id_from_tag(xml, tag) orelse continue;
             const seen = seen_ids.getOrPutAssumeCapacity(id);
-            if (seen.found_existing) return error.DuplicateId;
+            if (seen.found_existing) {
+                if (diagnostics) |d| d.record_duplicate_id(xml, id, tag.start);
+                return error.DuplicateId;
+            }
             seen.value_ptr.* = {};
 
             const object = try tag_index.CimObject.init(
@@ -303,6 +311,24 @@ test "EQ.init rejects duplicate RDF identifiers" {
     ;
 
     try std.testing.expectError(error.DuplicateId, EQ.init(gpa, try gpa.dupe(u8, xml)));
+}
+
+test "EQ diagnostics record duplicate RDF identifier" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:BaseVoltage rdf:ID="_DUP"/>
+        \\  <cim:BaseVoltage rdf:ID="_DUP"/>
+        \\</rdf:RDF>
+    ;
+    var diagnostics: Diagnostics = .{};
+    try std.testing.expectError(
+        error.DuplicateId,
+        EQ.initWithDiagnostics(gpa, try gpa.dupe(u8, xml), &diagnostics),
+    );
+    try std.testing.expectEqualStrings("_DUP", diagnostics.duplicate_id());
+    try std.testing.expectEqual(@as(u32, 3), diagnostics.duplicate_line);
+    try std.testing.expect(!diagnostics.duplicate_id_truncated);
 }
 
 const PREFIX_TEST_XML =

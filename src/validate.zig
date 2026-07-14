@@ -792,6 +792,7 @@ fn duration_valid(text: []const u8) bool {
 pub const DataSegment = struct {
     name: []const u8,
     start: u32,
+    line_start: u32 = 1,
 };
 
 pub const ReportEntry = struct {

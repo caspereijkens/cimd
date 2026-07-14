@@ -2,11 +2,14 @@ const std = @import("std");
 const cli = @import("cli.zig");
 const print = @import("io/print.zig");
 const builtin = @import("builtin");
-const SSH = @import("cgmes/ssh.zig").SSH;
-const TP = @import("cgmes/tp.zig").TP;
-const zip = @import("io/zip.zig");
-const EQ = @import("cgmes/eq.zig").EQ;
-const CimObject = @import("cgmes/eq.zig").CimObject;
+const ssh_mod = @import("cgmes/ssh.zig");
+const SSH = ssh_mod.SSH;
+const tp_mod = @import("cgmes/tp.zig");
+const TP = tp_mod.TP;
+const io_read = @import("io/read.zig");
+const eq_mod = @import("cgmes/eq.zig");
+const EQ = eq_mod.EQ;
+const CimObject = eq_mod.CimObject;
 const browse = @import("browse.zig");
 const diff = @import("diff.zig");
 const eqdiff = @import("eqdiff.zig");
@@ -17,7 +20,7 @@ const refs = @import("refs.zig");
 const tag_index = @import("cgmes/tag_index.zig");
 const ids = @import("cgmes/ids.zig");
 const cim_types = @import("cgmes/cim_types.zig");
-const CimMergedView = @import("cgmes/ssh.zig").CimMergedView;
+const CimMergedView = ssh_mod.CimMergedView;
 const qocdc = @import("qocdc.zig").validate;
 const validate = @import("validate.zig");
 const rule_set = @import("shacl/rule_set.zig");
@@ -26,7 +29,7 @@ const RuleSet = rule_set.RuleSet;
 const assert = std.debug.assert;
 
 const build_options = @import("build_options");
-const max_in_memory_input_bytes = std.math.maxInt(u32);
+const max_in_memory_input_bytes = io_read.max_in_memory_input_bytes;
 const max_get_fields = 32;
 const default_get_field = "IdentifiedObject.name";
 
@@ -38,15 +41,16 @@ const Inputs = struct {
     fn load(
         io: std.Io,
         gpa: std.mem.Allocator,
+        command_name: []const u8,
         eq_path: []const u8,
         eqbd_path: ?[]const u8,
         tp_path: ?[]const u8,
         ssh_path: ?[]const u8,
     ) !Inputs {
         return .{
-            .model = try load_model(io, gpa, eq_path, eqbd_path),
-            .tp = if (tp_path) |path| try load_tp(io, gpa, path) else null,
-            .ssh = if (ssh_path) |path| try load_ssh(io, gpa, path) else null,
+            .model = try load_model(io, gpa, command_name, "primary CGMES file", eq_path, eqbd_path),
+            .tp = if (tp_path) |path| try load_tp(io, gpa, command_name, path) else null,
+            .ssh = if (ssh_path) |path| try load_ssh(io, gpa, command_name, path) else null,
         };
     }
 
@@ -63,13 +67,22 @@ const PrefixTarget = struct {
 };
 
 pub fn main(init: std.process.Init) !void {
+    main_impl(init) catch |err| print.unexpected(init.io, "cimd", err);
+}
+
+fn main_impl(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
 
     var args = try init.minimal.args.iterateAllocator(gpa);
     defer args.deinit();
     const command = try cli.parse_args(io, &args);
+    const name = @tagName(command);
 
+    run_command(io, gpa, command) catch |err| print.unexpected(io, name, err);
+}
+
+fn run_command(io: std.Io, gpa: std.mem.Allocator, command: cli.Command) !void {
     switch (command) {
         .convert => |c| try command_convert(io, gpa, c),
         .browse => |c| try command_browse(io, gpa, c),
@@ -89,13 +102,13 @@ fn command_convert(io: std.Io, parent_gpa: std.mem.Allocator, c: cli.Command.Con
     defer arena_instance.deinit();
     const gpa = arena_instance.allocator();
 
-    const model = try load_model(io, gpa, c.eq_path, c.eqbd_path);
+    const model = try load_model(io, gpa, "convert", "EQ profile", c.eq_path, c.eqbd_path);
 
-    const tp_opt: ?TP = if (c.tp_path) |path| try load_tp(io, gpa, path) else null;
+    const tp_opt: ?TP = if (c.tp_path) |path| try load_tp(io, gpa, "convert", path) else null;
 
-    const ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
+    const ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, "convert", path) else null;
 
-    reject_tp_primary_id_collision(io, "convert", &model, tp_opt);
+    reject_tp_primary_id_collision(io, "convert", &model, tp_opt, c.tp_path);
 
     const network = try converter.convert(gpa, &model, tp_opt, ssh_opt, c.bus_branch);
 
@@ -136,9 +149,8 @@ fn command_convert(io: std.Io, parent_gpa: std.mem.Allocator, c: cli.Command.Con
     try print.stderr_info(io, "3-winding transformers: {d}\n", .{total_3w});
     try print.stderr_info(io, "Lines: {d}\n", .{network.lines.items.len});
 
-    const cwd = std.Io.Dir.cwd();
     const output_file = if (c.output_path) |path|
-        try cwd.createFile(io, path, .{})
+        try create_output_file(io, "convert", path)
     else
         std.Io.File.stdout();
     defer if (c.output_path != null) output_file.close(io);
@@ -151,13 +163,13 @@ fn command_convert(io: std.Io, parent_gpa: std.mem.Allocator, c: cli.Command.Con
 }
 
 fn command_browse(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Browse) !void {
-    var inputs = try Inputs.load(io, gpa, c.file_path, c.eqbd_path, c.tp_path, c.ssh_path);
+    var inputs = try Inputs.load(io, gpa, "browse", c.file_path, c.eqbd_path, c.tp_path, c.ssh_path);
     defer inputs.deinit(gpa);
 
     // Safety check: TP's new objects must not collide with primary model IDs.
     // Silent shadowing would make it impossible to tell which file an object
     // came from during navigation; fail loud instead.
-    reject_tp_primary_id_collision(io, "browse", &inputs.model, inputs.tp);
+    reject_tp_primary_id_collision(io, "browse", &inputs.model, inputs.tp, c.tp_path);
 
     var browse_input_buffer: [64]u8 = undefined;
     var browse_stdin = std.Io.File.stdin().reader(io, &browse_input_buffer);
@@ -176,9 +188,9 @@ fn command_browse(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Browse) !vo
 fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
     validate_get_args(io, c);
 
-    var inputs = try Inputs.load(io, gpa, c.file_path, c.eqbd_path, c.tp_path, c.ssh_path);
+    var inputs = try Inputs.load(io, gpa, "get", c.file_path, c.eqbd_path, c.tp_path, c.ssh_path);
     defer inputs.deinit(gpa);
-    reject_tp_primary_id_collision(io, "get", &inputs.model, inputs.tp);
+    reject_tp_primary_id_collision(io, "get", &inputs.model, inputs.tp, c.tp_path);
 
     if (c.mrid) |mrid_val| {
         const target = try resolve_prefix(io, gpa, &inputs.model, inputs.tp, mrid_val, c.type_filter, c.json, null) orelse return;
@@ -524,9 +536,9 @@ fn string_less_than(_: void, a: []const u8, b: []const u8) bool {
 fn command_refs(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Refs) !void {
     if (c.mrid.len == 0) print.stderr(io, "refs: <mrid> must not be empty", .{});
 
-    var inputs = try Inputs.load(io, gpa, c.file_path, c.eqbd_path, c.tp_path, c.ssh_path);
+    var inputs = try Inputs.load(io, gpa, "refs", c.file_path, c.eqbd_path, c.tp_path, c.ssh_path);
     defer inputs.deinit(gpa);
-    reject_tp_primary_id_collision(io, "refs", &inputs.model, inputs.tp);
+    reject_tp_primary_id_collision(io, "refs", &inputs.model, inputs.tp, c.tp_path);
 
     const target = try resolve_prefix(io, gpa, &inputs.model, inputs.tp, c.mrid, c.target_type, c.json, null) orelse return;
     // Pairs with resolve_prefix's final-branch invariants: a target without an
@@ -558,12 +570,23 @@ fn reject_tp_primary_id_collision(
     command_name: []const u8,
     model: *const EQ,
     tp_opt: ?TP,
+    tp_path: ?[]const u8,
 ) void {
-    if (tp_opt) |tp| if (refs.find_tp_primary_id_collision(model, tp)) |id| print.stderr(
-        io,
-        "{s}: mRID collision: '{s}' is defined in both the primary file and the TP profile",
-        .{ command_name, id },
-    );
+    if (tp_opt) |tp| if (refs.find_tp_primary_id_collision(model, tp)) |id| {
+        const path = tp_path orelse unreachable;
+        for (tp.new_objects) |object| {
+            if (!std.mem.eql(u8, object.id, id)) continue;
+            const offset = tp.boundaries[object.object_tag_idx].start;
+            var diagnostics: eq_mod.Diagnostics = .{};
+            diagnostics.record_duplicate_id(tp.xml, id, offset);
+            model_parse_error(io, .{
+                .command_name = command_name,
+                .role = "TP topology profile",
+                .path = path,
+            }, &.{.{ .name = path, .start = 0 }}, error.DuplicateId, diagnostics);
+        }
+        unreachable;
+    };
 }
 
 test "get type filter collector includes CIM subtypes" {
@@ -774,7 +797,7 @@ fn render_type_breakdown(io: std.Io, gpa: std.mem.Allocator, prefix: []const u8,
 }
 
 fn command_types(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Types) !void {
-    var model = try EQ.init(gpa, try read_path(io, gpa, c.file_path));
+    var model = try load_model(io, gpa, "types", "primary CGMES file", c.file_path, null);
     defer model.deinit(gpa);
 
     if (c.json) {
@@ -786,10 +809,10 @@ fn command_types(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Types) !void
 
 fn command_diff(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Diff) !void {
     // Load both models independently. Each holds its own XML backing.
-    var model1 = try load_model(io, gpa, c.file_path1, c.eqbd_path);
+    var model1 = try load_model(io, gpa, "diff", "left EQ profile", c.file_path1, c.eqbd_path);
     defer model1.deinit(gpa);
 
-    var model2 = try load_model(io, gpa, c.file_path2, c.eqbd_path);
+    var model2 = try load_model(io, gpa, "diff", "right EQ profile", c.file_path2, c.eqbd_path);
     defer model2.deinit(gpa);
 
     var out_buffer: [64 * 1024]u8 = undefined;
@@ -835,13 +858,13 @@ fn command_diff(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Diff) !void {
             .diff => |d| d,
         };
 
-        const output_file = try diff_output_file(io, c.output_path);
+        const output_file = try output_file_or_stdout(io, "diff", c.output_path);
         defer if (c.output_path != null) output_file.close(io);
         var writer = std.Io.File.Writer.init(output_file, io, &out_buffer);
         try writer.interface.writeAll(buffered.written());
         try writer.interface.flush();
     } else {
-        const output_file = try diff_output_file(io, c.output_path);
+        const output_file = try output_file_or_stdout(io, "diff", c.output_path);
         defer if (c.output_path != null) output_file.close(io);
         var writer = std.Io.File.Writer.init(output_file, io, &out_buffer);
 
@@ -885,9 +908,21 @@ fn conflicting_namespaces(io: std.Io) noreturn {
     );
 }
 
-fn diff_output_file(io: std.Io, output_path: ?[]const u8) !std.Io.File {
-    if (output_path) |path| return std.Io.Dir.cwd().createFile(io, path, .{});
+fn output_file_or_stdout(io: std.Io, command_name: []const u8, output_path: ?[]const u8) !std.Io.File {
+    if (output_path) |path| return create_output_file(io, command_name, path);
     return std.Io.File.stdout();
+}
+
+fn create_output_file(io: std.Io, command_name: []const u8, path: []const u8) !std.Io.File {
+    return std.Io.Dir.cwd().createFile(io, path, .{}) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => print.stderr(io, "{s}: output file '{s}' cannot be written: permission denied", .{ command_name, path }),
+        error.IsDir => print.stderr(io, "{s}: output path '{s}' is a directory, expected a file", .{ command_name, path }),
+        error.NotDir => print.stderr(io, "{s}: output path '{s}' has a non-directory path component", .{ command_name, path }),
+        error.FileNotFound => print.stderr(io, "{s}: output path '{s}' has a missing parent directory", .{ command_name, path }),
+        error.FileTooBig => print.stderr(io, "{s}: output file '{s}' is too large", .{ command_name, path }),
+        error.NoSpaceLeft => print.stderr(io, "{s}: no space left while opening output file '{s}'", .{ command_name, path }),
+        else => print.stderr(io, "{s}: failed to open output file '{s}': {t}", .{ command_name, path, err }),
+    };
 }
 
 /// Map the CLI's diff format to the report-mode options of diff.zig.
@@ -905,10 +940,10 @@ fn diff_options(c: cli.Command.Diff) diff.DiffOptions {
 }
 
 fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology) !void {
-    var model = try load_model(io, gpa, c.eq_path, c.eqbd_path);
+    var model = try load_model(io, gpa, "topology", "EQ profile", c.eq_path, c.eqbd_path);
     defer model.deinit(gpa);
 
-    var ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, path) else null;
+    var ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, "topology", path) else null;
     defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
@@ -924,9 +959,8 @@ fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology)
 
     try print.stderr_info(io, "TopologicalNodes: {d}\n", .{nodes.items.len});
 
-    const cwd = std.Io.Dir.cwd();
     const output_file = if (c.output_path) |path|
-        try cwd.createFile(io, path, .{})
+        try create_output_file(io, "topology", path)
     else
         std.Io.File.stdout();
     defer if (c.output_path != null) output_file.close(io);
@@ -958,34 +992,18 @@ fn command_validate(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Validate)
             path,
             &validate.qocdc_substitutions,
             &diagnostics,
-        ) catch |err| {
-            // Rule load errors name the rules input and offending line.
-            print.stderr(io, "validate: {s}:{d}: {t}", .{ path, diagnostics.line, err });
-        };
+        ) catch |err| rule_set_load_error(io, path, diagnostics.line, err);
         rule_sets_count += 1;
     }
 
-    // Load the model directly (not via load_model) to remember the EQ/EQBD
-    // split, so violation lines resolve to the file they actually sit in.
-    var segments: [2]validate.DataSegment = undefined;
-    segments[0] = .{ .name = c.eq_path, .start = 0 };
-    var segments_count: usize = 1;
-    const xml = blk: {
-        var x = try read_path(io, gpa, c.eq_path);
-        errdefer gpa.free(x);
-        if (c.eqbd_path) |path| {
-            const eqbd_xml = try read_path(io, gpa, path);
-            defer gpa.free(eqbd_xml);
-            if (x.len > max_in_memory_input_bytes - eqbd_xml.len) return error.FileTooLarge;
-            segments[1] = .{ .name = path, .start = @intCast(x.len) };
-            segments_count = 2;
-            const combined = try std.mem.concat(gpa, u8, &.{ x, eqbd_xml });
-            gpa.free(x);
-            x = combined;
-        }
-        break :blk x;
-    };
-    var model = try EQ.init(gpa, xml);
+    const data = try read_model_xml(io, gpa, "validate", "EQ profile", c.eq_path, c.eqbd_path);
+    var model_diagnostics: eq_mod.Diagnostics = .{};
+    var model = EQ.initWithDiagnostics(gpa, data.xml, &model_diagnostics) catch |err| model_parse_error(io, .{
+        .command_name = "validate",
+        .role = if (c.eqbd_path == null) "EQ profile" else "combined EQ/EQBD model",
+        .path = c.eq_path,
+        .secondary_path = c.eqbd_path,
+    }, data.segments[0..data.segments_count], err, model_diagnostics);
     defer model.deinit(gpa);
 
     var evaluations: [cli.Command.Validate.rules_count_max]validate.Evaluation = undefined;
@@ -998,9 +1016,8 @@ fn command_validate(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Validate)
         entries[i] = .{ .rules = rules, .evaluation = &evaluations[i] };
     }
 
-    const cwd = std.Io.Dir.cwd();
     const output_file = if (c.output_path) |path|
-        try cwd.createFile(io, path, .{})
+        try create_output_file(io, "validate", path)
     else
         std.Io.File.stdout();
     defer if (c.output_path != null) output_file.close(io);
@@ -1011,7 +1028,7 @@ fn command_validate(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Validate)
         gpa,
         &file_writer.interface,
         &model,
-        segments[0..segments_count],
+        data.segments[0..data.segments_count],
         entries[0..evaluations_count],
         .{ .list_skipped = c.list_skipped },
     );
@@ -1063,82 +1080,304 @@ fn command_version(io: std.Io, verbose: bool, json: bool) !void {
     }
 }
 
-fn load_model(io: std.Io, gpa: std.mem.Allocator, eq_path: []const u8, eqbd_path: ?[]const u8) !EQ {
-    // errdefer is scoped to the block so it frees only when read/concat fail.
-    // Once we hand `xml` to init, init owns it (frees on its own error path).
-    const xml = blk: {
-        var x = try read_path(io, gpa, eq_path);
-        errdefer gpa.free(x);
+const InputSpec = struct {
+    command_name: []const u8,
+    role: []const u8,
+    path: []const u8,
+    extension: []const u8,
+    max_bytes: u64,
+};
 
-        if (eqbd_path) |path| {
-            const eqbd_xml = try read_path(io, gpa, path);
-            defer gpa.free(eqbd_xml);
-            if (x.len > max_in_memory_input_bytes - eqbd_xml.len) return error.FileTooLarge;
-            const combined = try std.mem.concat(gpa, u8, &.{ x, eqbd_xml });
-            gpa.free(x);
-            x = combined;
-        }
-        break :blk x;
+const ParseSpec = struct {
+    command_name: []const u8,
+    role: []const u8,
+    path: []const u8,
+    secondary_path: ?[]const u8 = null,
+};
+
+const ModelXml = struct {
+    xml: []const u8,
+    segments: [2]validate.DataSegment,
+    segments_count: u8,
+};
+
+fn data_input(command_name: []const u8, role: []const u8, path: []const u8) InputSpec {
+    return .{
+        .command_name = command_name,
+        .role = role,
+        .path = path,
+        .extension = ".xml",
+        .max_bytes = max_in_memory_input_bytes,
     };
-    return EQ.init(gpa, xml);
 }
 
-fn load_ssh(io: std.Io, gpa: std.mem.Allocator, ssh_path: []const u8) !SSH {
-    return SSH.init(gpa, try read_path(io, gpa, ssh_path));
+fn rules_input(path: []const u8) InputSpec {
+    return .{
+        .command_name = "validate",
+        .role = "SHACL rules file",
+        .path = path,
+        .extension = ".ttl",
+        .max_bytes = rule_set.rules_bytes_max,
+    };
 }
 
-fn load_tp(io: std.Io, gpa: std.mem.Allocator, tp_path: []const u8) !TP {
-    return TP.init(gpa, try read_path(io, gpa, tp_path));
+fn load_model(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    command_name: []const u8,
+    role: []const u8,
+    eq_path: []const u8,
+    eqbd_path: ?[]const u8,
+) !EQ {
+    const data = try read_model_xml(io, gpa, command_name, role, eq_path, eqbd_path);
+    var diagnostics: eq_mod.Diagnostics = .{};
+    return EQ.initWithDiagnostics(gpa, data.xml, &diagnostics) catch |err| model_parse_error(io, .{
+        .command_name = command_name,
+        .role = if (eqbd_path == null) role else "combined EQ/EQBD model",
+        .path = eq_path,
+        .secondary_path = eqbd_path,
+    }, data.segments[0..data.segments_count], err, diagnostics);
 }
 
-fn read_path(io: std.Io, gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
-    return read_path_extension(io, gpa, file_path, ".xml", max_in_memory_input_bytes);
+fn load_ssh(io: std.Io, gpa: std.mem.Allocator, command_name: []const u8, ssh_path: []const u8) !SSH {
+    const xml = try read_path_extension(io, gpa, data_input(command_name, "SSH steady-state profile", ssh_path));
+    var diagnostics: ssh_mod.Diagnostics = .{};
+    return SSH.initWithDiagnostics(gpa, xml, &diagnostics) catch |err| model_parse_error(io, .{
+        .command_name = command_name,
+        .role = "SSH steady-state profile",
+        .path = ssh_path,
+    }, &.{.{ .name = ssh_path, .start = 0 }}, err, diagnostics);
+}
+
+fn load_tp(io: std.Io, gpa: std.mem.Allocator, command_name: []const u8, tp_path: []const u8) !TP {
+    const xml = try read_path_extension(io, gpa, data_input(command_name, "TP topology profile", tp_path));
+    var diagnostics: tp_mod.Diagnostics = .{};
+    return TP.initWithDiagnostics(gpa, xml, &diagnostics) catch |err| model_parse_error(io, .{
+        .command_name = command_name,
+        .role = "TP topology profile",
+        .path = tp_path,
+    }, &.{.{ .name = tp_path, .start = 0 }}, err, diagnostics);
+}
+
+fn read_model_xml(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    command_name: []const u8,
+    role: []const u8,
+    eq_path: []const u8,
+    eqbd_path: ?[]const u8,
+) !ModelXml {
+    var xml = try read_path_extension(io, gpa, data_input(command_name, role, eq_path));
+    errdefer gpa.free(xml);
+    var result: ModelXml = .{
+        .xml = undefined,
+        .segments = .{
+            .{ .name = eq_path, .start = 0 },
+            undefined,
+        },
+        .segments_count = 1,
+    };
+
+    if (eqbd_path) |path| {
+        const eqbd_xml = try read_path_extension(io, gpa, data_input(command_name, "EQBD boundary profile", path));
+        defer gpa.free(eqbd_xml);
+        const xml_len: u64 = @intCast(xml.len);
+        const eqbd_len: u64 = @intCast(eqbd_xml.len);
+        if (xml_len > max_in_memory_input_bytes - eqbd_len) {
+            combined_input_too_large(io, command_name, eq_path, path, xml_len + eqbd_len);
+        }
+        result.segments[1] = .{
+            .name = path,
+            .start = @intCast(xml.len),
+            .line_start = @intCast(std.mem.count(u8, xml, "\n") + 1),
+        };
+        result.segments_count = 2;
+        const combined = std.mem.concat(gpa, u8, &.{ xml, eqbd_xml }) catch |err| switch (err) {
+            error.OutOfMemory => print.stderr(io, "{s}: not enough memory to combine EQ and EQBD inputs", .{command_name}),
+        };
+        gpa.free(xml);
+        xml = combined;
+    }
+
+    result.xml = xml;
+    return result;
 }
 
 /// SHACL rule bundles are zips of Turtle, not XML. A .zip rule bundle reuses
 /// io/zip.zig exactly as data files do. The rules size limit applies before
 /// the file is read or decompressed, not only at RuleSet.load.
 fn read_rules_path(io: std.Io, gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
-    return read_path_extension(io, gpa, file_path, ".ttl", rule_set.rules_bytes_max);
+    return read_path_extension(io, gpa, rules_input(file_path));
 }
 
-fn read_path_extension(
-    io: std.Io,
-    gpa: std.mem.Allocator,
-    file_path: []const u8,
-    extension: []const u8,
-    max_bytes: u64,
-) ![]const u8 {
-    const cwd = std.Io.Dir.cwd();
-    const file = try cwd.openFile(io, file_path, .{});
-    defer file.close(io);
+fn read_path_extension(io: std.Io, gpa: std.mem.Allocator, spec: InputSpec) ![]const u8 {
+    var diagnostics: io_read.Diagnostics = .{};
+    return io_read.read_path_options(io, gpa, spec.path, .{
+        .extension = spec.extension,
+        .max_bytes = spec.max_bytes,
+        .diagnostics = &diagnostics,
+    }) catch |err| input_read_error(io, spec, err, diagnostics.actual_size);
+}
 
-    if (try zip.is_zip_file(io, file)) {
-        var zip_buffer: [256 * 1024]u8 = undefined;
-        var file_reader = file.reader(io, &zip_buffer);
-        const extracted = try zip.extract_first_file_to_memory(gpa, &file_reader, .{
-            .extract = .{},
-            .max_uncompressed_bytes = max_bytes,
-            .extension = extension,
-        });
-        const data = extracted.data;
-        gpa.free(extracted.filename);
-        return data;
-    } else {
-        return try read_file_to_memory(io, gpa, file, max_bytes);
+fn input_read_error(io: std.Io, spec: InputSpec, err: anyerror, actual_size: ?u64) noreturn {
+    switch (err) {
+        error.FileTooLarge, error.StreamTooLong => input_too_large(io, spec, actual_size),
+        error.FileNotFound => print.stderr(io, "{s}: {s} '{s}' was not found", .{ spec.command_name, spec.role, spec.path }),
+        error.AccessDenied => print.stderr(io, "{s}: {s} '{s}' cannot be read: permission denied", .{ spec.command_name, spec.role, spec.path }),
+        error.IsDir => print.stderr(io, "{s}: {s} '{s}' is a directory, expected a file", .{ spec.command_name, spec.role, spec.path }),
+        error.NotDir => print.stderr(io, "{s}: {s} '{s}' has a non-directory path component", .{ spec.command_name, spec.role, spec.path }),
+        error.ZipArchiveHasNoMatchingFiles => print.stderr(
+            io,
+            "{s}: {s} '{s}': ZIP archive contains no {s} file",
+            .{ spec.command_name, spec.role, spec.path, spec.extension },
+        ),
+        error.UnsupportedCompressionMethod => print.stderr(
+            io,
+            "{s}: {s} '{s}': ZIP entry uses an unsupported compression method (supported: store, deflate)",
+            .{ spec.command_name, spec.role, spec.path },
+        ),
+        error.ZipBadFilename, error.ZipFilenameHasBackslash => print.stderr(
+            io,
+            "{s}: {s} '{s}': ZIP archive contains an unsafe entry name",
+            .{ spec.command_name, spec.role, spec.path },
+        ),
+        error.ZipDecompressTruncated, error.EndOfStream => print.stderr(
+            io,
+            "{s}: {s} '{s}': ZIP archive is truncated",
+            .{ spec.command_name, spec.role, spec.path },
+        ),
+        error.OutOfMemory => print.stderr(io, "{s}: not enough memory while reading {s} '{s}'", .{ spec.command_name, spec.role, spec.path }),
+        else => print.stderr(io, "{s}: failed to read {s} '{s}': {t}", .{ spec.command_name, spec.role, spec.path, err }),
     }
 }
 
-fn read_file_to_memory(
-    io: std.Io,
-    gpa: std.mem.Allocator,
-    file: std.Io.File,
-    max_bytes: u64,
-) ![]u8 {
-    const file_size = try file.length(io);
-    if (file_size > max_bytes) return error.FileTooLarge;
+fn input_too_large(io: std.Io, spec: InputSpec, actual_size: ?u64) noreturn {
+    var limit_buf: [160]u8 = undefined;
+    const limit = print.size_limit_text(&limit_buf, actual_size, spec.max_bytes);
+    print.stderr(io, "{s}: {s} '{s}' is too large ({s})", .{ spec.command_name, spec.role, spec.path, limit });
+}
 
-    var file_reader = file.reader(io, &.{});
-    // +1 so the reader can observe EOF without tripping StreamTooLong on exact-size files.
-    return try file_reader.interface.allocRemaining(gpa, .limited(file_size + 1));
+fn combined_input_too_large(
+    io: std.Io,
+    command_name: []const u8,
+    eq_path: []const u8,
+    eqbd_path: []const u8,
+    actual_size: u64,
+) noreturn {
+    var limit_buf: [160]u8 = undefined;
+    const limit = print.size_limit_text(&limit_buf, actual_size, max_in_memory_input_bytes);
+    print.stderr(
+        io,
+        "{s}: combined EQ/EQBD model '{s}' + '{s}' is too large ({s})",
+        .{ command_name, eq_path, eqbd_path, limit },
+    );
+}
+
+fn model_parse_error(
+    io: std.Io,
+    spec: ParseSpec,
+    segments: []const validate.DataSegment,
+    err: anyerror,
+    diagnostics: eq_mod.Diagnostics,
+) noreturn {
+    if (err == error.DuplicateId and diagnostics.duplicate_id_recorded) {
+        const id = diagnostics.duplicate_id();
+        const suffix = if (diagnostics.duplicate_id_truncated) "..." else "";
+        const segment = segment_of(segments, diagnostics.duplicate_offset);
+        const line = diagnostics.duplicate_line - segment.line_start + 1;
+        print.stderr(io, "{s}: {s} '{s}': duplicate RDF identifier '{s}{s}' at line {d}", .{
+            spec.command_name,
+            spec.role,
+            segment.name,
+            id,
+            suffix,
+            line,
+        });
+    }
+
+    switch (err) {
+        error.EmptyInput => parse_error(io, spec, "input is empty", .{}),
+        error.DuplicateId => parse_error(io, spec, "duplicate RDF identifier", .{}),
+        error.FileTooLarge, error.StreamTooLong => {
+            var limit_buf: [160]u8 = undefined;
+            const limit = print.size_limit_text(&limit_buf, null, max_in_memory_input_bytes);
+            parse_error(io, spec, "input is too large ({s})", .{limit});
+        },
+        error.MalformedXML => parse_error(io, spec, "malformed XML: tags are unbalanced or not well nested", .{}),
+        error.MalformedTag => parse_error(io, spec, "malformed XML tag", .{}),
+        error.OutOfMemory => parse_error(io, spec, "not enough memory while parsing", .{}),
+        else => parse_error(io, spec, "failed to parse: {t}", .{err}),
+    }
+}
+
+fn segment_of(segments: []const validate.DataSegment, offset: u32) validate.DataSegment {
+    assert(segments.len > 0);
+    var segment = segments[0];
+    for (segments[1..]) |candidate| {
+        if (candidate.start <= offset) segment = candidate;
+    }
+    return segment;
+}
+
+test "duplicate diagnostics resolve to an EQBD-local line" {
+    const eq = "<rdf:RDF>\n</rdf:RDF>\n";
+    const eqbd = "<rdf:RDF>\n<object id=\"_DUP\"/>\n</rdf:RDF>";
+    const xml = eq ++ eqbd;
+    const offset: u32 = @intCast(std.mem.indexOf(u8, xml, "<object") orelse unreachable);
+    var diagnostics: eq_mod.Diagnostics = .{};
+    diagnostics.record_duplicate_id(xml, "_DUP", offset);
+    const segments = [_]validate.DataSegment{
+        .{ .name = "eq.xml", .start = 0 },
+        .{ .name = "eqbd.xml", .start = eq.len, .line_start = 3 },
+    };
+    const segment = segment_of(&segments, diagnostics.duplicate_offset);
+    const line = diagnostics.duplicate_line - segment.line_start + 1;
+    try std.testing.expectEqualStrings("eqbd.xml", segment.name);
+    try std.testing.expectEqual(@as(u32, 2), line);
+}
+
+fn rule_set_load_error(io: std.Io, path: []const u8, line: u32, err: anyerror) noreturn {
+    const spec: ParseSpec = .{
+        .command_name = "validate",
+        .role = "SHACL rules file",
+        .path = path,
+    };
+    const actual_line = if (line == 0) 1 else line;
+    switch (err) {
+        error.RuleSetTooLarge => {
+            var limit_buf: [160]u8 = undefined;
+            const limit = print.size_limit_text(&limit_buf, null, rule_set.rules_bytes_max);
+            parse_error(io, spec, "rule set is too large ({s})", .{limit});
+        },
+        error.InvalidEscape => parse_error(io, spec, "invalid Turtle escape at line {d}", .{actual_line}),
+        error.InvalidNumber => parse_error(io, spec, "invalid Turtle number at line {d}", .{actual_line}),
+        error.InvalidDirective => parse_error(io, spec, "invalid Turtle directive at line {d}", .{actual_line}),
+        error.TooManyTriples => parse_error(io, spec, "too many Turtle triples (max {d})", .{rule_set.triples_count_max}),
+        error.TooManyShapes => parse_error(io, spec, "too many SHACL shapes (max {d})", .{rule_set.shapes_count_max}),
+        error.TooManyConstraints => parse_error(io, spec, "too many SHACL constraints (max {d})", .{rule_set.constraints_count_max}),
+        error.TooManyClosedPaths => parse_error(io, spec, "too many SHACL closed-shape paths (max {d})", .{rule_set.closed_paths_count_max}),
+        error.TooManyListValues => parse_error(io, spec, "too many values in a SHACL list at line {d}", .{actual_line}),
+        error.MalformedList => parse_error(io, spec, "malformed SHACL list at line {d}", .{actual_line}),
+        error.MessageTooLong => parse_error(io, spec, "SHACL message at line {d} is too long (max {d} bytes)", .{
+            actual_line,
+            rule_set.message_bytes_max,
+        }),
+        error.OutOfMemory => parse_error(io, spec, "not enough memory while loading rules", .{}),
+        else => parse_error(io, spec, "failed to load rules at line {d}: {t}", .{ actual_line, err }),
+    }
+}
+
+fn parse_error(io: std.Io, spec: ParseSpec, comptime fmt_str: []const u8, args: anytype) noreturn {
+    var detail_buf: [512]u8 = undefined;
+    const detail = std.fmt.bufPrint(&detail_buf, fmt_str, args) catch "(details unavailable)";
+    if (spec.secondary_path) |secondary| {
+        print.stderr(io, "{s}: {s} '{s}' + '{s}': {s}", .{
+            spec.command_name,
+            spec.role,
+            spec.path,
+            secondary,
+            detail,
+        });
+    }
+    print.stderr(io, "{s}: {s} '{s}': {s}", .{ spec.command_name, spec.role, spec.path, detail });
 }

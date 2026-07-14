@@ -5,6 +5,7 @@ const TP = @import("tp.zig").TP;
 const TpPatch = @import("tp.zig").TpPatch;
 
 const assert = std.debug.assert;
+pub const Diagnostics = @import("diagnostics.zig").Diagnostics;
 
 pub const SshPatch = struct {
     mrid: []const u8,
@@ -20,8 +21,12 @@ pub const SSH = struct {
     /// Takes ownership of `xml`: on success the SSH owns it (freed by deinit),
     /// on error it is freed before returning. Callers never need to clean up `xml`.
     pub fn init(gpa: std.mem.Allocator, xml: []const u8) !SSH {
+        return initWithDiagnostics(gpa, xml, null);
+    }
+
+    pub fn initWithDiagnostics(gpa: std.mem.Allocator, xml: []const u8, diagnostics: ?*Diagnostics) !SSH {
         errdefer gpa.free(xml);
-        assert(xml.len > 0);
+        if (xml.len == 0) return error.EmptyInput;
 
         var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
         errdefer boundaries.deinit(gpa);
@@ -55,7 +60,13 @@ pub const SSH = struct {
             for (patches[1..], 1..) |patch, i| {
                 // Pairs with std.mem.sort above: the dedup walk relies on it.
                 assert(!patch_less_than({}, patch, patches[i - 1]));
-                if (std.mem.eql(u8, patches[i - 1].mrid, patch.mrid)) return error.DuplicateId;
+                if (std.mem.eql(u8, patches[i - 1].mrid, patch.mrid)) {
+                    const duplicate = if (patches[i - 1].patch_tag_idx > patch.patch_tag_idx) patches[i - 1] else patch;
+                    const tag = boundaries.items[duplicate.patch_tag_idx];
+                    const raw_id = extract_patch_raw_id(xml, tag.start) orelse unreachable;
+                    if (diagnostics) |d| d.record_duplicate_id(xml, raw_id, tag.start);
+                    return error.DuplicateId;
+                }
             }
         }
 
@@ -337,6 +348,16 @@ fn extract_patch_mrid(xml: []const u8, tag_start: u32) ?[]const u8 {
     return null;
 }
 
+fn extract_patch_raw_id(xml: []const u8, tag_start: u32) ?[]const u8 {
+    if (tag_index.extract_rdf_id(xml, tag_start)) |raw| {
+        if (raw.len > 0 and raw[0] == '_') return raw;
+    } else |_| {}
+    if (tag_index.extract_rdf_about(xml, tag_start)) |raw| {
+        if (raw.len > 1 and raw[0] == '#' and raw[1] == '_') return raw;
+    } else |_| {}
+    return null;
+}
+
 fn patch_less_than(_: void, a: SshPatch, b: SshPatch) bool {
     return std.mem.order(u8, a.mrid, b.mrid) == .lt;
 }
@@ -452,6 +473,42 @@ test "SSH.init - rejects duplicate patch mRIDs" {
     ;
 
     try std.testing.expectError(error.DuplicateId, SSH.init(gpa, try gpa.dupe(u8, xml)));
+}
+
+test "SSH diagnostics record duplicate patch mRID" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Switch rdf:ID="_SW1"/>
+        \\  <cim:Switch rdf:about="#_SW1"/>
+        \\</rdf:RDF>
+    ;
+    var diagnostics: Diagnostics = .{};
+    try std.testing.expectError(
+        error.DuplicateId,
+        SSH.initWithDiagnostics(gpa, try gpa.dupe(u8, xml), &diagnostics),
+    );
+    try std.testing.expectEqualStrings("#_SW1", diagnostics.duplicate_id());
+    try std.testing.expectEqual(@as(u32, 3), diagnostics.duplicate_line);
+    try std.testing.expect(!diagnostics.duplicate_id_truncated);
+}
+
+test "SSH diagnostics record an empty normalized patch mRID" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Switch rdf:ID="_"/>
+        \\  <cim:Switch rdf:about="#_"/>
+        \\</rdf:RDF>
+    ;
+    var diagnostics: Diagnostics = .{};
+    try std.testing.expectError(
+        error.DuplicateId,
+        SSH.initWithDiagnostics(gpa, try gpa.dupe(u8, xml), &diagnostics),
+    );
+    try std.testing.expect(diagnostics.duplicate_id_recorded);
+    try std.testing.expectEqualStrings("#_", diagnostics.duplicate_id());
+    try std.testing.expectEqual(@as(u32, 3), diagnostics.duplicate_line);
 }
 
 const EQ = @import("eq.zig").EQ;
