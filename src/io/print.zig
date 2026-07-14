@@ -4,6 +4,8 @@ const EQ = @import("../cgmes/eq.zig").EQ;
 const tag_index = @import("../cgmes/tag_index.zig");
 const utils = @import("../cgmes/ids.zig");
 
+const mebibyte = 1024 * 1024;
+
 pub const exit_not_found = 1;
 pub const exit_failure = 70;
 pub const exit_usage = 2;
@@ -43,17 +45,16 @@ pub fn unexpected(io: std.Io, command_name: []const u8, err: anyerror) noreturn 
 }
 
 pub fn size_limit_text(buf: []u8, actual_bytes: ?u64, max_bytes: u64) []const u8 {
-    const mib = 1024 * 1024;
     var prefix_buf: [48]u8 = undefined;
     const prefix = if (actual_bytes) |actual|
         std.fmt.bufPrint(&prefix_buf, "{d} bytes; ", .{actual}) catch ""
     else
         "";
     var suffix_buf: [32]u8 = undefined;
-    const suffix = if (max_bytes < mib) "" else std.fmt.bufPrint(
+    const suffix = if (max_bytes < mebibyte) "" else std.fmt.bufPrint(
         &suffix_buf,
         " (~{d} MiB)",
-        .{std.math.divCeil(u64, max_bytes, mib) catch unreachable},
+        .{std.math.divCeil(u64, max_bytes, mebibyte) catch unreachable},
     ) catch "";
     return std.fmt.bufPrint(
         buf,
@@ -63,10 +64,9 @@ pub fn size_limit_text(buf: []u8, actual_bytes: ?u64, max_bytes: u64) []const u8
 }
 
 pub fn size_limit_text_comptime(comptime max_bytes: u64) []const u8 {
-    const mib = 1024 * 1024;
-    if (max_bytes < mib) return std.fmt.comptimePrint("max supported size is {d} bytes", .{max_bytes});
-    const max_mib = std.math.divCeil(u64, max_bytes, mib) catch unreachable;
-    return std.fmt.comptimePrint("max supported size is {d} bytes (~{d} MiB)", .{ max_bytes, max_mib });
+    if (max_bytes < mebibyte) return std.fmt.comptimePrint("max supported size is {d} bytes", .{max_bytes});
+    const max_mebibyte = std.math.divCeil(u64, max_bytes, mebibyte) catch unreachable;
+    return std.fmt.comptimePrint("max supported size is {d} bytes (~{d} MiB)", .{ max_bytes, max_mebibyte });
 }
 
 /// Write informational (non-error) output to stderr. Returns an error on write failure.
