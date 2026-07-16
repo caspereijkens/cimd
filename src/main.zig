@@ -132,7 +132,9 @@ fn command_convert(io: std.Io, parent_gpa: std.mem.Allocator, c: cli.Command.Con
     defer arena_instance.deinit();
     const gpa = arena_instance.allocator();
 
-    const model = try load_model(io, gpa, "convert", "EQ profile", c.eq_path, c.eqbd_path);
+    const loaded = try load_model_with_segments(io, gpa, "convert", "EQ profile", c.eq_path, c.eqbd_path);
+    const model = loaded.model;
+    const segments = loaded.segments[0..loaded.segments_count];
 
     const tp_opt: ?TP = if (c.tp_path) |path| try load_tp(io, gpa, "convert", path) else null;
 
@@ -146,7 +148,12 @@ fn command_convert(io: std.Io, parent_gpa: std.mem.Allocator, c: cli.Command.Con
         error.MissingSubstations => invalid_model_structure(io, "convert", "Substation"),
         error.MissingVoltageLevels => invalid_model_structure(io, "convert", "VoltageLevel"),
         error.MissingTerminals => invalid_model_structure(io, "convert", "Terminal"),
-        error.EmptyMrid, error.DuplicateMrid => conversion_id_error(io, c.eq_path, &model, conversion_diagnostics, err),
+        error.UnresolvedVoltageLevels => print.data_error(
+            io,
+            "convert: EQ profile '{s}' has a VoltageLevel whose Substation reference is missing or unresolved",
+            .{c.eq_path},
+        ),
+        error.EmptyMrid, error.DuplicateMrid => conversion_id_error(io, segments, &model, conversion_diagnostics, err),
         else => if (is_model_data_error(err))
             invalid_model_data(io, "convert", c.eq_path, err)
         else if (is_model_capacity_error(err))
@@ -1190,7 +1197,7 @@ fn invalid_model_structure(io: std.Io, command_name: []const u8, required_type: 
 
 fn conversion_id_error(
     io: std.Io,
-    path: []const u8,
+    segments: []const validate.DataSegment,
     model: *const EQ,
     diagnostics: converter.ConversionDiagnostics,
     err: anyerror,
@@ -1198,17 +1205,18 @@ fn conversion_id_error(
     const issue = diagnostics.id_issue orelse print.data_error(
         io,
         "convert: EQ profile '{s}' contains an invalid IIDM identifier",
-        .{path},
+        .{segments[0].name},
     );
     switch (issue.kind) {
         .empty => {
             assert(err == error.EmptyMrid);
             if (issue.offset) |offset| {
-                const line = diagnostics_mod.line_number_at(model.xml, offset);
+                const segment = validate.segment_of(segments, offset);
+                const line = validate.segment_local_line(segment, diagnostics_mod.line_number_at(model.xml, offset));
                 print.data_error(
                     io,
-                    "convert: EQ profile '{s}': RDF identifier '{s}' resolves to an empty mRID at line {d}",
-                    .{ path, issue.raw_id, line },
+                    "convert: {s} '{s}': RDF identifier '{s}' resolves to an empty mRID at line {d}",
+                    .{ segment_role(segment), segment.name, issue.raw_id, line },
                 );
             }
             print.data_error(io, "convert: emitted IIDM object has an empty identifier", .{});
@@ -1216,16 +1224,23 @@ fn conversion_id_error(
         .duplicate => {
             assert(err == error.DuplicateMrid);
             if (issue.offset) |offset| {
-                const line = diagnostics_mod.line_number_at(model.xml, offset);
+                const segment = validate.segment_of(segments, offset);
+                const line = validate.segment_local_line(segment, diagnostics_mod.line_number_at(model.xml, offset));
                 print.data_error(
                     io,
-                    "convert: EQ profile '{s}': duplicate resolved mRID '{s}' at line {d}",
-                    .{ path, issue.mrid, line },
+                    "convert: {s} '{s}': duplicate resolved mRID '{s}' at line {d}",
+                    .{ segment_role(segment), segment.name, issue.mrid, line },
                 );
             }
             print.data_error(io, "convert: duplicate emitted IIDM identifier '{s}'", .{issue.mrid});
         },
     }
+}
+
+/// The primary EQ input starts at offset 0; any later segment is the EQBD
+/// boundary profile concatenated after it.
+fn segment_role(segment: validate.DataSegment) []const u8 {
+    return if (segment.start == 0) "EQ profile" else "EQBD boundary profile";
 }
 
 fn is_model_data_error(err: anyerror) bool {
@@ -1381,6 +1396,34 @@ fn rules_input(path: []const u8) InputSpec {
     };
 }
 
+/// A parsed model together with the segment metadata mapping byte offsets in
+/// the (possibly EQ+EQBD concatenated) backing XML to their originating file
+/// and local line, so later diagnostics can be reported against the right one.
+const LoadedModel = struct {
+    model: EQ,
+    segments: [2]validate.DataSegment,
+    segments_count: u8,
+};
+
+fn load_model_with_segments(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    command_name: []const u8,
+    role: []const u8,
+    eq_path: []const u8,
+    eqbd_path: ?[]const u8,
+) !LoadedModel {
+    const data = try read_model_xml(io, gpa, command_name, role, eq_path, eqbd_path);
+    var diagnostics: ModelDiagnostics = .{};
+    const model = EQ.initWithDiagnostics(gpa, data.xml, &diagnostics) catch |err| model_parse_error(io, .{
+        .command_name = command_name,
+        .role = if (eqbd_path == null) role else "combined EQ/EQBD model",
+        .path = eq_path,
+        .secondary_path = eqbd_path,
+    }, data.segments[0..data.segments_count], err, diagnostics);
+    return .{ .model = model, .segments = data.segments, .segments_count = data.segments_count };
+}
+
 fn load_model(
     io: std.Io,
     gpa: std.mem.Allocator,
@@ -1389,14 +1432,8 @@ fn load_model(
     eq_path: []const u8,
     eqbd_path: ?[]const u8,
 ) !EQ {
-    const data = try read_model_xml(io, gpa, command_name, role, eq_path, eqbd_path);
-    var diagnostics: ModelDiagnostics = .{};
-    return EQ.initWithDiagnostics(gpa, data.xml, &diagnostics) catch |err| model_parse_error(io, .{
-        .command_name = command_name,
-        .role = if (eqbd_path == null) role else "combined EQ/EQBD model",
-        .path = eq_path,
-        .secondary_path = eqbd_path,
-    }, data.segments[0..data.segments_count], err, diagnostics);
+    const loaded = try load_model_with_segments(io, gpa, command_name, role, eq_path, eqbd_path);
+    return loaded.model;
 }
 
 fn load_ssh(io: std.Io, gpa: std.mem.Allocator, command_name: []const u8, ssh_path: []const u8) !SSH {

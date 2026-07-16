@@ -34,6 +34,7 @@ const EQ = @import("cgmes/eq.zig").EQ;
 const tag_index = @import("cgmes/tag_index.zig");
 const cim_types = @import("cgmes/cim_types.zig");
 const core = @import("diff_core.zig");
+const print = @import("io/print.zig");
 
 const rdf_uri = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 const dm_uri = "http://iec.ch/2002/schema/CIM_difference_model#";
@@ -74,7 +75,9 @@ pub fn write_models(
         // DifferenceModel header instead of the statement sections.
         if (std.mem.eql(u8, type_name, "FullModel")) continue;
         if (!cim_types.matches_filter(type_name, options.type_filter)) continue;
-        const stats = try core.match_type(gpa, model1, model2, type_name, &emitter);
+        // The emitter writes into the in-memory `forward`/`reverse` buffers, so a
+        // WriteFailed here is allocation exhaustion, not an output-stream error.
+        const stats = try print.allocating_writer_result(&forward, core.match_type(gpa, model1, model2, type_name, &emitter));
         if (stats.any()) had_diffs = true;
     }
 

@@ -415,6 +415,33 @@ test "convert rejects voltage levels without a resolvable substation" {
     try std.testing.expectError(error.MissingVoltageLevels, convert(gpa, &model, null, null, false));
 }
 
+test "convert rejects a partially unresolved set of voltage levels" {
+    // _VL1 resolves to _SS1; _VL2 dangles. The old zero-only guard let this
+    // through, silently dropping _VL2 and its equipment from the network.
+    const xml =
+        \\<?xml version="1.0"?>
+        \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+        \\         xmlns:cim="http://iec.ch/TC57/2013/CIM-schema-cim16#">
+        \\  <cim:Substation rdf:ID="_SS1"/>
+        \\  <cim:VoltageLevel rdf:ID="_VL1">
+        \\    <cim:VoltageLevel.Substation rdf:resource="#_SS1"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:VoltageLevel rdf:ID="_VL2">
+        \\    <cim:VoltageLevel.Substation rdf:resource="#_MISSING_SUBSTATION"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:BusbarSection rdf:ID="_BBS1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BBS1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    try std.testing.expectError(error.UnresolvedVoltageLevels, convert(gpa, &model, null, null, false));
+}
+
 test "convert tolerates terminals without connectivity nodes" {
     const xml =
         \\<?xml version="1.0"?>
@@ -686,6 +713,12 @@ pub fn convertWithDiagnostics(
     var voltage_level_map = try voltage_level_conv.build_voltage_level_map(gpa, model, &topology_data, &network, &sub_id_map, &substation_map);
     defer voltage_level_map.deinit(gpa);
     if (voltage_level_map.count() == 0) return error.MissingVoltageLevels;
+    // Every declared (non-merged) VoltageLevel must resolve its Substation and
+    // land in the map. A shortfall means one was skipped for a missing or
+    // dangling VoltageLevel.Substation reference, so the network would be built
+    // with that level and its attached equipment silently dropped — reject it.
+    const declared_voltage_levels = model.get_objects_by_type("VoltageLevel").len - topology_data.voltage_level_merge.count();
+    if (voltage_level_map.count() < declared_voltage_levels) return error.UnresolvedVoltageLevels;
 
     var tap_changer_info_map: transformer_conv.TapChangerInfoMap = .empty;
     defer transformer_conv.deinit_tap_changer_info_map(gpa, &tap_changer_info_map);
