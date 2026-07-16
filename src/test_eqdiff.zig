@@ -199,6 +199,24 @@ test "eqdiff - object-local xmlns overriding the root is preserved, not a confli
     try std.testing.expect(r.section_contains("reverseDifferences", "<ext:Marker rdf:about=\"#_M1\" xmlns:ext=\"http://example.com/local#\">"));
 }
 
+test "eqdiff - local rdf:about fragment marker is preserved" {
+    // An object identified by a document-relative rdf:about must round-trip as
+    // "#_SS1"; the parser stores the fragment-stripped "_SS1", but emitting that
+    // would target a different RDF resource.
+    const xml1 = RDF_OPEN ++
+        \\
+        \\  <cim:Substation rdf:about="#_SS1">
+        \\    <cim:IdentifiedObject.name>Old</cim:IdentifiedObject.name>
+        \\  </cim:Substation>
+        \\</rdf:RDF>
+    ;
+    const xml2 = RDF_OPEN ++ "\n</rdf:RDF>";
+    const r = try run_eqdiff(std.testing.allocator, xml1, xml2, .{});
+    try std.testing.expect(r.had_diffs);
+    try std.testing.expect(r.section_contains("reverseDifferences", "<cim:Substation rdf:about=\"#_SS1\">"));
+    try std.testing.expect(!r.section_contains("reverseDifferences", "rdf:about=\"_SS1\""));
+}
+
 test "eqdiff - deterministic: same inputs produce byte-identical output" {
     const xml1 = RDF_OPEN ++
         \\

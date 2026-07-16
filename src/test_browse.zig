@@ -63,13 +63,12 @@ fn run_pick_session(
     var output: std.Io.Writer.Allocating = .init(gpa);
     errdefer output.deinit();
 
-    const picked = try browse.pick_from_prefix(
-        undefined,
+    const picked = (try browse.pick_from_prefix(
         gpa,
         .{ .input = &input, .output = &output.writer },
         prefix,
         matches,
-    );
+    )) orelse return error.TestExpectedPick;
     return .{ .output = try output.toOwnedSlice(), .picked = picked };
 }
 
@@ -226,6 +225,34 @@ test "prefix picker flat below threshold" {
     try expectContains(result.output, "Substation");
     try expectContains(result.output, "VoltageLevel");
     try expectNotContains(result.output, "pick a type to drill in");
+}
+
+test "prefix picker EOF and q exit without a selection" {
+    const gpa = std.testing.allocator;
+    var fixture = try BrowseFixture.init(gpa,
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:ID="_P1"/>
+        \\  <cim:Substation rdf:ID="_P2"/>
+        \\</rdf:RDF>
+    , null, null);
+    defer fixture.deinit(gpa);
+
+    const matches = try fixture.eq.get_object_by_id_prefix(gpa, "P");
+    defer gpa.free(matches);
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    defer output.deinit();
+
+    for ([_][]const u8{ "", "q\n" }) |scripted_input| {
+        var input = std.Io.Reader.fixed(scripted_input);
+        const picked = try browse.pick_from_prefix(
+            gpa,
+            .{ .input = &input, .output = &output.writer },
+            "P",
+            matches,
+        );
+        try std.testing.expectEqual(@as(?[]const u8, null), picked);
+        output.clearRetainingCapacity();
+    }
 }
 
 test "prefix picker grouped above threshold and drill-down" {

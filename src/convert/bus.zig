@@ -2,12 +2,12 @@ const std = @import("std");
 const iidm = @import("../iidm/model.zig");
 const EQ = @import("../cgmes/eq.zig").EQ;
 const TP = @import("../cgmes/tp.zig").TP;
+const parse = @import("../cgmes/parse.zig");
 const utils = @import("../cgmes/ids.zig");
 
 const assert = std.debug.assert;
 
 const strip_hash = utils.strip_hash;
-const strip_underscore = utils.strip_underscore;
 
 /// Resolved placement of a TopologicalNode as an IIDM Bus.
 pub const BusPlacement = struct {
@@ -76,8 +76,8 @@ pub fn convert_buses(
         const container_id = strip_hash(container_ref);
         const vl = voltage_level_map.get(container_id) orelse continue;
 
-        const mrid = try view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(obj.id);
-        const name = try view.getProperty("IdentifiedObject.name");
+        const mrid = try view.mrid();
+        const name = parse.non_blank(try view.getProperty("IdentifiedObject.name"));
 
         vl.bus_breaker_topology.buses.appendAssumeCapacity(.{ .id = mrid, .name = name });
 

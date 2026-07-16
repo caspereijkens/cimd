@@ -105,31 +105,35 @@ fn write_float_auto(jws: anytype, value: f64) !void {
     }
 }
 
-/// Format a float string to ensure it has a decimal point (e.g., "100" -> "100.0")
-/// Returns the original string if it already has a decimal, otherwise allocates a new one.
-pub fn format_float_str(gpa: std.mem.Allocator, str: []const u8) ![]const u8 {
-    // If string is in scientific notation (contains 'e'/'E'), parse and reformat as
-    // fixed-point decimal to match Java's Double.toString behaviour (e.g. "1250000.0").
-    const has_exp = std.mem.indexOfAny(u8, str, "eE") != null;
-    if (has_exp) {
-        const value = try std.fmt.parseFloat(f64, str);
-        const formatted = try std.fmt.allocPrint(gpa, "{d}", .{value});
-        if (std.mem.indexOfScalar(u8, formatted, '.') == null) {
-            defer gpa.free(formatted);
-            return std.fmt.allocPrint(gpa, "{s}.0", .{formatted});
-        }
-        return formatted;
-    }
-    // Check if it already has a decimal point — dupe so callers always own the result.
-    if (std.mem.indexOfScalar(u8, str, '.') != null) {
-        return gpa.dupe(u8, str);
-    }
-    // Allocate new string with .0 suffix
-    const result = try gpa.alloc(u8, str.len + 2);
-    @memcpy(result[0..str.len], str);
-    result[str.len] = '.';
-    result[str.len + 1] = '0';
-    return result;
+/// Format a finite float as canonical decimal text with a decimal point.
+pub fn format_float(gpa: std.mem.Allocator, value: f64) ![]const u8 {
+    if (!std.math.isFinite(value)) return error.InvalidNumericValue;
+
+    const formatted = try std.fmt.allocPrint(gpa, "{d}", .{value});
+    if (std.mem.indexOfScalar(u8, formatted, '.') != null) return formatted;
+
+    // `{d}` renders finite f64 values in positional notation.
+    defer gpa.free(formatted);
+    return std.fmt.allocPrint(gpa, "{s}.0", .{formatted});
+}
+
+test "format_float emits canonical decimal text" {
+    const gpa = std.testing.allocator;
+
+    const integer = try format_float(gpa, 420.0);
+    defer gpa.free(integer);
+    try std.testing.expectEqualStrings("420.0", integer);
+
+    const fractional = try format_float(gpa, 11.025);
+    defer gpa.free(fractional);
+    try std.testing.expectEqualStrings("11.025", fractional);
+
+    const thousand = try format_float(gpa, 1000.0);
+    defer gpa.free(thousand);
+    try std.testing.expectEqualStrings("1000.0", thousand);
+
+    try std.testing.expectError(error.InvalidNumericValue, format_float(gpa, std.math.inf(f64)));
+    try std.testing.expectError(error.InvalidNumericValue, format_float(gpa, std.math.nan(f64)));
 }
 
 /// Write a date string with milliseconds (e.g., "2017-06-25T16:43:00.000Z")
@@ -533,6 +537,10 @@ pub const MinMaxReactiveLimits = struct {
 };
 
 fn write_float_scientific(jws: anytype, value: f64) !void {
+    if (!std.math.isFinite(value)) {
+        try jws.write(null);
+        return;
+    }
     var buf: [32]u8 = undefined;
     const formatted = std.fmt.bufPrint(&buf, "{e}", .{value}) catch {
         try jws.write(value);
@@ -553,6 +561,17 @@ fn write_float_scientific(jws: anytype, value: f64) !void {
         }
     }
     try jws.print("{s}", .{out_buf[0..out_len]});
+}
+
+test "scientific float writer serializes non-finite values as JSON null" {
+    const gpa = std.testing.allocator;
+    const limits: MinMaxReactiveLimits = .{
+        .min_q = std.math.inf(f64),
+        .max_q = std.math.nan(f64),
+    };
+    const json = try std.json.Stringify.valueAlloc(gpa, limits, .{});
+    defer gpa.free(json);
+    try std.testing.expectEqualStrings("{\"minQ\":null,\"maxQ\":null}", json);
 }
 
 pub const Generator = struct {

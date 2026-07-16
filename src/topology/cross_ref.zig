@@ -31,10 +31,6 @@ pub const VoltageLimitInfo = struct {
     // VoltageLevel.highVoltageLimit / lowVoltageLimit.
     high_value: ?f64,
     low_value: ?f64,
-    // Raw strings for the most-restrictive values, preserved so JIIDM
-    // properties match the CGMES source byte-for-byte (e.g. "121.0", "11.025").
-    high_value_str: ?[]const u8,
-    low_value_str: ?[]const u8,
     // All VoltageLimit mRIDs contributing to this VL, in XML parse order, per side.
     // Emitted as semicolon-joined CGMES.OperationalLimit_highVoltageLimit / lowVoltageLimit properties.
     high_mrids: std.ArrayListUnmanaged([]const u8),
@@ -82,12 +78,30 @@ pub const CrossRef = struct {
     // BaseVoltage mRIDs from the EQBD boundary file
     boundary_base_voltage_ids: std.StringHashMapUnmanaged(void),
 
+    pub fn empty() CrossRef {
+        return .{
+            .terminal_equipment = .empty,
+            .terminal_conn_node = .empty,
+            .terminal_sequence = .empty,
+            .equipment_terminals = .empty,
+            .conn_node_container = .empty,
+            .conn_node_to_busbar_section = .empty,
+            .busbar_section_in_parse_order = .empty,
+            .limit_types = .empty,
+            .terminal_limit_sets = .empty,
+            .current_limits_by_set = .empty,
+            .voltage_level_limits = .empty,
+            .curve_points = .empty,
+            .boundary_base_voltage_ids = .empty,
+        };
+    }
+
     pub fn build(
         gpa: std.mem.Allocator,
         model: *const EQ,
         boundary_base_voltage_ids: std.StringHashMapUnmanaged(void),
     ) !CrossRef {
-        var index = create_empty_cross_ref();
+        var index = CrossRef.empty();
         errdefer index.deinit(gpa);
 
         try build_limit_types(gpa, model, &index);
@@ -105,7 +119,7 @@ pub const CrossRef = struct {
         model: *const EQ,
         boundary_base_voltage_ids: std.StringHashMapUnmanaged(void),
     ) !CrossRef {
-        var index = create_empty_cross_ref();
+        var index = CrossRef.empty();
         errdefer index.deinit(gpa);
 
         try build_terminals(gpa, model, &index);
@@ -171,22 +185,21 @@ pub const CrossRef = struct {
     }
 };
 
-fn create_empty_cross_ref() CrossRef {
-    return CrossRef{
-        .terminal_equipment = .empty,
-        .terminal_conn_node = .empty,
-        .terminal_sequence = .empty,
-        .equipment_terminals = .empty,
-        .conn_node_container = .empty,
-        .conn_node_to_busbar_section = .empty,
-        .busbar_section_in_parse_order = .empty,
-        .limit_types = .empty,
-        .terminal_limit_sets = .empty,
-        .current_limits_by_set = .empty,
-        .voltage_level_limits = .empty,
-        .curve_points = .empty,
-        .boundary_base_voltage_ids = .empty,
-    };
+test "cross references reject a model without terminals" {
+    const xml =
+        \\<?xml version="1.0"?>
+        \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+        \\         xmlns:cim="http://iec.ch/TC57/2013/CIM-schema-cim16#">
+        \\  <cim:BaseVoltage rdf:ID="_BV1"/>
+        \\  <cim:BaseVoltage rdf:ID="_BV2"/>
+        \\</rdf:RDF>
+    ;
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
+    try std.testing.expectError(error.MissingTerminals, CrossRef.build(gpa, &model, boundary_ids));
 }
 
 fn build_limit_types(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef) !void {
@@ -226,7 +239,7 @@ fn build_terminals(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef) !
         const sequence = try parse.int_strict(u32, try view.getProperty("ACDCTerminal.sequenceNumber"), 1);
         index.terminal_sequence.putAssumeCapacity(obj.id, sequence);
 
-        const equipment_ref = try view.getReference("Terminal.ConductingEquipment") orelse return error.MalFormedXML;
+        const equipment_ref = try view.getReference("Terminal.ConductingEquipment") orelse return error.MalformedXML;
         const equipment_id = strip_hash(equipment_ref);
         assert(equipment_id.len > 0);
         index.terminal_equipment.putAssumeCapacity(obj.id, equipment_id);
@@ -259,7 +272,7 @@ fn build_terminals(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef) !
 }
 
 fn build_connectivity(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef) !void {
-    assert(index.terminal_equipment.count() > 0);
+    if (index.terminal_equipment.count() == 0) return error.MissingTerminals;
     assert(index.conn_node_container.count() == 0);
     assert(index.busbar_section_in_parse_order.items.len == 0);
 
@@ -432,37 +445,41 @@ pub fn build_voltage_limits(gpa: std.mem.Allocator, model: *const EQ, index: *Cr
         const limit_type = model.getObjectById(strip_hash(limit_type_ref)) orelse continue;
         const direction = try limit_type.getReference("OperationalLimitType.direction") orelse continue;
 
-        // value_str is preserved verbatim below for byte-identical output; the
-        // numeric `value` trims so a pretty-printed source still compares correctly.
-        const value_str = try voltage_limit_view.getProperty("VoltageLimit.normalValue") orelse continue;
-        const value = try parse.float_req(value_str);
+        const direction_kind: enum { high, low } = if (std.mem.endsWith(u8, direction, "high"))
+            .high
+        else if (std.mem.endsWith(u8, direction, "low"))
+            .low
+        else
+            continue;
+
+        const value_text = parse.non_blank(try voltage_limit_view.getProperty("VoltageLimit.normalValue")) orelse continue;
+        const value = try parse.float_req(value_text);
 
         const gop = index.voltage_level_limits.getOrPutAssumeCapacity(container_id);
         if (!gop.found_existing) gop.value_ptr.* = .{
             .high_value = null,
             .low_value = null,
-            .high_value_str = null,
-            .low_value_str = null,
             .high_mrids = .empty,
             .low_mrids = .empty,
         };
 
         const voltage_limit_mrid = try voltage_limit_view.mrid();
 
-        if (std.mem.endsWith(u8, direction, "high")) {
-            try gop.value_ptr.high_mrids.append(gpa, voltage_limit_mrid);
-            // Most restrictive high limit is the minimum.
-            if (gop.value_ptr.high_value == null or value < gop.value_ptr.high_value.?) {
-                gop.value_ptr.high_value = value;
-                gop.value_ptr.high_value_str = value_str;
-            }
-        } else {
-            try gop.value_ptr.low_mrids.append(gpa, voltage_limit_mrid);
-            // Most restrictive low limit is the maximum.
-            if (gop.value_ptr.low_value == null or value > gop.value_ptr.low_value.?) {
-                gop.value_ptr.low_value = value;
-                gop.value_ptr.low_value_str = value_str;
-            }
+        switch (direction_kind) {
+            .high => {
+                try gop.value_ptr.high_mrids.append(gpa, voltage_limit_mrid);
+                // Most restrictive high limit is the minimum.
+                if (gop.value_ptr.high_value == null or value < gop.value_ptr.high_value.?) {
+                    gop.value_ptr.high_value = value;
+                }
+            },
+            .low => {
+                try gop.value_ptr.low_mrids.append(gpa, voltage_limit_mrid);
+                // Most restrictive low limit is the maximum.
+                if (gop.value_ptr.low_value == null or value > gop.value_ptr.low_value.?) {
+                    gop.value_ptr.low_value = value;
+                }
+            },
         }
     }
     assert(index.voltage_level_limits.count() <= voltage_limits.len);

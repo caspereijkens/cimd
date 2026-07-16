@@ -335,11 +335,47 @@ pub fn resolve_object_normalized(
     return null;
 }
 
-/// Return the first TP-added object id that collides with the primary model, or
-/// null if TP's new objects can be safely unioned with EQ/EQBD objects.
-pub fn find_tp_primary_id_collision(model: *const EQ, tp: TP) ?[]const u8 {
+pub const TpPrimaryMridCollision = struct {
+    object: tag_index.CimObject,
+    mrid: []const u8,
+};
+
+/// Return the first TP-added object whose raw RDF identifier collides with the
+/// primary model. Navigation resolves by raw id, so this check is allocation-
+/// free and prevents EQ from silently shadowing the TP object.
+pub fn find_tp_primary_id_collision(
+    model: *const EQ,
+    tp: TP,
+) ?tag_index.CimObject {
     for (tp.new_objects) |obj| {
-        if (model.getObjectById(obj.id) != null) return obj.id;
+        if (model.getObjectById(obj.id) != null) return obj;
+    }
+    return null;
+}
+
+/// Return the first TP-added object whose resolved mRID collides with the
+/// primary model. Conversion emits IIDM objects by mRID, so it uses this
+/// stronger check; raw-id navigation deliberately does not.
+pub fn find_tp_primary_mrid_collision(
+    gpa: std.mem.Allocator,
+    model: *const EQ,
+    tp: TP,
+) !?TpPrimaryMridCollision {
+    var primary_mrids: std.StringHashMapUnmanaged(void) = .empty;
+    defer primary_mrids.deinit(gpa);
+    try primary_mrids.ensureTotalCapacity(gpa, @intCast(model.objects.len));
+
+    for (model.objects) |obj| {
+        const mrid = try model.view(obj).mrid();
+        if (mrid.len == 0) continue;
+        primary_mrids.putAssumeCapacity(mrid, {});
+    }
+
+    for (tp.new_objects) |obj| {
+        const mrid = try tp.view(obj).mrid();
+        if (mrid.len > 0 and primary_mrids.contains(mrid)) {
+            return .{ .object = obj, .mrid = mrid };
+        }
     }
     return null;
 }
@@ -971,11 +1007,13 @@ test "collect_target_candidates: EQ and TP matches both included" {
     try std.testing.expectEqualStrings("_X2", matches[1].id);
 }
 
-test "find_tp_primary_id_collision returns first TP-added duplicate id" {
+test "find_tp_primary_id_collision compares raw RDF identifiers" {
     const gpa = std.testing.allocator;
     const eq_xml =
         \\<rdf:RDF>
-        \\  <cim:Terminal rdf:ID="_T1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:IdentifiedObject.mRID>EQ-MRID</cim:IdentifiedObject.mRID>
+        \\  </cim:Terminal>
         \\</rdf:RDF>
     ;
     const tp_xml =
@@ -989,5 +1027,34 @@ test "find_tp_primary_id_collision returns first TP-added duplicate id" {
     defer tp.deinit(gpa);
 
     const collision = find_tp_primary_id_collision(&model, tp) orelse return error.TestExpectedCollision;
-    try std.testing.expectEqualStrings("_T1", collision);
+    try std.testing.expectEqualStrings("_T1", collision.id);
+}
+
+test "find_tp_primary_id_collision allows distinct raw ids with equal mRIDs" {
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, "<rdf:RDF><cim:Terminal rdf:ID=\"_T1\"/></rdf:RDF>"));
+    defer model.deinit(gpa);
+    var tp = try TP.init(gpa, try gpa.dupe(u8, "<rdf:RDF><cim:TopologicalNode rdf:ID=\"T1\"/></rdf:RDF>"));
+    defer tp.deinit(gpa);
+
+    try std.testing.expect(find_tp_primary_id_collision(&model, tp) == null);
+}
+
+test "find_tp_primary_mrid_collision honors explicit primary mRID" {
+    const gpa = std.testing.allocator;
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <cim:Terminal rdf:ID="_eq-object">
+        \\    <cim:IdentifiedObject.mRID>SHARED</cim:IdentifiedObject.mRID>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+    const tp_xml = "<rdf:RDF><cim:TopologicalNode rdf:ID=\"_SHARED\"/></rdf:RDF>";
+    var model = try EQ.init(gpa, try gpa.dupe(u8, eq_xml));
+    defer model.deinit(gpa);
+    var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
+    defer tp.deinit(gpa);
+
+    const collision = try find_tp_primary_mrid_collision(gpa, &model, tp) orelse return error.TestExpectedCollision;
+    try std.testing.expectEqualStrings("SHARED", collision.mrid);
 }

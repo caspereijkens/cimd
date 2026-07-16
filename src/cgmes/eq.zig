@@ -6,6 +6,7 @@ const cgmes_ids = @import("ids.zig");
 const cim_types = @import("cim_types.zig");
 
 const assert = std.debug.assert;
+pub const Diagnostics = @import("diagnostics.zig").Diagnostics;
 
 pub const EQ = struct {
     objects: []CimObject,
@@ -31,6 +32,10 @@ pub const EQ = struct {
     /// Takes ownership of `xml`: on success the model owns it (freed by deinit),
     /// on error it is freed before returning. Callers never need to clean up `xml`.
     pub fn init(gpa: std.mem.Allocator, xml: []const u8) !EQ {
+        return initWithDiagnostics(gpa, xml, null);
+    }
+
+    pub fn initWithDiagnostics(gpa: std.mem.Allocator, xml: []const u8, diagnostics: ?*Diagnostics) !EQ {
         errdefer gpa.free(xml);
         if (xml.len == 0) return error.EmptyInput;
 
@@ -58,7 +63,10 @@ pub const EQ = struct {
             const tag = boundaries.items[i];
             const id = extract_object_id_from_tag(xml, tag) orelse continue;
             const seen = seen_ids.getOrPutAssumeCapacity(id);
-            if (seen.found_existing) return error.DuplicateId;
+            if (seen.found_existing) {
+                if (diagnostics) |d| d.record_duplicate_id(xml, id, tag.start);
+                return error.DuplicateId;
+            }
             seen.value_ptr.* = {};
 
             const object = try tag_index.CimObject.init(
@@ -283,7 +291,10 @@ fn extract_object_id_from_tag(xml: []const u8, tag: TagBoundary) ?[]const u8 {
     }
 
     if (extract_attribute_from_tag(xml, tag, "rdf:about=\"")) |about| {
-        if (about.len > 0) return about;
+        if (about.len > 0) {
+            const local_id = cgmes_ids.strip_hash(about);
+            return if (local_id.len > 0) local_id else about;
+        }
     }
 
     return null;
@@ -302,6 +313,75 @@ test "EQ.init rejects duplicate RDF identifiers" {
         \\</rdf:RDF>
     ;
 
+    try std.testing.expectError(error.DuplicateId, EQ.init(gpa, try gpa.dupe(u8, xml)));
+}
+
+test "EQ diagnostics record duplicate RDF identifier" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:BaseVoltage rdf:ID="_DUP"/>
+        \\  <cim:BaseVoltage rdf:ID="_DUP"/>
+        \\</rdf:RDF>
+    ;
+    var diagnostics: Diagnostics = .{};
+    try std.testing.expectError(
+        error.DuplicateId,
+        EQ.initWithDiagnostics(gpa, try gpa.dupe(u8, xml), &diagnostics),
+    );
+    try std.testing.expectEqualStrings("_DUP", diagnostics.duplicate_id());
+    try std.testing.expectEqual(@as(u64, 3), diagnostics.duplicate_line);
+    try std.testing.expect(!diagnostics.duplicate_id_truncated);
+}
+
+test "EQ inventory retains identifiers that conversion cannot use" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:ID="_"/>
+        \\  <cim:Substation rdf:ID="__"/>
+        \\</rdf:RDF>
+    ;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+    try std.testing.expect(model.getObjectById("_") != null);
+    try std.testing.expect(model.getObjectById("__") != null);
+}
+
+test "EQ inventory ignores identifier-looking text in comments" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <!-- placeholder rdf:ID="_" to be filled in later -->
+        \\  <cim:Substation rdf:ID="_SS1"/>
+        \\</rdf:RDF>
+    ;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+    try std.testing.expect(model.getObjectById("_SS1") != null);
+}
+
+test "EQ normalizes local rdf:about identifiers for lookup and mRID resolution" {
+    const gpa = std.testing.allocator;
+    const xml = "<rdf:RDF><cim:Substation rdf:about=\"#_SSX\"/></rdf:RDF>";
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    const view = model.getObjectById("_SSX") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("SSX", try view.mrid());
+    const matches = try model.get_object_by_id_prefix(gpa, "SSX");
+    defer gpa.free(matches);
+    try std.testing.expectEqual(@as(usize, 1), matches.len);
+}
+
+test "EQ rejects rdf:ID and local rdf:about spellings of the same identifier" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:about="#_SS1"/>
+        \\  <cim:Substation rdf:ID="_SS1"/>
+        \\</rdf:RDF>
+    ;
     try std.testing.expectError(error.DuplicateId, EQ.init(gpa, try gpa.dupe(u8, xml)));
 }
 

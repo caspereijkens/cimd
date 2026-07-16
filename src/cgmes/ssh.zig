@@ -5,6 +5,7 @@ const TP = @import("tp.zig").TP;
 const TpPatch = @import("tp.zig").TpPatch;
 
 const assert = std.debug.assert;
+pub const Diagnostics = @import("diagnostics.zig").Diagnostics;
 
 pub const SshPatch = struct {
     mrid: []const u8,
@@ -20,8 +21,12 @@ pub const SSH = struct {
     /// Takes ownership of `xml`: on success the SSH owns it (freed by deinit),
     /// on error it is freed before returning. Callers never need to clean up `xml`.
     pub fn init(gpa: std.mem.Allocator, xml: []const u8) !SSH {
+        return initWithDiagnostics(gpa, xml, null);
+    }
+
+    pub fn initWithDiagnostics(gpa: std.mem.Allocator, xml: []const u8, diagnostics: ?*Diagnostics) !SSH {
         errdefer gpa.free(xml);
-        assert(xml.len > 0);
+        if (xml.len == 0) return error.EmptyInput;
 
         var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
         errdefer boundaries.deinit(gpa);
@@ -55,7 +60,13 @@ pub const SSH = struct {
             for (patches[1..], 1..) |patch, i| {
                 // Pairs with std.mem.sort above: the dedup walk relies on it.
                 assert(!patch_less_than({}, patch, patches[i - 1]));
-                if (std.mem.eql(u8, patches[i - 1].mrid, patch.mrid)) return error.DuplicateId;
+                if (std.mem.eql(u8, patches[i - 1].mrid, patch.mrid)) {
+                    const duplicate = if (patches[i - 1].patch_tag_idx > patch.patch_tag_idx) patches[i - 1] else patch;
+                    const tag = boundaries.items[duplicate.patch_tag_idx];
+                    const raw_id = extract_patch_raw_id(xml, tag.start) orelse unreachable;
+                    if (diagnostics) |d| d.record_duplicate_id(xml, raw_id, tag.start);
+                    return error.DuplicateId;
+                }
             }
         }
 
@@ -321,19 +332,43 @@ pub const CimMergedView = struct {
     }
 };
 
-/// Returns the stripped mRID if this tag is an SSH equipment patch, null otherwise.
-/// Accepts rdf:ID="_mrid" → "mrid" and rdf:about="#_mrid" → "mrid".
-/// Rejects metadata (urn: URIs, FullModel, etc.).
+/// Returns the normalized mRID if this tag is an SSH equipment patch, null otherwise.
+/// A leading underscore is optional, matching `CimObjectView.mrid`.
+/// Rejects metadata (comments, processing instructions, urn: URIs, etc.).
 fn extract_patch_mrid(xml: []const u8, tag_start: u32) ?[]const u8 {
+    switch (xml[tag_start + 1]) {
+        '/', '!', '?' => return null,
+        else => {},
+    }
+
     if (tag_index.extract_rdf_id(xml, tag_start)) |raw| {
-        if (raw.len > 0 and raw[0] == '_') return utils.strip_underscore(raw);
+        const mrid = utils.strip_underscore(raw);
+        if (mrid.len > 0) return mrid;
     } else |_| {}
 
     if (tag_index.extract_rdf_about(xml, tag_start)) |raw| {
-        if (raw.len > 1 and raw[0] == '#' and raw[1] == '_')
-            return utils.strip_underscore(utils.strip_hash(raw));
+        if (raw.len > 1 and raw[0] == '#') {
+            const mrid = utils.strip_underscore(utils.strip_hash(raw));
+            if (mrid.len > 0) return mrid;
+        }
     } else |_| {}
 
+    return null;
+}
+
+fn extract_patch_raw_id(xml: []const u8, tag_start: u32) ?[]const u8 {
+    switch (xml[tag_start + 1]) {
+        '/', '!', '?' => return null,
+        else => {},
+    }
+
+    if (tag_index.extract_rdf_id(xml, tag_start)) |raw| {
+        if (utils.strip_underscore(raw).len > 0) return raw;
+    } else |_| {}
+    if (tag_index.extract_rdf_about(xml, tag_start)) |raw| {
+        if (raw.len > 1 and raw[0] == '#' and
+            utils.strip_underscore(utils.strip_hash(raw)).len > 0) return raw;
+    } else |_| {}
     return null;
 }
 
@@ -447,14 +482,88 @@ test "SSH.init - rejects duplicate patch mRIDs" {
     const xml =
         \\<rdf:RDF>
         \\  <cim:Switch rdf:ID="_SW1"/>
-        \\  <cim:Switch rdf:about="#_SW1"/>
+        \\  <cim:Switch rdf:about="#SW1"/>
         \\</rdf:RDF>
     ;
 
     try std.testing.expectError(error.DuplicateId, SSH.init(gpa, try gpa.dupe(u8, xml)));
 }
 
+test "SSH diagnostics record duplicate patch mRID" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Switch rdf:ID="_SW1"/>
+        \\  <cim:Switch rdf:about="#SW1"/>
+        \\</rdf:RDF>
+    ;
+    var diagnostics: Diagnostics = .{};
+    try std.testing.expectError(
+        error.DuplicateId,
+        SSH.initWithDiagnostics(gpa, try gpa.dupe(u8, xml), &diagnostics),
+    );
+    try std.testing.expectEqualStrings("#SW1", diagnostics.duplicate_id());
+    try std.testing.expectEqual(@as(u64, 3), diagnostics.duplicate_line);
+    try std.testing.expect(!diagnostics.duplicate_id_truncated);
+}
+
+test "SSH skips patch identifiers that normalize to an empty key" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <!-- placeholder rdf:ID="_" is not an object -->
+        \\  <cim:Switch rdf:ID="_"/>
+        \\  <cim:Switch rdf:about="#_"/>
+        \\</rdf:RDF>
+    ;
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, xml));
+    defer ssh.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 0), ssh.patches.len);
+}
+
+test "SSH indexes bare and underscored patch identifiers consistently" {
+    const gpa = std.testing.allocator;
+    const inputs = [_][]const u8{
+        "<rdf:RDF><cim:Switch rdf:about=\"#SW1\"><cim:Switch.open>true</cim:Switch.open></cim:Switch></rdf:RDF>",
+        "<rdf:RDF><cim:Switch rdf:about=\"#_SW1\"><cim:Switch.open>true</cim:Switch.open></cim:Switch></rdf:RDF>",
+    };
+    for (inputs) |xml| {
+        var ssh = try SSH.init(gpa, try gpa.dupe(u8, xml));
+        defer ssh.deinit(gpa);
+        const patch = ssh.find_patch("SW1") orelse return error.TestFailed;
+        const value = try ssh.getPropertyFromPatch(patch, "Switch.open") orelse return error.TestFailed;
+        try std.testing.expectEqualStrings("true", value);
+    }
+}
+
 const EQ = @import("eq.zig").EQ;
+
+test "CimMergedView applies SSH patches to bare EQ identifiers" {
+    const gpa = std.testing.allocator;
+    const eq_xml =
+        \\<rdf:RDF>
+        \\  <cim:Switch rdf:ID="SW1">
+        \\    <cim:Switch.open>false</cim:Switch.open>
+        \\  </cim:Switch>
+        \\</rdf:RDF>
+    ;
+    const ssh_xml =
+        \\<rdf:RDF>
+        \\  <cim:Switch rdf:about="#SW1">
+        \\    <cim:Switch.open>true</cim:Switch.open>
+        \\  </cim:Switch>
+        \\</rdf:RDF>
+    ;
+    var eq = try EQ.init(gpa, try gpa.dupe(u8, eq_xml));
+    defer eq.deinit(gpa);
+    var ssh = try SSH.init(gpa, try gpa.dupe(u8, ssh_xml));
+    defer ssh.deinit(gpa);
+
+    const view = eq.getObjectById("SW1") orelse return error.TestFailed;
+    const mrid = try view.mrid();
+    const merged = CimMergedView.init(view, mrid, null, ssh);
+    try std.testing.expectEqualStrings("true", (try merged.getProperty("Switch.open")).?);
+}
 
 test "CimMergedView.getAllProperties merges EQ + TP + SSH with SSH precedence" {
     const gpa = std.testing.allocator;

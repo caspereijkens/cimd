@@ -22,6 +22,8 @@ const TerminalPlacer = placement_mod.TerminalPlacer;
 const resolve_terminal_placement = placement_mod.resolve_terminal_placement;
 const NodeMap = topology.NodeMap;
 const max_tap_steps = 10_000;
+/// Smaller ratios invert to values above one million and are not meaningful tap positions.
+const min_tap_ratio_magnitude: f64 = 1e-6;
 
 pub const TapChangerInfoMap = std.StringHashMapUnmanaged(std.ArrayListUnmanaged(iidm.TapChangerInfo));
 
@@ -56,9 +58,25 @@ fn build_ends_by_transformer(
         std.sort.block(CimObjectView, transformer_ends.items, {}, view_less_than);
     }
 
-    assert(ends.len == 0 or ends_by_transformer.count() > 0);
-
     return ends_by_transformer;
+}
+
+test "build_ends_by_transformer skips ends without a transformer reference" {
+    const xml =
+        \\<rdf:RDF><cim:PowerTransformerEnd rdf:ID="_end">
+        \\  <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
+        \\</cim:PowerTransformerEnd></rdf:RDF>
+    ;
+    var model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, xml));
+    defer model.deinit(testing.allocator);
+    var ends_by_transformer = try build_ends_by_transformer(testing.allocator, &model);
+    defer {
+        var it = ends_by_transformer.valueIterator();
+        while (it.next()) |ends| ends.deinit(testing.allocator);
+        ends_by_transformer.deinit(testing.allocator);
+    }
+
+    try testing.expectEqual(@as(u32, 0), ends_by_transformer.count());
 }
 
 const TapChangerCommon = struct { low_step: i32, normal_step: i32, ltc_flag: bool };
@@ -72,7 +90,7 @@ fn read_tap_changer_regulating(
     if (ssh_opt) |ssh| {
         const control_id = strip_hash(control_ref);
         const control_mrid = if (model.getObjectById(control_id)) |control_view|
-            (try control_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(control_id))
+            try control_view.mrid()
         else
             strip_underscore(control_id);
         return parse.flag(try ssh.getProperty(control_mrid, "RegulatingCondEq.controlEnabled"));
@@ -86,27 +104,41 @@ fn read_tap_changer_common(tap_changer: CimObjectView) !?TapChangerCommon {
         "TapChanger.normalStep",
         "TapChanger.ltcFlag",
     });
-    const low_step = try parse.int_req(i32, props[0] orelse return null);
-    const normal_step = try parse.int_req(i32, props[1] orelse return null);
-    const ltc_flag = parse.flag(props[2] orelse return null);
+    const low_step = try parse.int_req(i32, parse.non_blank(props[0]) orelse return null);
+    const normal_step = try parse.int_req(i32, parse.non_blank(props[1]) orelse return null);
+    const ltc_flag = parse.flag(props[2]);
     return .{ .low_step = low_step, .normal_step = normal_step, .ltc_flag = ltc_flag };
+}
+
+test "blank ltcFlag keeps the tap changer disabled" {
+    const xml =
+        \\<rdf:RDF><cim:RatioTapChanger rdf:ID="_rtc">
+        \\  <cim:TapChanger.lowStep>0</cim:TapChanger.lowStep>
+        \\  <cim:TapChanger.normalStep>0</cim:TapChanger.normalStep>
+        \\  <cim:TapChanger.ltcFlag></cim:TapChanger.ltcFlag>
+        \\</cim:RatioTapChanger></rdf:RDF>
+    ;
+    var model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, xml));
+    defer model.deinit(testing.allocator);
+    const tap_changer = model.view(model.get_objects_by_type("RatioTapChanger")[0]);
+    const common = (try read_tap_changer_common(tap_changer)).?;
+    try testing.expect(!common.ltc_flag);
 }
 
 fn append_tap_changer_info(
     gpa: std.mem.Allocator,
     model: *const EQ,
-    map_opt: ?*TapChangerInfoMap,
+    map: *TapChangerInfoMap,
     end_id: []const u8,
     tap_changer_mrid: []const u8,
     tap_changer_type: ?[]const u8,
     normal_step: i32,
 ) !void {
-    const map = map_opt orelse return;
     const end_obj = model.getObjectById(end_id) orelse return;
     const transformer_ref = try end_obj.getReference("PowerTransformerEnd.PowerTransformer") orelse return;
     const transformer_id = strip_hash(transformer_ref);
     const transformer_obj = model.getObjectById(transformer_id) orelse return;
-    const transformer_mrid = try transformer_obj.getProperty("IdentifiedObject.mRID") orelse strip_underscore(transformer_id);
+    const transformer_mrid = try transformer_obj.mrid();
 
     const gop = try map.getOrPut(gpa, transformer_mrid);
     if (!gop.found_existing) gop.value_ptr.* = .empty;
@@ -121,6 +153,12 @@ fn append_tap_changer_info(
 // tap changers, so the caller applies it.
 const TapChangerBaseStep = struct { r: f64, x: f64, g: f64, b: f64, cgmes_ratio: f64 };
 
+fn validate_tap_ratio(ratio: f64) error{InvalidNumericValue}!void {
+    if (!std.math.isFinite(ratio) or @abs(ratio) < min_tap_ratio_magnitude) {
+        return error.InvalidNumericValue;
+    }
+}
+
 fn read_tap_changer_base_step(point: CimObjectView) !?TapChangerBaseStep {
     const props = try point.getProperties(.{
         "TapChangerTablePoint.r",
@@ -133,8 +171,27 @@ fn read_tap_changer_base_step(point: CimObjectView) !?TapChangerBaseStep {
     const x = try parse.float_strict(props[1], 0.0);
     const g = try parse.float_strict(props[2], 0.0);
     const b = try parse.float_strict(props[3], 0.0);
-    const cgmes_ratio = try parse.float_req(props[4] orelse return null);
+    const cgmes_ratio = try parse.float_req(parse.non_blank(props[4]) orelse return null);
+    try validate_tap_ratio(cgmes_ratio);
     return .{ .r = r, .x = x, .g = g, .b = b, .cgmes_ratio = cgmes_ratio };
+}
+
+test "tap changer table points reject zero ratio for ratio and phase paths" {
+    const xml =
+        \\<rdf:RDF><cim:RatioTapChangerTablePoint rdf:ID="_point">
+        \\  <cim:TapChangerTablePoint.ratio>0</cim:TapChangerTablePoint.ratio>
+        \\</cim:RatioTapChangerTablePoint>
+        \\<cim:PhaseTapChangerTablePoint rdf:ID="_phase_point">
+        \\  <cim:TapChangerTablePoint.ratio>0</cim:TapChangerTablePoint.ratio>
+        \\</cim:PhaseTapChangerTablePoint></rdf:RDF>
+    ;
+    var model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, xml));
+    defer model.deinit(testing.allocator);
+    const point = model.view(model.get_objects_by_type("RatioTapChangerTablePoint")[0]);
+    const phase_point = model.view(model.get_objects_by_type("PhaseTapChangerTablePoint")[0]);
+
+    try testing.expectError(error.InvalidNumericValue, read_tap_changer_base_step(point));
+    try testing.expectError(error.InvalidNumericValue, read_tap_changer_base_step(phase_point));
 }
 
 const OrderedRatioStep = struct {
@@ -152,16 +209,21 @@ fn build_ratio_table_points(
     const tables = model.get_objects_by_type("RatioTapChangerTable");
     const points = model.get_objects_by_type("RatioTapChangerTablePoint");
     var points_by_table: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(OrderedRatioStep)) = .empty;
+    errdefer {
+        var it = points_by_table.valueIterator();
+        while (it.next()) |list| list.deinit(gpa);
+        points_by_table.deinit(gpa);
+    }
     try points_by_table.ensureTotalCapacity(gpa, @intCast(tables.len));
     for (points) |point| {
         const point_view = model.view(point);
         const table_ref = try point_view.getReference("RatioTapChangerTablePoint.RatioTapChangerTable") orelse continue;
         const base = try read_tap_changer_base_step(point_view) orelse continue;
-        const step_num_str = try point_view.getProperty("TapChangerTablePoint.step") orelse continue;
+        const step_num_str = parse.non_blank(try point_view.getProperty("TapChangerTablePoint.step")) orelse continue;
         const step_num = try parse.int_req(i32, step_num_str);
         // pypowsybl inverts cgmes_ratio for ratio tap changers.
-        const rho = if (base.cgmes_ratio != 0.0) 1.0 / base.cgmes_ratio else 1.0;
-        const gop = points_by_table.getOrPutAssumeCapacity(strip_hash(table_ref));
+        const rho = 1.0 / base.cgmes_ratio;
+        const gop = try points_by_table.getOrPut(gpa, strip_hash(table_ref));
         if (!gop.found_existing) gop.value_ptr.* = .empty;
         try gop.value_ptr.append(gpa, .{
             .step_num = step_num,
@@ -171,8 +233,56 @@ fn build_ratio_table_points(
     // CGMES does not guarantee TablePoint XML order matches step order — sort explicitly.
     var sort_it = points_by_table.valueIterator();
     while (sort_it.next()) |list| std.sort.block(OrderedRatioStep, list.items, {}, OrderedRatioStep.less_than);
-    assert(points.len == 0 or points_by_table.count() > 0);
     return points_by_table;
+}
+
+test "tap point maps tolerate dangling table references and skipped points" {
+    const dangling_xml =
+        \\<rdf:RDF>
+        \\  <cim:RatioTapChangerTablePoint rdf:ID="_ratio_point">
+        \\    <cim:RatioTapChangerTablePoint.RatioTapChangerTable rdf:resource="#_missing_ratio_table"/>
+        \\    <cim:TapChangerTablePoint.step>0</cim:TapChangerTablePoint.step>
+        \\    <cim:TapChangerTablePoint.ratio>1</cim:TapChangerTablePoint.ratio>
+        \\  </cim:RatioTapChangerTablePoint>
+        \\  <cim:PhaseTapChangerTablePoint rdf:ID="_phase_point">
+        \\    <cim:PhaseTapChangerTablePoint.PhaseTapChangerTable rdf:resource="#_missing_phase_table"/>
+        \\    <cim:TapChangerTablePoint.step>0</cim:TapChangerTablePoint.step>
+        \\    <cim:TapChangerTablePoint.ratio>1</cim:TapChangerTablePoint.ratio>
+        \\  </cim:PhaseTapChangerTablePoint>
+        \\</rdf:RDF>
+    ;
+    var dangling_model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, dangling_xml));
+    defer dangling_model.deinit(testing.allocator);
+    var ratio_points = try build_ratio_table_points(testing.allocator, &dangling_model);
+    defer {
+        var it = ratio_points.valueIterator();
+        while (it.next()) |points| points.deinit(testing.allocator);
+        ratio_points.deinit(testing.allocator);
+    }
+    try testing.expectEqual(@as(u32, 1), ratio_points.count());
+
+    var phase_map = try build_phase_tap_changer_map(testing.allocator, &dangling_model, null, null);
+    defer {
+        var it = phase_map.valueIterator();
+        while (it.next()) |entry| entry.deinit(testing.allocator);
+        phase_map.deinit(testing.allocator);
+    }
+    try testing.expectEqual(@as(u32, 0), phase_map.count());
+
+    const skipped_xml =
+        \\<rdf:RDF>
+        \\  <cim:RatioTapChangerTable rdf:ID="_table"/>
+        \\  <cim:RatioTapChangerTablePoint rdf:ID="_point">
+        \\    <cim:RatioTapChangerTablePoint.RatioTapChangerTable rdf:resource="#_table"/>
+        \\    <cim:TapChangerTablePoint.step>0</cim:TapChangerTablePoint.step>
+        \\  </cim:RatioTapChangerTablePoint>
+        \\</rdf:RDF>
+    ;
+    var skipped_model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, skipped_xml));
+    defer skipped_model.deinit(testing.allocator);
+    var skipped_points = try build_ratio_table_points(testing.allocator, &skipped_model);
+    defer skipped_points.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, 0), skipped_points.count());
 }
 
 fn build_linear_ratio_steps(
@@ -180,11 +290,11 @@ fn build_linear_ratio_steps(
     tap_changer: CimObjectView,
     low_step: i32,
 ) !?std.ArrayListUnmanaged(iidm.RatioTapChangerStep) {
-    const high_step_str = try tap_changer.getProperty("TapChanger.highStep") orelse return null;
+    const high_step_str = parse.non_blank(try tap_changer.getProperty("TapChanger.highStep")) orelse return null;
     const high_step = try parse.int_req(i32, high_step_str);
-    const neutral_step_str = try tap_changer.getProperty("TapChanger.neutralStep") orelse return null;
+    const neutral_step_str = parse.non_blank(try tap_changer.getProperty("TapChanger.neutralStep")) orelse return null;
     const neutral_step = try parse.int_req(i32, neutral_step_str);
-    const increment_str = try tap_changer.getProperty("RatioTapChanger.stepVoltageIncrement") orelse return null;
+    const increment_str = parse.non_blank(try tap_changer.getProperty("RatioTapChanger.stepVoltageIncrement")) orelse return null;
     const increment = try parse.float_req(increment_str);
 
     if (high_step < low_step) return error.InvalidTapStepRange;
@@ -193,20 +303,38 @@ fn build_linear_ratio_steps(
     const step_count: usize = @intCast(step_count_i64);
 
     var steps: std.ArrayListUnmanaged(iidm.RatioTapChangerStep) = .empty;
+    errdefer steps.deinit(gpa);
     try steps.ensureTotalCapacity(gpa, step_count);
     for (0..step_count) |i| {
         const step: i32 = low_step + @as(i32, @intCast(i));
         // pypowsybl emits rho = 1 / cgmes_ratio; CGMES linear ratio at step = 1 + (step-neutral)*inc/100.
         const offset = @as(i64, step) - @as(i64, neutral_step);
         const cgmes_ratio = 1.0 + @as(f64, @floatFromInt(offset)) * increment / 100.0;
-        const rho = if (cgmes_ratio != 0.0) 1.0 / cgmes_ratio else 1.0;
+        try validate_tap_ratio(cgmes_ratio);
+        const rho = 1.0 / cgmes_ratio;
         steps.appendAssumeCapacity(.{ .r = 0.0, .x = 0.0, .g = 0.0, .b = 0.0, .rho = rho });
     }
     assert(steps.items.len > 0);
     return steps;
 }
 
+test "build_linear_ratio_steps rejects a computed near-zero ratio" {
+    const xml =
+        \\<rdf:RDF><cim:RatioTapChanger rdf:ID="_tap">
+        \\  <cim:TapChanger.highStep>0</cim:TapChanger.highStep>
+        \\  <cim:TapChanger.neutralStep>300</cim:TapChanger.neutralStep>
+        \\  <cim:RatioTapChanger.stepVoltageIncrement>0.3333333</cim:RatioTapChanger.stepVoltageIncrement>
+        \\</cim:RatioTapChanger></rdf:RDF>
+    ;
+    var model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, xml));
+    defer model.deinit(testing.allocator);
+    const tap_changer = model.view(model.get_objects_by_type("RatioTapChanger")[0]);
+
+    try testing.expectError(error.InvalidNumericValue, build_linear_ratio_steps(testing.allocator, tap_changer, 0));
+}
+
 const RatioTapChangerEntry = struct {
+    rdf_id: []const u8,
     mrid: []const u8,
     tap_changer: iidm.RatioTapChanger,
 
@@ -216,6 +344,7 @@ const RatioTapChangerEntry = struct {
 };
 
 const PhaseTapChangerEntry = struct {
+    rdf_id: []const u8,
     mrid: []const u8,
     tap_changer: iidm.PhaseTapChanger,
 
@@ -239,6 +368,11 @@ fn build_ratio_tap_changer_map(
 
     const tap_changers = model.get_objects_by_type("RatioTapChanger");
     var ratio_tap_changer_map: std.StringHashMapUnmanaged(RatioTapChangerEntry) = .empty;
+    errdefer {
+        var it = ratio_tap_changer_map.valueIterator();
+        while (it.next()) |entry| entry.deinit(gpa);
+        ratio_tap_changer_map.deinit(gpa);
+    }
     try ratio_tap_changer_map.ensureTotalCapacity(gpa, @intCast(tap_changers.len));
 
     for (tap_changers) |tap_changer| {
@@ -247,8 +381,7 @@ fn build_ratio_tap_changer_map(
         const end_id = strip_hash(end_ref);
         const common = try read_tap_changer_common(tap_changer_view) orelse continue;
         const regulating = try read_tap_changer_regulating(model, tap_changer_view, ssh_opt);
-        const mrid = try tap_changer_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(tap_changer.id);
-        try append_tap_changer_info(gpa, model, tap_changer_info_map, end_id, mrid, null, common.normal_step);
+        const mrid = try tap_changer_view.mrid();
 
         const owned_steps = if (try tap_changer_view.getReference("RatioTapChanger.RatioTapChangerTable")) |table_ref| blk: {
             const ordered = points_by_table.get(strip_hash(table_ref)) orelse continue;
@@ -260,7 +393,10 @@ fn build_ratio_tap_changer_map(
             break :blk try build_linear_ratio_steps(gpa, tap_changer_view, common.low_step) orelse continue;
         };
 
-        ratio_tap_changer_map.putAssumeCapacity(end_id, .{
+        const gop = ratio_tap_changer_map.getOrPutAssumeCapacity(end_id);
+        if (gop.found_existing) gop.value_ptr.deinit(gpa);
+        gop.value_ptr.* = .{
+            .rdf_id = tap_changer.id,
             .mrid = mrid,
             .tap_changer = .{
                 .low_tap_position = common.low_step,
@@ -271,7 +407,21 @@ fn build_ratio_tap_changer_map(
                 .terminal_ref = null,
                 .steps = owned_steps,
             },
-        });
+        };
+    }
+
+    // Record only tap changers that survived all validation and replacement.
+    // A second pass preserves CGMES parse order while filtering duplicate
+    // changers on the same TransformerEnd down to the retained entry.
+    if (tap_changer_info_map) |info_map| {
+        for (tap_changers) |tap_changer| {
+            const tap_changer_view = model.view(tap_changer);
+            const end_ref = try tap_changer_view.getReference("RatioTapChanger.TransformerEnd") orelse continue;
+            const end_id = strip_hash(end_ref);
+            const retained = ratio_tap_changer_map.get(end_id) orelse continue;
+            if (!std.mem.eql(u8, tap_changer.id, retained.rdf_id)) continue;
+            try append_tap_changer_info(gpa, model, info_map, end_id, retained.mrid, null, retained.tap_changer.tap_position);
+        }
     }
     return ratio_tap_changer_map;
 }
@@ -297,10 +447,9 @@ fn build_phase_tap_changer_map(
         points_by_table.deinit(gpa);
     }
 
+    const points = model.get_objects_by_type("PhaseTapChangerTablePoint");
     const tables = model.get_objects_by_type("PhaseTapChangerTable");
     try points_by_table.ensureTotalCapacity(gpa, @intCast(tables.len));
-
-    const points = model.get_objects_by_type("PhaseTapChangerTablePoint");
 
     // Build RAW (pre-movement) steps keyed by table. Scaling and rho/alpha movement
     // depend on which end the tap changer sits on; both are applied per tap changer below.
@@ -311,10 +460,10 @@ fn build_phase_tap_changer_map(
 
         const base = try read_tap_changer_base_step(point_view) orelse continue;
         const alpha = try parse.float_strict(try point_view.getProperty("PhaseTapChangerTablePoint.angle"), 0.0);
-        const step_num_str = try point_view.getProperty("TapChangerTablePoint.step") orelse continue;
+        const step_num_str = parse.non_blank(try point_view.getProperty("TapChangerTablePoint.step")) orelse continue;
         const step_num = try parse.int_req(i32, step_num_str);
 
-        const gop = points_by_table.getOrPutAssumeCapacity(table_id);
+        const gop = try points_by_table.getOrPut(gpa, table_id);
         if (!gop.found_existing) gop.value_ptr.* = .empty;
         try gop.value_ptr.append(gpa, .{
             .step_num = step_num,
@@ -336,6 +485,11 @@ fn build_phase_tap_changer_map(
     const tap_changers = model.get_objects_by_type("PhaseTapChangerTabular");
 
     var phase_tap_changer_map: std.StringHashMapUnmanaged(PhaseTapChangerEntry) = .empty;
+    errdefer {
+        var it = phase_tap_changer_map.valueIterator();
+        while (it.next()) |entry| entry.deinit(gpa);
+        phase_tap_changer_map.deinit(gpa);
+    }
     try phase_tap_changer_map.ensureTotalCapacity(gpa, @intCast(tap_changers.len));
 
     for (tap_changers) |tap_changer| {
@@ -345,8 +499,7 @@ fn build_phase_tap_changer_map(
         const regulating = try read_tap_changer_regulating(model, tap_changer_view, ssh_opt);
 
         const common = try read_tap_changer_common(tap_changer_view) orelse continue;
-        const mrid = try tap_changer_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(tap_changer.id);
-        try append_tap_changer_info(gpa, model, tap_changer_info_map, end_id, mrid, "PhaseTapChangerTabular", common.normal_step);
+        const mrid = try tap_changer_view.mrid();
 
         const table_ref = try tap_changer_view.getReference("PhaseTapChangerTabular.PhaseTapChangerTable") orelse continue;
         const table_id = strip_hash(table_ref);
@@ -368,22 +521,23 @@ fn build_phase_tap_changer_map(
         for (ordered_steps.items) |os| {
             var step = os.step;
             if (move) {
-                step.rho = if (step.rho != 0.0) 1.0 / step.rho else step.rho;
+                step.rho = 1.0 / step.rho;
                 step.alpha = -step.alpha;
             } else {
                 const a2 = step.rho * step.rho;
-                if (a2 != 0.0) {
-                    step.r = 100.0 * ((1.0 + step.r / 100.0) * a2 - 1.0);
-                    step.x = 100.0 * ((1.0 + step.x / 100.0) * a2 - 1.0);
-                    step.g = 100.0 * ((1.0 + step.g / 100.0) / a2 - 1.0);
-                    step.b = 100.0 * ((1.0 + step.b / 100.0) / a2 - 1.0);
-                }
+                step.r = 100.0 * ((1.0 + step.r / 100.0) * a2 - 1.0);
+                step.x = 100.0 * ((1.0 + step.x / 100.0) * a2 - 1.0);
+                step.g = 100.0 * ((1.0 + step.g / 100.0) / a2 - 1.0);
+                step.b = 100.0 * ((1.0 + step.b / 100.0) / a2 - 1.0);
             }
             owned_steps.appendAssumeCapacity(step);
         }
 
         // PhaseTapChangerTabular maps to CURRENT_LIMITER in pypowsybl's CGMES importer.
-        phase_tap_changer_map.putAssumeCapacity(end_id, .{
+        const gop = phase_tap_changer_map.getOrPutAssumeCapacity(end_id);
+        if (gop.found_existing) gop.value_ptr.deinit(gpa);
+        gop.value_ptr.* = .{
+            .rdf_id = tap_changer.id,
             .mrid = mrid,
             .tap_changer = .{
                 .low_tap_position = common.low_step,
@@ -393,9 +547,147 @@ fn build_phase_tap_changer_map(
                 .regulation_mode = "CURRENT_LIMITER",
                 .steps = owned_steps,
             },
-        });
+        };
+    }
+
+    if (tap_changer_info_map) |info_map| {
+        for (tap_changers) |tap_changer| {
+            const tap_changer_view = model.view(tap_changer);
+            const end_ref = try tap_changer_view.getReference("PhaseTapChanger.TransformerEnd") orelse continue;
+            const end_id = strip_hash(end_ref);
+            const retained = phase_tap_changer_map.get(end_id) orelse continue;
+            if (!std.mem.eql(u8, tap_changer.id, retained.rdf_id)) continue;
+            try append_tap_changer_info(gpa, model, info_map, end_id, retained.mrid, "PhaseTapChangerTabular", retained.tap_changer.tap_position);
+        }
     }
     return phase_tap_changer_map;
+}
+
+test "build_phase_tap_changer_map unwinds entries when a later changer is invalid" {
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:PhaseTapChangerTable rdf:ID="_table"/>
+        \\  <cim:PhaseTapChangerTablePoint rdf:ID="_point">
+        \\    <cim:PhaseTapChangerTablePoint.PhaseTapChangerTable rdf:resource="#_table"/>
+        \\    <cim:TapChangerTablePoint.step>0</cim:TapChangerTablePoint.step>
+        \\    <cim:TapChangerTablePoint.ratio>1</cim:TapChangerTablePoint.ratio>
+        \\  </cim:PhaseTapChangerTablePoint>
+        \\  <cim:PowerTransformerEnd rdf:ID="_end1">
+        \\    <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PhaseTapChangerTabular rdf:ID="_valid">
+        \\    <cim:PhaseTapChanger.TransformerEnd rdf:resource="#_end1"/>
+        \\    <cim:PhaseTapChangerTabular.PhaseTapChangerTable rdf:resource="#_table"/>
+        \\    <cim:TapChanger.lowStep>0</cim:TapChanger.lowStep>
+        \\    <cim:TapChanger.normalStep>0</cim:TapChanger.normalStep>
+        \\  </cim:PhaseTapChangerTabular>
+        \\  <cim:PhaseTapChangerTabular rdf:ID="_invalid">
+        \\    <cim:PhaseTapChanger.TransformerEnd rdf:resource="#_end2"/>
+        \\    <cim:TapChanger.lowStep>not-an-integer</cim:TapChanger.lowStep>
+        \\    <cim:TapChanger.normalStep>0</cim:TapChanger.normalStep>
+        \\  </cim:PhaseTapChangerTabular>
+        \\</rdf:RDF>
+    ;
+    var model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, xml));
+    defer model.deinit(testing.allocator);
+
+    try testing.expectError(error.InvalidIntegerValue, build_phase_tap_changer_map(testing.allocator, &model, null, null));
+}
+
+test "tap changer info includes only retained map entries" {
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:PowerTransformer rdf:ID="_transformer"/>
+        \\  <cim:PowerTransformerEnd rdf:ID="_end1">
+        \\    <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
+        \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_transformer"/>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PowerTransformerEnd rdf:ID="_end2">
+        \\    <cim:TransformerEnd.endNumber>2</cim:TransformerEnd.endNumber>
+        \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_transformer"/>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:RatioTapChanger rdf:ID="_ratio_first">
+        \\    <cim:IdentifiedObject.mRID>ratio_same</cim:IdentifiedObject.mRID>
+        \\    <cim:RatioTapChanger.TransformerEnd rdf:resource="#_end1"/>
+        \\    <cim:TapChanger.lowStep>0</cim:TapChanger.lowStep>
+        \\    <cim:TapChanger.highStep>0</cim:TapChanger.highStep>
+        \\    <cim:TapChanger.normalStep>0</cim:TapChanger.normalStep>
+        \\    <cim:TapChanger.neutralStep>0</cim:TapChanger.neutralStep>
+        \\    <cim:RatioTapChanger.stepVoltageIncrement>1</cim:RatioTapChanger.stepVoltageIncrement>
+        \\  </cim:RatioTapChanger>
+        \\  <cim:RatioTapChanger rdf:ID="_ratio_skipped">
+        \\    <cim:RatioTapChanger.TransformerEnd rdf:resource="#_end2"/>
+        \\    <cim:RatioTapChanger.RatioTapChangerTable rdf:resource="#_missing_ratio_table"/>
+        \\    <cim:TapChanger.lowStep>0</cim:TapChanger.lowStep>
+        \\    <cim:TapChanger.normalStep>0</cim:TapChanger.normalStep>
+        \\  </cim:RatioTapChanger>
+        \\  <cim:RatioTapChanger rdf:ID="_ratio_second">
+        \\    <cim:IdentifiedObject.mRID>ratio_same</cim:IdentifiedObject.mRID>
+        \\    <cim:RatioTapChanger.TransformerEnd rdf:resource="#_end1"/>
+        \\    <cim:TapChanger.lowStep>0</cim:TapChanger.lowStep>
+        \\    <cim:TapChanger.highStep>0</cim:TapChanger.highStep>
+        \\    <cim:TapChanger.normalStep>0</cim:TapChanger.normalStep>
+        \\    <cim:TapChanger.neutralStep>0</cim:TapChanger.neutralStep>
+        \\    <cim:RatioTapChanger.stepVoltageIncrement>1</cim:RatioTapChanger.stepVoltageIncrement>
+        \\  </cim:RatioTapChanger>
+        \\  <cim:PhaseTapChangerTable rdf:ID="_phase_table"/>
+        \\  <cim:PhaseTapChangerTablePoint rdf:ID="_phase_point">
+        \\    <cim:PhaseTapChangerTablePoint.PhaseTapChangerTable rdf:resource="#_phase_table"/>
+        \\    <cim:TapChangerTablePoint.step>0</cim:TapChangerTablePoint.step>
+        \\    <cim:TapChangerTablePoint.ratio>1</cim:TapChangerTablePoint.ratio>
+        \\  </cim:PhaseTapChangerTablePoint>
+        \\  <cim:PhaseTapChangerTabular rdf:ID="_phase_first">
+        \\    <cim:IdentifiedObject.mRID>phase_same</cim:IdentifiedObject.mRID>
+        \\    <cim:PhaseTapChanger.TransformerEnd rdf:resource="#_end1"/>
+        \\    <cim:PhaseTapChangerTabular.PhaseTapChangerTable rdf:resource="#_phase_table"/>
+        \\    <cim:TapChanger.lowStep>0</cim:TapChanger.lowStep>
+        \\    <cim:TapChanger.normalStep>0</cim:TapChanger.normalStep>
+        \\  </cim:PhaseTapChangerTabular>
+        \\  <cim:PhaseTapChangerTabular rdf:ID="_phase_second">
+        \\    <cim:IdentifiedObject.mRID>phase_same</cim:IdentifiedObject.mRID>
+        \\    <cim:PhaseTapChanger.TransformerEnd rdf:resource="#_end1"/>
+        \\    <cim:PhaseTapChangerTabular.PhaseTapChangerTable rdf:resource="#_phase_table"/>
+        \\    <cim:TapChanger.lowStep>0</cim:TapChanger.lowStep>
+        \\    <cim:TapChanger.normalStep>0</cim:TapChanger.normalStep>
+        \\  </cim:PhaseTapChangerTabular>
+        \\  <cim:PhaseTapChangerTabular rdf:ID="_phase_skipped">
+        \\    <cim:PhaseTapChanger.TransformerEnd rdf:resource="#_end2"/>
+        \\    <cim:PhaseTapChangerTabular.PhaseTapChangerTable rdf:resource="#_missing_phase_table"/>
+        \\    <cim:TapChanger.lowStep>0</cim:TapChanger.lowStep>
+        \\    <cim:TapChanger.normalStep>0</cim:TapChanger.normalStep>
+        \\  </cim:PhaseTapChangerTabular>
+        \\</rdf:RDF>
+    ;
+    var model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, xml));
+    defer model.deinit(testing.allocator);
+
+    var tap_changer_info_map: TapChangerInfoMap = .empty;
+    defer deinit_tap_changer_info_map(testing.allocator, &tap_changer_info_map);
+
+    var ratio_map = try build_ratio_tap_changer_map(testing.allocator, &model, null, &tap_changer_info_map);
+    defer {
+        var it = ratio_map.valueIterator();
+        while (it.next()) |entry| entry.deinit(testing.allocator);
+        ratio_map.deinit(testing.allocator);
+    }
+    try testing.expectEqual(@as(u32, 1), ratio_map.count());
+    try testing.expectEqualStrings("_ratio_second", ratio_map.get("_end1").?.rdf_id);
+    try testing.expectEqualStrings("ratio_same", ratio_map.get("_end1").?.mrid);
+
+    var phase_map = try build_phase_tap_changer_map(testing.allocator, &model, null, &tap_changer_info_map);
+    defer {
+        var it = phase_map.valueIterator();
+        while (it.next()) |entry| entry.deinit(testing.allocator);
+        phase_map.deinit(testing.allocator);
+    }
+    try testing.expectEqual(@as(u32, 1), phase_map.count());
+    try testing.expectEqualStrings("_phase_second", phase_map.get("_end1").?.rdf_id);
+    try testing.expectEqualStrings("phase_same", phase_map.get("_end1").?.mrid);
+
+    const retained_info = tap_changer_info_map.get("transformer") orelse return error.TestFailed;
+    try testing.expectEqual(@as(usize, 2), retained_info.items.len);
+    try testing.expectEqualStrings("ratio_same", retained_info.items[0].id);
+    try testing.expectEqualStrings("phase_same", retained_info.items[1].id);
 }
 
 fn view_less_than(_: void, a: CimObjectView, b: CimObjectView) bool {
@@ -426,6 +718,19 @@ test "view_less_than: end 1 < end 2" {
     defer t2.model.deinit(testing.allocator);
     try testing.expect(view_less_than({}, t1.end, t2.end));
     try testing.expect(!view_less_than({}, t2.end, t1.end));
+}
+
+test "CimObjectView.mrid treats blank content as absent" {
+    var t = try make_end(
+        \\<rdf:RDF><cim:PowerTransformerEnd rdf:ID="_fallback">
+        \\  <cim:IdentifiedObject.mRID>
+        \\
+        \\  </cim:IdentifiedObject.mRID>
+        \\</cim:PowerTransformerEnd></rdf:RDF>
+    );
+    defer t.model.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("fallback", try t.end.mrid());
 }
 
 test "view_less_than: equal end numbers are not less than" {
@@ -506,13 +811,51 @@ fn read_end_electrical(end: CimObjectView) !?EndElectrical {
         "PowerTransformerEnd.b",
         "PowerTransformerEnd.ratedS",
     });
-    const rated_u = try parse.float_req(props[0] orelse return null);
+    const rated_u = try parse.float_req(parse.non_blank(props[0]) orelse return null);
+    if (rated_u == 0.0) return error.InvalidNumericValue;
     const r = try parse.float_strict(props[1], 0.0);
     const x = try parse.float_strict(props[2], 0.0);
     const g = try parse.float_strict(props[3], 0.0);
     const b = try parse.float_strict(props[4], 0.0);
-    const rated_s: ?f64 = if (props[5]) |s| try parse.float_req(s) else null;
+    const rated_s: ?f64 = if (parse.non_blank(props[5])) |s| try parse.float_req(s) else null;
     return .{ .r = r, .x = x, .g = g, .b = b, .rated_u = rated_u, .rated_s = rated_s };
+}
+
+test "read_end_electrical treats explicit-empty and self-closing values as absent" {
+    var explicit_empty = try make_end(
+        \\<rdf:RDF><cim:PowerTransformerEnd rdf:ID="_e1">
+        \\  <cim:PowerTransformerEnd.ratedU></cim:PowerTransformerEnd.ratedU>
+        \\</cim:PowerTransformerEnd></rdf:RDF>
+    );
+    defer explicit_empty.model.deinit(testing.allocator);
+    try testing.expect((try read_end_electrical(explicit_empty.end)) == null);
+
+    var self_closing = try make_end(
+        \\<rdf:RDF><cim:PowerTransformerEnd rdf:ID="_e1">
+        \\  <cim:PowerTransformerEnd.ratedU/>
+        \\</cim:PowerTransformerEnd></rdf:RDF>
+    );
+    defer self_closing.model.deinit(testing.allocator);
+    try testing.expect((try read_end_electrical(self_closing.end)) == null);
+
+    var optional_empty = try make_end(
+        \\<rdf:RDF><cim:PowerTransformerEnd rdf:ID="_e1">
+        \\  <cim:PowerTransformerEnd.ratedU>220</cim:PowerTransformerEnd.ratedU>
+        \\  <cim:PowerTransformerEnd.ratedS></cim:PowerTransformerEnd.ratedS>
+        \\</cim:PowerTransformerEnd></rdf:RDF>
+    );
+    defer optional_empty.model.deinit(testing.allocator);
+    const electrical = (try read_end_electrical(optional_empty.end)).?;
+    try testing.expectEqual(@as(f64, 220.0), electrical.rated_u);
+    try testing.expectEqual(@as(?f64, null), electrical.rated_s);
+
+    var zero_rated_u = try make_end(
+        \\<rdf:RDF><cim:PowerTransformerEnd rdf:ID="_e1">
+        \\  <cim:PowerTransformerEnd.ratedU>0</cim:PowerTransformerEnd.ratedU>
+        \\</cim:PowerTransformerEnd></rdf:RDF>
+    );
+    defer zero_rated_u.model.deinit(testing.allocator);
+    try testing.expectError(error.InvalidNumericValue, read_end_electrical(zero_rated_u.end));
 }
 
 fn resolve_end_placement(
@@ -532,8 +875,6 @@ fn pre_allocate_transformers(
     substation_map: *const std.StringHashMapUnmanaged(*iidm.Substation),
     placer: TerminalPlacer,
 ) !void {
-    assert(placer.voltage_level_map.count() > 0);
-
     var transformer_counts: std.AutoHashMapUnmanaged(*iidm.Substation, struct { two: u32, three: u32 }) = .empty;
     defer transformer_counts.deinit(gpa);
     try transformer_counts.ensureTotalCapacity(gpa, @intCast(ends_by_transformer.count()));
@@ -583,8 +924,8 @@ fn append_two_windings_transformer(
     const ratio = e2.rated_u / e1.rated_u;
     const ratio2 = ratio * ratio;
 
-    const mrid = try transformer.getProperty("IdentifiedObject.mRID") orelse strip_underscore(transformer.id);
-    const name = try transformer.getProperty("IdentifiedObject.name");
+    const mrid = try transformer.mrid();
+    const name = parse.non_blank(try transformer.getProperty("IdentifiedObject.name"));
 
     // Tap changers keyed by end rdf:ID (= end.id). Track which end (1 or 2) so we can
     // emit the correct CGMES.RatioTapChanger<N> / CGMES.PhaseTapChanger<N> alias.
@@ -606,6 +947,11 @@ fn append_two_windings_transformer(
         phase_tc = kv.value;
         phase_tc_side = 2;
     }
+    var tap_changers_transferred = false;
+    defer if (!tap_changers_transferred) {
+        if (ratio_tc) |*entry| entry.deinit(gpa);
+        if (phase_tc) |*entry| entry.deinit(gpa);
+    };
 
     // aliases + operational limits per terminal, keyed by end's own Terminal.
     const t1_id = strip_hash(try ends[0].getReference("TransformerEnd.Terminal") orelse return);
@@ -666,6 +1012,7 @@ fn append_two_windings_transformer(
         .op_lims_groups2 = op_lims_groups_2,
         .aliases = aliases,
     });
+    tap_changers_transferred = true;
 }
 
 fn append_three_windings_transformer(
@@ -686,13 +1033,28 @@ fn append_three_windings_transformer(
     const e2 = try read_end_electrical(ends[1]) orelse return;
     const e3 = try read_end_electrical(ends[2]) orelse return;
 
-    const mrid = try transformer.getProperty("IdentifiedObject.mRID") orelse strip_underscore(transformer.id);
-    const name = try transformer.getProperty("IdentifiedObject.name");
+    const mrid = try transformer.mrid();
+    const name = parse.non_blank(try transformer.getProperty("IdentifiedObject.name"));
 
     // Tap changers keyed by end rdf:ID (= end.id). fetchRemove takes ownership.
     const rtc1 = ratio_tap_changer_map.fetchRemove(ends[0].id);
     const rtc2 = ratio_tap_changer_map.fetchRemove(ends[1].id);
     const rtc3 = ratio_tap_changer_map.fetchRemove(ends[2].id);
+    var tap_changers_transferred = false;
+    defer if (!tap_changers_transferred) {
+        if (rtc1) |kv| {
+            var entry = kv.value;
+            entry.deinit(gpa);
+        }
+        if (rtc2) |kv| {
+            var entry = kv.value;
+            entry.deinit(gpa);
+        }
+        if (rtc3) |kv| {
+            var entry = kv.value;
+            entry.deinit(gpa);
+        }
+    };
 
     // aliases + operational limits per terminal, keyed by end's own Terminal.
     const t1_id = strip_hash(try ends[0].getReference("TransformerEnd.Terminal") orelse return);
@@ -733,8 +1095,8 @@ fn append_three_windings_transformer(
 
     // Refer each end's r/x/g/b to the star-point voltage (u0 = u1). Ratio per end
     // is u1/uN. Impedance scales by ratio²; admittance by 1/ratio². End 1 ratio is 1.
-    const ratio2_2 = if (e2.rated_u != 0.0) (e1.rated_u / e2.rated_u) * (e1.rated_u / e2.rated_u) else 1.0;
-    const ratio2_3 = if (e3.rated_u != 0.0) (e1.rated_u / e3.rated_u) * (e1.rated_u / e3.rated_u) else 1.0;
+    const ratio2_2 = (e1.rated_u / e2.rated_u) * (e1.rated_u / e2.rated_u);
+    const ratio2_3 = (e1.rated_u / e3.rated_u) * (e1.rated_u / e3.rated_u);
 
     substation.three_winding_transformers.appendAssumeCapacity(.{
         .id = mrid,
@@ -781,6 +1143,7 @@ fn append_three_windings_transformer(
         .op_lims_groups3 = op_lims_groups_3,
         .aliases = aliases,
     });
+    tap_changers_transferred = true;
 }
 
 pub fn convert_transformers(
@@ -828,5 +1191,29 @@ pub fn convert_transformers(
             else => continue,
         }
     }
-    assert(transformers.len == 0 or ends_by_transformer.count() > 0);
+}
+
+test "convert_transformers skips a transformer without ends" {
+    const xml = "<rdf:RDF><cim:PowerTransformer rdf:ID=\"_transformer\"/></rdf:RDF>";
+    var model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, xml));
+    defer model.deinit(testing.allocator);
+
+    var index = CrossRef.empty();
+    defer index.deinit(testing.allocator);
+    var topology_data = topology.Topology.empty();
+    defer topology_data.deinit(testing.allocator);
+    var voltage_level_map: std.StringHashMapUnmanaged(*iidm.VoltageLevel) = .empty;
+    defer voltage_level_map.deinit(testing.allocator);
+    var node_map: NodeMap = .empty;
+    defer node_map.deinit(testing.allocator);
+    const placer = TerminalPlacer{
+        .mode = .{ .node_breaker = &node_map },
+        .index = &index,
+        .topology = &topology_data,
+        .voltage_level_map = &voltage_level_map,
+    };
+    var substation_map: std.StringHashMapUnmanaged(*iidm.Substation) = .empty;
+    defer substation_map.deinit(testing.allocator);
+
+    try convert_transformers(testing.allocator, &model, &substation_map, placer, null, null);
 }

@@ -31,7 +31,10 @@ pub fn populate_internal_connections(
     // is fine for ensureTotalCapacity.
     var conn_node_other_count: std.StringHashMapUnmanaged(u32) = .empty;
     defer conn_node_other_count.deinit(gpa);
-    try conn_node_other_count.ensureTotalCapacity(gpa, @intCast(index.conn_node_container.count()));
+    // Keys come from Terminal.ConnectivityNode references, including boundary
+    // CNs that may be declared only in an omitted EQBD file. The terminal map,
+    // not the locally declared-CN map, is therefore the safe upper bound.
+    try conn_node_other_count.ensureTotalCapacity(gpa, @intCast(index.terminal_conn_node.count()));
 
     for (model.get_objects_by_type("Terminal")) |terminal| {
         const conn_node_id = index.terminal_conn_node.get(terminal.id) orelse continue;

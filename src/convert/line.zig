@@ -220,17 +220,17 @@ pub fn convert_lines(
                 if (!boundary_conn_node_entry.found_existing) {
                     // First encounter: collect metadata from this segment's view.
                     const conn_node_object = model.getObjectById(conn_node_id).?;
-                    const conn_node_mrid = try conn_node_object.getProperty("IdentifiedObject.mRID") orelse strip_underscore(conn_node_id);
+                    const conn_node_mrid = try conn_node_object.mrid();
                     const container_object_opt = model.getObjectById(container_id);
                     const container_mrid: []const u8 = blk: {
                         if (container_object_opt) |container_object| {
-                            if (try container_object.getProperty("IdentifiedObject.mRID")) |container_mrid_value| break :blk container_mrid_value;
+                            if (parse.non_blank(try container_object.getProperty("IdentifiedObject.mRID"))) |container_mrid_value| break :blk container_mrid_value;
                         }
                         break :blk strip_underscore(container_id);
                     };
                     const conn_node_name: ?[]const u8 = blk: {
                         const container_object = container_object_opt orelse break :blk null;
-                        break :blk try container_object.getProperty("IdentifiedObject.name");
+                        break :blk parse.non_blank(try container_object.getProperty("IdentifiedObject.name"));
                     };
                     var nominal_voltage: ?f64 = null;
                     if (try segment_view.getReference("ConductingEquipment.BaseVoltage")) |base_voltage_ref| {
@@ -305,7 +305,7 @@ pub fn convert_lines(
     const equivalent_injections = model.get_objects_by_type("EquivalentInjection");
     for (equivalent_injections) |equivalent_injection| {
         const equivalent_injection_view = model.view(equivalent_injection);
-        const mrid = try equivalent_injection_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(equivalent_injection.id);
+        const mrid = try equivalent_injection_view.mrid();
 
         const equivalent_injection_terminals = index.equipment_terminals.get(equivalent_injection.id) orelse continue;
         if (equivalent_injection_terminals.items.len == 0) continue;
@@ -370,7 +370,6 @@ pub fn convert_lines(
     for (lines) |line| {
         const line_view = model.view(line);
         const props = try line_view.getProperties(.{
-            "IdentifiedObject.mRID",
             "IdentifiedObject.name",
             "ACLineSegment.r",
             "ACLineSegment.x",
@@ -380,12 +379,12 @@ pub fn convert_lines(
         // ACLineSegment shunt admittance (gch/bch) is split evenly across both ends.
         try append_line_segment(gpa, model, network, placer, &boundary_conn_node_voltage_level_map, &terminal_node_map, .{
             .object = line,
-            .mrid = props[0] orelse strip_underscore(line.id),
-            .name = props[1],
-            .r = try parse.float_strict(props[2], 0.0),
-            .x = try parse.float_strict(props[3], 0.0),
-            .g = (try parse.float_strict(props[4], 0.0)) / 2.0,
-            .b = (try parse.float_strict(props[5], 0.0)) / 2.0,
+            .mrid = try line_view.mrid(),
+            .name = parse.non_blank(props[0]),
+            .r = try parse.float_strict(props[1], 0.0),
+            .x = try parse.float_strict(props[2], 0.0),
+            .g = (try parse.float_strict(props[3], 0.0)) / 2.0,
+            .b = (try parse.float_strict(props[4], 0.0)) / 2.0,
             .original_class = "ACLineSegment",
         });
     }
@@ -395,17 +394,16 @@ pub fn convert_lines(
     for (series_compensators) |series_compensator| {
         const series_compensator_view = model.view(series_compensator);
         const props = try series_compensator_view.getProperties(.{
-            "IdentifiedObject.mRID",
             "IdentifiedObject.name",
             "SeriesCompensator.r",
             "SeriesCompensator.x",
         });
         try append_line_segment(gpa, model, network, placer, &boundary_conn_node_voltage_level_map, &terminal_node_map, .{
             .object = series_compensator,
-            .mrid = props[0] orelse strip_underscore(series_compensator.id),
-            .name = props[1],
-            .r = try parse.float_strict(props[2], 0.0),
-            .x = try parse.float_strict(props[3], 0.0),
+            .mrid = try series_compensator_view.mrid(),
+            .name = parse.non_blank(props[0]),
+            .r = try parse.float_strict(props[1], 0.0),
+            .x = try parse.float_strict(props[2], 0.0),
             .g = 0.0,
             .b = 0.0,
             .original_class = "SeriesCompensator",

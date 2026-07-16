@@ -21,10 +21,11 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const turtle = @import("turtle.zig");
+const units = @import("../units.zig");
 
 /// Maximum rule-set file size: u32 offsets need < 4 GiB; the largest
 /// published file is 1.04 MiB, so this is 60x headroom.
-pub const rules_bytes_max = 64 * 1024 * 1024;
+pub const rules_bytes_max = 64 * units.mebibyte;
 
 /// Maximum triples per rule-set file. Largest corpus file: 22,788.
 pub const triples_count_max = 1 << 22;

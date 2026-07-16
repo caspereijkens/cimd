@@ -34,6 +34,7 @@ const EQ = @import("cgmes/eq.zig").EQ;
 const tag_index = @import("cgmes/tag_index.zig");
 const cim_types = @import("cgmes/cim_types.zig");
 const core = @import("diff_core.zig");
+const print = @import("io/print.zig");
 
 const rdf_uri = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 const dm_uri = "http://iec.ch/2002/schema/CIM_difference_model#";
@@ -74,7 +75,9 @@ pub fn write_models(
         // DifferenceModel header instead of the statement sections.
         if (std.mem.eql(u8, type_name, "FullModel")) continue;
         if (!cim_types.matches_filter(type_name, options.type_filter)) continue;
-        const stats = try core.match_type(gpa, model1, model2, type_name, &emitter);
+        // The emitter writes into the in-memory `forward`/`reverse` buffers, so a
+        // WriteFailed here is allocation exhaustion, not an output-stream error.
+        const stats = try print.allocating_writer_result(&forward, core.match_type(gpa, model1, model2, type_name, &emitter));
         if (stats.any()) had_diffs = true;
     }
 
@@ -214,15 +217,29 @@ fn emit_local_xmlns(writer: *std.Io.Writer, view: tag_index.CimObjectView) !void
 
 /// rdf:about value for an object: rdf:ID-style ids ("_mrid") become the
 /// document-relative "#_mrid"; ids that already came from an rdf:about
-/// attribute (full URIs) are kept verbatim.
+/// attribute are re-emitted from the original attribute text so a
+/// document-relative fragment ("#_SS1") is preserved rather than being
+/// rewritten to a different relative URI ("_SS1") — view.id has had the
+/// fragment marker stripped by the parser.
 fn write_about(writer: *std.Io.Writer, view: tag_index.CimObjectView) !void {
     const tag = view.boundaries[view.object_tag_idx];
     const opening = view.xml[tag.start..tag.end];
     if (std.mem.indexOf(u8, opening, "rdf:ID=\"") != null) {
         try writer.print("#{s}", .{view.id});
+    } else if (attribute_value(opening, "rdf:about=\"")) |about| {
+        try writer.writeAll(about);
     } else {
         try writer.print("{s}", .{view.id});
     }
+}
+
+/// The value of a `name="value"` attribute within a single tag's text, or null
+/// if the attribute (or its closing quote) is absent.
+fn attribute_value(tag: []const u8, comptime pattern: []const u8) ?[]const u8 {
+    const start = std.mem.indexOf(u8, tag, pattern) orelse return null;
+    const value_start = start + pattern.len;
+    const value_end = std.mem.indexOfScalarPos(u8, tag, value_start, '"') orelse return null;
+    return tag[value_start..value_end];
 }
 
 /// Tag name including its namespace prefix, e.g. "cim:Substation".

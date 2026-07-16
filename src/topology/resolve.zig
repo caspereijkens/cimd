@@ -147,10 +147,8 @@ pub fn union_voltage_levels(
 
     const voltage_level_a = model.getObjectById(root_a) orelse return;
     const voltage_level_b = model.getObjectById(root_b) orelse return;
-    const mrid_a = try voltage_level_a.getProperty("IdentifiedObject.mRID") orelse
-        strip_underscore(root_a);
-    const mrid_b = try voltage_level_b.getProperty("IdentifiedObject.mRID") orelse
-        strip_underscore(root_b);
+    const mrid_a = try voltage_level_a.mrid();
+    const mrid_b = try voltage_level_b.mrid();
 
     if (std.mem.lessThan(u8, mrid_a, mrid_b)) {
         parent.putAssumeCapacity(root_b, root_a);
@@ -207,7 +205,6 @@ pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const EQ, index
 // or when a PowerTransformer spans two substations. Mirrors PyPowSyBl.
 pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const EQ, index: *const CrossRef, topology: *Topology) !void {
     assert(topology.substation_merge.count() == 0);
-    assert(index.conn_node_container.count() > 0);
 
     const substations = model.get_objects_by_type("Substation");
 
@@ -282,7 +279,6 @@ fn conn_node_to_voltage_level(model: *const EQ, index: *const CrossRef, conn_nod
 /// and doing the graph walk at query time would be quadratic. We pre-compute once.
 pub fn build_reachable_busbar_section_index(gpa: std.mem.Allocator, model: *const EQ, index: *const CrossRef, topology: *Topology) !void {
     assert(topology.conn_node_reachable_busbar_section.count() == 0);
-    assert(index.conn_node_container.count() > 0);
 
     const conn_nodes = model.get_objects_by_type("ConnectivityNode");
     const switch_slices = get_switch_type_slices(model);
@@ -526,8 +522,6 @@ pub fn build_node_map(
     voltage_levels: *const SetMap,
     ssh_opt: ?SSH,
 ) !NodeMapResult {
-    assert(index.conn_node_container.count() > 0);
-
     // Counts non-BBS, non-switch terminals per CN. Used only to pre-seed
     // conn_node_first_seen for CNs with 3+ Phase 2 terminals.
     var conn_node_total_other_count = try count_non_switch_non_busbar_terminals(gpa, model, index);
@@ -707,7 +701,6 @@ pub fn build_topological_nodes(
     topology: *const Topology,
     ssh_opt: ?*const SSH,
 ) !std.ArrayListUnmanaged(TopologicalNode) {
-    assert(index.conn_node_container.count() > 0);
     var conn_node_to_root = try build_conn_node_root_map(gpa, model, index, ssh_opt);
     defer conn_node_to_root.deinit(gpa);
 

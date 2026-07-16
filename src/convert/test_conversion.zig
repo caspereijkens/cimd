@@ -53,7 +53,8 @@ const EQ_XML =
     \\  </cim:SubGeographicalRegion>
     \\
     \\  <cim:Substation rdf:ID="_SS1">
-    \\    <cim:IdentifiedObject.mRID>SS1</cim:IdentifiedObject.mRID>
+    \\    <cim:IdentifiedObject.mRID></cim:IdentifiedObject.mRID>
+    \\    <cim:IdentifiedObject.name></cim:IdentifiedObject.name>
     \\    <cim:Substation.Region rdf:resource="#_SGR1"/>
     \\  </cim:Substation>
     \\  <cim:Substation rdf:ID="_SS2">
@@ -67,7 +68,7 @@ const EQ_XML =
     \\  </cim:BaseVoltage>
     \\
     \\  <cim:VoltageLevel rdf:ID="_VL1">
-    \\    <cim:IdentifiedObject.mRID>VL1</cim:IdentifiedObject.mRID>
+    \\    <cim:IdentifiedObject.mRID></cim:IdentifiedObject.mRID>
     \\    <cim:VoltageLevel.Substation rdf:resource="#_SS1"/>
     \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#_BV220"/>
     \\  </cim:VoltageLevel>
@@ -79,7 +80,8 @@ const EQ_XML =
     \\
     \\  <!-- Boundary line container: an ACLineSegment whose ID is used as CN container -->
     \\  <cim:ACLineSegment rdf:ID="_LINE_CTR">
-    \\    <cim:IdentifiedObject.mRID>LINE_CTR</cim:IdentifiedObject.mRID>
+    \\    <cim:IdentifiedObject.mRID></cim:IdentifiedObject.mRID>
+    \\    <cim:IdentifiedObject.name></cim:IdentifiedObject.name>
     \\  </cim:ACLineSegment>
     \\
     \\  <!-- ConnectivityNodes: one per equipment terminal group in VL1 -->
@@ -129,6 +131,7 @@ const EQ_XML =
     \\  <!-- BusbarSection in VL1 -->
     \\  <cim:BusbarSection rdf:ID="_BusbarSection1">
     \\    <cim:IdentifiedObject.mRID>BusbarSection1</cim:IdentifiedObject.mRID>
+    \\    <cim:IdentifiedObject.name></cim:IdentifiedObject.name>
     \\  </cim:BusbarSection>
     \\  <cim:Terminal rdf:ID="_T_BusbarSection1">
     \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BusbarSection1"/>
@@ -138,7 +141,7 @@ const EQ_XML =
     \\
     \\  <!-- Load (gets a detail extension) -->
     \\  <cim:EnergyConsumer rdf:ID="_LOAD1">
-    \\    <cim:IdentifiedObject.mRID>LOAD1</cim:IdentifiedObject.mRID>
+    \\    <cim:IdentifiedObject.mRID></cim:IdentifiedObject.mRID>
     \\    <cim:IdentifiedObject.name>Load One</cim:IdentifiedObject.name>
     \\  </cim:EnergyConsumer>
     \\  <cim:Terminal rdf:ID="_T_LOAD1">
@@ -149,7 +152,7 @@ const EQ_XML =
     \\
     \\  <!-- LinearShuntCompensator -->
     \\  <cim:LinearShuntCompensator rdf:ID="_SHUNT1">
-    \\    <cim:IdentifiedObject.mRID>SHUNT1</cim:IdentifiedObject.mRID>
+    \\    <cim:IdentifiedObject.mRID></cim:IdentifiedObject.mRID>
     \\    <cim:ShuntCompensator.sections>2</cim:ShuntCompensator.sections>
     \\    <cim:ShuntCompensator.maximumSections>4</cim:ShuntCompensator.maximumSections>
     \\    <cim:LinearShuntCompensator.bPerSection>0.01</cim:LinearShuntCompensator.bPerSection>
@@ -164,7 +167,7 @@ const EQ_XML =
     \\
     \\  <!-- StaticVarCompensator: voltage regulation mode -->
     \\  <cim:StaticVarCompensator rdf:ID="_SVC1">
-    \\    <cim:IdentifiedObject.mRID>SVC1</cim:IdentifiedObject.mRID>
+    \\    <cim:IdentifiedObject.mRID></cim:IdentifiedObject.mRID>
     \\    <cim:StaticVarCompensator.bMin>-0.05</cim:StaticVarCompensator.bMin>
     \\    <cim:StaticVarCompensator.bMax>0.05</cim:StaticVarCompensator.bMax>
     \\    <cim:StaticVarCompensator.regulationMode rdf:resource="#StaticVarCompensatorItesMode.voltage"/>
@@ -187,7 +190,7 @@ const EQ_XML =
     \\    <cim:FossilFuel.fossilFuelType rdf:resource="#FuelType.coal"/>
     \\  </cim:FossilFuel>
     \\  <cim:SynchronousMachine rdf:ID="_GEN_TH">
-    \\    <cim:IdentifiedObject.mRID>GEN_TH</cim:IdentifiedObject.mRID>
+    \\    <cim:IdentifiedObject.mRID></cim:IdentifiedObject.mRID>
     \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_THG1"/>
     \\    <cim:RotatingMachine.ratedS>600</cim:RotatingMachine.ratedS>
     \\    <cim:SynchronousMachine.minQ>-200</cim:SynchronousMachine.minQ>
@@ -307,7 +310,7 @@ const EQ_XML =
     \\  <!-- ControlArea with one TieFlow boundary -->
     \\  <cim:ControlArea rdf:ID="_CA1">
     \\    <cim:IdentifiedObject.mRID>CA1</cim:IdentifiedObject.mRID>
-    \\    <cim:IdentifiedObject.name>TestArea</cim:IdentifiedObject.name>
+    \\    <cim:IdentifiedObject.name></cim:IdentifiedObject.name>
     \\    <cim:ControlArea.type rdf:resource="#ControlAreaTypeKind.Interchange"/>
     \\  </cim:ControlArea>
     \\  <cim:TieFlow rdf:ID="_TF1">
@@ -316,7 +319,8 @@ const EQ_XML =
     \\  </cim:TieFlow>
     \\
     \\  <!-- VoltageLimits on VL1 via the BusbarSection1 terminal.
-    \\       Two high limits (121.0 and 125.0) and two low limits (99.0 and 95.0).
+    \\       Two numeric high limits (121.0 and 125.0), one blank high limit,
+    \\       two low limits (99.0 and 95.0), and one ignored absoluteValue limit.
     \\       Most-restrictive high=121.0 (min), most-restrictive low=99.0 (max). -->
     \\  <cim:OperationalLimitType rdf:ID="_OLT_HI_V">
     \\    <cim:IdentifiedObject.mRID>OLT_HI_V</cim:IdentifiedObject.mRID>
@@ -330,13 +334,18 @@ const EQ_XML =
     \\    <cim:OperationalLimitType.kind rdf:resource="http://iec.ch/TC57/CIM100-European#LimitKind.lowVoltage"/>
     \\    <cim:OperationalLimitType.isInfiniteDuration>true</cim:OperationalLimitType.isInfiniteDuration>
     \\  </cim:OperationalLimitType>
+    \\  <cim:OperationalLimitType rdf:ID="_OLT_ABS_V">
+    \\    <cim:OperationalLimitType.direction rdf:resource="http://iec.ch/TC57/CIM100#OperationalLimitDirectionKind.absoluteValue"/>
+    \\  </cim:OperationalLimitType>
     \\  <cim:OperationalLimitSet rdf:ID="_OLS_VL1">
     \\    <cim:IdentifiedObject.mRID>OLS_VL1</cim:IdentifiedObject.mRID>
     \\    <cim:OperationalLimitSet.Terminal rdf:resource="#_T_BusbarSection1"/>
     \\  </cim:OperationalLimitSet>
     \\  <cim:VoltageLimit rdf:ID="_VL_HI_1">
     \\    <cim:IdentifiedObject.mRID>VL_HI_1</cim:IdentifiedObject.mRID>
-    \\    <cim:VoltageLimit.normalValue>121.0</cim:VoltageLimit.normalValue>
+    \\    <cim:VoltageLimit.normalValue>
+    \\      1.21e2
+    \\    </cim:VoltageLimit.normalValue>
     \\    <cim:OperationalLimit.OperationalLimitSet rdf:resource="#_OLS_VL1"/>
     \\    <cim:OperationalLimit.OperationalLimitType rdf:resource="#_OLT_HI_V"/>
     \\  </cim:VoltageLimit>
@@ -346,9 +355,23 @@ const EQ_XML =
     \\    <cim:OperationalLimit.OperationalLimitSet rdf:resource="#_OLS_VL1"/>
     \\    <cim:OperationalLimit.OperationalLimitType rdf:resource="#_OLT_HI_V"/>
     \\  </cim:VoltageLimit>
+    \\  <cim:VoltageLimit rdf:ID="_VL_HI_BLANK">
+    \\    <cim:IdentifiedObject.mRID>VL_HI_BLANK</cim:IdentifiedObject.mRID>
+    \\    <cim:VoltageLimit.normalValue></cim:VoltageLimit.normalValue>
+    \\    <cim:OperationalLimit.OperationalLimitSet rdf:resource="#_OLS_VL1"/>
+    \\    <cim:OperationalLimit.OperationalLimitType rdf:resource="#_OLT_HI_V"/>
+    \\  </cim:VoltageLimit>
+    \\  <cim:VoltageLimit rdf:ID="_VL_ABS">
+    \\    <cim:IdentifiedObject.mRID>VL_ABS</cim:IdentifiedObject.mRID>
+    \\    <cim:VoltageLimit.normalValue>1000.0</cim:VoltageLimit.normalValue>
+    \\    <cim:OperationalLimit.OperationalLimitSet rdf:resource="#_OLS_VL1"/>
+    \\    <cim:OperationalLimit.OperationalLimitType rdf:resource="#_OLT_ABS_V"/>
+    \\  </cim:VoltageLimit>
     \\  <cim:VoltageLimit rdf:ID="_VL_LO_1">
     \\    <cim:IdentifiedObject.mRID>VL_LO_1</cim:IdentifiedObject.mRID>
-    \\    <cim:VoltageLimit.normalValue>99.0</cim:VoltageLimit.normalValue>
+    \\    <cim:VoltageLimit.normalValue>
+    \\      9.9e1
+    \\    </cim:VoltageLimit.normalValue>
     \\    <cim:OperationalLimit.OperationalLimitSet rdf:resource="#_OLS_VL1"/>
     \\    <cim:OperationalLimit.OperationalLimitType rdf:resource="#_OLT_LO_V"/>
     \\  </cim:VoltageLimit>
@@ -369,7 +392,8 @@ const EQ_XML =
     \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#_VL1"/>
     \\  </cim:ConnectivityNode>
     \\  <cim:PowerTransformer rdf:ID="_TWT1">
-    \\    <cim:IdentifiedObject.mRID>TWT1</cim:IdentifiedObject.mRID>
+    \\    <cim:IdentifiedObject.mRID></cim:IdentifiedObject.mRID>
+    \\    <cim:IdentifiedObject.name></cim:IdentifiedObject.name>
     \\  </cim:PowerTransformer>
     \\  <cim:PowerTransformerEnd rdf:ID="_TWT1_E1">
     \\    <cim:IdentifiedObject.mRID>TWT1_E1</cim:IdentifiedObject.mRID>
@@ -420,7 +444,8 @@ const EQ_XML =
     \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#_VL1"/>
     \\  </cim:ConnectivityNode>
     \\  <cim:PowerTransformer rdf:ID="_TWT2">
-    \\    <cim:IdentifiedObject.mRID>TWT2</cim:IdentifiedObject.mRID>
+    \\    <cim:IdentifiedObject.mRID></cim:IdentifiedObject.mRID>
+    \\    <cim:IdentifiedObject.name></cim:IdentifiedObject.name>
     \\  </cim:PowerTransformer>
     \\  <cim:PowerTransformerEnd rdf:ID="_TWT2_E1">
     \\    <cim:IdentifiedObject.mRID>TWT2_E1</cim:IdentifiedObject.mRID>
@@ -477,13 +502,22 @@ const EQ_XML =
     \\    <cim:OperationalLimitType.isInfiniteDuration>true</cim:OperationalLimitType.isInfiniteDuration>
     \\  </cim:OperationalLimitType>
     \\  <cim:OperationalLimitSet rdf:ID="_OLS_TWT1_E1">
-    \\    <cim:IdentifiedObject.mRID>OLS_TWT1_E1</cim:IdentifiedObject.mRID>
-    \\    <cim:IdentifiedObject.name>LimSet_TWT1_E1</cim:IdentifiedObject.name>
+    \\    <cim:IdentifiedObject.mRID></cim:IdentifiedObject.mRID>
+    \\    <cim:IdentifiedObject.name></cim:IdentifiedObject.name>
     \\    <cim:OperationalLimitSet.Terminal rdf:resource="#_T_TWT1_1"/>
     \\  </cim:OperationalLimitSet>
+    \\  <cim:CurrentLimit rdf:ID="_CL_TWT1_E1_BLANK">
+    \\    <cim:IdentifiedObject.mRID>CL_TWT1_E1_BLANK</cim:IdentifiedObject.mRID>
+    \\    <cim:CurrentLimit.normalValue></cim:CurrentLimit.normalValue>
+    \\    <cim:OperationalLimit.OperationalLimitSet rdf:resource="#_OLS_TWT1_E1"/>
+    \\    <cim:OperationalLimit.OperationalLimitType rdf:resource="#_OLT_CL_PATL"/>
+    \\  </cim:CurrentLimit>
     \\  <cim:CurrentLimit rdf:ID="_CL_TWT1_E1">
-    \\    <cim:IdentifiedObject.mRID>CL_TWT1_E1</cim:IdentifiedObject.mRID>
-    \\    <cim:CurrentLimit.normalValue>500.0</cim:CurrentLimit.normalValue>
+    \\    <cim:IdentifiedObject.mRID></cim:IdentifiedObject.mRID>
+    \\    <cim:CurrentLimit.value></cim:CurrentLimit.value>
+    \\    <cim:CurrentLimit.normalValue>
+    \\      5e2
+    \\    </cim:CurrentLimit.normalValue>
     \\    <cim:OperationalLimit.OperationalLimitSet rdf:resource="#_OLS_TWT1_E1"/>
     \\    <cim:OperationalLimit.OperationalLimitType rdf:resource="#_OLT_CL_PATL"/>
     \\  </cim:CurrentLimit>
@@ -781,6 +815,8 @@ test "boundary line: creates a fictitious VL and LINE_BNDRY lands in it" {
     // The fictitious VL id is "<CN_mRID>_VL".
     const fvoltage_level = network.fictitious_voltage_levels.items[0];
     try std.testing.expectEqualStrings("CN_BNDRY_VL", fvoltage_level.id);
+    try std.testing.expectEqualStrings("LINE_CTR", fvoltage_level.line_container_id);
+    try std.testing.expectEqual(@as(?[]const u8, null), fvoltage_level.name);
 
     // LINE_BNDRY must appear in the output.
     const line = find_line(network, "LINE_BNDRY") orelse return error.TestFailed;
@@ -951,7 +987,7 @@ test "areas: ControlArea produces one area with TieFlow boundary" {
     try std.testing.expectEqual(@as(usize, 1), network.areas.items.len);
     const area = network.areas.items[0];
     try std.testing.expectEqualStrings("CA1", area.id);
-    try std.testing.expectEqualStrings("TestArea", area.name);
+    try std.testing.expectEqualStrings("CA1", area.name);
     // TF1 references T_LINE1_1 whose equipment is LINE1
     try std.testing.expectEqual(@as(usize, 1), area.boundaries.items.len);
     try std.testing.expectEqualStrings("LINE1", area.boundaries.items[0].id);
@@ -1148,7 +1184,7 @@ test "three winding transformer: CGMES.TransformerEnd1/2/3 aliases" {
 
 // ── Transformer operationalLimitsGroups ───────────────────────────────────────
 
-test "two winding transformer: operationalLimitsGroups1 populated from CurrentLimit on terminal 1" {
+test "two winding transformer: blank sibling is skipped and empty value falls back" {
     const gpa = std.testing.allocator;
     var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
@@ -1164,9 +1200,37 @@ test "two winding transformer: operationalLimitsGroups1 populated from CurrentLi
     try std.testing.expectEqualStrings("OLS_TWT1_E1", twt.selected_op_lims_group1_id.?);
     try std.testing.expectEqual(@as(?[]const u8, null), twt.selected_op_lims_group2_id);
     try std.testing.expectEqual(@as(f64, 500.0), group.current_limits.?.permanent_limit);
+    const normal_value = find_property(group.properties.items, "CGMES.normalValue_CurrentLimit_patl") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("500.0", normal_value.value);
+    const set_name = find_property(group.properties.items, "CGMES.OperationalLimitSetName") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("OLS_TWT1_E1", set_name.value);
+    const set_id = find_property(group.properties.items, "CGMES.OperationalLimitSetRdfID") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("OLS_TWT1_E1", set_id.value);
+    const limit_id = find_property(group.properties.items, "CGMES.OperationalLimit_CurrentLimit_patl") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("CL_TWT1_E1", limit_id.value);
 }
 
-test "three winding transformer: operationalLimitsGroups2 populated from CurrentLimit on terminal 2" {
+test "operational limit groups unwind earlier groups when a later value is invalid" {
+    const gpa = std.testing.allocator;
+    const invalid_suffix =
+        \\  <cim:OperationalLimitSet rdf:ID="_OLS_INVALID">
+        \\    <cim:OperationalLimitSet.Terminal rdf:resource="#_T_TWT1_1"/>
+        \\  </cim:OperationalLimitSet>
+        \\  <cim:CurrentLimit rdf:ID="_CL_INVALID">
+        \\    <cim:CurrentLimit.normalValue>not-a-number</cim:CurrentLimit.normalValue>
+        \\    <cim:OperationalLimit.OperationalLimitSet rdf:resource="#_OLS_INVALID"/>
+        \\    <cim:OperationalLimit.OperationalLimitType rdf:resource="#_OLT_CL_PATL"/>
+        \\  </cim:CurrentLimit>
+        \\</rdf:RDF>
+    ;
+    const xml = try std.mem.replaceOwned(u8, gpa, EQ_XML, "</rdf:RDF>", invalid_suffix);
+    var model = try EQ.init(gpa, xml);
+    defer model.deinit(gpa);
+
+    try std.testing.expectError(error.InvalidNumericValue, converter.convert(gpa, &model, null, null, false));
+}
+
+test "three winding transformer: plain-decimal CurrentLimit is preserved numerically" {
     const gpa = std.testing.allocator;
     var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
@@ -1184,6 +1248,8 @@ test "three winding transformer: operationalLimitsGroups2 populated from Current
     try std.testing.expectEqual(@as(?[]const u8, null), twt.selected_op_lims_group_id1);
     try std.testing.expectEqual(@as(?[]const u8, null), twt.selected_op_lims_group_id3);
     try std.testing.expectEqual(@as(f64, 750.0), group.current_limits.?.permanent_limit);
+    const normal_value = find_property(group.properties.items, "CGMES.normalValue_CurrentLimit_patl") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("750.0", normal_value.value);
 }
 
 // ── Transformer phaseTapChanger ───────────────────────────────────────────────
@@ -1461,6 +1527,7 @@ test "busbar section: CGMES.Terminal1 alias contains terminal mRID" {
     defer network.deinit(gpa);
 
     const bbs = find_busbar_section(network, "BusbarSection1") orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(?[]const u8, null), bbs.name);
     try std.testing.expectEqual(@as(usize, 1), bbs.aliases.items.len);
     try std.testing.expectEqualStrings("CGMES.Terminal1", bbs.aliases.items[0].type_info.static_string);
     // T_BusbarSection1 has no IdentifiedObject.mRID → fallback is strip_underscore(rdf:ID)
@@ -1718,6 +1785,7 @@ test "substation: emits CGMES.regionName, CGMES.regionId, CGMES.subRegionId" {
     defer network.deinit(gpa);
 
     const sub = find_substation(network, "SS1") orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(?[]const u8, null), sub.name);
 
     const region_name = find_property(sub.properties.items, "CGMES.regionName") orelse return error.TestFailed;
     try std.testing.expectEqualStrings("TestRegion", region_name.value);
@@ -1743,7 +1811,7 @@ test "voltage level: most-restrictive low/high limits resolved from VoltageLimit
     try std.testing.expectEqual(@as(?f64, 99.0), vl.low_voltage_limit);
 }
 
-test "voltage level: emits CGMES.normalValue_* and OperationalLimit_* properties" {
+test "voltage level: trims and formats scientific normalValue properties" {
     const gpa = std.testing.allocator;
     var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);

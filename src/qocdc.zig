@@ -248,7 +248,7 @@ pub fn check_filename_consistency(io: std.Io, file_path: []const u8) !void {
             return error.FileNameConsistency;
         }
     } else {
-        return error.FileNameConsistency;
+        return error.NotZipArchive;
     }
 }
 
@@ -436,39 +436,63 @@ fn validate_filename_parts(filename: Filename) !void {
 
 pub fn validate(io: std.Io, file_path: []const u8) !void {
     const filename = filename_stem_from_path(file_path);
-    const filename_parsed = parse_filename(filename) catch |e| {
-        try print.stderr_info(io, "The structure of the filename '{s}' does not match the rules.\n", .{filename});
-        return e;
+    check_filename_consistency(io, file_path) catch |e| {
+        switch (e) {
+            error.FileNameConsistency => print.data_error(
+                io,
+                "qocdc: XML entry name differs from ZIP container name '{s}'",
+                .{filename},
+            ),
+            error.NotZipArchive => print.data_error(
+                io,
+                "qocdc: input '{s}' is not a ZIP archive",
+                .{file_path},
+            ),
+            error.ZipInsufficientBuffer => print.data_error(
+                io,
+                "qocdc: ZIP entry name exceeds the supported path length",
+                .{},
+            ),
+            else => return e,
+        }
     };
 
-    check_filename_consistency(io, file_path) catch |e| {
-        try print.stderr_info(io, "XML instance file name is different from zip container file name '{s}'.\n", .{filename});
-        return e;
-    };
+    const filename_parsed = parse_filename(filename) catch
+        print.data_error(io, "qocdc: the structure of filename '{s}' does not match the rules", .{filename});
 
     validate_filename_parts(filename_parsed) catch |e| {
         switch (e) {
-            error.EffectiveDateTime => {
-                try print.stderr_info(io, "EffectiveDateTime '{s}' in file name is invalid.\n", .{filename_parsed.effective_date_time});
-            },
-            error.SourcingActor => {
-                try print.stderr_info(io, "sourcingRSC or/and sourcingTSO parts '{s}' of the file name has/have value(s) that are not included in the QoCDC Reference Data document.\n", .{filename_parsed.sourcing_actor});
-            },
-            error.CGMRegion => {
-                try print.stderr_info(io, "cgmRegion part '{s}' of the file name has value that is not included in the QoCDC Reference Data document.\n", .{filename_parsed.sourcing_actor});
-            },
+            error.EffectiveDateTime => print.data_error(
+                io,
+                "qocdc: EffectiveDateTime '{s}' in the filename is invalid",
+                .{filename_parsed.effective_date_time},
+            ),
+            error.SourcingActor => print.data_error(
+                io,
+                "qocdc: sourcingRSC or sourcingTSO '{s}' is absent from the QoCDC reference data",
+                .{filename_parsed.sourcing_actor},
+            ),
+            error.CGMRegion => print.data_error(
+                io,
+                "qocdc: cgmRegion in sourcing actor '{s}' is absent from the QoCDC reference data",
+                .{filename_parsed.sourcing_actor},
+            ),
             error.BusinessProcess => {
                 if (filename_parsed.business_process) |business_process| {
-                    try print.stderr_info(io, "Unknown business process '{s}'.\n", .{business_process});
+                    print.data_error(io, "qocdc: unknown business process '{s}'", .{business_process});
                 }
+                unreachable;
             },
-            error.ModelPartType => {
-                try print.stderr_info(io, "Unknown modelPart type '{s}' in the filename.\n", .{filename_parsed.model_part});
-            },
-            error.FileVersion => {
-                try print.stderr_info(io, "Invalid fileVersion '{s}' in the filename.\n", .{filename_parsed.file_version});
-            },
+            error.ModelPartType => print.data_error(
+                io,
+                "qocdc: unknown modelPart type '{s}' in the filename",
+                .{filename_parsed.model_part},
+            ),
+            error.FileVersion => print.data_error(
+                io,
+                "qocdc: invalid fileVersion '{s}' in the filename",
+                .{filename_parsed.file_version},
+            ),
         }
-        return e;
     };
 }

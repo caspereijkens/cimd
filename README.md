@@ -20,6 +20,12 @@ Usage: cimd <command> [options]
 
 A high-performance CGMES file parser and analysis tool.
 
+Input limits:
+  XML data: max supported size is 4294967295 bytes (~4096 MiB) after unzip and EQ+EQBD merge.
+  SHACL rule files: max supported size is 67108864 bytes (~64 MiB) after unzip.
+  Non-interactive commands accept '-' as the primary data path to read
+  uncompressed XML from stdin.
+
 Commands:
   convert    Convert an EQ profile to JIIDM JSON
   browse     Interactively browse CIM objects (EQ/EQBD/TP/SSH merged view)
@@ -181,7 +187,8 @@ one object, browse opens a picker menu — flat list when few candidates,
 grouped by type when many.
 
 Arguments:
-  <file>    Primary CIM file (typically EQ; XML or ZIP)
+  <file>    Primary CIM file (typically EQ; XML or ZIP); '-' is not
+            supported because browse reserves stdin for interaction
   <mrid>    Full mRID or a prefix of one
 
 Options:
@@ -214,8 +221,13 @@ report-style view instead.
 
 Exit codes:
   0  files are identical (no differences found)
-  1  differences found
+  1  requested mRID was not found
   2  usage error
+  3  differences found
+  65  invalid or unsupported input data
+  66  input unavailable
+  70  unexpected internal failure
+  71  operating-system or resource failure
 
 Arguments:
   <file1>    First EQ profile (XML or ZIP)
@@ -260,8 +272,12 @@ rules file report file and line the same way.
 
 Exit codes:
   0  no violations (warnings and info findings do not fail the run)
-  1  violations found
-  2  usage error, or the rule set failed to load
+  2  usage error
+  4  violations found
+  65  invalid or unsupported input data
+  66  input unavailable
+  70  unexpected internal failure
+  71  operating-system or resource failure
 
 Arguments:
   <file>                  CGMES instance file, any profile (XML or ZIP)

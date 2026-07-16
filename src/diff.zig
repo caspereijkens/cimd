@@ -18,6 +18,7 @@ const EQ = @import("cgmes/eq.zig").EQ;
 const tag_index = @import("cgmes/tag_index.zig");
 const cim_types = @import("cgmes/cim_types.zig");
 const core = @import("diff_core.zig");
+const print = @import("io/print.zig");
 
 pub const SingleDiffStatus = core.SingleDiffStatus;
 
@@ -95,7 +96,9 @@ fn diff_type(
     var screen: std.Io.Writer.Allocating = .init(gpa);
     defer screen.deinit();
     const renderer = Renderer{ .format = .patch, .writer = &screen.writer };
-    const stats = try core.match_type(gpa, model1, model2, type_name, &renderer);
+    // The renderer writes into the in-memory `screen` buffer, so a WriteFailed
+    // here is allocation exhaustion, not an output-stream error.
+    const stats = try print.allocating_writer_result(&screen, core.match_type(gpa, model1, model2, type_name, &renderer));
     if (stats.any()) {
         try writer.print("\n@@ {s} @@\n", .{type_name});
         try writer.writeAll(screen.written());

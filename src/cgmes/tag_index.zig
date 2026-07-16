@@ -1,5 +1,6 @@
 const std = @import("std");
 const ids = @import("ids.zig");
+const parse = @import("parse.zig");
 const assert = std.debug.assert;
 
 /// Vector size for SIMD operations (32 bytes = 256-bit AVX2)
@@ -603,10 +604,10 @@ pub const CimObjectView = struct {
     }
 
     /// The key SSH/TP overlays use to patch this object: explicit
-    /// IdentifiedObject.mRID, else the rdf:ID with its leading underscore
-    /// stripped. Single source of truth for overlay keying across commands.
+    /// IdentifiedObject.mRID, else the local RDF identifier with its leading
+    /// hash and underscore stripped. Single source of truth for overlay keying.
     pub fn mrid(self: CimObjectView) error{MalformedTag}![]const u8 {
-        return (try self.getProperty("IdentifiedObject.mRID")) orelse ids.strip_underscore(self.id);
+        return parse.non_blank(try self.getProperty("IdentifiedObject.mRID")) orelse ids.strip_underscore(ids.strip_hash(self.id));
     }
 
     /// Batch-fetch multiple text properties in a single scan through child tags.

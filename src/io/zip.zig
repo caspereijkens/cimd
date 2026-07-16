@@ -267,6 +267,11 @@ pub const FirstFileOptions = struct {
     /// Extension (with dot, matched case-insensitively) selecting the entry
     /// to extract: ".xml" for data files, ".ttl" for SHACL rule bundles.
     extension: []const u8 = ".xml",
+    diagnostics: ?*FirstFileDiagnostics = null,
+};
+
+pub const FirstFileDiagnostics = struct {
+    selected_uncompressed_size: ?u64 = null,
 };
 
 /// Extract the first regular file with the selected extension (skipping
@@ -301,6 +306,9 @@ pub fn extract_first_file_to_memory(
         }
 
         if (entry.uncompressed_size > options.max_uncompressed_bytes) {
+            if (options.diagnostics) |diagnostics| {
+                diagnostics.selected_uncompressed_size = entry.uncompressed_size;
+            }
             return error.FileTooLarge; // errdefer fires here (filename_owned = true)
         }
 
