@@ -116,7 +116,7 @@ pub fn size_limit_text_comptime(comptime max_bytes: u64) []const u8 {
 /// Use for diagnostic/progress output that should not pollute stdout data.
 pub fn stderr_info(io: std.Io, comptime fmt_str: []const u8, args: anytype) !void {
     var buffer: [4096]u8 = undefined;
-    var file_writer = std.Io.File.Writer.init(std.Io.File.stderr(), io, &buffer);
+    var file_writer = std.Io.File.Writer.initStreaming(std.Io.File.stderr(), io, &buffer);
     file_writer_result(&file_writer, file_writer.interface.print(fmt_str, args)) catch |err| switch (err) {
         error.BrokenPipe => return,
         else => return err,
@@ -129,7 +129,7 @@ pub fn stderr_info(io: std.Io, comptime fmt_str: []const u8, args: anytype) !voi
 
 pub fn stdout(io: std.Io, comptime fmt_str: []const u8, args: anytype) !void {
     var buffer: [4096]u8 = undefined;
-    var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &buffer);
+    var file_writer = std.Io.File.Writer.initStreaming(std.Io.File.stdout(), io, &buffer);
     try file_writer_result(&file_writer, file_writer.interface.print(fmt_str, args));
     try flush_file_writer(&file_writer);
 }
@@ -250,7 +250,7 @@ pub fn display_object_inventory_json(io: std.Io, gpa: std.mem.Allocator, model: 
     defer gpa.free(counts);
 
     var write_buffer: [4096]u8 = undefined;
-    var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &write_buffer);
+    var file_writer = std.Io.File.Writer.initStreaming(std.Io.File.stdout(), io, &write_buffer);
     try file_writer_result(&file_writer, write_object_inventory_json(&file_writer.interface, counts));
     try flush_file_writer(&file_writer);
 }
@@ -271,7 +271,7 @@ pub fn display_object_inventory(io: std.Io, gpa: std.mem.Allocator, model: EQ) !
     defer gpa.free(counts);
 
     var write_buffer: [4096]u8 = undefined;
-    var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &write_buffer);
+    var file_writer = std.Io.File.Writer.initStreaming(std.Io.File.stdout(), io, &write_buffer);
     try file_writer_result(&file_writer, write_object_inventory(&file_writer.interface, counts));
     try flush_file_writer(&file_writer);
 }
@@ -293,7 +293,7 @@ pub fn display_object_list_json(
     fields: []const []const u8,
 ) !void {
     var write_buffer: [64 * 1024]u8 = undefined;
-    var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &write_buffer);
+    var file_writer = std.Io.File.Writer.initStreaming(std.Io.File.stdout(), io, &write_buffer);
     try file_writer_result(&file_writer, write_object_list_json(
         &file_writer.interface,
         gpa,
