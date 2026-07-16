@@ -7,6 +7,40 @@ const SSH = @import("../cgmes/ssh.zig").SSH;
 
 const CimObject = tag_index.CimObject;
 
+const EQ_MALFORMED_LATE_TOPOLOGY_REFERENCE =
+    \\<rdf:RDF>
+    \\  <cim:VoltageLevel rdf:ID="_VL1">
+    \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#_BV1/>
+    \\  </cim:VoltageLevel>
+    \\  <cim:ConnectivityNode rdf:ID="_CN1">
+    \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#_VL1"/>
+    \\  </cim:ConnectivityNode>
+    \\  <cim:EnergyConsumer rdf:ID="_LOAD1"/>
+    \\  <cim:Terminal rdf:ID="_T1">
+    \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LOAD1"/>
+    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN1"/>
+    \\  </cim:Terminal>
+    \\</rdf:RDF>
+;
+
+test "build_topological_nodes reports malformed references after cross-reference succeeds" {
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_MALFORMED_LATE_TOPOLOGY_REFERENCE));
+    defer model.deinit(gpa);
+
+    const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
+    var index = try CrossRef.build_for_topology(gpa, &model, boundary_ids);
+    defer index.deinit(gpa);
+
+    var resolved = try topology.Topology.build_for_topological_nodes(gpa, &model, &index);
+    defer resolved.deinit(gpa);
+
+    try std.testing.expectError(
+        error.MalformedTag,
+        topology.build_topological_nodes(gpa, &model, &index, &resolved, null),
+    );
+}
+
 test "union_smallest_id_wins: two nodes share root after union" {
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer parent.deinit(std.testing.allocator);
@@ -263,6 +297,43 @@ test "Topology.build_with_options: can skip reachable busbar index" {
     defer topology_data.deinit(gpa);
 
     try std.testing.expectEqual(@as(@TypeOf(topology_data.conn_node_reachable_busbar_section.count()), 0), topology_data.conn_node_reachable_busbar_section.count());
+}
+
+test "topology builders tolerate a model without connectivity nodes" {
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:ID="_SS1"/>
+        \\  <cim:VoltageLevel rdf:ID="_VL1">
+        \\    <cim:VoltageLevel.Substation rdf:resource="#_SS1"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:BusbarSection rdf:ID="_BBS1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BBS1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
+    var index = try CrossRef.build(gpa, &model, boundary_ids);
+    defer index.deinit(gpa);
+    try std.testing.expectEqual(@as(u32, 0), index.conn_node_container.count());
+
+    var topology_data = try topology.Topology.build(gpa, &model, &index);
+    defer topology_data.deinit(gpa);
+
+    var voltage_levels: std.StringHashMapUnmanaged(void) = .empty;
+    defer voltage_levels.deinit(gpa);
+    try voltage_levels.put(gpa, "_VL1", {});
+    var node_map_result = try topology.build_node_map(gpa, &model, &index, &topology_data, &voltage_levels, null);
+    defer node_map_result.deinit(gpa);
+    try std.testing.expectEqual(@as(u32, 0), node_map_result.node_map.count());
+
+    var nodes = try topology.build_topological_nodes(gpa, &model, &index, &topology_data, null);
+    defer nodes.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 0), nodes.items.len);
 }
 
 const SSH_SWITCH_XML =

@@ -173,6 +173,23 @@ test "FileNameConsistency rejects zip containers with multiple files" {
     try std.testing.expectError(error.FileNameConsistency, check_filename_consistency(io, file_path));
 }
 
+test "FileNameConsistency rejects a plain file as not a ZIP archive" {
+    var tmpdir = std.testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    const io = std.testing.io;
+    var file = try tmpdir.dir.createFile(io, "model.xml", .{ .read = true });
+    defer file.close(io);
+    try file.writeStreamingAll(io, "<rdf:RDF/>");
+
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const path_len = try file.realPath(io, &path_buffer);
+    try std.testing.expectError(
+        error.NotZipArchive,
+        check_filename_consistency(io, path_buffer[0..path_len]),
+    );
+}
+
 test "EffectiveDateTime" {
     const correct_filename_template1: []const u8 = "20260603T1325Z_businessProcess_sourcingTSO_modelPart_fileVersion";
     const filename1 = try parse_filename(correct_filename_template1);

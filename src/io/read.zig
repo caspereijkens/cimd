@@ -1,6 +1,11 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const zip = @import("zip.zig");
 const print = @import("print.zig");
+const units = @import("../units.zig");
+
+const file_read_chunk_bytes: u32 = 64 * units.mebibyte;
+
 pub const max_in_memory_input_bytes = std.math.maxInt(u32);
 
 pub const Options = struct {
@@ -60,25 +65,52 @@ pub fn read_path_options(
     }
 }
 
-pub fn read_file_to_memory(io: std.Io, gpa: std.mem.Allocator, file: std.Io.File) ![]u8 {
-    return read_file_to_memory_options(io, gpa, file, .{});
-}
-
 pub fn read_file_to_memory_options(
     io: std.Io,
     gpa: std.mem.Allocator,
     file: std.Io.File,
     options: Options,
 ) ![]u8 {
+    assert(options.max_bytes <= max_in_memory_input_bytes);
     const file_size = try file.length(io);
     if (file_size > options.max_bytes) {
         if (options.diagnostics) |diagnostics| diagnostics.actual_size = file_size;
         return error.FileTooLarge;
     }
 
+    const file_size_u32: u32 = @intCast(file_size);
+    const data = try gpa.alloc(u8, file_size_u32);
+    errdefer gpa.free(data);
+
     var file_reader = file.reader(io, &.{});
-    // +1 so the reader can observe EOF without tripping StreamTooLong on exact-size files.
-    return try file_reader.interface.allocRemaining(gpa, .limited(file_size + 1));
+    read_all_in_chunks(&file_reader.interface, data, file_read_chunk_bytes) catch |err| switch (err) {
+        error.EndOfStream => return error.FileTruncated,
+        else => |e| return e,
+    };
+    return data;
+}
+
+fn read_all_in_chunks(reader: *std.Io.Reader, data: []u8, chunk_bytes: u32) !void {
+    assert(chunk_bytes > 0);
+    assert(chunk_bytes <= file_read_chunk_bytes);
+    assert(data.len <= max_in_memory_input_bytes);
+
+    const data_len: u32 = @intCast(data.len);
+    var offset: u32 = 0;
+    // readSliceAll loops until its slice is full, but its first readVec receives
+    // the whole remaining slice. Bound that slice to keep each syscall below
+    // Darwin's maxInt(i32) limit.
+    while (offset < data_len) {
+        const chunk_len = @min(chunk_bytes, data_len - offset);
+        assert(chunk_len > 0);
+        try reader.readSliceAll(data[offset..][0..chunk_len]);
+        offset += chunk_len;
+        assert(offset <= data_len);
+    }
+    assert(offset == data_len);
+
+    var extra: [1]u8 = undefined;
+    if (try reader.readSliceShort(&extra) != 0) return error.FileGrew;
 }
 
 /// Read all of stdin into memory. Unlike a file, stdin is a pipe: it has no
@@ -96,11 +128,35 @@ fn read_stdin(io: std.Io, gpa: std.mem.Allocator, options: Options) ![]const u8 
         if (options.diagnostics) |diagnostics| diagnostics.actual_size = data.len;
         return error.FileTooLarge;
     }
-    if (std.mem.startsWith(u8, data, &std.zip.local_file_header_sig)) print.stderr(
+    if (std.mem.startsWith(u8, data, &std.zip.local_file_header_sig)) print.data_error(
         io,
         "stdin: reading a ZIP archive from stdin is not supported; pipe XML instead " ++
             "(e.g. `unzip -p eq.zip | cimd types -`)",
         .{},
     );
     return data;
+}
+
+test "read_all_in_chunks fills the destination with multiple reads" {
+    const source = "0123456789";
+    var reader = std.Io.Reader.fixed(source);
+    var data: [source.len]u8 = undefined;
+
+    try read_all_in_chunks(&reader, &data, 3);
+
+    try std.testing.expectEqualStrings(source, &data);
+}
+
+test "read_all_in_chunks reports a short source" {
+    var reader = std.Io.Reader.fixed("short");
+    var data: [6]u8 = undefined;
+
+    try std.testing.expectError(error.EndOfStream, read_all_in_chunks(&reader, &data, 3));
+}
+
+test "read_all_in_chunks reports a growing source" {
+    var reader = std.Io.Reader.fixed("longer");
+    var data: [5]u8 = undefined;
+
+    try std.testing.expectError(error.FileGrew, read_all_in_chunks(&reader, &data, 3));
 }

@@ -128,16 +128,20 @@ pub fn build_op_lims(
 ) !std.ArrayListUnmanaged(iidm.OperationalLimitsGroup) {
     assert(terminal_id.len > 0);
     var groups: std.ArrayListUnmanaged(iidm.OperationalLimitsGroup) = .empty;
+    errdefer {
+        for (groups.items) |*group| group.deinit(gpa);
+        groups.deinit(gpa);
+    }
 
     const limit_sets = index.terminal_limit_sets.get(terminal_id) orelse return groups;
     try groups.ensureTotalCapacity(gpa, limit_sets.items.len);
 
     for (limit_sets.items) |set| {
         const set_view = model.view(set);
-        const set_mrid = try set_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(set.id);
-        const set_name = try set_view.getProperty("IdentifiedObject.name") orelse set_mrid;
+        const set_mrid = try set_view.mrid();
+        const set_name = parse.non_blank(try set_view.getProperty("IdentifiedObject.name")) orelse set_mrid;
 
-        var patl_value_str: ?[]const u8 = null;
+        var patl_value: ?f64 = null;
         var patl_cl_mrid: ?[]const u8 = null;
 
         if (index.current_limits_by_set.get(set.id)) |current_limits| {
@@ -148,27 +152,29 @@ pub fn build_op_lims(
                 const type_info = index.limit_types.get(type_id) orelse continue;
                 if (!type_info.is_infinite) continue; // skip TATLs for now (none in dataset)
 
-                patl_value_str = try current_limit_view.getProperty("CurrentLimit.value") orelse
-                    try current_limit_view.getProperty("CurrentLimit.normalValue");
-                patl_cl_mrid = try current_limit_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(current_limit.id);
+                const value_str = parse.non_blank(try current_limit_view.getProperty("CurrentLimit.value")) orelse
+                    parse.non_blank(try current_limit_view.getProperty("CurrentLimit.normalValue")) orelse continue;
+                patl_value = try parse.float_req(value_str);
+                patl_cl_mrid = try current_limit_view.mrid();
+                break;
             }
         }
 
         var props: std.ArrayListUnmanaged(iidm.Property) = .empty;
         errdefer props.deinit(gpa);
         try props.ensureTotalCapacity(gpa, 4);
-        if (patl_value_str) |pv| {
-            const formatted_pv = try iidm.format_float_str(gpa, std.mem.trim(u8, pv, " \t\r\n"));
+        if (patl_value) |value| {
+            const formatted_pv = try iidm.format_float(gpa, value);
             props.appendAssumeCapacity(.{ .name = "CGMES.normalValue_CurrentLimit_patl", .value = formatted_pv, .owned_value = true });
         }
         props.appendAssumeCapacity(.{ .name = "CGMES.OperationalLimitSetName", .value = set_name });
         props.appendAssumeCapacity(.{ .name = "CGMES.OperationalLimitSetRdfID", .value = set_mrid });
         if (patl_cl_mrid) |pm| props.appendAssumeCapacity(.{ .name = "CGMES.OperationalLimit_CurrentLimit_patl", .value = pm });
 
-        const current_limits: ?iidm.CurrentLimits = if (patl_value_str) |pv| blk: {
-            const value = parse.float_opt(pv) orelse break :blk null;
-            break :blk .{ .permanent_limit = value };
-        } else null;
+        const current_limits: ?iidm.CurrentLimits = if (patl_value) |value|
+            .{ .permanent_limit = value }
+        else
+            null;
 
         groups.appendAssumeCapacity(.{
             .id = set_mrid,

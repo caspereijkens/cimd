@@ -20,7 +20,297 @@ const populate_internal_connections = @import("internal_connections.zig").popula
 const assert = std.debug.assert;
 
 const strip_hash = utils.strip_hash;
-const strip_underscore = utils.strip_underscore;
+
+pub const ConversionIdIssue = struct {
+    kind: enum { empty, duplicate },
+    mrid: []const u8,
+    raw_id: []const u8,
+    offset: ?u32,
+};
+
+pub const ConversionDiagnostics = struct {
+    id_issue: ?ConversionIdIssue = null,
+};
+
+/// IIDM sources not already covered by topology's shared switch and Phase 2
+/// equipment lists. Reference-only/container types deliberately stay out.
+const standalone_iidm_source_types = [_][]const u8{
+    "Substation",
+    "VoltageLevel",
+    "BusbarSection",
+    "EquivalentInjection",
+    "ControlArea",
+};
+
+fn record_conversion_mrid(
+    seen: *std.StringHashMapUnmanaged(void),
+    view: tag_index.CimObjectView,
+    diagnostics: ?*ConversionDiagnostics,
+) !void {
+    const mrid = try view.mrid();
+    if (mrid.len == 0) {
+        if (diagnostics) |d| d.id_issue = .{
+            .kind = .empty,
+            .mrid = mrid,
+            .raw_id = view.id,
+            .offset = view.boundaries[view.object_tag_idx].start,
+        };
+        return error.EmptyMrid;
+    }
+    const entry = seen.getOrPutAssumeCapacity(mrid);
+    if (entry.found_existing) {
+        if (diagnostics) |d| d.id_issue = .{
+            .kind = .duplicate,
+            .mrid = mrid,
+            .raw_id = view.id,
+            .offset = view.boundaries[view.object_tag_idx].start,
+        };
+        return error.DuplicateMrid;
+    }
+    entry.value_ptr.* = {};
+}
+
+/// Fail early with source locations for the currently known emitter types.
+/// `validate_emitted_iidm_ids` remains the authoritative, emitter-independent
+/// check over the completed network.
+fn validate_conversion_mrids(
+    gpa: std.mem.Allocator,
+    model: *const EQ,
+    diagnostics: ?*ConversionDiagnostics,
+) !void {
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen.deinit(gpa);
+
+    var source_count: u32 = 0;
+    inline for (standalone_iidm_source_types) |type_name| {
+        source_count += @intCast(model.get_objects_by_type(type_name).len);
+    }
+    inline for (topology.switch_types) |type_name| {
+        source_count += @intCast(model.get_objects_by_type(type_name).len);
+    }
+    inline for (topology.phase2_equipment_types) |type_name| {
+        source_count += @intCast(model.get_objects_by_type(type_name).len);
+    }
+    try seen.ensureTotalCapacity(gpa, source_count);
+
+    inline for (standalone_iidm_source_types) |type_name| {
+        for (model.get_objects_by_type(type_name)) |object| {
+            try record_conversion_mrid(&seen, model.view(object), diagnostics);
+        }
+    }
+    inline for (topology.switch_types) |type_name| {
+        for (model.get_objects_by_type(type_name)) |object| {
+            try record_conversion_mrid(&seen, model.view(object), diagnostics);
+        }
+    }
+    inline for (topology.phase2_equipment_types) |type_name| {
+        for (model.get_objects_by_type(type_name)) |object| {
+            try record_conversion_mrid(&seen, model.view(object), diagnostics);
+        }
+    }
+}
+
+fn add_iidm_ids(count: *u32, items: anytype) !void {
+    const item_count: u32 = @intCast(items.len);
+    count.* = std.math.add(u32, count.*, item_count) catch return error.TooManyIidmObjects;
+}
+
+fn record_emitted_iidm_id(
+    seen: *std.StringHashMapUnmanaged(void),
+    id: []const u8,
+    diagnostics: ?*ConversionDiagnostics,
+) !void {
+    if (id.len == 0) {
+        if (diagnostics) |d| d.id_issue = .{
+            .kind = .empty,
+            .mrid = id,
+            .raw_id = id,
+            .offset = null,
+        };
+        return error.EmptyMrid;
+    }
+    const entry = seen.getOrPutAssumeCapacity(id);
+    if (entry.found_existing) {
+        if (diagnostics) |d| d.id_issue = .{
+            .kind = .duplicate,
+            .mrid = id,
+            .raw_id = id,
+            .offset = null,
+        };
+        return error.DuplicateMrid;
+    }
+    entry.value_ptr.* = {};
+}
+
+fn record_emitted_iidm_ids(
+    seen: *std.StringHashMapUnmanaged(void),
+    items: anytype,
+    diagnostics: ?*ConversionDiagnostics,
+) !void {
+    for (items) |item| try record_emitted_iidm_id(seen, item.id, diagnostics);
+}
+
+/// Check the identifiers that will actually be serialized, independent of
+/// source CIM type lists. This is the future-proof guard for newly added IIDM
+/// emitters; the source-side pass above exists only to provide XML locations.
+fn validate_emitted_iidm_ids(
+    gpa: std.mem.Allocator,
+    network: *const iidm.Network,
+    diagnostics: ?*ConversionDiagnostics,
+) !void {
+    var count: u32 = 1; // Network itself.
+    for (network.substations.items) |substation| {
+        if (substation.voltage_levels.items.len == 0) continue;
+        count = std.math.add(u32, count, 1) catch return error.TooManyIidmObjects;
+        try add_iidm_ids(&count, substation.voltage_levels.items);
+        try add_iidm_ids(&count, substation.two_winding_transformers.items);
+        try add_iidm_ids(&count, substation.three_winding_transformers.items);
+        for (substation.voltage_levels.items) |voltage_level| {
+            try add_iidm_ids(&count, voltage_level.bus_breaker_topology.buses.items);
+            try add_iidm_ids(&count, voltage_level.node_breaker_topology.busbar_sections.items);
+            try add_iidm_ids(&count, voltage_level.node_breaker_topology.switches.items);
+            try add_iidm_ids(&count, voltage_level.generators.items);
+            try add_iidm_ids(&count, voltage_level.loads.items);
+            try add_iidm_ids(&count, voltage_level.shunts.items);
+            try add_iidm_ids(&count, voltage_level.static_var_compensators.items);
+            try add_iidm_ids(&count, voltage_level.vs_converter_stations.items);
+            try add_iidm_ids(&count, voltage_level.lcc_converter_stations.items);
+        }
+    }
+    try add_iidm_ids(&count, network.fictitious_voltage_levels.items);
+    for (network.fictitious_voltage_levels.items) |voltage_level| {
+        try add_iidm_ids(&count, voltage_level.generators.items);
+    }
+    try add_iidm_ids(&count, network.lines.items);
+    try add_iidm_ids(&count, network.hvdc_lines.items);
+    try add_iidm_ids(&count, network.areas.items);
+
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen.deinit(gpa);
+    try seen.ensureTotalCapacity(gpa, count);
+    try record_emitted_iidm_id(&seen, network.id, diagnostics);
+    for (network.substations.items) |substation| {
+        if (substation.voltage_levels.items.len == 0) continue;
+        try record_emitted_iidm_id(&seen, substation.id, diagnostics);
+        try record_emitted_iidm_ids(&seen, substation.voltage_levels.items, diagnostics);
+        try record_emitted_iidm_ids(&seen, substation.two_winding_transformers.items, diagnostics);
+        try record_emitted_iidm_ids(&seen, substation.three_winding_transformers.items, diagnostics);
+        for (substation.voltage_levels.items) |voltage_level| {
+            try record_emitted_iidm_ids(&seen, voltage_level.bus_breaker_topology.buses.items, diagnostics);
+            try record_emitted_iidm_ids(&seen, voltage_level.node_breaker_topology.busbar_sections.items, diagnostics);
+            try record_emitted_iidm_ids(&seen, voltage_level.node_breaker_topology.switches.items, diagnostics);
+            try record_emitted_iidm_ids(&seen, voltage_level.generators.items, diagnostics);
+            try record_emitted_iidm_ids(&seen, voltage_level.loads.items, diagnostics);
+            try record_emitted_iidm_ids(&seen, voltage_level.shunts.items, diagnostics);
+            try record_emitted_iidm_ids(&seen, voltage_level.static_var_compensators.items, diagnostics);
+            try record_emitted_iidm_ids(&seen, voltage_level.vs_converter_stations.items, diagnostics);
+            try record_emitted_iidm_ids(&seen, voltage_level.lcc_converter_stations.items, diagnostics);
+        }
+    }
+    try record_emitted_iidm_ids(&seen, network.fictitious_voltage_levels.items, diagnostics);
+    for (network.fictitious_voltage_levels.items) |voltage_level| {
+        try record_emitted_iidm_ids(&seen, voltage_level.generators.items, diagnostics);
+    }
+    try record_emitted_iidm_ids(&seen, network.lines.items, diagnostics);
+    try record_emitted_iidm_ids(&seen, network.hvdc_lines.items, diagnostics);
+    try record_emitted_iidm_ids(&seen, network.areas.items, diagnostics);
+}
+
+test "convert rejects resolved mRID collisions and empty keys" {
+    const gpa = std.testing.allocator;
+    const cases = [_]struct {
+        xml: []const u8,
+        expected: anyerror,
+    }{
+        .{
+            .xml =
+            \\<rdf:RDF>
+            \\  <cim:Substation rdf:ID="_SS1"/>
+            \\  <cim:Substation rdf:ID="SS1"/>
+            \\  <cim:VoltageLevel rdf:ID="_VL1"/>
+            \\</rdf:RDF>
+            ,
+            .expected = error.DuplicateMrid,
+        },
+        .{
+            .xml =
+            \\<rdf:RDF>
+            \\  <cim:Substation rdf:ID="_a1b2">
+            \\    <cim:IdentifiedObject.mRID>SS1</cim:IdentifiedObject.mRID>
+            \\  </cim:Substation>
+            \\  <cim:Substation rdf:ID="_SS1"/>
+            \\  <cim:VoltageLevel rdf:ID="_VL1"/>
+            \\</rdf:RDF>
+            ,
+            .expected = error.DuplicateMrid,
+        },
+        .{
+            .xml = "<rdf:RDF><cim:Substation rdf:ID=\"_\"/><cim:VoltageLevel rdf:ID=\"_VL1\"/></rdf:RDF>",
+            .expected = error.EmptyMrid,
+        },
+    };
+
+    for (cases) |case| {
+        var model = try EQ.init(gpa, try gpa.dupe(u8, case.xml));
+        defer model.deinit(gpa);
+        var diagnostics: ConversionDiagnostics = .{};
+        try std.testing.expectError(case.expected, convertWithDiagnostics(gpa, &model, null, null, false, &diagnostics));
+        try std.testing.expect(diagnostics.id_issue != null);
+    }
+}
+
+test "conversion mRID validation ignores reference-only Line containers" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Line rdf:ID="_line_a">
+        \\    <cim:IdentifiedObject.mRID>duplicate-container</cim:IdentifiedObject.mRID>
+        \\  </cim:Line>
+        \\  <cim:Line rdf:ID="_line_b">
+        \\    <cim:IdentifiedObject.mRID>duplicate-container</cim:IdentifiedObject.mRID>
+        \\  </cim:Line>
+        \\</rdf:RDF>
+    ;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+    try validate_conversion_mrids(gpa, &model, null);
+}
+
+test "structural conversion errors take precedence over irrelevant mRID collisions" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Line rdf:ID="_line_a"><cim:IdentifiedObject.mRID>same</cim:IdentifiedObject.mRID></cim:Line>
+        \\  <cim:Line rdf:ID="_line_b"><cim:IdentifiedObject.mRID>same</cim:IdentifiedObject.mRID></cim:Line>
+        \\</rdf:RDF>
+    ;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+    try std.testing.expectError(error.MissingSubstations, convert(gpa, &model, null, null, false));
+}
+
+test "completed-network validation rejects duplicate emitted identifiers" {
+    const gpa = std.testing.allocator;
+    var network = iidm.Network{
+        .id = "network",
+        .case_date = null,
+        .substations = .empty,
+        .lines = .empty,
+        .hvdc_lines = .empty,
+        .extensions = .empty,
+    };
+    defer {
+        for (network.areas.items) |*area| area.deinit(gpa);
+        network.areas.deinit(gpa);
+    }
+    try network.areas.append(gpa, .{ .id = "duplicate", .name = "one", .area_type = "ControlArea" });
+    try network.areas.append(gpa, .{ .id = "duplicate", .name = "two", .area_type = "ControlArea" });
+
+    var diagnostics: ConversionDiagnostics = .{};
+    try std.testing.expectError(error.DuplicateMrid, validate_emitted_iidm_ids(gpa, &network, &diagnostics));
+    try std.testing.expectEqualStrings("duplicate", diagnostics.id_issue.?.mrid);
+    try std.testing.expectEqual(@as(?u32, null), diagnostics.id_issue.?.offset);
+}
 
 /// Decode XML character entities into a newly-allocated string.
 /// Handles &lt; &gt; &amp; &quot; &apos; only (CGMES descriptions use these).
@@ -58,6 +348,96 @@ fn decode_xml_entities(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
         }
     }
     return result.toOwnedSlice(gpa);
+}
+
+test "convert rejects a model without substations" {
+    const xml =
+        \\<?xml version="1.0"?>
+        \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+        \\         xmlns:cim="http://iec.ch/TC57/2013/CIM-schema-cim16#">
+        \\  <cim:BaseVoltage rdf:ID="_BV1"/>
+        \\  <cim:BaseVoltage rdf:ID="_BV2"/>
+        \\</rdf:RDF>
+    ;
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    try std.testing.expectError(error.MissingSubstations, convert(gpa, &model, null, null, false));
+}
+
+test "convert rejects a model without voltage levels" {
+    const xml =
+        \\<?xml version="1.0"?>
+        \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+        \\         xmlns:cim="http://iec.ch/TC57/2013/CIM-schema-cim16#">
+        \\  <cim:Substation rdf:ID="_SS1"/>
+        \\  <cim:ConnectivityNode rdf:ID="_CN1">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#_SS1"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:BusbarSection rdf:ID="_BBS1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BBS1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    try std.testing.expectError(error.MissingVoltageLevels, convert(gpa, &model, null, null, false));
+}
+
+test "convert rejects voltage levels without a resolvable substation" {
+    const xml =
+        \\<?xml version="1.0"?>
+        \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+        \\         xmlns:cim="http://iec.ch/TC57/2013/CIM-schema-cim16#">
+        \\  <cim:Substation rdf:ID="_SS1"/>
+        \\  <cim:VoltageLevel rdf:ID="_VL1">
+        \\    <cim:VoltageLevel.Substation rdf:resource="#_MISSING_SUBSTATION"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:ConnectivityNode rdf:ID="_CN1">
+        \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#_VL1"/>
+        \\  </cim:ConnectivityNode>
+        \\  <cim:BusbarSection rdf:ID="_BBS1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BBS1"/>
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    try std.testing.expectError(error.MissingVoltageLevels, convert(gpa, &model, null, null, false));
+}
+
+test "convert tolerates terminals without connectivity nodes" {
+    const xml =
+        \\<?xml version="1.0"?>
+        \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+        \\         xmlns:cim="http://iec.ch/TC57/2013/CIM-schema-cim16#">
+        \\  <cim:Substation rdf:ID="_SS1"/>
+        \\  <cim:VoltageLevel rdf:ID="_VL1">
+        \\    <cim:VoltageLevel.Substation rdf:resource="#_SS1"/>
+        \\  </cim:VoltageLevel>
+        \\  <cim:BusbarSection rdf:ID="_BBS1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BBS1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+    const gpa = std.testing.allocator;
+    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    var network = try convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 1), network.substations.items.len);
+    try std.testing.expectEqual(@as(usize, 1), network.substations.items[0].voltage_levels.items.len);
 }
 
 /// Parse ISO8601 datetime "YYYY-MM-DDTHH:MM:SSZ" to seconds since Unix epoch.
@@ -156,8 +536,8 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const EQ, ssh_opt: ?SSH, networ
 
     for (control_areas) |control_area| {
         const control_area_view = model.view(control_area);
-        const control_area_mrid = try control_area_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(control_area.id);
-        const control_area_name = try control_area_view.getProperty("IdentifiedObject.name") orelse control_area_mrid;
+        const control_area_mrid = try control_area_view.mrid();
+        const control_area_name = parse.non_blank(try control_area_view.getProperty("IdentifiedObject.name")) orelse control_area_mrid;
 
         // ControlArea.type is a rdf:resource; extract the fragment after '#'.
         const area_type: []const u8 = blk: {
@@ -183,7 +563,7 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const EQ, ssh_opt: ?SSH, networ
             const equipment_ref = try term_obj.getReference("Terminal.ConductingEquipment") orelse continue;
             const equipment_id = strip_hash(equipment_ref);
             const equipment = model.getObjectById(equipment_id) orelse continue;
-            const eq_mrid = try equipment.getProperty("IdentifiedObject.mRID") orelse strip_underscore(equipment_id);
+            const eq_mrid = try equipment.mrid();
 
             const seq = parse.int_or(u32, try term_obj.getProperty("ACDCTerminal.sequenceNumber"), 1);
             const side: []const u8 = if (seq == 1) "ONE" else "TWO";
@@ -219,7 +599,23 @@ pub fn convert(
     ssh_opt: ?SSH,
     bus_branch: bool,
 ) !iidm.Network {
-    assert(model.get_objects_by_type("Substation").len > 0);
+    return convertWithDiagnostics(gpa, model, tp_opt, ssh_opt, bus_branch, null);
+}
+
+pub fn convertWithDiagnostics(
+    gpa: std.mem.Allocator,
+    model: *const EQ,
+    tp_opt: ?TP,
+    ssh_opt: ?SSH,
+    bus_branch: bool,
+    diagnostics: ?*ConversionDiagnostics,
+) !iidm.Network {
+    if (model.get_objects_by_type("Substation").len == 0) return error.MissingSubstations;
+    // Fast path: avoid building cross-reference and topology indexes when no
+    // VoltageLevel declarations exist. The post-conversion map check below
+    // remains necessary for declared levels whose Substation cannot resolve.
+    if (model.get_objects_by_type("VoltageLevel").len == 0) return error.MissingVoltageLevels;
+    try validate_conversion_mrids(gpa, model, diagnostics);
     assert(!bus_branch or tp_opt != null);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
@@ -289,6 +685,7 @@ pub fn convert(
     defer substation_map.deinit(gpa);
     var voltage_level_map = try voltage_level_conv.build_voltage_level_map(gpa, model, &topology_data, &network, &sub_id_map, &substation_map);
     defer voltage_level_map.deinit(gpa);
+    if (voltage_level_map.count() == 0) return error.MissingVoltageLevels;
 
     var tap_changer_info_map: transformer_conv.TapChangerInfoMap = .empty;
     defer transformer_conv.deinit_tap_changer_info_map(gpa, &tap_changer_info_map);
@@ -500,7 +897,7 @@ pub fn convert(
         try base_voltage_list.ensureTotalCapacity(gpa, base_voltages.len);
         for (base_voltages) |base_voltage| {
             const base_voltage_view = model.view(base_voltage);
-            const base_voltage_mrid = try base_voltage_view.getProperty("IdentifiedObject.mRID") orelse strip_underscore(base_voltage.id);
+            const base_voltage_mrid = try base_voltage_view.mrid();
             const nom_v_str = try base_voltage_view.getProperty("BaseVoltage.nominalVoltage") orelse continue;
             const nom_v = parse.float_opt(nom_v_str) orelse continue;
             const xml_pos = base_voltage_view.boundaries[base_voltage_view.object_tag_idx].start;
@@ -535,6 +932,7 @@ pub fn convert(
         try network.extension_versions.append(gpa, .{ .extension_name = "cimCharacteristics", .version = extension_version("cimCharacteristics") });
     }
 
+    try validate_emitted_iidm_ids(gpa, &network, diagnostics);
     assert(network.substations.items.len > 0);
     return network;
 }

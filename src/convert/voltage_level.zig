@@ -16,7 +16,6 @@ const CimObject = tag_index.CimObject;
 const CimObjectView = tag_index.CimObjectView;
 const CrossRef = cross_ref.CrossRef;
 const strip_hash = utils.strip_hash;
-const strip_underscore = utils.strip_underscore;
 
 // Resolve the nominal voltage for a VoltageLevel.
 // VoltageLevel.BaseVoltage -> BaseVoltage.nominalVoltage -> parseFloat.
@@ -41,14 +40,16 @@ fn append_voltage_level(
 ) !void {
     assert(std.mem.eql(u8, voltage_level.type_name, "VoltageLevel"));
 
-    const mrid = try voltage_level.getProperty("IdentifiedObject.mRID") orelse strip_underscore(voltage_level.id);
+    const mrid = try voltage_level.mrid();
     assert(mrid.len > 0);
-    const name = try voltage_level.getProperty("IdentifiedObject.name");
+    const name = parse.non_blank(try voltage_level.getProperty("IdentifiedObject.name"));
     const nominal_voltageoltage = try resolve_nominal_voltageoltage(model, voltage_level);
     const limits = index.voltage_level_limits.get(voltage_level.id);
 
     // Build MergedVoltageLevel aliases for any stub VLs absorbed into this one.
     var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
+    var ownership_transferred = false;
+    defer if (!ownership_transferred) aliases.deinit(gpa);
     if (repr_to_stub_mrids.get(voltage_level.id)) |stubs| {
         assert(stubs.items.len > 0);
         try aliases.ensureTotalCapacity(gpa, stubs.items.len);
@@ -57,7 +58,8 @@ fn append_voltage_level(
         }
     }
 
-    const properties = try build_voltage_limit_properties(gpa, limits);
+    var properties = try build_voltage_limit_properties(gpa, limits);
+    defer if (!ownership_transferred) deinit_properties(gpa, &properties);
 
     const substation_ref = try voltage_level.getReference("VoltageLevel.Substation") orelse return;
     const substation_idx = substation_id_map.get(strip_hash(substation_ref)) orelse return;
@@ -77,6 +79,12 @@ fn append_voltage_level(
         .vs_converter_stations = .empty,
         .lcc_converter_stations = .empty,
     });
+    ownership_transferred = true;
+}
+
+fn deinit_properties(gpa: std.mem.Allocator, properties: *std.ArrayListUnmanaged(iidm.Property)) void {
+    for (properties.items) |property| if (property.owned_value) gpa.free(property.value);
+    properties.deinit(gpa);
 }
 
 // Build the CGMES voltage-limit properties for one VoltageLevel.
@@ -87,6 +95,7 @@ fn build_voltage_limit_properties(
     limits_opt: ?cross_ref.VoltageLimitInfo,
 ) !std.ArrayListUnmanaged(iidm.Property) {
     var properties: std.ArrayListUnmanaged(iidm.Property) = .empty;
+    errdefer deinit_properties(gpa, &properties);
 
     const has_high = if (limits_opt) |lim| lim.high_mrids.items.len > 0 else false;
     const has_low = if (limits_opt) |lim| lim.low_mrids.items.len > 0 else false;
@@ -98,8 +107,7 @@ fn build_voltage_limit_properties(
 
     if (has_high) {
         const limits = limits_opt.?;
-        const value_str = limits.high_value_str orelse unreachable;
-        const normal_value = try iidm.format_float_str(gpa, value_str);
+        const normal_value = try iidm.format_float(gpa, limits.high_value orelse unreachable);
         properties.appendAssumeCapacity(.{
             .name = "CGMES.normalValue_highVoltageLimit",
             .value = normal_value,
@@ -114,8 +122,7 @@ fn build_voltage_limit_properties(
     }
     if (has_low) {
         const limits = limits_opt.?;
-        const value_str = limits.low_value_str orelse unreachable;
-        const normal_value = try iidm.format_float_str(gpa, value_str);
+        const normal_value = try iidm.format_float(gpa, limits.low_value orelse unreachable);
         properties.appendAssumeCapacity(.{
             .name = "CGMES.normalValue_lowVoltageLimit",
             .value = normal_value,
@@ -172,7 +179,7 @@ pub fn convert_voltage_levels(
             const stub_id = entry.key_ptr.*;
             const repr_id = entry.value_ptr.*;
             const stub_obj = model.getObjectById(stub_id) orelse continue;
-            const stub_mrid = try stub_obj.getProperty("IdentifiedObject.mRID") orelse strip_underscore(stub_id);
+            const stub_mrid = try stub_obj.mrid();
             const gop = try repr_to_stub_mrids.getOrPut(gpa, repr_id);
             if (!gop.found_existing) gop.value_ptr.* = .empty;
             try gop.value_ptr.append(gpa, stub_mrid);
@@ -184,12 +191,6 @@ pub fn convert_voltage_levels(
         if (topology.voltage_level_merge.contains(voltage_level.id)) continue;
         try append_voltage_level(gpa, model, index, model.view(voltage_level), network, substation_id_map, &repr_to_stub_mrids);
     }
-
-    assert(voltage_levels.len - topology.voltage_level_merge.count() == blk: {
-        var total: usize = 0;
-        for (network.substations.items) |substation| total += substation.voltage_levels.items.len;
-        break :blk total;
-    });
 }
 
 pub fn build_voltage_level_map(
@@ -236,7 +237,6 @@ pub fn build_voltage_level_map(
         voltage_level_map.putAssumeCapacity(voltage_level.id, &network.substations.items[substation_item_idx].voltage_levels.items[voltage_level_idx]);
     }
 
-    assert(voltage_level_map.count() == representative_count);
     // Pairs with the snapshot above: building the maps must not have grown
     // network.substations (which would invalidate the pointers just stored).
     assert(network.substations.items.ptr == substations_ptr);

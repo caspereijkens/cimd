@@ -3,7 +3,7 @@
 //! A TP profile contains two structurally distinct kinds of tags:
 //!   1. New first-class objects (identified by `rdf:ID`), typically `TopologicalNode`.
 //!      These become navigable by mRID just like EQ objects.
-//!   2. Patches on existing objects (identified by `rdf:about="#_..."`), typically
+//!   2. Patches on existing objects (identified by `rdf:about="#..."`), typically
 //!      `Terminal` and `ConnectivityNode`, adding a `.TopologicalNode` reference.
 //!
 //! TP keeps both indexed independently: `patches` is sorted by stripped mRID
@@ -233,6 +233,11 @@ pub const TP = struct {
         const obj = self.new_objects[idx];
         // The stored object must round-trip — pairs with the id_to_object build.
         assert(std.mem.eql(u8, obj.id, id));
+        return self.view(obj);
+    }
+
+    /// Bind a stored TP-added object to this profile's XML context.
+    pub fn view(self: TP, obj: CimObject) tag_index.CimObjectView {
         assert(obj.object_tag_idx < self.boundaries.len);
         assert(obj.closing_tag_idx < self.boundaries.len);
         assert(obj.closing_tag_idx >= obj.object_tag_idx);
@@ -250,30 +255,44 @@ pub const TP = struct {
 const TagKind = union(enum) {
     /// Not a CIM object — metadata (FullModel), comment, rdf:RDF root, etc.
     skip,
-    /// New first-class object carrying rdf:ID="_..."; payload is the raw id (with underscore).
+    /// New first-class object carrying rdf:ID; payload is the raw id.
     new_object: []const u8,
-    /// Patch on an existing object via rdf:about="#_..."; payload is the stripped mRID.
+    /// Patch on an existing object via rdf:about="#..."; payload is the normalized mRID.
     patch: []const u8,
 };
 
 /// Classify a tag based on whether it carries rdf:ID (new object) or rdf:about (patch).
-/// The underscore check rules out metadata tags like `<md:FullModel rdf:about="urn:uuid:...">`.
+/// A leading underscore is optional, matching `CimObjectView.mrid`. The hash
+/// requirement on patches rules out metadata tags such as FullModel URNs.
 fn classify_tag(xml: []const u8, tag_start: u32) TagKind {
+    switch (xml[tag_start + 1]) {
+        '/', '!', '?' => return .skip,
+        else => {},
+    }
+
     if (tag_index.extract_rdf_id(xml, tag_start)) |raw| {
-        if (raw.len > 0 and raw[0] == '_') return .{ .new_object = raw };
+        if (raw.len > 0) return .{ .new_object = raw };
     } else |_| {}
 
     if (tag_index.extract_rdf_about(xml, tag_start)) |raw| {
-        if (raw.len > 1 and raw[0] == '#' and raw[1] == '_')
-            return .{ .patch = utils.strip_underscore(utils.strip_hash(raw)) };
+        if (raw.len > 1 and raw[0] == '#') {
+            const mrid = utils.strip_underscore(utils.strip_hash(raw));
+            if (mrid.len > 0) return .{ .patch = mrid };
+        }
     } else |_| {}
 
     return .skip;
 }
 
 fn extract_patch_raw_id(xml: []const u8, tag_start: u32) ?[]const u8 {
+    switch (xml[tag_start + 1]) {
+        '/', '!', '?' => return null,
+        else => {},
+    }
+
     if (tag_index.extract_rdf_about(xml, tag_start)) |raw| {
-        if (raw.len > 1 and raw[0] == '#' and raw[1] == '_') return raw;
+        if (raw.len > 1 and raw[0] == '#' and
+            utils.strip_underscore(utils.strip_hash(raw)).len > 0) return raw;
     } else |_| {}
     return null;
 }
@@ -388,6 +407,35 @@ test "TP.get_object_by_id_prefix - returns matches by prefix; leading _ optional
     try std.testing.expectEqual(@as(usize, 0), none.len);
 }
 
+test "TP retains raw new-object ids and skips empty patch keys" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <!-- placeholder rdf:ID="_" is not an object -->
+        \\  <cim:TopologicalNode rdf:ID="_"/>
+        \\  <cim:Terminal rdf:about="#_"/>
+        \\</rdf:RDF>
+    ;
+    var tp = try TP.init(gpa, try gpa.dupe(u8, xml));
+    defer tp.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 1), tp.new_objects.len);
+    try std.testing.expectEqualStrings("_", tp.new_objects[0].id);
+    try std.testing.expectEqual(@as(usize, 0), tp.patches.len);
+}
+
+test "TP indexes bare and underscored patch identifiers consistently" {
+    const gpa = std.testing.allocator;
+    const inputs = [_][]const u8{
+        "<rdf:RDF><cim:Terminal rdf:about=\"#T1\"/></rdf:RDF>",
+        "<rdf:RDF><cim:Terminal rdf:about=\"#_T1\"/></rdf:RDF>",
+    };
+    for (inputs) |xml| {
+        var tp = try TP.init(gpa, try gpa.dupe(u8, xml));
+        defer tp.deinit(gpa);
+        try std.testing.expect(tp.find_patch("T1") != null);
+    }
+}
+
 test "TP.init - skips metadata tags (FullModel, rdf:RDF)" {
     const gpa = std.testing.allocator;
     const xml =
@@ -430,7 +478,7 @@ test "TP diagnostics record duplicate new object ID" {
         TP.initWithDiagnostics(gpa, try gpa.dupe(u8, xml), &diagnostics),
     );
     try std.testing.expectEqualStrings("_TN1", diagnostics.duplicate_id());
-    try std.testing.expectEqual(@as(u32, 3), diagnostics.duplicate_line);
+    try std.testing.expectEqual(@as(u64, 3), diagnostics.duplicate_line);
     try std.testing.expect(!diagnostics.duplicate_id_truncated);
 }
 
@@ -438,7 +486,7 @@ test "TP.init - rejects duplicate patch mRIDs" {
     const gpa = std.testing.allocator;
     const xml =
         \\<rdf:RDF>
-        \\  <cim:Terminal rdf:about="#_T1"/>
+        \\  <cim:Terminal rdf:about="#T1"/>
         \\  <cim:Terminal rdf:about="#_T1"/>
         \\</rdf:RDF>
     ;
@@ -450,7 +498,7 @@ test "TP diagnostics record duplicate patch mRID" {
     const gpa = std.testing.allocator;
     const xml =
         \\<rdf:RDF>
-        \\  <cim:Terminal rdf:about="#_T1"/>
+        \\  <cim:Terminal rdf:about="#T1"/>
         \\  <cim:Terminal rdf:about="#_T1"/>
         \\</rdf:RDF>
     ;
@@ -460,6 +508,6 @@ test "TP diagnostics record duplicate patch mRID" {
         TP.initWithDiagnostics(gpa, try gpa.dupe(u8, xml), &diagnostics),
     );
     try std.testing.expectEqualStrings("#_T1", diagnostics.duplicate_id());
-    try std.testing.expectEqual(@as(u32, 3), diagnostics.duplicate_line);
+    try std.testing.expectEqual(@as(u64, 3), diagnostics.duplicate_line);
     try std.testing.expect(!diagnostics.duplicate_id_truncated);
 }

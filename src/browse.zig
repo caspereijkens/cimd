@@ -81,9 +81,78 @@ pub const InteractiveIo = struct {
 fn take_input_line(input: *std.Io.Reader) ![]const u8 {
     const line = input.takeDelimiterInclusive('\n') catch |err| switch (err) {
         error.EndOfStream => return input.takeDelimiterExclusive('\n'),
+        error.StreamTooLong => {
+            _ = input.discardDelimiterInclusive('\n') catch |discard_err| switch (discard_err) {
+                error.EndOfStream => return error.InputTooLong,
+                else => return discard_err,
+            };
+            return error.InputTooLong;
+        },
         else => return err,
     };
     return std.mem.trimEnd(u8, line, "\r\n");
+}
+
+fn allocating_writer_result(
+    allocating: *std.Io.Writer.Allocating,
+    result: anytype,
+) (@typeInfo(@TypeOf(result)).error_union.error_set || error{OutOfMemory})!@typeInfo(@TypeOf(result)).error_union.payload {
+    // Intentional type witness: only an Allocating writer makes WriteFailed
+    // unambiguously mean allocation failure. Keep this parameter even though
+    // the generic result cannot be tied to it by Zig's type system.
+    _ = allocating;
+    return result catch |err| {
+        if (err == error.WriteFailed) return error.OutOfMemory;
+        return err;
+    };
+}
+
+test "allocating writer failure is out of memory" {
+    var allocating: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer allocating.deinit();
+    const failed: anyerror!void = error.WriteFailed;
+    try std.testing.expectError(error.OutOfMemory, allocating_writer_result(&allocating, failed));
+}
+
+fn report_input_too_long(output: *std.Io.Writer, picker: bool) !void {
+    const message = if (picker)
+        "Input too long — expected a number, [b]ack, or [q]uit.\n\n"
+    else
+        "Input too long — expected one menu command per line.\n\n";
+    try output.writeAll(message);
+    try output.flush();
+}
+
+test "overlong input feedback identifies the active prompt" {
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+
+    try report_input_too_long(&output.writer, true);
+    try std.testing.expect(std.mem.indexOf(u8, output.written(), "expected a number") != null);
+    output.clearRetainingCapacity();
+
+    try report_input_too_long(&output.writer, false);
+    try std.testing.expect(std.mem.indexOf(u8, output.written(), "one menu command") != null);
+}
+
+test "overlong input is drained through the next newline" {
+    var tmpdir = std.testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    const io = std.testing.io;
+    var file = try tmpdir.dir.createFile(io, "input.txt", .{ .read = true });
+    defer file.close(io);
+    var input_bytes: [203]u8 = undefined;
+    @memset(input_bytes[0..200], 'x');
+    input_bytes[200] = '\n';
+    input_bytes[201] = 'q';
+    input_bytes[202] = '\n';
+    try file.writeStreamingAll(io, &input_bytes);
+
+    var buffer: [64]u8 = undefined;
+    var file_reader = file.reader(io, &buffer);
+    try std.testing.expectError(error.InputTooLong, take_input_line(&file_reader.interface));
+    try std.testing.expectEqualStrings("q", try take_input_line(&file_reader.interface));
 }
 
 /// Interactively browse CIM objects by following rdf:resource references.
@@ -123,18 +192,22 @@ pub fn browse(
         const referrers = back_refs.lookup(id);
 
         const counter: u32 = switch (mode) {
-            .regular => try render_regular(writer, gpa, tp_opt, ssh_opt, object, &selections),
-            .back_refs => |view| try render_back_refs(writer, gpa, model, tp_opt, object, referrers, view, &selections),
+            .regular => try allocating_writer_result(&screen, render_regular(writer, gpa, tp_opt, ssh_opt, object, &selections)),
+            .back_refs => |view| try allocating_writer_result(&screen, render_back_refs(writer, gpa, model, tp_opt, object, referrers, view, &selections)),
         };
 
         const has_back = trace.items.len > 0 or mode != .regular;
-        try render_footer(writer, trace.items, object.type_name, counter, has_back, mode, referrers.len);
+        try allocating_writer_result(&screen, render_footer(writer, trace.items, object.type_name, counter, has_back, mode, referrers.len));
         try interactive.output.writeAll(screen.written());
         try interactive.output.flush();
 
         const input = take_input_line(interactive.input) catch |err| switch (err) {
             error.EndOfStream => break,
-            else => continue,
+            error.InputTooLong => {
+                try report_input_too_long(interactive.output, false);
+                continue;
+            },
+            else => return err,
         };
         if (input.len == 0) continue;
 
@@ -513,18 +586,17 @@ const PickSel = union(enum) {
 
 /// Interactive picker shown when the user enters a prefix that matches more
 /// than one object. Returns the chosen mRID (a slice into `model.xml` via the
-/// CimObjects in `matches`). Exits the process on `q`.
+/// CimObjects in `matches`). Returns null on `q` or end of input.
 ///
 /// Layout follows the back-refs menu: grouped-by-type when over
 /// `group_threshold` matches, flat list otherwise. `b` returns to the grouped
 /// overview from a drilled or flat-all view.
 pub fn pick_from_prefix(
-    io: std.Io,
     gpa: std.mem.Allocator,
     interactive: InteractiveIo,
     prefix: []const u8,
     matches: []const tag_index.CimObject,
-) ![]const u8 {
+) !?[]const u8 {
     assert(matches.len > 1);
 
     var screen: std.Io.Writer.Allocating = .init(gpa);
@@ -539,28 +611,29 @@ pub fn pick_from_prefix(
         selections.clearRetainingCapacity();
         const writer = &screen.writer;
 
-        const use_grouped = view == .auto and matches.len > group_threshold;
-        const counter: u32 = if (use_grouped)
-            try render_prefix_grouped(writer, gpa, prefix, matches, &selections)
-        else
-            try render_prefix_flat(writer, gpa, prefix, matches, view.filter(), &selections);
-
-        const has_back = view != .auto;
-        try writer.writeAll("\n\n");
-        if (counter > 1) try writer.print(" [1-{d}]", .{counter - 1});
-        if (has_back) try writer.writeAll("  [b]ack");
-        try writer.writeAll("  [q]uit\n\n");
+        _ = try allocating_writer_result(&screen, render_prefix_screen(
+            writer,
+            gpa,
+            prefix,
+            matches,
+            view,
+            &selections,
+        ));
         try interactive.output.writeAll(screen.written());
         try interactive.output.flush();
 
         const input = take_input_line(interactive.input) catch |err| switch (err) {
-            error.EndOfStream => return error.EndOfStream,
-            else => continue,
+            error.EndOfStream => return null,
+            error.InputTooLong => {
+                try report_input_too_long(interactive.output, true);
+                continue;
+            },
+            else => return err,
         };
         if (input.len == 0) continue;
 
         switch (input[0]) {
-            'q' => print.stderr(io, "aborted", .{}),
+            'q' => return null,
             'b' => view = .auto,
             else => {
                 const n = std.fmt.parseInt(u32, input, 10) catch continue;
@@ -573,6 +646,28 @@ pub fn pick_from_prefix(
             },
         }
     }
+}
+
+fn render_prefix_screen(
+    writer: *std.Io.Writer,
+    gpa: std.mem.Allocator,
+    prefix: []const u8,
+    matches: []const tag_index.CimObject,
+    view: ListView,
+    selections: *std.ArrayList(PickSel),
+) !u32 {
+    const use_grouped = view == .auto and matches.len > group_threshold;
+    const counter: u32 = if (use_grouped)
+        try render_prefix_grouped(writer, gpa, prefix, matches, selections)
+    else
+        try render_prefix_flat(writer, gpa, prefix, matches, view.filter(), selections);
+
+    const has_back = view != .auto;
+    try writer.writeAll("\n\n");
+    if (counter > 1) try writer.print(" [1-{d}]", .{counter - 1});
+    if (has_back) try writer.writeAll("  [b]ack");
+    try writer.writeAll("  [q]uit\n\n");
+    return counter;
 }
 
 fn render_prefix_grouped(

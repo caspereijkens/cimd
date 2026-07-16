@@ -792,7 +792,9 @@ fn duration_valid(text: []const u8) bool {
 pub const DataSegment = struct {
     name: []const u8,
     start: u32,
-    line_start: u32 = 1,
+    /// Global 1-based line at `start`, retained because model parsers free XML
+    /// on error before duplicate diagnostics are rendered.
+    line_start: u64,
 };
 
 pub const ReportEntry = struct {
@@ -892,7 +894,8 @@ fn write_violation(
     }
 
     const segment = segment_of(segments, violation.offset);
-    const line = line_of(newlines, violation.offset) - line_of(newlines, segment.start) + 1;
+    const global_line = line_of(newlines, violation.offset);
+    const line = segment_local_line(segment, global_line);
     try w.print("{s}:{d}: {s}: {s}: ", .{
         segment.name, line, @tagName(severity), name,
     });
@@ -912,7 +915,7 @@ fn write_violation(
     try w.print(" (object {s})\n", .{violation.object_id});
 }
 
-fn segment_of(segments: []const DataSegment, offset: u32) DataSegment {
+pub fn segment_of(segments: []const DataSegment, offset: u32) DataSegment {
     assert(segments.len > 0);
     var result = segments[0];
     for (segments[1..]) |segment| {
@@ -921,9 +924,14 @@ fn segment_of(segments: []const DataSegment, offset: u32) DataSegment {
     return result;
 }
 
+pub fn segment_local_line(segment: DataSegment, global_line: u64) u64 {
+    assert(global_line >= segment.line_start);
+    return global_line - segment.line_start + 1;
+}
+
 /// 1-based line of a byte offset: the number of newlines strictly before it,
 /// plus one.
-fn line_of(newlines: []const u32, offset: u32) u32 {
+fn line_of(newlines: []const u32, offset: u32) u64 {
     var low: usize = 0;
     var high: usize = newlines.len;
     while (low < high) {
@@ -934,7 +942,7 @@ fn line_of(newlines: []const u32, offset: u32) u32 {
             high = mid;
         }
     }
-    return @intCast(low + 1);
+    return @as(u64, @intCast(low)) + 1;
 }
 
 const ComponentCount = struct {

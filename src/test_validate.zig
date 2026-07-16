@@ -6,6 +6,7 @@
 //! pass.
 
 const std = @import("std");
+const diagnostics_mod = @import("cgmes/diagnostics.zig");
 const EQ = @import("cgmes/eq.zig").EQ;
 const RuleSet = @import("shacl/rule_set.zig").RuleSet;
 const validate = @import("validate.zig");
@@ -224,7 +225,7 @@ test "report carries file:line, rule code, message, and honesty note" {
         gpa,
         &out.writer,
         &fixture.model,
-        &.{.{ .name = "eq.xml", .start = 0 }},
+        &.{.{ .name = "eq.xml", .start = 0, .line_start = 1 }},
         &.{.{ .rules = &fixture.rules, .evaluation = &fixture.evaluation }},
         .{},
     );
@@ -269,7 +270,7 @@ test "report --list-skipped names each unchecked rule" {
         gpa,
         &out.writer,
         &fixture.model,
-        &.{.{ .name = "eq.xml", .start = 0 }},
+        &.{.{ .name = "eq.xml", .start = 0, .line_start = 1 }},
         &.{.{ .rules = &fixture.rules, .evaluation = &fixture.evaluation }},
         .{ .list_skipped = true },
     );
@@ -321,8 +322,12 @@ test "report resolves offsets into the correct data segment" {
         &out.writer,
         &model,
         &.{
-            .{ .name = "eq.xml", .start = 0 },
-            .{ .name = "eqbd.xml", .start = @intCast(eq_part.len) },
+            .{ .name = "eq.xml", .start = 0, .line_start = 1 },
+            .{
+                .name = "eqbd.xml",
+                .start = @intCast(eq_part.len),
+                .line_start = diagnostics_mod.line_number_at(eq_part, @intCast(eq_part.len)),
+            },
         },
         &.{.{ .rules = &rules, .evaluation = &evaluation }},
         .{},
@@ -409,7 +414,7 @@ test "rdf:about instance files (SSH/TP/SV) resolve references and referrers" {
     // sees _tn1's referrer and misses one for _tn2 only.
     try testing.expectEqual(@as(usize, 1), evaluation.violations.items.len);
     const violation = evaluation.violations.items[0];
-    try testing.expectEqualStrings("#_tn2", violation.object_id);
+    try testing.expectEqualStrings("_tn2", violation.object_id);
     try testing.expectEqualStrings(
         "TopologicalNode.SvVoltage-inverse",
         rules.constraints[violation.constraint].name,
@@ -454,7 +459,7 @@ test "escape-decoded and substitution-expanded messages flow into the report" {
         gpa,
         &out.writer,
         &model,
-        &.{.{ .name = "eq.xml", .start = 0 }},
+        &.{.{ .name = "eq.xml", .start = 0, .line_start = 1 }},
         &.{.{ .rules = &rules, .evaluation = &evaluation }},
         .{},
     );

@@ -7,7 +7,12 @@
 //!   0  success
 //!   1  not found (requested mRID / resource does not exist)
 //!   2  usage error (bad flags, missing args, unknown subcommand)
+//!   3  differences found (`diff` only)
+//!   4  validation violations found (`validate` only)
+//!  65  invalid or unsupported input data
+//!  66  input unavailable (missing, unreadable, or wrong path type)
 //!  70  unexpected internal failure
+//!  71  operating-system or resource failure
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -22,6 +27,12 @@ pub const ansi_yellow = "\x1b[33m";
 
 const path_separator = if (builtin.os.tag == .windows) "\\" else "/";
 
+const help_failure_exit_codes =
+    "\n  65  invalid or unsupported input data" ++
+    "\n  66  input unavailable" ++
+    "\n  70  unexpected internal failure" ++
+    "\n  71  operating-system or resource failure\n";
+
 const help_main = std.fmt.comptimePrint(
     \\Usage: cimd <command> [options]
     \\
@@ -30,6 +41,8 @@ const help_main = std.fmt.comptimePrint(
     \\Input limits:
     \\  XML data: {[xml_limit]s} after unzip and EQ+EQBD merge.
     \\  SHACL rule files: {[rules_limit]s} after unzip.
+    \\  Non-interactive commands accept '-' as the primary data path to read
+    \\  uncompressed XML from stdin.
     \\
     \\Commands:
     \\  convert    Convert an EQ profile to JIIDM JSON
@@ -94,7 +107,8 @@ const help_browse = std.fmt.comptimePrint(
     \\grouped by type when many.
     \\
     \\Arguments:
-    \\  <file>    Primary CIM file (typically EQ; XML or ZIP)
+    \\  <file>    Primary CIM file (typically EQ; XML or ZIP); '-' is not
+    \\            supported because browse reserves stdin for interaction
     \\  <mrid>    Full mRID or a prefix of one
     \\
     \\Options:
@@ -247,8 +261,10 @@ const help_diff =
     \\
     \\Exit codes:
     \\  0  files are identical (no differences found)
-    \\  1  differences found
+    \\  1  requested mRID was not found
     \\  2  usage error
+    \\  3  differences found
+++ help_failure_exit_codes ++
     \\
     \\Arguments:
     \\  <file1>    First EQ profile (XML or ZIP)
@@ -316,8 +332,9 @@ const help_validate = std.fmt.comptimePrint(
     \\
     \\Exit codes:
     \\  0  no violations (warnings and info findings do not fail the run)
-    \\  1  violations found
-    \\  2  usage error, or the rule set failed to load
+    \\  2  usage error
+    \\  4  violations found
+++ help_failure_exit_codes ++
     \\
     \\Arguments:
     \\  <file>                  CGMES instance file, any profile (XML or ZIP)
@@ -337,22 +354,16 @@ const help_validate = std.fmt.comptimePrint(
 , .{ .sep = path_separator, .rules_max = Command.Validate.rules_count_max });
 
 const help_qocdc = std.fmt.comptimePrint(
-    \\Usage: cimd qocdc <file> [options]
+    \\Usage: cimd qocdc <file>
     \\
     \\Validate a grid model against to the 'Quality of CGMES Datasets and
     \\Calculations'.
     \\
     \\Arguments:
-    \\  <file>                  EQ profile (XML or ZIP)
-    \\
-    \\Options:
-    \\  -b, --eqbd <file>       EQBD boundary profile (XML or ZIP)
-    \\  -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
-    \\  -o, --output <file>     Write output to file instead of stdout
+    \\  <file>                  CGMES ZIP archive
     \\
     \\Examples:
-    \\  cimd qocdc data{[sep]s}eq.zip -s ssh.zip
-    \\  cimd qocdc data{[sep]s}eq.zip --eqbd eqbd.zip -s ssh.zip -o tn.json
+    \\  cimd qocdc data{[sep]s}eq.zip
     \\
 , .{ .sep = path_separator });
 
@@ -466,9 +477,6 @@ pub const Command = union(enum) {
 
     pub const Qocdc = struct {
         eq_path: []const u8,
-        eqbd_path: ?[]const u8,
-        ssh_path: ?[]const u8,
-        output_path: ?[]const u8,
     };
 
     pub const Validate = struct {
@@ -544,8 +552,7 @@ fn parse_convert(io: std.Io, args: *std.process.Args.Iterator) !Command {
         } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--ssh")) {
             ssh_path = take_path_arg(io, args, command_name, "--ssh");
         } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
-            output_path = args.next() orelse
-                print.stderr(io, command_name ++ ": --output requires a file path", .{});
+            output_path = take_output_arg(io, args, command_name);
         } else if (std.mem.eql(u8, arg, "--bus-branch")) {
             bus_branch = true;
         } else if (is_flag(arg)) {
@@ -607,6 +614,9 @@ fn parse_browse(io: std.Io, args: *std.process.Args.Iterator) !Command {
 
     if (file_path == null) print.stderr(io, command_name ++ ": <file> is required", .{});
     if (mrid == null) print.stderr(io, command_name ++ ": <mrid> is required", .{});
+    if (io_read.is_stdin(file_path.?)) {
+        print.stderr(io, command_name ++ ": '-' cannot be used as input because browse needs stdin for interaction", .{});
+    }
 
     return .{ .browse = .{
         .file_path = file_path.?,
@@ -636,11 +646,9 @@ fn parse_get(io: std.Io, args: *std.process.Args.Iterator) !Command {
             std.process.exit(0);
         }
         if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--type")) {
-            type_filter = args.next() orelse
-                print.stderr(io, command_name ++ ": --type requires a CIM type name", .{});
+            type_filter = take_value_arg(io, args, command_name, "--type", "a CIM type name");
         } else if (std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--fields")) {
-            fields = args.next() orelse
-                print.stderr(io, command_name ++ ": --fields requires a comma-separated list of property names", .{});
+            fields = take_value_arg(io, args, command_name, "--fields", "a comma-separated list of property names");
         } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--count")) {
             count = true;
         } else if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
@@ -699,11 +707,9 @@ fn parse_refs(io: std.Io, args: *std.process.Args.Iterator) !Command {
             std.process.exit(0);
         }
         if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--type")) {
-            target_type = args.next() orelse
-                print.stderr(io, command_name ++ ": --type requires a CIM type name", .{});
+            target_type = take_value_arg(io, args, command_name, "--type", "a CIM type name");
         } else if (std.mem.eql(u8, arg, "--from")) {
-            from_type = args.next() orelse
-                print.stderr(io, command_name ++ ": --from requires a CIM type name", .{});
+            from_type = take_value_arg(io, args, command_name, "--from", "a CIM type name");
         } else if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
             eqbd_path = take_path_arg(io, args, command_name, "--eqbd");
         } else if (std.mem.eql(u8, arg, "--tp")) {
@@ -792,14 +798,11 @@ fn parse_diff(io: std.Io, args: *std.process.Args.Iterator) !Command {
         if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
             eqbd_path = take_path_arg(io, args, command_name, "--eqbd");
         } else if (std.mem.eql(u8, arg, "-i") or std.mem.eql(u8, arg, "--mrid")) {
-            mrid = args.next() orelse
-                print.stderr(io, command_name ++ ": --mrid requires an mRID value", .{});
+            mrid = take_value_arg(io, args, command_name, "--mrid", "an mRID value");
         } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--type")) {
-            type_filter = args.next() orelse
-                print.stderr(io, command_name ++ ": --type requires a CIM type name", .{});
+            type_filter = take_value_arg(io, args, command_name, "--type", "a CIM type name");
         } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
-            output_path = args.next() orelse
-                print.stderr(io, command_name ++ ": --output requires a file path", .{});
+            output_path = take_output_arg(io, args, command_name);
         } else if (std.mem.eql(u8, arg, "-p") or std.mem.eql(u8, arg, "--patch")) {
             patch = true;
         } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--summary")) {
@@ -860,8 +863,7 @@ fn parse_topology(io: std.Io, args: *std.process.Args.Iterator) !Command {
         } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--ssh")) {
             ssh_path = take_path_arg(io, args, command_name, "--ssh");
         } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
-            output_path = args.next() orelse
-                print.stderr(io, command_name ++ ": --output requires a file path", .{});
+            output_path = take_output_arg(io, args, command_name);
         } else if (is_flag(arg)) {
             print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
         } else {
@@ -898,8 +900,13 @@ fn parse_validate(io: std.Io, args: *std.process.Args.Iterator) !Command {
             std.process.exit(0);
         }
         if (std.mem.eql(u8, arg, "-r") or std.mem.eql(u8, arg, "--rules")) {
-            const path = args.next() orelse
-                print.stderr(io, command_name ++ ": --rules requires a file path", .{});
+            const path = take_value_arg(
+                io,
+                args,
+                command_name,
+                "--rules",
+                "a file path (prefix a leading '-' with './')",
+            );
             validate_path(io, path, command_name);
             validate_rules_extension(io, path, command_name);
             if (rules_count >= Command.Validate.rules_count_max) {
@@ -912,8 +919,7 @@ fn parse_validate(io: std.Io, args: *std.process.Args.Iterator) !Command {
         } else if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
             eqbd_path = take_path_arg(io, args, command_name, "--eqbd");
         } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
-            output_path = args.next() orelse
-                print.stderr(io, command_name ++ ": --output requires a file path", .{});
+            output_path = take_output_arg(io, args, command_name);
         } else if (std.mem.eql(u8, arg, "--list-skipped")) {
             list_skipped = true;
         } else if (is_flag(arg)) {
@@ -943,40 +949,27 @@ fn parse_qocdc(io: std.Io, args: *std.process.Args.Iterator) !Command {
     const command_name = "qocdc";
 
     var eq_path: ?[]const u8 = null;
-    var eqbd_path: ?[]const u8 = null;
-    var ssh_path: ?[]const u8 = null;
-    var output_path: ?[]const u8 = null;
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             try print.write(io, help_qocdc);
             std.process.exit(0);
         }
-        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
-            eqbd_path = take_path_arg(io, args, command_name, "--eqbd");
-        } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--ssh")) {
-            ssh_path = take_path_arg(io, args, command_name, "--ssh");
-        } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
-            output_path = args.next() orelse
-                print.stderr(io, command_name ++ ": --output requires a file path", .{});
-        } else if (is_flag(arg)) {
+        if (is_flag(arg)) {
             print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
         } else {
             if (eq_path != null) print.stderr(io, command_name ++ ": unexpected argument '{s}'", .{arg});
             validate_path(io, arg, command_name);
-            validate_cgmes_extension(io, arg, command_name);
+            if (io_read.is_stdin(arg)) {
+                print.stderr(io, command_name ++ ": '-' is not supported; qocdc requires a ZIP file path", .{});
+            }
             eq_path = arg;
         }
     }
 
     if (eq_path == null) print.stderr(io, command_name ++ ": <file> is required", .{});
 
-    return .{ .qocdc = .{
-        .eq_path = eq_path.?,
-        .eqbd_path = eqbd_path,
-        .ssh_path = ssh_path,
-        .output_path = output_path,
-    } };
+    return .{ .qocdc = .{ .eq_path = eq_path.? } };
 }
 fn parse_version(io: std.Io, args: *std.process.Args.Iterator) !Command {
     var verbose = false;
@@ -1009,13 +1002,64 @@ fn take_path_arg(
 ) []const u8 {
     const path = args.next() orelse
         print.stderr(io, command_name ++ ": " ++ flag ++ " requires a file path", .{});
+    if (io_read.is_stdin(path)) {
+        print.stderr(
+            io,
+            command_name ++ ": " ++ flag ++ " does not accept '-'; only the primary input can read stdin",
+            .{},
+        );
+    }
+    if (is_flag(path)) {
+        print.stderr(
+            io,
+            command_name ++ ": " ++ flag ++ " path '{s}' starts with '-'; prefix it with './' if it is a filename",
+            .{path},
+        );
+    }
     validate_path(io, path, command_name);
     validate_cgmes_extension(io, path, command_name);
     return path;
 }
 
+fn take_value_arg(
+    io: std.Io,
+    args: *std.process.Args.Iterator,
+    comptime command_name: []const u8,
+    comptime flag: []const u8,
+    comptime description: []const u8,
+) []const u8 {
+    const value = args.next() orelse
+        print.stderr(io, command_name ++ ": " ++ flag ++ " requires " ++ description, .{});
+    if (value.len == 0 or value[0] == '-') {
+        print.stderr(
+            io,
+            command_name ++ ": " ++ flag ++ " got option-like value '{s}', expected " ++ description,
+            .{value},
+        );
+    }
+    return value;
+}
+
+fn take_output_arg(
+    io: std.Io,
+    args: *std.process.Args.Iterator,
+    comptime command_name: []const u8,
+) []const u8 {
+    const path = args.next() orelse
+        print.stderr(io, command_name ++ ": --output requires a file path", .{});
+    if (is_flag(path)) {
+        print.stderr(
+            io,
+            command_name ++ ": --output path '{s}' starts with '-'; prefix it with './' if it is a filename",
+            .{path},
+        );
+    }
+    validate_path(io, path, command_name);
+    return path;
+}
+
 inline fn is_flag(arg: []const u8) bool {
-    return arg.len > 0 and arg[0] == '-';
+    return arg.len > 1 and arg[0] == '-';
 }
 
 fn validate_path(io: std.Io, path: []const u8, comptime command_name: []const u8) void {
@@ -1028,11 +1072,17 @@ fn validate_path(io: std.Io, path: []const u8, comptime command_name: []const u8
 }
 
 fn validate_cgmes_extension(io: std.Io, path: []const u8, comptime command_name: []const u8) void {
+    if (io_read.is_stdin(path)) return;
     if (path.len < 4) print.stderr(io, command_name ++ ": file must be .xml or .zip (got '{s}')", .{path});
     const ext = std.fs.path.extension(path);
     if (!std.ascii.eqlIgnoreCase(ext, ".xml") and !std.ascii.eqlIgnoreCase(ext, ".zip")) {
         print.stderr(io, command_name ++ ": file must be .xml or .zip (got '{s}')", .{path});
     }
+}
+
+test "bare stdin token is positional, not a flag" {
+    try std.testing.expect(!is_flag(io_read.stdin_token));
+    try std.testing.expect(is_flag("--json"));
 }
 
 fn validate_rules_extension(io: std.Io, path: []const u8, comptime command_name: []const u8) void {

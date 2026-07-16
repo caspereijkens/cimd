@@ -4,7 +4,7 @@ const assert = std.debug.assert;
 
 pub const Diagnostics = struct {
     duplicate_offset: u32 = 0,
-    duplicate_line: u32 = 0,
+    duplicate_line: u64 = 0,
     duplicate_id_len: u8 = 0,
     duplicate_id_truncated: bool = false,
     duplicate_id_recorded: bool = false,
@@ -27,13 +27,9 @@ pub const Diagnostics = struct {
     }
 };
 
-fn line_number_at(xml: []const u8, offset: u32) u32 {
+pub fn line_number_at(xml: []const u8, offset: u32) u64 {
     assert(offset <= xml.len);
-    var line: u32 = 1;
-    for (xml[0..offset]) |byte| {
-        if (byte == '\n') line += 1;
-    }
-    return line;
+    return @as(u64, @intCast(std.mem.count(u8, xml[0..offset], "\n"))) + 1;
 }
 
 test "Diagnostics remains valid when copied" {
@@ -41,5 +37,5 @@ test "Diagnostics remains valid when copied" {
     original.record_duplicate_id("one\ntwo", "_id", 4);
     const copy = original;
     try std.testing.expectEqualStrings("_id", copy.duplicate_id());
-    try std.testing.expectEqual(@as(u32, 2), copy.duplicate_line);
+    try std.testing.expectEqual(@as(u64, 2), copy.duplicate_line);
 }
