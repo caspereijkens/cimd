@@ -1555,7 +1555,7 @@ fn input_read_error(io: std.Io, spec: InputSpec, err: anyerror, actual_size: ?u6
     switch (err) {
         error.FileTooLarge, error.StreamTooLong => input_too_large(io, spec, actual_size),
         error.FileNotFound => print.no_input(io, "{s}: {s} '{s}' was not found", .{ spec.command_name, spec.role, spec.path }),
-        error.AccessDenied => print.no_input(io, "{s}: {s} '{s}' cannot be read: permission denied", .{ spec.command_name, spec.role, spec.path }),
+        error.AccessDenied, error.PermissionDenied => print.no_input(io, "{s}: {s} '{s}' cannot be read: permission denied", .{ spec.command_name, spec.role, spec.path }),
         error.IsDir => print.no_input(io, "{s}: {s} '{s}' is a directory, expected a file", .{ spec.command_name, spec.role, spec.path }),
         error.NotDir => print.no_input(io, "{s}: {s} '{s}' has a non-directory path component", .{ spec.command_name, spec.role, spec.path }),
         error.FileTruncated, error.FileGrew => print.system_error(

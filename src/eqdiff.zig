@@ -217,15 +217,29 @@ fn emit_local_xmlns(writer: *std.Io.Writer, view: tag_index.CimObjectView) !void
 
 /// rdf:about value for an object: rdf:ID-style ids ("_mrid") become the
 /// document-relative "#_mrid"; ids that already came from an rdf:about
-/// attribute (full URIs) are kept verbatim.
+/// attribute are re-emitted from the original attribute text so a
+/// document-relative fragment ("#_SS1") is preserved rather than being
+/// rewritten to a different relative URI ("_SS1") — view.id has had the
+/// fragment marker stripped by the parser.
 fn write_about(writer: *std.Io.Writer, view: tag_index.CimObjectView) !void {
     const tag = view.boundaries[view.object_tag_idx];
     const opening = view.xml[tag.start..tag.end];
     if (std.mem.indexOf(u8, opening, "rdf:ID=\"") != null) {
         try writer.print("#{s}", .{view.id});
+    } else if (attribute_value(opening, "rdf:about=\"")) |about| {
+        try writer.writeAll(about);
     } else {
         try writer.print("{s}", .{view.id});
     }
+}
+
+/// The value of a `name="value"` attribute within a single tag's text, or null
+/// if the attribute (or its closing quote) is absent.
+fn attribute_value(tag: []const u8, comptime pattern: []const u8) ?[]const u8 {
+    const start = std.mem.indexOf(u8, tag, pattern) orelse return null;
+    const value_start = start + pattern.len;
+    const value_end = std.mem.indexOfScalarPos(u8, tag, value_start, '"') orelse return null;
+    return tag[value_start..value_end];
 }
 
 /// Tag name including its namespace prefix, e.g. "cim:Substation".
