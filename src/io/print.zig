@@ -172,6 +172,32 @@ pub fn flush_file_writer(file_writer: *std.Io.File.Writer) OutputError!void {
     file_writer.flush() catch |err| return classify_output_error(err);
 }
 
+/// Translate an in-memory `Allocating` writer's `error.WriteFailed` into
+/// `error.OutOfMemory`. An `std.Io.Writer.Allocating` only fails a write when it
+/// cannot grow its backing allocation, so `WriteFailed` there unambiguously means
+/// the allocator was exhausted. Call this at the boundary where the concrete
+/// `Allocating` writer is still in scope; higher layers only see `OutOfMemory`.
+pub fn allocating_writer_result(
+    allocating: *std.Io.Writer.Allocating,
+    result: anytype,
+) (@typeInfo(@TypeOf(result)).error_union.error_set || error{OutOfMemory})!@typeInfo(@TypeOf(result)).error_union.payload {
+    // Intentional type witness: only an Allocating writer makes WriteFailed
+    // unambiguously mean allocation failure. Keep this parameter even though
+    // the generic result cannot be tied to it by Zig's type system.
+    _ = allocating;
+    return result catch |err| {
+        if (err == error.WriteFailed) return error.OutOfMemory;
+        return err;
+    };
+}
+
+test "allocating writer failure is out of memory" {
+    var allocating: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer allocating.deinit();
+    const failed: anyerror!void = error.WriteFailed;
+    try std.testing.expectError(error.OutOfMemory, allocating_writer_result(&allocating, failed));
+}
+
 fn classify_output_error(err: anyerror) OutputError {
     return switch (err) {
         error.BrokenPipe => error.BrokenPipe,

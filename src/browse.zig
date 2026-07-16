@@ -93,27 +93,6 @@ fn take_input_line(input: *std.Io.Reader) ![]const u8 {
     return std.mem.trimEnd(u8, line, "\r\n");
 }
 
-fn allocating_writer_result(
-    allocating: *std.Io.Writer.Allocating,
-    result: anytype,
-) (@typeInfo(@TypeOf(result)).error_union.error_set || error{OutOfMemory})!@typeInfo(@TypeOf(result)).error_union.payload {
-    // Intentional type witness: only an Allocating writer makes WriteFailed
-    // unambiguously mean allocation failure. Keep this parameter even though
-    // the generic result cannot be tied to it by Zig's type system.
-    _ = allocating;
-    return result catch |err| {
-        if (err == error.WriteFailed) return error.OutOfMemory;
-        return err;
-    };
-}
-
-test "allocating writer failure is out of memory" {
-    var allocating: std.Io.Writer.Allocating = .init(std.testing.allocator);
-    defer allocating.deinit();
-    const failed: anyerror!void = error.WriteFailed;
-    try std.testing.expectError(error.OutOfMemory, allocating_writer_result(&allocating, failed));
-}
-
 fn report_input_too_long(output: *std.Io.Writer, picker: bool) !void {
     const message = if (picker)
         "Input too long — expected a number, [b]ack, or [q]uit.\n\n"
@@ -192,12 +171,12 @@ pub fn browse(
         const referrers = back_refs.lookup(id);
 
         const counter: u32 = switch (mode) {
-            .regular => try allocating_writer_result(&screen, render_regular(writer, gpa, tp_opt, ssh_opt, object, &selections)),
-            .back_refs => |view| try allocating_writer_result(&screen, render_back_refs(writer, gpa, model, tp_opt, object, referrers, view, &selections)),
+            .regular => try print.allocating_writer_result(&screen, render_regular(writer, gpa, tp_opt, ssh_opt, object, &selections)),
+            .back_refs => |view| try print.allocating_writer_result(&screen, render_back_refs(writer, gpa, model, tp_opt, object, referrers, view, &selections)),
         };
 
         const has_back = trace.items.len > 0 or mode != .regular;
-        try allocating_writer_result(&screen, render_footer(writer, trace.items, object.type_name, counter, has_back, mode, referrers.len));
+        try print.allocating_writer_result(&screen, render_footer(writer, trace.items, object.type_name, counter, has_back, mode, referrers.len));
         try interactive.output.writeAll(screen.written());
         try interactive.output.flush();
 
@@ -611,7 +590,7 @@ pub fn pick_from_prefix(
         selections.clearRetainingCapacity();
         const writer = &screen.writer;
 
-        _ = try allocating_writer_result(&screen, render_prefix_screen(
+        _ = try print.allocating_writer_result(&screen, render_prefix_screen(
             writer,
             gpa,
             prefix,

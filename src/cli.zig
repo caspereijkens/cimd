@@ -827,6 +827,12 @@ fn parse_diff(io: std.Io, args: *std.process.Args.Iterator) !Command {
     if (file_path1 == null) print.stderr(io, command_name ++ ": <file1> is required", .{});
     if (file_path2 == null) print.stderr(io, command_name ++ ": <file2> is required", .{});
 
+    // A single stdin stream cannot supply two independent operands: the left
+    // model would consume it to EOF and the right would see empty input.
+    if (io_read.is_stdin(file_path1.?) and io_read.is_stdin(file_path2.?)) {
+        print.stderr(io, command_name ++ ": '-' cannot be used for both <file1> and <file2>; stdin provides only one stream", .{});
+    }
+
     // The format flags select one output format; combinations are ambiguous.
     const format_flags = @as(u8, @intFromBool(patch)) + @as(u8, @intFromBool(summary)) + @as(u8, @intFromBool(json));
     if (format_flags > 1) {

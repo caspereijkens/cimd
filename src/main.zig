@@ -932,18 +932,18 @@ fn command_diff(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Diff) !void {
         defer buffered.deinit();
 
         const status = switch (c.format) {
-            .eqdiff => eqdiff.write_single(
+            .eqdiff => print.allocating_writer_result(&buffered, eqdiff.write_single(
                 gpa,
                 &model1,
                 &model2,
                 mrid,
                 .{ .type_filter = c.type_filter },
                 &buffered.writer,
-            ) catch |err| switch (err) {
+            )) catch |err| switch (err) {
                 error.ConflictingNamespaceBindings => conflicting_namespaces(io),
                 else => return err,
             },
-            .patch, .json, .summary => try diff.diff_single(
+            .patch, .json, .summary => try print.allocating_writer_result(&buffered, diff.diff_single(
                 gpa,
                 &model1,
                 &model2,
@@ -952,7 +952,7 @@ fn command_diff(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Diff) !void {
                 c.file_path2,
                 diff_options(c),
                 &buffered.writer,
-            ),
+            )),
         };
         had_diffs = switch (status) {
             .not_found => print.not_found(io, "No object found with mRID '{s}' in either file", .{mrid}),
@@ -1546,22 +1546,35 @@ fn input_read_error(io: std.Io, spec: InputSpec, err: anyerror, actual_size: ?u6
             "{s}: {s} '{s}': ZIP archive is truncated",
             .{ spec.command_name, spec.role, spec.path },
         ),
-        error.ZipBadFileOffset,
-        error.ZipBadDirectorySize,
-        error.ZipMismatchVersionNeeded,
-        error.ZipMismatchModTime,
-        error.ZipMismatchModDate,
-        error.ZipMismatchFlags,
-        error.ZipMismatchCrc32,
-        error.ZipMismatchFilenameLen,
-        => print.data_error(
-            io,
-            "{s}: {s} '{s}': ZIP archive is malformed or corrupt",
-            .{ spec.command_name, spec.role, spec.path },
-        ),
         error.OutOfMemory => print.system_error(io, "{s}: not enough memory while reading {s} '{s}'", .{ spec.command_name, spec.role, spec.path }),
-        else => print.system_error(io, "{s}: failed to read {s} '{s}': {t}", .{ spec.command_name, spec.role, spec.path, err }),
+        else => {
+            // Every remaining ZIP structural/parse/unsupported error (both std.zip
+            // and our io/zip.zig name them "Zip...") means the input archive is
+            // malformed or unsupported, not an OS failure — classify as bad input.
+            if (is_malformed_zip_error(err)) print.data_error(
+                io,
+                "{s}: {s} '{s}': ZIP archive is malformed or corrupt",
+                .{ spec.command_name, spec.role, spec.path },
+            );
+            print.system_error(io, "{s}: failed to read {s} '{s}': {t}", .{ spec.command_name, spec.role, spec.path, err });
+        },
     }
+}
+
+/// Whether `err` is a ZIP parser/structure error. Both std.zip and our
+/// io/zip.zig prefix these "Zip...", so a malformed or unsupported archive is
+/// bad user input (exit 65) rather than an operating-system failure (exit 71).
+fn is_malformed_zip_error(err: anyerror) bool {
+    return std.mem.startsWith(u8, @errorName(err), "Zip");
+}
+
+test "malformed ZIP parser errors classify as bad input" {
+    try std.testing.expect(is_malformed_zip_error(error.ZipNoEndRecord));
+    try std.testing.expect(is_malformed_zip_error(error.ZipTruncated));
+    try std.testing.expect(is_malformed_zip_error(error.ZipInvalid));
+    try std.testing.expect(is_malformed_zip_error(error.ZipBadFileOffset));
+    try std.testing.expect(!is_malformed_zip_error(error.OutOfMemory));
+    try std.testing.expect(!is_malformed_zip_error(error.FileNotFound));
 }
 
 fn input_too_large(io: std.Io, spec: InputSpec, actual_size: ?u64) noreturn {
