@@ -39,7 +39,8 @@ const help_main = std.fmt.comptimePrint(
     \\A high-performance CGMES file parser and analysis tool.
     \\
     \\Input limits:
-    \\  XML data: {[xml_limit]s} after unzip and EQ+EQBD merge.
+    \\  XML data: {[xml_limit]s} after unzip
+    \\    and EQ+EQBD merge.
     \\  SHACL rule files: {[rules_limit]s} after unzip.
     \\  Non-interactive commands accept '-' as the primary data path to read
     \\  uncompressed XML from stdin.
@@ -51,9 +52,9 @@ const help_main = std.fmt.comptimePrint(
     \\  refs       List objects that reference a CIM object
     \\  types      List CIM types present in a CIM file
     \\  diff       Semantic diff between two EQ profiles
-    \\  topology   Generate TopologicalNodes from EQ (+SSH) — TP-equivalent output
+    \\  topology   Generate TopologicalNodes from EQ (+SSH)
     \\  validate   Validate a CGMES file against a SHACL rule set
-    \\  qocdc      Validate grid model according to the 'Quality of CGMES Datasets and Calculations'
+    \\  qocdc      Run Quality of CGMES Datasets and Calculations checks
     \\  version    Print version information
     \\
     \\Use 'cimd <command> --help' for more information about a command.
@@ -79,7 +80,7 @@ const help_convert = std.fmt.comptimePrint(
     \\  -t, --tp <file>         TP topology profile (XML or ZIP)
     \\  -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
     \\  -o, --output <file>     Write output to file instead of stdout
-    \\      --bus-branch        Emit bus-branch JIIDM (one bus per TopologicalNode).
+    \\      --bus-branch        Emit one JIIDM bus per TopologicalNode
     \\                          Requires --tp. Default is node-breaker even
     \\                          when TP is given (matches pypowsybl).
     \\
@@ -114,11 +115,11 @@ const help_browse = std.fmt.comptimePrint(
     \\Options:
     \\  -b, --eqbd <file>           EQBD boundary profile (XML or ZIP)
     \\  -t, --tp <file>             TP topology profile (XML or ZIP)
-    \\  -s, --ssh <file>            SSH steady-state hypothesis profile (XML or ZIP)
+    \\  -s, --ssh <file>            SSH profile (XML or ZIP)
     \\
     \\Examples:
     \\  cimd browse data{[sep]s}eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
-    \\  cimd browse data{[sep]s}eq.zip be60a3cf                # prefix; underscore optional
+    \\  cimd browse data{[sep]s}eq.zip be60a3cf
     \\  cimd browse data{[sep]s}eq.zip _abc --tp tp.zip -s ssh.zip
     \\
 , .{ .sep = path_separator });
@@ -133,11 +134,11 @@ const help_get = std.fmt.comptimePrint(
     \\
     \\Prefix lookup:
     \\  <mrid> may be any prefix of a full mRID. For the common rdf:ID form
-    \\  the leading underscore is optional, so "_be60" and "be60" are equivalent.
+    \\  a leading underscore is optional: "_be60" and "be60" are equivalent.
     \\  For FullModel-style ids carried in rdf:about (e.g. "urn:uuid:484c..."),
     \\  pass the prefix literally — "urn", "urn:uuid:484c", etc. all work. When
     \\  a prefix matches multiple objects, cimd prints the candidates and exits
-    \\  without selecting one — or, if the match list is large, prints a per-type
+    \\  without selecting one. Large match lists show a per-type
     \\  breakdown instead. With --json, an envelope
     \\  `{{"prefix","total","matches","types"}}` is emitted regardless of match
     \\  count. Pass --type to narrow ambiguous prefixes to a single type.
@@ -146,8 +147,8 @@ const help_get = std.fmt.comptimePrint(
     \\  With --json, the not-found / wrong-type paths emit a structured error
     \\  on stdout and exit 1 instead of printing to stderr:
     \\    {{"error":"not_found", "prefix":...}}
-    \\    {{"error":"type_mismatch", "prefix":..., "id":..., "actual_type":..., "requested_type":...}}
-    \\    {{"error":"none_of_type", "prefix":..., "total":..., "requested_type":...}}
+    \\    {{"error":"type_mismatch", "prefix":..., "id":..., ...}}
+    \\    {{"error":"none_of_type", "prefix":..., "total":..., ...}}
     \\
     \\Arguments:
     \\  <file>    CGMES file (XML or ZIP)
@@ -155,33 +156,32 @@ const help_get = std.fmt.comptimePrint(
     \\
     \\Options:
     \\  -t, --type <type>          Filter by CIM type (e.g. ConductingEquipment)
-    \\                             Includes subtypes from the CIM inheritance graph.
+    \\                             Includes CIM subtypes
     \\                             Without <mrid>: list all objects of this type
-    \\                             With <mrid>: verify the object is of this type,
-    \\                             or narrow an ambiguous prefix to one of this type
-    \\  -f, --fields <f1,f2,...>   Properties to include in list output (list mode only)
+    \\                             With <mrid>: verify its type or narrow an
+    \\                             ambiguous prefix
+    \\  -f, --fields <f1,f2,...>   Include properties in list output
     \\                             Text default: IdentifiedObject.name
-    \\                             JSON default: full object (all properties + references)
-    \\  -c, --count                Print only the count of matching objects (list mode only)
+    \\                             JSON default: full object
+    \\  -c, --count                Print only the list-mode match count
     \\  -b, --eqbd <file>          EQBD boundary profile (XML or ZIP)
-    \\      --tp <file>            TP topology profile (XML or ZIP; single-object mode only)
-    \\      --ssh <file>           SSH steady-state hypothesis profile (XML or ZIP;
+    \\      --tp <file>            TP profile (single-object mode only)
+    \\      --ssh <file>           SSH profile (single-object mode only;
     \\                             single-object mode only)
     \\  -j, --json                 Output as JSON. In list mode, each element is
-    \\                             {{"id","type","properties":{{...}},"references":{{...}}}}
+    \\                             {{"id","type","properties","references"}}
     \\                             unless --fields narrows the projection.
     \\
     \\Examples:
     \\  cimd get data{[sep]s}eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
-    \\  cimd get data{[sep]s}eq.zip be60a3cf                          # prefix; underscore optional
+    \\  cimd get data{[sep]s}eq.zip be60a3cf
     \\  cimd get data{[sep]s}eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -j
-    \\  cimd get data{[sep]s}eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221 -t PowerTransformer
-    \\  cimd get data{[sep]s}eq.zip be60 -t PowerTransformer          # narrow ambiguous prefix
+    \\  cimd get data{[sep]s}eq.zip be60 -t PowerTransformer
     \\  cimd get data{[sep]s}eq.zip _TN1 --tp tp.zip -j
     \\  cimd get data{[sep]s}eq.zip _switch --ssh ssh.zip -j
     \\  cimd get data{[sep]s}eq.zip -t PowerTransformer -j
     \\  cimd get data{[sep]s}eq.zip -t PowerTransformer -c
-    \\  cimd get data{[sep]s}eq.zip -t VoltageLevel -f IdentifiedObject.name,VoltageLevel.nominalVoltage
+    \\  cimd get data{[sep]s}eq.zip -t VoltageLevel -f IdentifiedObject.name
     \\  cimd get data{[sep]s}tp.zip -t TopologicalNode -c
     \\
 , .{ .sep = path_separator });
@@ -212,7 +212,7 @@ const help_refs = std.fmt.comptimePrint(
     \\  <mrid>    Full mRID or a unique prefix
     \\
     \\Options:
-    \\  -t, --type <type>     Narrow target to this CIM type (disambiguates <mrid>)
+    \\  -t, --type <type>     Narrow the target type
     \\      --from <type>     Only show referrers of this CIM type
     \\  -b, --eqbd <file>     EQBD boundary profile (XML or ZIP)
     \\      --tp <file>       TP topology profile (XML or ZIP)
@@ -237,7 +237,7 @@ const help_types = std.fmt.comptimePrint(
     \\  <file>                  CGMES file (XML or ZIP)
     \\
     \\Options:
-    \\  -j, --json              Output as JSON array of {{{{type, count}}}} objects
+    \\  -j, --json              Output a JSON array of {{{{type, count}}}}
     \\
     \\Examples:
     \\  cimd types data{[sep]s}eq.zip
@@ -273,13 +273,13 @@ const help_diff =
     \\Options:
     \\  -b, --eqbd <file>       EQBD boundary profile (applied to both models)
     \\  -i, --mrid <id>         Diff a single object by mRID
-    \\  -t, --type <name>       Restrict diff to a specific CIM type, including subtypes
+    \\  -t, --type <name>       Restrict diff to a CIM type and its subtypes
     \\                          With --mrid: verify the object is of this type
     \\  -o, --output <file>     Write output to file instead of stdout
     \\  -p, --patch             Human-readable report modelled after `git diff`
-    \\  -s, --summary           Print only per-type counts (added/removed/changed)
+    \\  -s, --summary           Print per-type change counts
     \\  -j, --json              Output as NDJSON (one object per change)
-    \\                          --patch, --summary, and --json are mutually exclusive.
+    \\                          Cannot be combined with --patch or --summary
     \\
     \\Examples:
     \\  cimd diff eq_v1.zip eq_v2.zip -o eqdiff.xml
@@ -294,7 +294,7 @@ const help_diff =
 const help_topology = std.fmt.comptimePrint(
     \\Usage: cimd topology <file> [options]
     \\
-    \\Generate TopologicalNodes from an EQ profile (and optional SSH). Each TN is
+    \\Generate TopologicalNodes from an EQ profile and optional SSH. Each TN is
     \\a connected component of ConnectivityNodes joined by *closed* switches —
     \\equivalent to a CGMES TP profile's terminal→TopologicalNode mapping.
     \\Output is JSON on stdout.
@@ -341,15 +341,15 @@ const help_validate = std.fmt.comptimePrint(
     \\
     \\Options:
     \\  -r, --rules <file>      SHACL rule set, Turtle or zipped Turtle
-    \\                          (repeatable, up to {[rules_max]d} rule sets per run)
+    \\                          (repeatable, at most {[rules_max]d} per run)
     \\  -b, --eqbd <file>       EQBD boundary profile merged into the model
     \\                          before validation (XML or ZIP)
     \\  -o, --output <file>     Write the report to a file instead of stdout
     \\      --list-skipped      List every rule the engine cannot execute
     \\
     \\Examples:
-    \\  cimd validate data{[sep]s}eq.zip --rules rules{[sep]s}AssessedElement-SHACL.ttl
-    \\  cimd validate data{[sep]s}eq.zip -b eqbd.zip -r a.ttl -r b.ttl --list-skipped
+    \\  cimd validate data{[sep]s}eq.zip -r rules{[sep]s}profile.ttl
+    \\  cimd validate data{[sep]s}eq.zip -b eqbd.zip -r a.ttl -r b.ttl
     \\
 , .{ .sep = path_separator, .rules_max = Command.Validate.rules_count_max });
 
