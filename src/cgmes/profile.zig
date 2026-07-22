@@ -63,9 +63,122 @@ pub fn kind_from_uri(uri: []const u8) ?Kind {
     return null;
 }
 
+/// Bytes inspected around the header in the common case. A FullModel element
+/// with `profile_uris_max` URIs is a few hundred bytes and sits at the top of
+/// the part; indexing every tag of a 36 MB EQ profile just to read it is the
+/// dominant cost of classification. A window too small for the element is
+/// retried against the whole part, so this bound never changes an outcome.
+const header_window_max = 1 << 20;
+
+const name_start = "FullModel";
+
 /// Inspect FullModel metadata without retaining allocations. Returned strings
 /// borrow from `xml`.
 pub fn classify(gpa: std.mem.Allocator, xml: []const u8) !Header {
+    const candidate = find_header_candidate(xml) orelse return error.NoFullModel;
+    // Two candidates may be two headers (ambiguous) or one header plus a
+    // mention in a comment or attribute; only the tag walk can tell them
+    // apart, so hand the whole part over.
+    if (candidate.needs_full_walk) return classify_range(gpa, xml);
+
+    // The window starts at the document, never at the candidate: comments and
+    // CDATA sections are only recognised by walking from the beginning, so a
+    // slice starting mid-comment would read commented-out markup as a header.
+    // A part carries its header at the top, so the retained prefix is short.
+    const limit: u64 = @as(u64, candidate.start) + header_window_max;
+    if (limit >= xml.len) return classify_range(gpa, xml);
+    // Cut between tags. A window ending inside one is malformed XML, and which
+    // byte the cut lands on is an accident of the input, so without this the
+    // fast path would fall back on roughly half of all parts.
+    const end = std.mem.lastIndexOfScalar(u8, xml[0..@intCast(limit)], '>') orelse
+        return classify_range(gpa, xml);
+    return classify_range(gpa, xml[0 .. end + 1]) catch |err| switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        // The element did not fit the window; the part itself is the answer.
+        else => classify_range(gpa, xml),
+    };
+}
+
+/// Longest qualified tag name the filter decides on its own. `md:FullModel` is
+/// twelve bytes; anything longer is handed to the tag walk rather than guessed
+/// at, so the cap can never hide a header.
+const qualified_name_max = 128;
+
+const HeaderCandidate = struct {
+    /// Offset of the `<` opening a tag whose local name is `FullModel`.
+    start: u32,
+    /// The filter could not settle the part on its own: a second candidate, or
+    /// a tag name too long to decide.
+    needs_full_walk: bool,
+};
+
+/// Locate the first tag that could open a FullModel element. This is a filter,
+/// not a parser: a tag name cannot be escaped, so it never misses a real
+/// header, but a `FullModel` mention inside a comment or an attribute value
+/// can add a candidate the exhaustive walk would reject.
+/// The scan is anchored on the local name rather than on `<`: a CGMES part has
+/// hundreds of thousands of tags but only a handful of `F` bytes, so this is a
+/// vectorized byte search that inspects a few dozen positions.
+fn find_header_candidate(xml: []const u8) ?HeaderCandidate {
+    assert(xml.len <= std.math.maxInt(u32));
+
+    var found: ?u32 = null;
+    var search: u32 = 0;
+    while (std.mem.indexOfScalarPos(u8, xml, search, name_start[0])) |index| {
+        const at: u32 = @intCast(index);
+        search = at + 1;
+        switch (header_tag_match(xml, at)) {
+            .no => {},
+            .undecided => return .{ .start = found orelse 0, .needs_full_walk = true },
+            .yes => {
+                const start = tag_start_before(xml, at);
+                if (found != null) return .{ .start = found.?, .needs_full_walk = true };
+                found = start;
+            },
+        }
+    }
+    return if (found) |start| .{ .start = start, .needs_full_walk = false } else null;
+}
+
+const TagMatch = enum { no, yes, undecided };
+
+/// Decide whether the local name at `at` opens a FullModel element, given the
+/// qualified name that precedes it and the byte that follows it.
+fn header_tag_match(xml: []const u8, at: u32) TagMatch {
+    assert(xml[at] == name_start[0]);
+
+    if (!std.mem.startsWith(u8, xml[at..], name_start)) return .no;
+    const after = xml[at + name_start.len ..];
+    if (after.len == 0) return .no;
+    if (after[0] != '>' and after[0] != '/' and
+        std.mem.indexOfScalar(u8, whitespace, after[0]) == null) return .no;
+
+    var begin = at;
+    while (begin > 0 and at - begin < qualified_name_max and is_name_byte(xml[begin - 1])) {
+        begin -= 1;
+    }
+    // An over-long qualified name is not something this filter should rule on.
+    if (at - begin == qualified_name_max) return .undecided;
+    if (begin != at and xml[at - 1] != ':') return .no;
+    if (begin == 0) return .no;
+    // A prefix byte outside the ASCII name set: let the tag walk decide.
+    if (xml[begin - 1] >= 0x80) return .undecided;
+    return if (xml[begin - 1] == '<') .yes else .no;
+}
+
+fn tag_start_before(xml: []const u8, at: u32) u32 {
+    var begin = at;
+    while (begin > 0 and is_name_byte(xml[begin - 1])) begin -= 1;
+    assert(begin > 0 and xml[begin - 1] == '<');
+    return begin - 1;
+}
+
+fn is_name_byte(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or byte == ':' or byte == '_' or
+        byte == '-' or byte == '.';
+}
+
+fn classify_range(gpa: std.mem.Allocator, xml: []const u8) !Header {
     var boundaries = tag_index.find_tag_boundaries(gpa, xml) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.MalformedHeader,
@@ -175,6 +288,70 @@ test "classify distinguishes missing and malformed metadata" {
         std.testing.allocator,
         "<rdf:RDF><md:FullModel><md:Model.profile>x</md:Model.profile></md:FullModel></rdf:RDF>",
     ));
+}
+
+test "header scan ignores FullModel text outside a tag" {
+    const gpa = std.testing.allocator;
+    const profile = "<md:Model.profile>http://entsoe.eu/CIM/Topology/4/1</md:Model.profile>";
+    // A comment, a closing tag and a longer local name all mention the literal
+    // the fast scan anchors on; none of them is a second header.
+    const commented = try classify(gpa, "<rdf:RDF><!-- FullModel --><md:FullModel rdf:about=\"urn:uuid:a\">" ++
+        profile ++ "</md:FullModel><md:FullModelRef/></rdf:RDF>");
+    try std.testing.expectEqual(Kind.tp, commented.profile.known);
+    try std.testing.expectEqualStrings("urn:uuid:a", commented.model_id);
+
+    // Two real headers stay ambiguous even when a decoy precedes them.
+    try std.testing.expectError(error.AmbiguousHeader, classify(gpa, "<rdf:RDF><!-- FullModel --><md:FullModel rdf:about=\"urn:uuid:a\"></md:FullModel>" ++
+        "<md:FullModel rdf:about=\"urn:uuid:b\"></md:FullModel></rdf:RDF>"));
+
+    // A commented-out header is tag-shaped, so the scan cannot reject it; the
+    // classified range still starts at the document, which is where the
+    // comment is recognised.
+    try std.testing.expectError(error.NoFullModel, classify(gpa, "<rdf:RDF><!-- <md:FullModel rdf:about=\"urn:uuid:a\">" ++ profile ++
+        "</md:FullModel> --></rdf:RDF>"));
+}
+
+test "classify windows to a tag boundary" {
+    const gpa = std.testing.allocator;
+    const head = "<rdf:RDF><md:FullModel rdf:about=\"urn:uuid:near\">" ++
+        "<md:Model.profile>http://entsoe.eu/CIM/EquipmentCore/3/1</md:Model.profile></md:FullModel>";
+    const filler = "<cim:Substation rdf:ID=\"_s\"><cim:IdentifiedObject.name>x</cim:IdentifiedObject.name></cim:Substation>";
+    const tag_start = "<rdf:RDF>".len;
+
+    // Pad until the window edge lands inside a tag rather than between two, the
+    // case that used to reindex the whole part.
+    var xml: std.ArrayList(u8) = .empty;
+    defer xml.deinit(gpa);
+    try xml.appendSlice(gpa, head);
+    while (xml.items.len < header_window_max * 2) try xml.appendSlice(gpa, filler);
+    try xml.appendSlice(gpa, "</rdf:RDF>");
+
+    const edge = xml.items[0 .. header_window_max + tag_start];
+    try std.testing.expect(std.mem.lastIndexOfScalar(u8, edge, '<').? >
+        std.mem.lastIndexOfScalar(u8, edge, '>').?);
+
+    const header = try classify(gpa, xml.items);
+    try std.testing.expectEqual(Kind.eq, header.profile.known);
+    try std.testing.expectEqualStrings("urn:uuid:near", header.model_id);
+}
+
+test "classify reaches a header past the fast-path window" {
+    const gpa = std.testing.allocator;
+    const head = "<rdf:RDF><md:FullModel rdf:about=\"urn:uuid:far\">";
+    const filler = "<cim:Substation rdf:ID=\"_s\"><cim:IdentifiedObject.name>x</cim:IdentifiedObject.name></cim:Substation>";
+    const tail = "<md:Model.profile>http://entsoe.eu/CIM/EquipmentCore/3/1</md:Model.profile></md:FullModel></rdf:RDF>";
+
+    // The element itself spans more than `header_window_max`, so the windowed
+    // attempt fails and the whole part is re-read.
+    var xml: std.ArrayList(u8) = .empty;
+    defer xml.deinit(gpa);
+    try xml.appendSlice(gpa, head);
+    while (xml.items.len < header_window_max + filler.len) try xml.appendSlice(gpa, filler);
+    try xml.appendSlice(gpa, tail);
+
+    const header = try classify(gpa, xml.items);
+    try std.testing.expectEqual(Kind.eq, header.profile.known);
+    try std.testing.expectEqualStrings("urn:uuid:far", header.model_id);
 }
 
 test "profile URI matching is exact at boundary collisions" {
