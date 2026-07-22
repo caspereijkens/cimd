@@ -84,8 +84,17 @@ pub const Evaluation = struct {
     violations: std.ArrayList(Violation),
     /// Violations beyond violations_count_max: counted, not stored.
     truncated: u64,
+    violations_total: u64,
+    warnings_total: u64,
+    infos_total: u64,
 
-    pub const empty: Evaluation = .{ .violations = .empty, .truncated = 0 };
+    pub const empty: Evaluation = .{
+        .violations = .empty,
+        .truncated = 0,
+        .violations_total = 0,
+        .warnings_total = 0,
+        .infos_total = 0,
+    };
 
     pub fn deinit(self: *Evaluation, gpa: std.mem.Allocator) void {
         self.violations.deinit(gpa);
@@ -99,6 +108,18 @@ pub fn evaluate(
     model: *const EQ,
     rules: *const RuleSet,
 ) !Evaluation {
+    return evaluate_with_limit(gpa, model, rules, violations_count_max);
+}
+
+/// Evaluate with a caller-provided remaining storage budget. Findings beyond
+/// the limit are still counted in the severity totals and as truncated.
+pub fn evaluate_with_limit(
+    gpa: std.mem.Allocator,
+    model: *const EQ,
+    rules: *const RuleSet,
+    stored_max: u32,
+) !Evaluation {
+    assert(stored_max <= violations_count_max);
     var evaluation: Evaluation = .empty;
     errdefer evaluation.deinit(gpa);
 
@@ -117,6 +138,7 @@ pub fn evaluate(
         .evaluation = &evaluation,
         .ids = &ids,
         .referrers = &referrers,
+        .stored_max = stored_max,
         .counts = .empty,
         .staged = .empty,
     };
@@ -191,6 +213,7 @@ const Evaluator = struct {
     evaluation: *Evaluation,
     ids: *const IdIndex,
     referrers: *const ReferrerCounts,
+    stored_max: u32,
     /// Per-constraint occurrence counts, reset per object.
     counts: std.ArrayList(u32),
     /// Violations of the object under evaluation; committed only when the
@@ -394,7 +417,17 @@ const Evaluator = struct {
 
     fn commit_staged(ev: *Evaluator) !void {
         for (ev.staged.items) |violation| {
-            if (ev.evaluation.violations.items.len >= violations_count_max) {
+            const shape = ev.rules.shapes[violation.shape];
+            const severity = if (violation.constraint == constraint_none)
+                shape.severity
+            else
+                ev.rules.constraints[violation.constraint].severity;
+            switch (severity) {
+                .violation => ev.evaluation.violations_total += 1,
+                .warning => ev.evaluation.warnings_total += 1,
+                .info => ev.evaluation.infos_total += 1,
+            }
+            if (@as(u32, @intCast(ev.evaluation.violations.items.len)) >= ev.stored_max) {
                 ev.evaluation.truncated += 1;
                 continue;
             }
@@ -804,6 +837,7 @@ pub const ReportEntry = struct {
 
 pub const ReportOptions = struct {
     list_skipped: bool = false,
+    write_truncation: bool = true,
 };
 
 pub const Totals = struct {
@@ -837,11 +871,14 @@ pub fn write_report(
 
     for (entries) |entry| {
         totals.truncated += entry.evaluation.truncated;
+        totals.violations += entry.evaluation.violations_total;
+        totals.warnings += entry.evaluation.warnings_total;
+        totals.infos += entry.evaluation.infos_total;
         for (entry.evaluation.violations.items) |violation| {
             if (newlines == null) {
                 newlines = try tag_index.find_byte_simd(gpa, model.xml, '\n');
             }
-            try write_violation(w, entry.rules, segments, newlines.?.items, violation, &totals);
+            try write_violation(w, entry.rules, segments, newlines.?.items, violation);
         }
     }
 
@@ -849,7 +886,7 @@ pub fn write_report(
     try w.print("summary: {d} violations, {d} warnings, {d} info\n", .{
         totals.violations, totals.warnings, totals.infos,
     });
-    if (totals.truncated > 0) {
+    if (options.write_truncation and totals.truncated > 0) {
         try w.print("summary: {d} further violations truncated (limit {d})\n", .{
             totals.truncated, violations_count_max,
         });
@@ -878,7 +915,6 @@ fn write_violation(
     segments: []const DataSegment,
     newlines: []const u32,
     violation: Violation,
-    totals: *Totals,
 ) !void {
     const shape = rules.shapes[violation.shape];
     const severity, const name, const message = if (violation.constraint == constraint_none)
@@ -887,12 +923,6 @@ fn write_violation(
         const constraint = rules.constraints[violation.constraint];
         break :blk .{ constraint.severity, constraint.name, constraint.message };
     };
-    switch (severity) {
-        .violation => totals.violations += 1,
-        .warning => totals.warnings += 1,
-        .info => totals.infos += 1,
-    }
-
     const segment = segment_of(segments, violation.offset);
     const global_line = line_of(newlines, violation.offset);
     const line = segment_local_line(segment, global_line);

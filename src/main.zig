@@ -9,13 +9,13 @@ const TP = tp_mod.TP;
 const io_read = @import("io/read.zig");
 const eq_mod = @import("cgmes/eq.zig");
 const diagnostics_mod = @import("cgmes/diagnostics.zig");
-const ModelDiagnostics = diagnostics_mod.Diagnostics;
 const EQ = eq_mod.EQ;
 const CimObject = eq_mod.CimObject;
 const browse = @import("browse.zig");
 const diff = @import("diff.zig");
 const eqdiff = @import("eqdiff.zig");
 const converter = @import("convert/network.zig");
+const iidm = @import("iidm/model.zig");
 const cross_ref = @import("topology/cross_ref.zig");
 const resolve = @import("topology/resolve.zig");
 const refs = @import("refs.zig");
@@ -25,6 +25,7 @@ const cim_types = @import("cgmes/cim_types.zig");
 const CimMergedView = ssh_mod.CimMergedView;
 const qocdc = @import("qocdc.zig");
 const validate = @import("validate.zig");
+const model_set = @import("model_set.zig");
 const rule_set = @import("shacl/rule_set.zig");
 const RuleSet = rule_set.RuleSet;
 
@@ -34,34 +35,6 @@ const build_options = @import("build_options");
 const max_in_memory_input_bytes = io_read.max_in_memory_input_bytes;
 const max_get_fields = 32;
 const default_get_field = "IdentifiedObject.name";
-
-const Inputs = struct {
-    model: EQ,
-    tp: ?TP,
-    ssh: ?SSH,
-
-    fn load(
-        io: std.Io,
-        gpa: std.mem.Allocator,
-        command_name: []const u8,
-        eq_path: []const u8,
-        eqbd_path: ?[]const u8,
-        tp_path: ?[]const u8,
-        ssh_path: ?[]const u8,
-    ) !Inputs {
-        return .{
-            .model = try load_model(io, gpa, command_name, "primary CGMES file", eq_path, eqbd_path),
-            .tp = if (tp_path) |path| try load_tp(io, gpa, command_name, path) else null,
-            .ssh = if (ssh_path) |path| try load_ssh(io, gpa, command_name, path) else null,
-        };
-    }
-
-    fn deinit(inputs: *Inputs, gpa: std.mem.Allocator) void {
-        if (inputs.ssh) |*ssh| ssh.deinit(gpa);
-        if (inputs.tp) |*tp| tp.deinit(gpa);
-        inputs.model.deinit(gpa);
-    }
-};
 
 const PrefixTarget = struct {
     id: []const u8,
@@ -132,72 +105,39 @@ fn command_convert(io: std.Io, parent_gpa: std.mem.Allocator, c: cli.Command.Con
     defer arena_instance.deinit();
     const gpa = arena_instance.allocator();
 
-    const loaded = try load_model_with_segments(io, gpa, "convert", "EQ profile", c.eq_path, c.eqbd_path);
-    const model = loaded.model;
-    const segments = loaded.segments[0..loaded.segments_count];
+    var inputs = try model_set.load_merged(io, gpa, "convert", c.model_inputs.slice(), .convert);
+    defer inputs.deinit(gpa);
+    const model = &inputs.model;
+    const segments = inputs.segments[0..inputs.segments_count];
+    const tp_opt: ?TP = if (inputs.tp) |loaded| loaded.tp else null;
+    const ssh_opt: ?SSH = if (inputs.ssh) |loaded| loaded.ssh else null;
+    const primary_path = inputs.primary_source.label();
+    const tp_path: ?[]const u8 = if (inputs.tp) |loaded| loaded.source.label() else null;
 
-    const tp_opt: ?TP = if (c.tp_path) |path| try load_tp(io, gpa, "convert", path) else null;
-
-    const ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, "convert", path) else null;
-
-    reject_tp_primary_mrid_collision(io, gpa, "convert", &model, tp_opt, c.tp_path) catch |err|
-        return model_operation_error(io, "convert", c.eq_path, err);
+    if (c.bus_branch and tp_opt == null) print.stderr(io, "convert: --bus-branch requires a TP part", .{});
+    reject_tp_primary_mrid_collision(io, gpa, "convert", model, tp_opt, tp_path) catch |err|
+        return model_operation_error(io, "convert", primary_path, err);
 
     var conversion_diagnostics: converter.ConversionDiagnostics = .{};
-    const network = converter.convertWithDiagnostics(gpa, &model, tp_opt, ssh_opt, c.bus_branch, &conversion_diagnostics) catch |err| switch (err) {
+    const network = converter.convertWithDiagnostics(gpa, model, tp_opt, ssh_opt, c.bus_branch, &conversion_diagnostics) catch |err| switch (err) {
         error.MissingSubstations => invalid_model_structure(io, "convert", "Substation"),
         error.MissingVoltageLevels => invalid_model_structure(io, "convert", "VoltageLevel"),
         error.MissingTerminals => invalid_model_structure(io, "convert", "Terminal"),
         error.UnresolvedVoltageLevels => print.data_error(
             io,
             "convert: EQ profile '{s}' has a VoltageLevel whose Substation reference is missing or unresolved",
-            .{c.eq_path},
+            .{primary_path},
         ),
-        error.EmptyMrid, error.DuplicateMrid => conversion_id_error(io, segments, &model, conversion_diagnostics, err),
+        error.EmptyMrid, error.DuplicateMrid => conversion_id_error(io, segments, model, conversion_diagnostics, err),
         else => if (is_model_data_error(err))
-            invalid_model_data(io, "convert", c.eq_path, err)
+            invalid_model_data(io, "convert", primary_path, err)
         else if (is_model_capacity_error(err))
-            model_capacity_error(io, "convert", c.eq_path, err)
+            model_capacity_error(io, "convert", primary_path, err)
         else
             return err,
     };
 
-    var total_voltage_levels: usize = 0;
-    var total_buses: usize = 0;
-    var total_busbar_sections: usize = 0;
-    var total_switches: usize = 0;
-    var total_loads: usize = 0;
-    var total_shunts: usize = 0;
-    var total_svcs: usize = 0;
-    var total_generators: usize = 0;
-    var total_2w: usize = 0;
-    var total_3w: usize = 0;
-    for (network.substations.items) |substation| {
-        total_voltage_levels += substation.voltage_levels.items.len;
-        total_2w += substation.two_winding_transformers.items.len;
-        total_3w += substation.three_winding_transformers.items.len;
-        for (substation.voltage_levels.items) |voltage_level| {
-            total_buses += voltage_level.bus_breaker_topology.buses.items.len;
-            total_busbar_sections += voltage_level.node_breaker_topology.busbar_sections.items.len;
-            total_switches += voltage_level.node_breaker_topology.switches.items.len;
-            total_loads += voltage_level.loads.items.len;
-            total_shunts += voltage_level.shunts.items.len;
-            total_svcs += voltage_level.static_var_compensators.items.len;
-            total_generators += voltage_level.generators.items.len;
-        }
-    }
-    try print.stderr_info(io, "Substations: {d}\n", .{network.substations.items.len});
-    try print.stderr_info(io, "VoltageLevels: {d}\n", .{total_voltage_levels});
-    if (tp_opt != null) try print.stderr_info(io, "Buses: {d}\n", .{total_buses});
-    try print.stderr_info(io, "BusbarSections: {d}\n", .{total_busbar_sections});
-    try print.stderr_info(io, "Switches: {d}\n", .{total_switches});
-    try print.stderr_info(io, "Loads: {d}\n", .{total_loads});
-    try print.stderr_info(io, "Shunts: {d}\n", .{total_shunts});
-    try print.stderr_info(io, "StaticVarCompensators: {d}\n", .{total_svcs});
-    try print.stderr_info(io, "Generators: {d}\n", .{total_generators});
-    try print.stderr_info(io, "2-winding transformers: {d}\n", .{total_2w});
-    try print.stderr_info(io, "3-winding transformers: {d}\n", .{total_3w});
-    try print.stderr_info(io, "Lines: {d}\n", .{network.lines.items.len});
+    try print_conversion_summary(io, &network, tp_opt != null);
 
     const output = try open_output(io, "convert", c.output_path);
     defer output.deinit(io);
@@ -209,14 +149,57 @@ fn command_convert(io: std.Io, parent_gpa: std.mem.Allocator, c: cli.Command.Con
     try print.flush_file_writer(&file_writer);
 }
 
+fn print_conversion_summary(io: std.Io, network: *const iidm.Network, has_tp: bool) !void {
+    var total_voltage_levels: u64 = 0;
+    var total_buses: u64 = 0;
+    var total_busbar_sections: u64 = 0;
+    var total_switches: u64 = 0;
+    var total_loads: u64 = 0;
+    var total_shunts: u64 = 0;
+    var total_svcs: u64 = 0;
+    var total_generators: u64 = 0;
+    var total_2w: u64 = 0;
+    var total_3w: u64 = 0;
+    for (network.substations.items) |substation| {
+        total_voltage_levels += @intCast(substation.voltage_levels.items.len);
+        total_2w += @intCast(substation.two_winding_transformers.items.len);
+        total_3w += @intCast(substation.three_winding_transformers.items.len);
+        for (substation.voltage_levels.items) |voltage_level| {
+            total_buses += @intCast(voltage_level.bus_breaker_topology.buses.items.len);
+            total_busbar_sections += @intCast(voltage_level.node_breaker_topology.busbar_sections.items.len);
+            total_switches += @intCast(voltage_level.node_breaker_topology.switches.items.len);
+            total_loads += @intCast(voltage_level.loads.items.len);
+            total_shunts += @intCast(voltage_level.shunts.items.len);
+            total_svcs += @intCast(voltage_level.static_var_compensators.items.len);
+            total_generators += @intCast(voltage_level.generators.items.len);
+        }
+    }
+    try print.stderr_info(io, "Substations: {d}\n", .{network.substations.items.len});
+    try print.stderr_info(io, "VoltageLevels: {d}\n", .{total_voltage_levels});
+    if (has_tp) try print.stderr_info(io, "Buses: {d}\n", .{total_buses});
+    try print.stderr_info(io, "BusbarSections: {d}\n", .{total_busbar_sections});
+    try print.stderr_info(io, "Switches: {d}\n", .{total_switches});
+    try print.stderr_info(io, "Loads: {d}\n", .{total_loads});
+    try print.stderr_info(io, "Shunts: {d}\n", .{total_shunts});
+    try print.stderr_info(io, "StaticVarCompensators: {d}\n", .{total_svcs});
+    try print.stderr_info(io, "Generators: {d}\n", .{total_generators});
+    try print.stderr_info(io, "2-winding transformers: {d}\n", .{total_2w});
+    try print.stderr_info(io, "3-winding transformers: {d}\n", .{total_3w});
+    try print.stderr_info(io, "Lines: {d}\n", .{network.lines.items.len});
+}
+
 fn command_browse(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Browse) !void {
-    var inputs = try Inputs.load(io, gpa, "browse", c.file_path, c.eqbd_path, c.tp_path, c.ssh_path);
+    var inputs = try model_set.load_merged(io, gpa, "browse", c.model_inputs.slice(), .query);
     defer inputs.deinit(gpa);
+    const tp_opt: ?TP = if (inputs.tp) |loaded| loaded.tp else null;
+    const ssh_opt: ?SSH = if (inputs.ssh) |loaded| loaded.ssh else null;
+    const tp_path: ?[]const u8 = if (inputs.tp) |loaded| loaded.source.label() else null;
+    const primary_path = inputs.primary_source.label();
 
     // Safety check: navigation addresses objects by raw RDF identifier.
     // Silent shadowing would make it impossible to tell which file an object
     // came from during navigation; fail loud instead.
-    reject_tp_primary_id_collision(io, "browse", &inputs.model, inputs.tp, c.tp_path);
+    reject_tp_primary_id_collision(io, "browse", &inputs.model, tp_opt, tp_path);
 
     var browse_input_buffer: [64]u8 = undefined;
     var browse_stdin = std.Io.File.stdin().reader(io, &browse_input_buffer);
@@ -229,44 +212,51 @@ fn command_browse(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Browse) !vo
 
     const target_opt = print.file_writer_result(
         &browse_stdout,
-        resolve_prefix(io, gpa, &inputs.model, inputs.tp, c.mrid, null, false, interactive),
-    ) catch |err| return model_operation_error(io, "browse", c.file_path, err);
+        resolve_prefix(io, gpa, &inputs.model, tp_opt, c.mrid, null, false, interactive),
+    ) catch |err| return model_operation_error(io, "browse", primary_path, err);
     const target = target_opt orelse {
         try print.flush_file_writer(&browse_stdout);
         return;
     };
     print.file_writer_result(
         &browse_stdout,
-        browse.browse(io, gpa, interactive, &inputs.model, inputs.tp, inputs.ssh, target.id),
-    ) catch |err| return model_operation_error(io, "browse", c.file_path, err);
+        browse.browse(io, gpa, interactive, &inputs.model, tp_opt, ssh_opt, target.id),
+    ) catch |err| return model_operation_error(io, "browse", primary_path, err);
     try print.flush_file_writer(&browse_stdout);
 }
 
 fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
     validate_get_args(io, c);
 
-    var inputs = try Inputs.load(io, gpa, "get", c.file_path, c.eqbd_path, c.tp_path, c.ssh_path);
+    var inputs = try model_set.load_merged(io, gpa, "get", c.model_inputs.slice(), .query);
     defer inputs.deinit(gpa);
-    reject_tp_primary_id_collision(io, "get", &inputs.model, inputs.tp, c.tp_path);
+    if (c.mrid == null and (inputs.tp != null or inputs.ssh != null)) {
+        print.stderr(io, "get: list mode does not merge supplementary TP or SSH parts", .{});
+    }
+    const tp_opt: ?TP = if (inputs.tp) |loaded| loaded.tp else null;
+    const ssh_opt: ?SSH = if (inputs.ssh) |loaded| loaded.ssh else null;
+    const tp_path: ?[]const u8 = if (inputs.tp) |loaded| loaded.source.label() else null;
+    const primary_path = inputs.primary_source.label();
+    reject_tp_primary_id_collision(io, "get", &inputs.model, tp_opt, tp_path);
 
     if (c.mrid) |mrid_val| {
-        const target = (resolve_prefix(io, gpa, &inputs.model, inputs.tp, mrid_val, c.type_filter, c.json, null) catch |err|
-            return model_operation_error(io, "get", c.file_path, err)) orelse return;
+        const target = (resolve_prefix(io, gpa, &inputs.model, tp_opt, mrid_val, c.type_filter, c.json, null) catch |err|
+            return model_operation_error(io, "get", primary_path, err)) orelse return;
         assert(target.id.len > 0);
         assert(target.type_name.len > 0);
-        const object = refs.resolve_object(&inputs.model, inputs.tp, target.id) orelse unreachable;
+        const object = refs.resolve_object(&inputs.model, tp_opt, target.id) orelse unreachable;
         // Pair the resolution: resolve_prefix already verified the id resolves;
         // the same lookup here must return the same identity.
         assert(std.mem.eql(u8, object.id, target.id));
         assert(std.mem.eql(u8, object.type_name, target.type_name));
-        display_get_object(io, gpa, object, inputs.tp, inputs.ssh, c.json) catch |err|
-            return model_operation_error(io, "get", c.file_path, err);
+        display_get_object(io, gpa, object, tp_opt, ssh_opt, c.json) catch |err|
+            return model_operation_error(io, "get", primary_path, err);
         return;
     }
 
     assert(c.type_filter != null); // command_get_list's contract.
     command_get_list(io, gpa, &inputs.model, c) catch |err|
-        return model_operation_error(io, "get", c.file_path, err);
+        return model_operation_error(io, "get", primary_path, err);
 }
 
 fn validate_get_args(io: std.Io, c: cli.Command.Get) void {
@@ -274,8 +264,11 @@ fn validate_get_args(io: std.Io, c: cli.Command.Get) void {
     if (c.mrid) |mrid| if (mrid.len == 0) print.stderr(io, "get: <mrid> must not be empty", .{});
     if (c.mrid != null and c.count) print.stderr(io, "get: --count requires --type without <mrid>", .{});
     if (c.mrid != null and c.fields != null) print.stderr(io, "get: --fields requires --type without <mrid>", .{});
-    if (c.mrid == null and c.tp_path != null) print.stderr(io, "get: --tp requires <mrid> (list mode does not merge TP objects yet)", .{});
-    if (c.mrid == null and c.ssh_path != null) print.stderr(io, "get: --ssh requires <mrid> (list mode does not merge SSH patches yet)", .{});
+    if (c.mrid == null) for (c.model_inputs.slice()) |input| switch (input.override orelse continue) {
+        .tp => print.stderr(io, "get: --tp is not supported in list mode", .{}),
+        .ssh => print.stderr(io, "get: --ssh is not supported in list mode", .{}),
+        else => {},
+    };
 }
 
 fn command_get_list(io: std.Io, gpa: std.mem.Allocator, model: *const EQ, c: cli.Command.Get) !void {
@@ -612,20 +605,24 @@ fn string_less_than(_: void, a: []const u8, b: []const u8) bool {
 fn command_refs(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Refs) !void {
     if (c.mrid.len == 0) print.stderr(io, "refs: <mrid> must not be empty", .{});
 
-    var inputs = try Inputs.load(io, gpa, "refs", c.file_path, c.eqbd_path, c.tp_path, c.ssh_path);
+    var inputs = try model_set.load_merged(io, gpa, "refs", c.model_inputs.slice(), .query);
     defer inputs.deinit(gpa);
-    reject_tp_primary_id_collision(io, "refs", &inputs.model, inputs.tp, c.tp_path);
+    const tp_opt: ?TP = if (inputs.tp) |loaded| loaded.tp else null;
+    const ssh_opt: ?SSH = if (inputs.ssh) |loaded| loaded.ssh else null;
+    const tp_path: ?[]const u8 = if (inputs.tp) |loaded| loaded.source.label() else null;
+    const primary_path = inputs.primary_source.label();
+    reject_tp_primary_id_collision(io, "refs", &inputs.model, tp_opt, tp_path);
 
-    const target = (resolve_prefix(io, gpa, &inputs.model, inputs.tp, c.mrid, c.target_type, c.json, null) catch |err|
-        return model_operation_error(io, "refs", c.file_path, err)) orelse return;
+    const target = (resolve_prefix(io, gpa, &inputs.model, tp_opt, c.mrid, c.target_type, c.json, null) catch |err|
+        return model_operation_error(io, "refs", primary_path, err)) orelse return;
     // Pairs with resolve_prefix's final-branch invariants: a target without an
     // id/type would break the index lookup and the writer's preconditions.
     assert(target.id.len > 0);
     assert(target.type_name.len > 0);
 
     // One-shot refs needs only this target's edges; browse keeps the full index.
-    const candidates = refs.collect_referrers_for_target(gpa, &inputs.model, inputs.tp, inputs.ssh, target.id) catch |err|
-        return model_operation_error(io, "refs", c.file_path, err);
+    const candidates = refs.collect_referrers_for_target(gpa, &inputs.model, tp_opt, ssh_opt, target.id) catch |err|
+        return model_operation_error(io, "refs", primary_path, err);
     defer gpa.free(candidates);
 
     const referrers = try refs.filter_referrers(gpa, candidates, c.from_type);
@@ -910,104 +907,174 @@ fn write_type_breakdown(w: *std.Io.Writer, entries: []const TypeCount, max_type_
 }
 
 fn command_types(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Types) !void {
-    var model = try load_model(io, gpa, "types", "primary CGMES file", c.file_path, null);
-    defer model.deinit(gpa);
-
-    if (c.json) {
-        try print.display_object_inventory_json(io, gpa, model);
-    } else {
-        try print.display_object_inventory(io, gpa, model);
+    var documents = try model_set.plan_documents(io, gpa, "types", c.model_inputs.slice(), .never);
+    defer documents.deinit(gpa);
+    var write_buffer: [4096]u8 = undefined;
+    var file_writer = std.Io.File.Writer.initStreaming(std.Io.File.stdout(), io, &write_buffer);
+    const w = &file_writer.interface;
+    const multiple = documents.count() > 1;
+    if (c.json and multiple) try print.file_writer_result(&file_writer, w.writeByte('['));
+    var index: u32 = 0;
+    while (index < documents.count()) : (index += 1) {
+        var diagnostics: model_set.ParseDiagnostics = .{};
+        var document = next_document(io, gpa, "types", &documents, &diagnostics);
+        defer documents.release(gpa, &document);
+        const counts = try document.model.sorted_type_counts(gpa);
+        defer gpa.free(counts);
+        if (!multiple) {
+            if (c.json) {
+                try print.file_writer_result(&file_writer, print.write_object_inventory_json_value(w, counts));
+                try print.file_writer_result(&file_writer, w.writeByte('\n'));
+            } else {
+                try print.file_writer_result(&file_writer, print.write_object_inventory(w, counts));
+            }
+        } else if (c.json) {
+            if (index > 0) try print.file_writer_result(&file_writer, w.writeByte(','));
+            try print.file_writer_result(&file_writer, w.writeAll("{\"source\":"));
+            try print.file_writer_result(&file_writer, std.json.Stringify.value(document.segments[0].name, .{}, w));
+            try print.file_writer_result(&file_writer, w.writeAll(",\"types\":"));
+            try print.file_writer_result(&file_writer, print.write_object_inventory_json_value(w, counts));
+            try print.file_writer_result(&file_writer, w.writeByte('}'));
+        } else {
+            try print.file_writer_result(&file_writer, w.print("── {s} ──\n", .{document.segments[0].name}));
+            try print.file_writer_result(&file_writer, print.write_object_inventory(w, counts));
+        }
     }
+    if (c.json and multiple) try print.file_writer_result(&file_writer, w.writeAll("]\n"));
+    try print.flush_file_writer(&file_writer);
+}
+
+fn next_document(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    command_name: []const u8,
+    documents: *model_set.DocumentSet,
+    diagnostics: *model_set.ParseDiagnostics,
+) model_set.LoadedDocument {
+    return (documents.next(gpa, diagnostics) catch |err|
+        model_set.report_document_parse_error(io, command_name, err, diagnostics.*)) orelse unreachable;
 }
 
 fn command_diff(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Diff) !void {
-    // Load both models independently. Each holds its own XML backing.
-    var model1 = try load_model(io, gpa, "diff", "left EQ profile", c.file_path1, c.eqbd_path);
-    defer model1.deinit(gpa);
+    var models = try load_diff_models(io, gpa, c);
+    defer models.deinit(gpa);
+    const had_diffs = if (c.mrid != null)
+        try write_diff_single(io, gpa, c, &models)
+    else
+        try write_diff_all(io, gpa, c, &models);
+    if (had_diffs) std.process.exit(print.exit_differences);
+}
 
-    var model2 = try load_model(io, gpa, "diff", "right EQ profile", c.file_path2, c.eqbd_path);
-    defer model2.deinit(gpa);
+const DiffModels = struct {
+    left: model_set.MergedModelSet,
+    right: model_set.MergedModelSet,
 
-    var out_buffer: [64 * 1024]u8 = undefined;
-    var had_diffs = false;
+    fn deinit(self: *DiffModels, gpa: std.mem.Allocator) void {
+        self.right.deinit(gpa);
+        self.left.deinit(gpa);
+    }
+};
 
-    if (c.mrid) |mrid| {
-        // Buffer single-object output first: the not-found / type-mismatch
-        // error paths exit without producing a diff, and must not have
-        // created or truncated an existing --output file by then.
-        var buffered: std.Io.Writer.Allocating = .init(gpa);
-        defer buffered.deinit();
+fn load_diff_models(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Diff) !DiffModels {
+    var left_inputs: [2]model_set.Input = undefined;
+    left_inputs[0] = c.sides[0];
+    var left_count: u8 = 1;
+    if (c.eqbd_path) |path| {
+        left_inputs[1] = .{ .path = path, .override = .eqbd };
+        left_count = 2;
+    }
+    var right_inputs: [2]model_set.Input = undefined;
+    right_inputs[0] = c.sides[1];
+    var right_count: u8 = 1;
+    if (c.eqbd_path) |path| {
+        right_inputs[1] = .{ .path = path, .override = .eqbd };
+        right_count = 2;
+    }
+    var left = try model_set.load_merged(io, gpa, "diff", left_inputs[0..left_count], .diff_side);
+    errdefer left.deinit(gpa);
+    const right = try model_set.load_merged(io, gpa, "diff", right_inputs[0..right_count], .diff_side);
+    return .{ .left = left, .right = right };
+}
 
-        const status = switch (c.format) {
-            .eqdiff => print.allocating_writer_result(&buffered, eqdiff.write_single(
-                gpa,
-                &model1,
-                &model2,
-                mrid,
-                .{ .type_filter = c.type_filter },
-                &buffered.writer,
-            )) catch |err| switch (err) {
-                error.ConflictingNamespaceBindings => conflicting_namespaces(io),
-                else => return err,
-            },
-            .patch, .json, .summary => try print.allocating_writer_result(&buffered, diff.diff_single(
-                gpa,
-                &model1,
-                &model2,
-                mrid,
-                c.file_path1,
-                c.file_path2,
-                diff_options(c),
-                &buffered.writer,
-            )),
-        };
-        had_diffs = switch (status) {
-            .not_found => print.not_found(io, "No object found with mRID '{s}' in either file", .{mrid}),
-            .type_mismatch => |actual| print.stderr(
-                io,
-                "diff: object '{s}' is of type '{s}', not '{s}'",
-                .{ mrid, actual, c.type_filter.? },
-            ),
-            .diff => |d| d,
-        };
-
-        const output = try open_output(io, "diff", c.output_path);
-        defer output.deinit(io);
-        var writer = std.Io.File.Writer.init(output.file, io, &out_buffer);
-        try print.file_writer_result(&writer, writer.interface.writeAll(buffered.written()));
-        try print.flush_file_writer(&writer);
-    } else {
-        const output = try open_output(io, "diff", c.output_path);
-        defer output.deinit(io);
-        var writer = std.Io.File.Writer.init(output.file, io, &out_buffer);
-
-        const diff_result = switch (c.format) {
-            .eqdiff => eqdiff.write_models(
-                gpa,
-                &model1,
-                &model2,
-                .{ .type_filter = c.type_filter },
-                &writer.interface,
-            ),
-            .patch, .json, .summary => diff.diff_models(
-                gpa,
-                &model1,
-                &model2,
-                c.file_path1,
-                c.file_path2,
-                diff_options(c),
-                &writer.interface,
-            ),
-        };
-        had_diffs = print.file_writer_result(&writer, diff_result) catch |err| switch (err) {
+fn write_diff_single(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    c: cli.Command.Diff,
+    models: *DiffModels,
+) !bool {
+    const mrid = c.mrid.?;
+    var buffered: std.Io.Writer.Allocating = .init(gpa);
+    defer buffered.deinit();
+    const status = switch (c.format) {
+        .eqdiff => print.allocating_writer_result(&buffered, eqdiff.write_single(
+            gpa,
+            &models.left.model,
+            &models.right.model,
+            mrid,
+            .{ .type_filter = c.type_filter },
+            &buffered.writer,
+        )) catch |err| switch (err) {
             error.ConflictingNamespaceBindings => conflicting_namespaces(io),
             else => return err,
-        };
-        try print.flush_file_writer(&writer);
-    }
+        },
+        .patch, .json, .summary => try print.allocating_writer_result(&buffered, diff.diff_single(
+            gpa,
+            &models.left.model,
+            &models.right.model,
+            mrid,
+            models.left.primary_source.label(),
+            models.right.primary_source.label(),
+            diff_options(c),
+            &buffered.writer,
+        )),
+    };
+    const had_diffs = switch (status) {
+        .not_found => print.not_found(io, "No object found with mRID '{s}' in either file", .{mrid}),
+        .type_mismatch => |actual| print.stderr(
+            io,
+            "diff: object '{s}' is of type '{s}', not '{s}'",
+            .{ mrid, actual, c.type_filter.? },
+        ),
+        .diff => |value| value,
+    };
+    var out_buffer: [64 * 1024]u8 = undefined;
+    const output = try open_output(io, "diff", c.output_path);
+    defer output.deinit(io);
+    var writer = std.Io.File.Writer.init(output.file, io, &out_buffer);
+    try print.file_writer_result(&writer, writer.interface.writeAll(buffered.written()));
+    try print.flush_file_writer(&writer);
+    return had_diffs;
+}
 
-    // A distinct status lets callers distinguish differences from not-found.
-    if (had_diffs) std.process.exit(print.exit_differences);
+fn write_diff_all(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Diff, models: *DiffModels) !bool {
+    const output = try open_output(io, "diff", c.output_path);
+    defer output.deinit(io);
+    var out_buffer: [64 * 1024]u8 = undefined;
+    var writer = std.Io.File.Writer.init(output.file, io, &out_buffer);
+    const diff_result = switch (c.format) {
+        .eqdiff => eqdiff.write_models(
+            gpa,
+            &models.left.model,
+            &models.right.model,
+            .{ .type_filter = c.type_filter },
+            &writer.interface,
+        ),
+        .patch, .json, .summary => diff.diff_models(
+            gpa,
+            &models.left.model,
+            &models.right.model,
+            models.left.primary_source.label(),
+            models.right.primary_source.label(),
+            diff_options(c),
+            &writer.interface,
+        ),
+    };
+    const had_diffs = print.file_writer_result(&writer, diff_result) catch |err| switch (err) {
+        error.ConflictingNamespaceBindings => conflicting_namespaces(io),
+        else => return err,
+    };
+    try print.flush_file_writer(&writer);
+    return had_diffs;
 }
 
 /// EQDIFF copies statements verbatim, so two inputs binding the same prefix
@@ -1028,6 +1095,98 @@ const Output = struct {
 
     fn deinit(output: Output, io: std.Io) void {
         if (output.owned) output.file.close(io);
+    }
+};
+
+const AtomicOutput = struct {
+    output_file: std.Io.File,
+    dir: std.Io.Dir,
+    target_basename: []const u8,
+    temp_name: [32]u8,
+    temp_name_len: u8,
+    owned: bool,
+    file_open: bool,
+    temp_exists: bool,
+    close_dir: bool,
+
+    const collision_retries_max = 8;
+
+    fn open(io: std.Io, command_name: []const u8, output_path: ?[]const u8) !AtomicOutput {
+        if (output_path) |path| if (!io_read.is_stdin(path)) {
+            const dirname = std.fs.path.dirname(path);
+            const dir = if (dirname) |name|
+                std.Io.Dir.cwd().openDir(io, name, .{}) catch |err| switch (err) {
+                    error.AccessDenied, error.PermissionDenied => print.system_error(io, "{s}: output directory for '{s}' cannot be opened: permission denied", .{ command_name, path }),
+                    error.FileNotFound => print.system_error(io, "{s}: output path '{s}' has a missing parent directory", .{ command_name, path }),
+                    error.NotDir => print.system_error(io, "{s}: output path '{s}' has a non-directory path component", .{ command_name, path }),
+                    else => print.system_error(io, "{s}: failed to open output directory for '{s}': {t}", .{ command_name, path, err }),
+                }
+            else
+                std.Io.Dir.cwd();
+            const close_dir = dirname != null;
+            errdefer if (close_dir) dir.close(io);
+
+            var temp_name: [32]u8 = undefined;
+            var attempt: u8 = 0;
+            while (attempt < collision_retries_max) : (attempt += 1) {
+                var nonce: u64 = undefined;
+                io.random(std.mem.asBytes(&nonce));
+                const name = std.fmt.bufPrint(&temp_name, ".cimd-{x}.tmp", .{nonce}) catch unreachable;
+                const temp_file = dir.createFile(io, name, .{ .exclusive = true }) catch |err| switch (err) {
+                    error.PathAlreadyExists, error.FileBusy, error.DeviceBusy => continue,
+                    error.AccessDenied, error.PermissionDenied => print.system_error(io, "{s}: output file '{s}' cannot be written: permission denied", .{ command_name, path }),
+                    error.NotDir => print.system_error(io, "{s}: output path '{s}' has a non-directory path component", .{ command_name, path }),
+                    error.FileNotFound => print.system_error(io, "{s}: output path '{s}' has a missing parent directory", .{ command_name, path }),
+                    error.NoSpaceLeft => print.system_error(io, "{s}: no space left while opening output file '{s}'", .{ command_name, path }),
+                    else => print.system_error(io, "{s}: failed to open temporary output beside '{s}': {t}", .{ command_name, path, err }),
+                };
+                return .{
+                    .output_file = temp_file,
+                    .dir = dir,
+                    .target_basename = std.fs.path.basename(path),
+                    .temp_name = temp_name,
+                    .temp_name_len = @intCast(name.len),
+                    .owned = true,
+                    .file_open = true,
+                    .temp_exists = true,
+                    .close_dir = close_dir,
+                };
+            }
+            print.system_error(io, "{s}: could not create a unique temporary output beside '{s}' after {d} attempts", .{
+                command_name, path, collision_retries_max,
+            });
+        };
+        return .{
+            .output_file = std.Io.File.stdout(),
+            .dir = std.Io.Dir.cwd(),
+            .target_basename = "",
+            .temp_name = undefined,
+            .temp_name_len = 0,
+            .owned = false,
+            .file_open = false,
+            .temp_exists = false,
+            .close_dir = false,
+        };
+    }
+
+    fn file(self: *AtomicOutput) std.Io.File {
+        return self.output_file;
+    }
+
+    fn commit(self: *AtomicOutput, io: std.Io) !void {
+        if (!self.owned) return;
+        assert(self.file_open and self.temp_exists);
+        self.output_file.close(io);
+        self.file_open = false;
+        try self.dir.rename(self.temp_name[0..self.temp_name_len], self.dir, self.target_basename, io);
+        self.temp_exists = false;
+    }
+
+    fn deinit(self: *AtomicOutput, io: std.Io) void {
+        if (self.file_open) self.output_file.close(io);
+        if (self.temp_exists) self.dir.deleteFile(io, self.temp_name[0..self.temp_name_len]) catch {};
+        if (self.close_dir) self.dir.close(io);
+        self.* = undefined;
     }
 };
 
@@ -1076,26 +1235,26 @@ fn diff_options(c: cli.Command.Diff) diff.DiffOptions {
 }
 
 fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology) !void {
-    var model = try load_model(io, gpa, "topology", "EQ profile", c.eq_path, c.eqbd_path);
-    defer model.deinit(gpa);
-
-    var ssh_opt: ?SSH = if (c.ssh_path) |path| try load_ssh(io, gpa, "topology", path) else null;
-    defer if (ssh_opt) |*ssh| ssh.deinit(gpa);
+    var inputs = try model_set.load_merged(io, gpa, "topology", c.model_inputs.slice(), .topology);
+    defer inputs.deinit(gpa);
+    const model = &inputs.model;
+    const ssh_opt: ?SSH = if (inputs.ssh) |loaded| loaded.ssh else null;
+    const primary_path = inputs.primary_source.label();
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
-    var index = cross_ref.CrossRef.build_for_topology(gpa, &model, boundary_ids) catch |err| switch (err) {
+    var index = cross_ref.CrossRef.build_for_topology(gpa, model, boundary_ids) catch |err| switch (err) {
         error.MissingTerminals => invalid_model_structure(io, "topology", "Terminal"),
-        else => return model_operation_error(io, "topology", c.eq_path, err),
+        else => return model_operation_error(io, "topology", primary_path, err),
     };
     defer index.deinit(gpa);
 
-    var topology = resolve.Topology.build_for_topological_nodes(gpa, &model, &index) catch |err|
-        return model_operation_error(io, "topology", c.eq_path, err);
+    var topology = resolve.Topology.build_for_topological_nodes(gpa, model, &index) catch |err|
+        return model_operation_error(io, "topology", primary_path, err);
     defer topology.deinit(gpa);
 
     const ssh_ptr: ?*const SSH = if (ssh_opt) |*s| s else null;
-    var nodes = resolve.build_topological_nodes(gpa, &model, &index, &topology, ssh_ptr) catch |err|
-        return model_operation_error(io, "topology", c.eq_path, err);
+    var nodes = resolve.build_topological_nodes(gpa, model, &index, &topology, ssh_ptr) catch |err|
+        return model_operation_error(io, "topology", primary_path, err);
     defer nodes.deinit(gpa);
 
     try print.stderr_info(io, "TopologicalNodes: {d}\n", .{nodes.items.len});
@@ -1136,44 +1295,97 @@ fn command_validate(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Validate)
         rule_sets_count += 1;
     }
 
-    const data = try read_model_xml(io, gpa, "validate", "EQ profile", c.eq_path, c.eqbd_path);
-    var model_diagnostics: ModelDiagnostics = .{};
-    var model = EQ.initWithDiagnostics(gpa, data.xml, &model_diagnostics) catch |err| model_parse_error(io, .{
-        .command_name = "validate",
-        .role = if (c.eqbd_path == null) "EQ profile" else "combined EQ/EQBD model",
-        .path = c.eq_path,
-        .secondary_path = c.eqbd_path,
-    }, data.segments[0..data.segments_count], err, model_diagnostics);
-    defer model.deinit(gpa);
-
-    var evaluations: [cli.Command.Validate.rules_count_max]validate.Evaluation = undefined;
-    var entries: [cli.Command.Validate.rules_count_max]validate.ReportEntry = undefined;
-    var evaluations_count: usize = 0;
-    defer for (evaluations[0..evaluations_count]) |*evaluation| evaluation.deinit(gpa);
-    for (rule_sets[0..rule_sets_count], 0..) |*rules, i| {
-        evaluations[i] = try validate.evaluate(gpa, &model, rules);
-        evaluations_count += 1;
-        entries[i] = .{ .rules = rules, .evaluation = &evaluations[i] };
-    }
-
-    const output = try open_output(io, "validate", c.output_path);
+    var documents = try model_set.plan_documents(io, gpa, "validate", c.model_inputs.slice(), .single_pair);
+    defer documents.deinit(gpa);
+    var output = try AtomicOutput.open(io, "validate", c.output_path);
     defer output.deinit(io);
-
     var write_buffer: [64 * 1024]u8 = undefined;
-    var file_writer = std.Io.File.Writer.init(output.file, io, &write_buffer);
-    const totals = try print.file_writer_result(&file_writer, validate.write_report(
+    var file_writer = std.Io.File.Writer.init(output.file(), io, &write_buffer);
+    const totals = try write_validation_documents(
+        io,
         gpa,
-        &file_writer.interface,
-        &model,
-        data.segments[0..data.segments_count],
-        entries[0..evaluations_count],
-        .{ .list_skipped = c.list_skipped },
-    ));
+        c,
+        rule_sets[0..rule_sets_count],
+        &documents,
+        &output,
+        &file_writer,
+    );
     try print.flush_file_writer(&file_writer);
+    try output.commit(io);
 
     // Violations have a command-specific exit code; warnings and info findings
     // do not fail the run.
     if (totals.violations > 0) std.process.exit(print.exit_validation_failed);
+}
+
+const ValidationTotals = struct { violations: u64 = 0, truncated: u64 = 0 };
+
+fn write_validation_documents(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    c: cli.Command.Validate,
+    rule_sets: []RuleSet,
+    documents: *model_set.DocumentSet,
+    output: *AtomicOutput,
+    file_writer: *std.Io.File.Writer,
+) !ValidationTotals {
+    const multiple_documents = documents.count() > 1;
+    if (multiple_documents) try print.file_writer_result(
+        file_writer,
+        file_writer.interface.writeAll("warning: parts validated independently; cross-part references are not resolved\n"),
+    );
+
+    var remaining_violations: u32 = validate.violations_count_max;
+    var totals: ValidationTotals = .{};
+    var document_index: u32 = 0;
+    while (document_index < documents.count()) : (document_index += 1) {
+        var parse_diagnostics: model_set.ParseDiagnostics = .{};
+        var document = (documents.next(gpa, &parse_diagnostics) catch |err| {
+            output.deinit(io);
+            model_set.report_document_parse_error(io, "validate", err, parse_diagnostics);
+        }) orelse unreachable;
+        defer documents.release(gpa, &document);
+
+        if (multiple_documents) try write_validation_heading(file_writer, document);
+
+        var evaluations: [cli.Command.Validate.rules_count_max]validate.Evaluation = undefined;
+        var entries: [cli.Command.Validate.rules_count_max]validate.ReportEntry = undefined;
+        var evaluations_count: u32 = 0;
+        defer for (evaluations[0..evaluations_count]) |*evaluation| evaluation.deinit(gpa);
+        for (rule_sets, 0..) |*rules, i| {
+            evaluations[i] = try validate.evaluate_with_limit(gpa, &document.model, rules, remaining_violations);
+            evaluations_count += 1;
+            remaining_violations -= @intCast(evaluations[i].violations.items.len);
+            entries[i] = .{ .rules = rules, .evaluation = &evaluations[i] };
+        }
+        const document_totals = try print.file_writer_result(file_writer, validate.write_report(
+            gpa,
+            &file_writer.interface,
+            &document.model,
+            document.segments[0..document.segments_count],
+            entries[0..evaluations_count],
+            .{ .list_skipped = c.list_skipped, .write_truncation = !multiple_documents },
+        ));
+        totals.violations += document_totals.violations;
+        totals.truncated += document_totals.truncated;
+    }
+    if (multiple_documents and totals.truncated > 0) try print.file_writer_result(
+        file_writer,
+        file_writer.interface.print("summary: {d} further violations truncated (global limit {d})\n", .{
+            totals.truncated, validate.violations_count_max,
+        }),
+    );
+    return totals;
+}
+
+fn write_validation_heading(file_writer: *std.Io.File.Writer, document: model_set.LoadedDocument) !void {
+    try print.file_writer_result(file_writer, file_writer.interface.writeAll("\n── "));
+    try print.file_writer_result(file_writer, file_writer.interface.writeAll(document.segments[0].name));
+    if (document.segments_count == 2) {
+        try print.file_writer_result(file_writer, file_writer.interface.writeAll(" + "));
+        try print.file_writer_result(file_writer, file_writer.interface.writeAll(document.segments[1].name));
+    }
+    try print.file_writer_result(file_writer, file_writer.interface.writeAll(" ──\n"));
 }
 
 fn command_qocdc(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Qocdc) !void {
@@ -1370,22 +1582,6 @@ const ParseSpec = struct {
     secondary_path: ?[]const u8 = null,
 };
 
-const ModelXml = struct {
-    xml: []const u8,
-    segments: [2]validate.DataSegment,
-    segments_count: u8,
-};
-
-fn data_input(command_name: []const u8, role: []const u8, path: []const u8) InputSpec {
-    return .{
-        .command_name = command_name,
-        .role = role,
-        .path = path,
-        .extension = ".xml",
-        .max_bytes = max_in_memory_input_bytes,
-    };
-}
-
 fn rules_input(path: []const u8) InputSpec {
     return .{
         .command_name = "validate",
@@ -1394,145 +1590,6 @@ fn rules_input(path: []const u8) InputSpec {
         .extension = ".ttl",
         .max_bytes = rule_set.rules_bytes_max,
     };
-}
-
-/// A parsed model together with the segment metadata mapping byte offsets in
-/// the (possibly EQ+EQBD concatenated) backing XML to their originating file
-/// and local line, so later diagnostics can be reported against the right one.
-const LoadedModel = struct {
-    model: EQ,
-    segments: [2]validate.DataSegment,
-    segments_count: u8,
-};
-
-fn load_model_with_segments(
-    io: std.Io,
-    gpa: std.mem.Allocator,
-    command_name: []const u8,
-    role: []const u8,
-    eq_path: []const u8,
-    eqbd_path: ?[]const u8,
-) !LoadedModel {
-    const data = try read_model_xml(io, gpa, command_name, role, eq_path, eqbd_path);
-    var diagnostics: ModelDiagnostics = .{};
-    const model = EQ.initWithDiagnostics(gpa, data.xml, &diagnostics) catch |err| model_parse_error(io, .{
-        .command_name = command_name,
-        .role = if (eqbd_path == null) role else "combined EQ/EQBD model",
-        .path = eq_path,
-        .secondary_path = eqbd_path,
-    }, data.segments[0..data.segments_count], err, diagnostics);
-    return .{ .model = model, .segments = data.segments, .segments_count = data.segments_count };
-}
-
-fn load_model(
-    io: std.Io,
-    gpa: std.mem.Allocator,
-    command_name: []const u8,
-    role: []const u8,
-    eq_path: []const u8,
-    eqbd_path: ?[]const u8,
-) !EQ {
-    const loaded = try load_model_with_segments(io, gpa, command_name, role, eq_path, eqbd_path);
-    return loaded.model;
-}
-
-fn load_ssh(io: std.Io, gpa: std.mem.Allocator, command_name: []const u8, ssh_path: []const u8) !SSH {
-    const xml = try read_path_extension(io, gpa, data_input(command_name, "SSH steady-state profile", ssh_path));
-    var diagnostics: ModelDiagnostics = .{};
-    return SSH.initWithDiagnostics(gpa, xml, &diagnostics) catch |err| model_parse_error(io, .{
-        .command_name = command_name,
-        .role = "SSH steady-state profile",
-        .path = ssh_path,
-    }, &.{.{ .name = ssh_path, .start = 0, .line_start = 1 }}, err, diagnostics);
-}
-
-fn load_tp(io: std.Io, gpa: std.mem.Allocator, command_name: []const u8, tp_path: []const u8) !TP {
-    const xml = try read_path_extension(io, gpa, data_input(command_name, "TP topology profile", tp_path));
-    var diagnostics: ModelDiagnostics = .{};
-    return TP.initWithDiagnostics(gpa, xml, &diagnostics) catch |err| model_parse_error(io, .{
-        .command_name = command_name,
-        .role = "TP topology profile",
-        .path = tp_path,
-    }, &.{.{ .name = tp_path, .start = 0, .line_start = 1 }}, err, diagnostics);
-}
-
-fn read_model_xml(
-    io: std.Io,
-    gpa: std.mem.Allocator,
-    command_name: []const u8,
-    role: []const u8,
-    eq_path: []const u8,
-    eqbd_path: ?[]const u8,
-) !ModelXml {
-    var xml = try read_path_extension(io, gpa, data_input(command_name, role, eq_path));
-    errdefer gpa.free(xml);
-    var result: ModelXml = .{
-        .xml = undefined,
-        .segments = .{
-            .{ .name = eq_path, .start = 0, .line_start = 1 },
-            undefined,
-        },
-        .segments_count = 1,
-    };
-
-    if (eqbd_path) |path| {
-        const eqbd_xml = try read_path_extension(io, gpa, data_input(command_name, "EQBD boundary profile", path));
-        defer gpa.free(eqbd_xml);
-        if (eqbd_xml.len == 0) print.data_error(
-            io,
-            "{s}: EQBD boundary profile '{s}': input is empty",
-            .{ command_name, path },
-        );
-        const xml_len: u64 = @intCast(xml.len);
-        const eqbd_len: u64 = @intCast(eqbd_xml.len);
-        if (xml_len > max_in_memory_input_bytes - eqbd_len) {
-            combined_input_too_large(io, command_name, eq_path, path, xml_len + eqbd_len);
-        }
-        result.segments[1] = .{
-            .name = path,
-            .start = @intCast(xml.len),
-            .line_start = diagnostics_mod.line_number_at(xml, @intCast(xml.len)),
-        };
-        result.segments_count = 2;
-        const combined = std.mem.concat(gpa, u8, &.{ xml, eqbd_xml }) catch |err| switch (err) {
-            error.OutOfMemory => print.system_error(io, "{s}: not enough memory to combine EQ and EQBD inputs", .{command_name}),
-        };
-        gpa.free(xml);
-        xml = combined;
-    }
-
-    result.xml = xml;
-    return result;
-}
-
-test "read_model_xml derives EQBD segment metadata from files" {
-    const io = std.testing.io;
-    const gpa = std.testing.allocator;
-    const eq_xml = "<rdf:RDF>\n<object/>\n</rdf:RDF>\n";
-    const eqbd_xml = "<rdf:RDF>\n<boundary/>\n</rdf:RDF>";
-    var tmpdir = std.testing.tmpDir(.{});
-    defer tmpdir.cleanup();
-
-    var eq_file = try tmpdir.dir.createFile(io, "eq.xml", .{ .read = true });
-    try eq_file.writeStreamingAll(io, eq_xml);
-    var eq_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const eq_path_len = try eq_file.realPath(io, &eq_path_buf);
-    eq_file.close(io);
-    const eq_path = eq_path_buf[0..eq_path_len];
-
-    var eqbd_file = try tmpdir.dir.createFile(io, "eqbd.xml", .{ .read = true });
-    try eqbd_file.writeStreamingAll(io, eqbd_xml);
-    var eqbd_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const eqbd_path_len = try eqbd_file.realPath(io, &eqbd_path_buf);
-    eqbd_file.close(io);
-    const eqbd_path = eqbd_path_buf[0..eqbd_path_len];
-
-    const data = try read_model_xml(io, gpa, "test", "EQ profile", eq_path, eqbd_path);
-    defer gpa.free(data.xml);
-    try std.testing.expectEqual(@as(u8, 2), data.segments_count);
-    try std.testing.expectEqual(@as(u32, eq_xml.len), data.segments[1].start);
-    try std.testing.expectEqual(@as(u64, 4), data.segments[1].line_start);
-    try std.testing.expectEqualStrings(eqbd_path, data.segments[1].name);
 }
 
 /// SHACL rule bundles are zips of Turtle, not XML. A .zip rule bundle reuses
@@ -1618,75 +1675,6 @@ fn input_too_large(io: std.Io, spec: InputSpec, actual_size: ?u64) noreturn {
     var limit_buf: [print.size_limit_text_buffer_bytes]u8 = undefined;
     const limit = print.size_limit_text(&limit_buf, actual_size, spec.max_bytes);
     print.data_error(io, "{s}: {s} '{s}' is too large ({s})", .{ spec.command_name, spec.role, spec.path, limit });
-}
-
-fn combined_input_too_large(
-    io: std.Io,
-    command_name: []const u8,
-    eq_path: []const u8,
-    eqbd_path: []const u8,
-    actual_size: u64,
-) noreturn {
-    var limit_buf: [print.size_limit_text_buffer_bytes]u8 = undefined;
-    const limit = print.size_limit_text(&limit_buf, actual_size, max_in_memory_input_bytes);
-    print.data_error(
-        io,
-        "{s}: combined EQ/EQBD model '{s}' + '{s}' is too large ({s})",
-        .{ command_name, eq_path, eqbd_path, limit },
-    );
-}
-
-fn model_parse_error(
-    io: std.Io,
-    spec: ParseSpec,
-    segments: []const validate.DataSegment,
-    err: anyerror,
-    diagnostics: ModelDiagnostics,
-) noreturn {
-    if (err == error.DuplicateId and diagnostics.duplicate_id_recorded) {
-        const id = diagnostics.duplicate_id();
-        const suffix = if (diagnostics.duplicate_id_truncated) "..." else "";
-        const segment = validate.segment_of(segments, diagnostics.duplicate_offset);
-        const line = validate.segment_local_line(segment, diagnostics.duplicate_line);
-        print.data_error(io, "{s}: {s} '{s}': duplicate RDF identifier '{s}{s}' at line {d}", .{
-            spec.command_name,
-            spec.role,
-            segment.name,
-            id,
-            suffix,
-            line,
-        });
-    }
-    switch (err) {
-        error.EmptyInput => parse_error(io, spec, "input is empty", .{}),
-        error.DuplicateId => parse_error(io, spec, "duplicate RDF identifier", .{}),
-        error.FileTooLarge, error.StreamTooLong => {
-            var limit_buf: [print.size_limit_text_buffer_bytes]u8 = undefined;
-            const limit = print.size_limit_text(&limit_buf, null, max_in_memory_input_bytes);
-            parse_error(io, spec, "input is too large ({s})", .{limit});
-        },
-        error.MalformedXML => parse_error(io, spec, "malformed XML: tags are unbalanced or not well nested", .{}),
-        error.MalformedTag => parse_error(io, spec, "malformed XML tag", .{}),
-        error.OutOfMemory => system_parse_error(io, spec, "not enough memory while parsing", .{}),
-        else => parse_error(io, spec, "failed to parse: {t}", .{err}),
-    }
-}
-
-test "duplicate diagnostics resolve to an EQBD-local line" {
-    const eq = "<rdf:RDF>\n</rdf:RDF>\n";
-    const eqbd = "<rdf:RDF>\n<object id=\"_DUP\"/>\n</rdf:RDF>";
-    const xml = eq ++ eqbd;
-    const offset: u32 = @intCast(std.mem.indexOf(u8, xml, "<object") orelse unreachable);
-    var diagnostics: ModelDiagnostics = .{};
-    diagnostics.record_duplicate_id(xml, "_DUP", offset);
-    const segments = [_]validate.DataSegment{
-        .{ .name = "eq.xml", .start = 0, .line_start = 1 },
-        .{ .name = "eqbd.xml", .start = eq.len, .line_start = 3 },
-    };
-    const segment = validate.segment_of(&segments, diagnostics.duplicate_offset);
-    const line = validate.segment_local_line(segment, diagnostics.duplicate_line);
-    try std.testing.expectEqualStrings("eqbd.xml", segment.name);
-    try std.testing.expectEqual(@as(u64, 2), line);
 }
 
 fn rule_set_load_error(io: std.Io, path: []const u8, line: u32, err: anyerror) noreturn {

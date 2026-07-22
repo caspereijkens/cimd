@@ -271,17 +271,7 @@ test "file writer failures are classified by output origin" {
     try std.testing.expectEqualStrings("NoSpaceLeft", output_error_cause(error.OutputNoSpaceLeft));
 }
 
-pub fn display_object_inventory_json(io: std.Io, gpa: std.mem.Allocator, model: EQ) !void {
-    const counts = try model.sorted_type_counts(gpa);
-    defer gpa.free(counts);
-
-    var write_buffer: [4096]u8 = undefined;
-    var file_writer = std.Io.File.Writer.initStreaming(std.Io.File.stdout(), io, &write_buffer);
-    try file_writer_result(&file_writer, write_object_inventory_json(&file_writer.interface, counts));
-    try flush_file_writer(&file_writer);
-}
-
-fn write_object_inventory_json(w: *std.Io.Writer, counts: []const EQ.TypeCount) !void {
+pub fn write_object_inventory_json_value(w: *std.Io.Writer, counts: []const EQ.TypeCount) !void {
     try w.writeByte('[');
     for (counts, 0..) |entry, i| {
         if (i > 0) try w.writeByte(',');
@@ -289,21 +279,11 @@ fn write_object_inventory_json(w: *std.Io.Writer, counts: []const EQ.TypeCount) 
         try std.json.Stringify.value(entry.type_name, .{}, w);
         try w.print(",\"count\":{d}}}", .{entry.count});
     }
-    try w.writeAll("]\n");
+    try w.writeByte(']');
 }
 
-pub fn display_object_inventory(io: std.Io, gpa: std.mem.Allocator, model: EQ) !void {
-    const counts = try model.sorted_type_counts(gpa);
-    defer gpa.free(counts);
-
-    var write_buffer: [4096]u8 = undefined;
-    var file_writer = std.Io.File.Writer.initStreaming(std.Io.File.stdout(), io, &write_buffer);
-    try file_writer_result(&file_writer, write_object_inventory(&file_writer.interface, counts));
-    try flush_file_writer(&file_writer);
-}
-
-fn write_object_inventory(w: *std.Io.Writer, counts: []const EQ.TypeCount) !void {
-    var total: usize = 0;
+pub fn write_object_inventory(w: *std.Io.Writer, counts: []const EQ.TypeCount) !void {
+    var total: u64 = 0;
     for (counts) |entry| {
         try w.print("{s}: {d} objects\n", .{ entry.type_name, entry.count });
         total += entry.count;
