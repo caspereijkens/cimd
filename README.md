@@ -11,6 +11,12 @@ cimd is a **C**ommand line **I**nterface for grid **M**odel **D**ata. It is a hi
 
 *Median of 10 runs after a discarded warm-up. Measured on Apple M4 Pro. Reproduce with `scripts/benchmark/main.py`.*
 
+Model-set loading reads every XML part in a ZIP and classifies parts from their
+`FullModel` profile declarations. Positional EQ/EQBD/TP/SSH files can therefore
+be supplied together without kind flags. Compatibility note: a multi-entry ZIP
+is no longer reduced to its first XML entry, and a strict command rejects an
+unknown declared profile unless `--eq` routes it explicitly.
+
 <!-- FEATURES_START -->
 ## Features
 ```
@@ -21,8 +27,8 @@ Usage: cimd <command> [options]
 A high-performance CGMES file parser and analysis tool.
 
 Input limits:
-  XML data: max supported size is 4294967295 bytes (~4096 MiB) after unzip
-    and EQ+EQBD merge.
+  XML data: max supported size is 4294967295 bytes (~4096 MiB) total after unzip (up to 8 inputs,
+    16 XML parts per ZIP).
   SHACL rule files: max supported size is 67108864 bytes (~64 MiB) after unzip.
   Non-interactive commands accept '-' as the primary data path to read
   uncompressed XML from stdin.
@@ -46,15 +52,17 @@ Use 'cimd <command> --help' for more information about a command.
 ```
 $ cimd types --help
 
-Usage: cimd types <file> [options]
+Usage: cimd types <file>... [options]
 
-List all CIM types present in a CGMES file with object counts.
-Works on any CGMES file (EQ, EQBD, TP, SSH, ...).
+List all CIM types present in CGMES files with object counts.
+Every XML part in a ZIP bundle is inventoried.
 
 Arguments:
-  <file>                  CGMES file (XML or ZIP)
+  <file>...               CGMES files or bundles (XML or ZIP)
 
 Options:
+      --eq/--eqbd/--tp/--ssh <file>
+                           Explicit profile routing for one-part inputs
   -j, --json              Output a JSON array of {{type, count}}
 
 Examples:
@@ -66,7 +74,7 @@ Examples:
 ```
 $ cimd get --help
 
-Usage: cimd get <file> [<mrid>] [options]
+Usage: cimd get <file>... [<mrid>] [options]
 
 Fetch a CIM object by mRID (or a prefix of one), or list all objects of a
 given type. Works on any CGMES file (EQ, EQBD, TP, SSH, ...).
@@ -96,6 +104,7 @@ Arguments:
   <mrid>    Full mRID or a unique prefix (optional if --type is given)
 
 Options:
+      --eq <file>            Explicitly route a file as EQ
   -t, --type <type>          Filter by CIM type (e.g. ConductingEquipment)
                              Includes CIM subtypes
                              Without <mrid>: list all objects of this type
@@ -107,8 +116,7 @@ Options:
   -c, --count                Print only the list-mode match count
   -b, --eqbd <file>          EQBD boundary profile (XML or ZIP)
       --tp <file>            TP profile (single-object mode only)
-      --ssh <file>           SSH profile (single-object mode only;
-                             single-object mode only)
+      --ssh <file>           SSH profile (single-object mode only)
   -j, --json                 Output as JSON. In list mode, each element is
                              {"id","type","properties","references"}
                              unless --fields narrows the projection.
@@ -130,7 +138,7 @@ Examples:
 ```
 $ cimd refs --help
 
-Usage: cimd refs <file> <mrid> [options]
+Usage: cimd refs <file>... <mrid> [options]
 
 List reverse references to a CIM object: every object whose rdf:resource
 points at <mrid>, searched across the primary file plus any EQBD/TP/SSH
@@ -155,6 +163,7 @@ Arguments:
   <mrid>    Full mRID or a unique prefix
 
 Options:
+      --eq <file>       Explicitly route a file as EQ
   -t, --type <type>     Narrow the target type
       --from <type>     Only show referrers of this CIM type
   -b, --eqbd <file>     EQBD boundary profile (XML or ZIP)
@@ -173,7 +182,7 @@ Examples:
 ```
 $ cimd browse --help
 
-Usage: cimd browse <file> <mrid> [options]
+Usage: cimd browse <file>... <mrid> [options]
 
 Interactively browse CIM objects by following rdf:resource references.
 When --tp or --ssh is passed, patches from those profiles are shown
@@ -192,6 +201,7 @@ Arguments:
   <mrid>    Full mRID or a prefix of one
 
 Options:
+      --eq <file>             Explicitly route a file as EQ
   -b, --eqbd <file>           EQBD boundary profile (XML or ZIP)
   -t, --tp <file>             TP topology profile (XML or ZIP)
   -s, --ssh <file>            SSH profile (XML or ZIP)
@@ -235,6 +245,7 @@ Arguments:
 
 Options:
   -b, --eqbd <file>       EQBD boundary profile (applied to both models)
+      --eq <file>         Supply either side explicitly as EQ (up to twice)
   -i, --mrid <id>         Diff a single object by mRID
   -t, --type <name>       Restrict diff to a CIM type and its subtypes
                           With --mrid: verify the object is of this type
@@ -257,7 +268,7 @@ Examples:
 ```
 $ cimd validate --help
 
-Usage: cimd validate <file> --rules <ttl|zip> [options]
+Usage: cimd validate <file>... --rules <ttl|zip> [options]
 
 Validate a CGMES instance file against a SHACL rule set (e.g. the
 ENTSO-E application-profile constraints). Any profile works — EQ, SSH,
@@ -280,9 +291,12 @@ Exit codes:
   71  operating-system or resource failure
 
 Arguments:
-  <file>                  CGMES instance file, any profile (XML or ZIP)
+  <file>...               CGMES files or bundles, any profile (XML or ZIP)
 
 Options:
+      --eq <file>         Explicit EQ merge target / profile routing
+      --tp <file>         Explicit TP profile routing
+      --ssh <file>        Explicit SSH profile routing
   -r, --rules <file>      SHACL rule set, Turtle or zipped Turtle
                           (repeatable, at most 16 per run)
   -b, --eqbd <file>       EQBD boundary profile merged into the model
@@ -299,7 +313,7 @@ Examples:
 ```
 $ cimd topology --help
 
-Usage: cimd topology <file> [options]
+Usage: cimd topology <file>... [options]
 
 Generate TopologicalNodes from an EQ profile and optional SSH. Each TN is
 a connected component of ConnectivityNodes joined by *closed* switches —
@@ -310,9 +324,10 @@ Without --ssh, all switches are treated as closed (electrical-equivalence
 snapshot ignoring switch state).
 
 Arguments:
-  <file>                  EQ profile (XML or ZIP)
+  <file>...               CGMES parts or a bundle (XML or ZIP)
 
 Options:
+      --eq <file>         Explicitly route a file as EQ
   -b, --eqbd <file>       EQBD boundary profile (XML or ZIP)
   -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
   -o, --output <file>     Write output to file instead of stdout
@@ -326,21 +341,22 @@ Examples:
 ```
 $ cimd convert --help
 
-Usage: cimd convert <file> [options]
+Usage: cimd convert <file>... [options]
 
 Convert a CGMES EQ profile to JIIDM JSON format.
 Output is written to stdout unless --output is given.
 
 Arguments:
-  <file>                  EQ profile (XML or ZIP)
+  <file>...               CGMES parts or a bundle (XML or ZIP)
 
 Options:
+      --eq <file>         Explicitly route a headerless/unknown file as EQ
   -b, --eqbd <file>       EQBD boundary profile (XML or ZIP)
   -t, --tp <file>         TP topology profile (XML or ZIP)
   -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
   -o, --output <file>     Write output to file instead of stdout
       --bus-branch        Emit one JIIDM bus per TopologicalNode
-                          Requires --tp. Default is node-breaker even
+                          Requires a TP part. Default is node-breaker even
                           when TP is given (matches pypowsybl).
 
 Examples:

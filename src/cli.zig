@@ -19,6 +19,7 @@ const builtin = @import("builtin");
 const assert = std.debug.assert;
 const print = @import("io/print.zig");
 const io_read = @import("io/read.zig");
+const model_set = @import("model_set.zig");
 const rule_set = @import("shacl/rule_set.zig");
 
 pub const ansi_green = "\x1b[92m";
@@ -39,8 +40,8 @@ const help_main = std.fmt.comptimePrint(
     \\A high-performance CGMES file parser and analysis tool.
     \\
     \\Input limits:
-    \\  XML data: {[xml_limit]s} after unzip
-    \\    and EQ+EQBD merge.
+    \\  XML data: {[xml_limit]s} total after unzip (up to 8 inputs,
+    \\    16 XML parts per ZIP).
     \\  SHACL rule files: {[rules_limit]s} after unzip.
     \\  Non-interactive commands accept '-' as the primary data path to read
     \\  uncompressed XML from stdin.
@@ -67,21 +68,22 @@ const help_main = std.fmt.comptimePrint(
 );
 
 const help_convert = std.fmt.comptimePrint(
-    \\Usage: cimd convert <file> [options]
+    \\Usage: cimd convert <file>... [options]
     \\
     \\Convert a CGMES EQ profile to JIIDM JSON format.
     \\Output is written to stdout unless --output is given.
     \\
     \\Arguments:
-    \\  <file>                  EQ profile (XML or ZIP)
+    \\  <file>...               CGMES parts or a bundle (XML or ZIP)
     \\
     \\Options:
+    \\      --eq <file>         Explicitly route a headerless/unknown file as EQ
     \\  -b, --eqbd <file>       EQBD boundary profile (XML or ZIP)
     \\  -t, --tp <file>         TP topology profile (XML or ZIP)
     \\  -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
     \\  -o, --output <file>     Write output to file instead of stdout
     \\      --bus-branch        Emit one JIIDM bus per TopologicalNode
-    \\                          Requires --tp. Default is node-breaker even
+    \\                          Requires a TP part. Default is node-breaker even
     \\                          when TP is given (matches pypowsybl).
     \\
     \\Examples:
@@ -94,7 +96,7 @@ const help_convert = std.fmt.comptimePrint(
 , .{ .sep = path_separator });
 
 const help_browse = std.fmt.comptimePrint(
-    \\Usage: cimd browse <file> <mrid> [options]
+    \\Usage: cimd browse <file>... <mrid> [options]
     \\
     \\Interactively browse CIM objects by following rdf:resource references.
     \\When --tp or --ssh is passed, patches from those profiles are shown
@@ -113,6 +115,7 @@ const help_browse = std.fmt.comptimePrint(
     \\  <mrid>    Full mRID or a prefix of one
     \\
     \\Options:
+    \\      --eq <file>             Explicitly route a file as EQ
     \\  -b, --eqbd <file>           EQBD boundary profile (XML or ZIP)
     \\  -t, --tp <file>             TP topology profile (XML or ZIP)
     \\  -s, --ssh <file>            SSH profile (XML or ZIP)
@@ -125,7 +128,7 @@ const help_browse = std.fmt.comptimePrint(
 , .{ .sep = path_separator });
 
 const help_get = std.fmt.comptimePrint(
-    \\Usage: cimd get <file> [<mrid>] [options]
+    \\Usage: cimd get <file>... [<mrid>] [options]
     \\
     \\Fetch a CIM object by mRID (or a prefix of one), or list all objects of a
     \\given type. Works on any CGMES file (EQ, EQBD, TP, SSH, ...).
@@ -155,6 +158,7 @@ const help_get = std.fmt.comptimePrint(
     \\  <mrid>    Full mRID or a unique prefix (optional if --type is given)
     \\
     \\Options:
+    \\      --eq <file>            Explicitly route a file as EQ
     \\  -t, --type <type>          Filter by CIM type (e.g. ConductingEquipment)
     \\                             Includes CIM subtypes
     \\                             Without <mrid>: list all objects of this type
@@ -166,8 +170,7 @@ const help_get = std.fmt.comptimePrint(
     \\  -c, --count                Print only the list-mode match count
     \\  -b, --eqbd <file>          EQBD boundary profile (XML or ZIP)
     \\      --tp <file>            TP profile (single-object mode only)
-    \\      --ssh <file>           SSH profile (single-object mode only;
-    \\                             single-object mode only)
+    \\      --ssh <file>           SSH profile (single-object mode only)
     \\  -j, --json                 Output as JSON. In list mode, each element is
     \\                             {{"id","type","properties","references"}}
     \\                             unless --fields narrows the projection.
@@ -187,7 +190,7 @@ const help_get = std.fmt.comptimePrint(
 , .{ .sep = path_separator });
 
 const help_refs = std.fmt.comptimePrint(
-    \\Usage: cimd refs <file> <mrid> [options]
+    \\Usage: cimd refs <file>... <mrid> [options]
     \\
     \\List reverse references to a CIM object: every object whose rdf:resource
     \\points at <mrid>, searched across the primary file plus any EQBD/TP/SSH
@@ -212,6 +215,7 @@ const help_refs = std.fmt.comptimePrint(
     \\  <mrid>    Full mRID or a unique prefix
     \\
     \\Options:
+    \\      --eq <file>       Explicitly route a file as EQ
     \\  -t, --type <type>     Narrow the target type
     \\      --from <type>     Only show referrers of this CIM type
     \\  -b, --eqbd <file>     EQBD boundary profile (XML or ZIP)
@@ -228,15 +232,17 @@ const help_refs = std.fmt.comptimePrint(
 , .{ .sep = path_separator });
 
 const help_types = std.fmt.comptimePrint(
-    \\Usage: cimd types <file> [options]
+    \\Usage: cimd types <file>... [options]
     \\
-    \\List all CIM types present in a CGMES file with object counts.
-    \\Works on any CGMES file (EQ, EQBD, TP, SSH, ...).
+    \\List all CIM types present in CGMES files with object counts.
+    \\Every XML part in a ZIP bundle is inventoried.
     \\
     \\Arguments:
-    \\  <file>                  CGMES file (XML or ZIP)
+    \\  <file>...               CGMES files or bundles (XML or ZIP)
     \\
     \\Options:
+    \\      --eq/--eqbd/--tp/--ssh <file>
+    \\                           Explicit profile routing for one-part inputs
     \\  -j, --json              Output a JSON array of {{{{type, count}}}}
     \\
     \\Examples:
@@ -272,6 +278,7 @@ const help_diff =
     \\
     \\Options:
     \\  -b, --eqbd <file>       EQBD boundary profile (applied to both models)
+    \\      --eq <file>         Supply either side explicitly as EQ (up to twice)
     \\  -i, --mrid <id>         Diff a single object by mRID
     \\  -t, --type <name>       Restrict diff to a CIM type and its subtypes
     \\                          With --mrid: verify the object is of this type
@@ -292,7 +299,7 @@ const help_diff =
 ;
 
 const help_topology = std.fmt.comptimePrint(
-    \\Usage: cimd topology <file> [options]
+    \\Usage: cimd topology <file>... [options]
     \\
     \\Generate TopologicalNodes from an EQ profile and optional SSH. Each TN is
     \\a connected component of ConnectivityNodes joined by *closed* switches —
@@ -303,9 +310,10 @@ const help_topology = std.fmt.comptimePrint(
     \\snapshot ignoring switch state).
     \\
     \\Arguments:
-    \\  <file>                  EQ profile (XML or ZIP)
+    \\  <file>...               CGMES parts or a bundle (XML or ZIP)
     \\
     \\Options:
+    \\      --eq <file>         Explicitly route a file as EQ
     \\  -b, --eqbd <file>       EQBD boundary profile (XML or ZIP)
     \\  -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
     \\  -o, --output <file>     Write output to file instead of stdout
@@ -317,7 +325,7 @@ const help_topology = std.fmt.comptimePrint(
 , .{ .sep = path_separator });
 
 const help_validate = std.fmt.comptimePrint(
-    \\Usage: cimd validate <file> --rules <ttl|zip> [options]
+    \\Usage: cimd validate <file>... --rules <ttl|zip> [options]
     \\
     \\Validate a CGMES instance file against a SHACL rule set (e.g. the
     \\ENTSO-E application-profile constraints). Any profile works — EQ, SSH,
@@ -337,9 +345,12 @@ const help_validate = std.fmt.comptimePrint(
 ++ help_failure_exit_codes ++
     \\
     \\Arguments:
-    \\  <file>                  CGMES instance file, any profile (XML or ZIP)
+    \\  <file>...               CGMES files or bundles, any profile (XML or ZIP)
     \\
     \\Options:
+    \\      --eq <file>         Explicit EQ merge target / profile routing
+    \\      --tp <file>         Explicit TP profile routing
+    \\      --ssh <file>        Explicit SSH profile routing
     \\  -r, --rules <file>      SHACL rule set, Turtle or zipped Turtle
     \\                          (repeatable, at most {[rules_max]d} per run)
     \\  -b, --eqbd <file>       EQBD boundary profile merged into the model
@@ -397,53 +408,40 @@ pub const Command = union(enum) {
     version: Version,
 
     pub const Convert = struct {
-        eq_path: []const u8,
-        eqbd_path: ?[]const u8,
-        tp_path: ?[]const u8,
-        ssh_path: ?[]const u8,
+        model_inputs: ModelInputs,
         output_path: ?[]const u8,
         bus_branch: bool,
     };
 
     pub const Browse = struct {
-        file_path: []const u8,
-        eqbd_path: ?[]const u8,
-        tp_path: ?[]const u8,
-        ssh_path: ?[]const u8,
+        model_inputs: ModelInputs,
         mrid: []const u8,
     };
 
     pub const Get = struct {
-        file_path: []const u8,
+        model_inputs: ModelInputs,
         mrid: ?[]const u8,
         type_filter: ?[]const u8,
         fields: ?[]const u8,
-        eqbd_path: ?[]const u8,
-        tp_path: ?[]const u8,
-        ssh_path: ?[]const u8,
         count: bool,
         json: bool,
     };
 
     pub const Refs = struct {
-        file_path: []const u8,
+        model_inputs: ModelInputs,
         mrid: []const u8,
         target_type: ?[]const u8,
         from_type: ?[]const u8,
-        eqbd_path: ?[]const u8,
-        tp_path: ?[]const u8,
-        ssh_path: ?[]const u8,
         json: bool,
     };
 
     pub const Types = struct {
-        file_path: []const u8,
+        model_inputs: ModelInputs,
         json: bool,
     };
 
     pub const Diff = struct {
-        file_path1: []const u8,
-        file_path2: []const u8,
+        sides: [2]model_set.Input,
         /// Applied to both models.
         eqbd_path: ?[]const u8,
         /// When set, diff only this one object.
@@ -469,9 +467,7 @@ pub const Command = union(enum) {
     };
 
     pub const Topology = struct {
-        eq_path: []const u8,
-        eqbd_path: ?[]const u8,
-        ssh_path: ?[]const u8,
+        model_inputs: ModelInputs,
         output_path: ?[]const u8,
     };
 
@@ -480,8 +476,7 @@ pub const Command = union(enum) {
     };
 
     pub const Validate = struct {
-        eq_path: []const u8,
-        eqbd_path: ?[]const u8,
+        model_inputs: ModelInputs,
         output_path: ?[]const u8,
         list_skipped: bool,
         rules_count: u32,
@@ -501,6 +496,16 @@ pub const Command = union(enum) {
         verbose: bool,
         json: bool,
     };
+};
+
+pub const ModelInputs = struct {
+    values: [model_set.inputs_count_max]model_set.Input,
+    count: u8,
+
+    pub fn slice(self: *const ModelInputs) []const model_set.Input {
+        assert(self.count > 0 and self.count <= model_set.inputs_count_max);
+        return self.values[0..self.count];
+    }
 };
 
 /// Parse the command-line arguments passed to the cimd binary.
@@ -530,13 +535,109 @@ pub fn parse_args(io: std.Io, args: *std.process.Args.Iterator) !Command {
     print.stderr(io, "unknown command '{s}'\n\n" ++ help_main, .{command_name});
 }
 
+const KindFlag = struct {
+    name: []const u8,
+    alias: ?[]const u8 = null,
+    kind: model_set.Kind,
+};
+
+const kind_flags = [_]KindFlag{
+    .{ .name = "--eq", .kind = .eq },
+    .{ .name = "--eqbd", .alias = "-b", .kind = .eqbd },
+    .{ .name = "--tp", .kind = .tp },
+    .{ .name = "--ssh", .kind = .ssh },
+};
+
+const InputBuilder = struct {
+    positionals: [model_set.inputs_count_max]model_set.Input = undefined,
+    positional_count: u8 = 0,
+    flagged: [kind_flags.len]model_set.Input = undefined,
+    flagged_count: u8 = 0,
+    seen_kind: [kind_flags.len]bool = @splat(false),
+    stdin_seen: bool = false,
+
+    fn add_positional(self: *InputBuilder, io: std.Io, comptime command_name: []const u8, path: []const u8) void {
+        validate_path(io, path, command_name);
+        validate_cgmes_extension(io, path, command_name);
+        if (self.positional_count + self.flagged_count >= model_set.inputs_count_max) {
+            print.stderr(io, command_name ++ ": too many model inputs (max {d})", .{model_set.inputs_count_max});
+        }
+        if (io_read.is_stdin(path)) {
+            if (self.stdin_seen) print.stderr(io, command_name ++ ": '-' may be used for at most one input", .{});
+            self.stdin_seen = true;
+        }
+        self.positionals[self.positional_count] = .{ .path = path };
+        self.positional_count += 1;
+    }
+
+    fn add_flagged(
+        self: *InputBuilder,
+        io: std.Io,
+        args: *std.process.Args.Iterator,
+        comptime command_name: []const u8,
+        comptime flag: []const u8,
+        kind: model_set.Kind,
+    ) void {
+        const kind_index = kind_flag_index(kind);
+        if (self.seen_kind[kind_index]) print.stderr(io, command_name ++ ": " ++ flag ++ " may be specified at most once", .{});
+        if (self.positional_count + self.flagged_count >= model_set.inputs_count_max) {
+            print.stderr(io, command_name ++ ": too many model inputs (max {d})", .{model_set.inputs_count_max});
+        }
+        const path = take_path_arg(io, args, command_name, flag);
+        self.seen_kind[kind_index] = true;
+        self.flagged[self.flagged_count] = .{ .path = path, .override = kind };
+        self.flagged_count += 1;
+    }
+
+    fn kind_seen(self: *const InputBuilder, kind: model_set.Kind) bool {
+        return self.seen_kind[kind_flag_index(kind)];
+    }
+
+    fn finish(self: *const InputBuilder, io: std.Io, comptime command_name: []const u8) ModelInputs {
+        const count = self.positional_count + self.flagged_count;
+        if (count == 0) print.stderr(io, command_name ++ ": at least one model input is required", .{});
+        var result: ModelInputs = .{ .values = undefined, .count = count };
+        @memcpy(result.values[0..self.positional_count], self.positionals[0..self.positional_count]);
+        @memcpy(result.values[self.positional_count..count], self.flagged[0..self.flagged_count]);
+        return result;
+    }
+};
+
+fn parse_kind_flag(
+    builder: *InputBuilder,
+    io: std.Io,
+    args: *std.process.Args.Iterator,
+    comptime command_name: []const u8,
+    arg: []const u8,
+) bool {
+    inline for (kind_flags) |flag| {
+        const matches_name = std.mem.eql(u8, arg, flag.name);
+        const matches_alias = if (flag.alias) |alias| std.mem.eql(u8, arg, alias) else false;
+        if (matches_name or matches_alias) {
+            builder.add_flagged(io, args, command_name, flag.name, flag.kind);
+            return true;
+        }
+    }
+    return false;
+}
+
+fn kind_flag_index(kind: model_set.Kind) u8 {
+    for (kind_flags, 0..) |flag, index| {
+        if (flag.kind == kind) return @intCast(index);
+    }
+    unreachable;
+}
+
+fn is_cgmes_operand(arg: []const u8) bool {
+    if (io_read.is_stdin(arg)) return true;
+    const extension = std.fs.path.extension(arg);
+    return std.ascii.eqlIgnoreCase(extension, ".xml") or std.ascii.eqlIgnoreCase(extension, ".zip");
+}
+
 fn parse_convert(io: std.Io, args: *std.process.Args.Iterator) !Command {
     const command_name = "convert";
 
-    var eq_path: ?[]const u8 = null;
-    var eqbd_path: ?[]const u8 = null;
-    var tp_path: ?[]const u8 = null;
-    var ssh_path: ?[]const u8 = null;
+    var inputs: InputBuilder = .{};
     var output_path: ?[]const u8 = null;
     var bus_branch: bool = false;
 
@@ -545,12 +646,12 @@ fn parse_convert(io: std.Io, args: *std.process.Args.Iterator) !Command {
             try print.write(io, help_convert);
             std.process.exit(0);
         }
-        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
-            eqbd_path = take_path_arg(io, args, command_name, "--eqbd");
-        } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--tp")) {
-            tp_path = take_path_arg(io, args, command_name, "--tp");
-        } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--ssh")) {
-            ssh_path = take_path_arg(io, args, command_name, "--ssh");
+        if (std.mem.eql(u8, arg, "-t")) {
+            inputs.add_flagged(io, args, command_name, "--tp", .tp);
+        } else if (std.mem.eql(u8, arg, "-s")) {
+            inputs.add_flagged(io, args, command_name, "--ssh", .ssh);
+        } else if (parse_kind_flag(&inputs, io, args, command_name, arg)) {
+            continue;
         } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
             output_path = take_output_arg(io, args, command_name);
         } else if (std.mem.eql(u8, arg, "--bus-branch")) {
@@ -558,22 +659,12 @@ fn parse_convert(io: std.Io, args: *std.process.Args.Iterator) !Command {
         } else if (is_flag(arg)) {
             print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
         } else {
-            if (eq_path != null) print.stderr(io, command_name ++ ": unexpected argument '{s}'", .{arg});
-            validate_path(io, arg, command_name);
-            validate_cgmes_extension(io, arg, command_name);
-            eq_path = arg;
+            inputs.add_positional(io, command_name, arg);
         }
     }
 
-    if (eq_path == null) print.stderr(io, command_name ++ ": <file> is required", .{});
-    if (bus_branch and tp_path == null)
-        print.stderr(io, command_name ++ ": --bus-branch requires --tp", .{});
-
     return .{ .convert = .{
-        .eq_path = eq_path.?,
-        .eqbd_path = eqbd_path,
-        .tp_path = tp_path,
-        .ssh_path = ssh_path,
+        .model_inputs = inputs.finish(io, command_name),
         .output_path = output_path,
         .bus_branch = bus_branch,
     } };
@@ -582,10 +673,7 @@ fn parse_convert(io: std.Io, args: *std.process.Args.Iterator) !Command {
 fn parse_browse(io: std.Io, args: *std.process.Args.Iterator) !Command {
     const command_name = "browse";
 
-    var file_path: ?[]const u8 = null;
-    var eqbd_path: ?[]const u8 = null;
-    var tp_path: ?[]const u8 = null;
-    var ssh_path: ?[]const u8 = null;
+    var inputs: InputBuilder = .{};
     var mrid: ?[]const u8 = null;
 
     while (args.next()) |arg| {
@@ -593,18 +681,16 @@ fn parse_browse(io: std.Io, args: *std.process.Args.Iterator) !Command {
             try print.write(io, help_browse);
             std.process.exit(0);
         }
-        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
-            eqbd_path = take_path_arg(io, args, command_name, "--eqbd");
-        } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--tp")) {
-            tp_path = take_path_arg(io, args, command_name, "--tp");
-        } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--ssh")) {
-            ssh_path = take_path_arg(io, args, command_name, "--ssh");
+        if (std.mem.eql(u8, arg, "-t")) {
+            inputs.add_flagged(io, args, command_name, "--tp", .tp);
+        } else if (std.mem.eql(u8, arg, "-s")) {
+            inputs.add_flagged(io, args, command_name, "--ssh", .ssh);
+        } else if (parse_kind_flag(&inputs, io, args, command_name, arg)) {
+            continue;
         } else if (is_flag(arg)) {
             print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
-        } else if (file_path == null) {
-            validate_path(io, arg, command_name);
-            validate_cgmes_extension(io, arg, command_name);
-            file_path = arg;
+        } else if (is_cgmes_operand(arg)) {
+            inputs.add_positional(io, command_name, arg);
         } else if (mrid == null) {
             mrid = arg;
         } else {
@@ -612,17 +698,13 @@ fn parse_browse(io: std.Io, args: *std.process.Args.Iterator) !Command {
         }
     }
 
-    if (file_path == null) print.stderr(io, command_name ++ ": <file> is required", .{});
     if (mrid == null) print.stderr(io, command_name ++ ": <mrid> is required", .{});
-    if (io_read.is_stdin(file_path.?)) {
+    const model_inputs = inputs.finish(io, command_name);
+    for (model_inputs.slice()) |input| if (io_read.is_stdin(input.path))
         print.stderr(io, command_name ++ ": '-' cannot be used as input because browse needs stdin for interaction", .{});
-    }
 
     return .{ .browse = .{
-        .file_path = file_path.?,
-        .eqbd_path = eqbd_path,
-        .tp_path = tp_path,
-        .ssh_path = ssh_path,
+        .model_inputs = model_inputs,
         .mrid = mrid.?,
     } };
 }
@@ -630,13 +712,10 @@ fn parse_browse(io: std.Io, args: *std.process.Args.Iterator) !Command {
 fn parse_get(io: std.Io, args: *std.process.Args.Iterator) !Command {
     const command_name = "get";
 
-    var file_path: ?[]const u8 = null;
+    var inputs: InputBuilder = .{};
     var mrid: ?[]const u8 = null;
     var type_filter: ?[]const u8 = null;
     var fields: ?[]const u8 = null;
-    var eqbd_path: ?[]const u8 = null;
-    var tp_path: ?[]const u8 = null;
-    var ssh_path: ?[]const u8 = null;
     var count = false;
     var json = false;
 
@@ -651,20 +730,14 @@ fn parse_get(io: std.Io, args: *std.process.Args.Iterator) !Command {
             fields = take_value_arg(io, args, command_name, "--fields", "a comma-separated list of property names");
         } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--count")) {
             count = true;
-        } else if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
-            eqbd_path = take_path_arg(io, args, command_name, "--eqbd");
-        } else if (std.mem.eql(u8, arg, "--tp")) {
-            tp_path = take_path_arg(io, args, command_name, "--tp");
-        } else if (std.mem.eql(u8, arg, "--ssh")) {
-            ssh_path = take_path_arg(io, args, command_name, "--ssh");
+        } else if (parse_kind_flag(&inputs, io, args, command_name, arg)) {
+            continue;
         } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
             json = true;
         } else if (is_flag(arg)) {
             print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
-        } else if (file_path == null) {
-            validate_path(io, arg, command_name);
-            validate_cgmes_extension(io, arg, command_name);
-            file_path = arg;
+        } else if (is_cgmes_operand(arg)) {
+            inputs.add_positional(io, command_name, arg);
         } else if (mrid == null) {
             mrid = arg;
         } else {
@@ -672,18 +745,14 @@ fn parse_get(io: std.Io, args: *std.process.Args.Iterator) !Command {
         }
     }
 
-    if (file_path == null) print.stderr(io, command_name ++ ": <file> is required", .{});
     if (mrid == null and type_filter == null) print.stderr(io, command_name ++ ": <mrid> or --type is required", .{});
     if (count and mrid != null) print.stderr(io, command_name ++ ": --count takes no value; '{s}' was parsed as <mrid> (use --type without <mrid> for list mode)", .{mrid.?});
 
     return .{ .get = .{
-        .file_path = file_path.?,
+        .model_inputs = inputs.finish(io, command_name),
         .mrid = mrid,
         .type_filter = type_filter,
         .fields = fields,
-        .eqbd_path = eqbd_path,
-        .tp_path = tp_path,
-        .ssh_path = ssh_path,
         .count = count,
         .json = json,
     } };
@@ -692,13 +761,10 @@ fn parse_get(io: std.Io, args: *std.process.Args.Iterator) !Command {
 fn parse_refs(io: std.Io, args: *std.process.Args.Iterator) !Command {
     const command_name = "refs";
 
-    var file_path: ?[]const u8 = null;
+    var inputs: InputBuilder = .{};
     var mrid: ?[]const u8 = null;
     var target_type: ?[]const u8 = null;
     var from_type: ?[]const u8 = null;
-    var eqbd_path: ?[]const u8 = null;
-    var tp_path: ?[]const u8 = null;
-    var ssh_path: ?[]const u8 = null;
     var json = false;
 
     while (args.next()) |arg| {
@@ -710,20 +776,14 @@ fn parse_refs(io: std.Io, args: *std.process.Args.Iterator) !Command {
             target_type = take_value_arg(io, args, command_name, "--type", "a CIM type name");
         } else if (std.mem.eql(u8, arg, "--from")) {
             from_type = take_value_arg(io, args, command_name, "--from", "a CIM type name");
-        } else if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
-            eqbd_path = take_path_arg(io, args, command_name, "--eqbd");
-        } else if (std.mem.eql(u8, arg, "--tp")) {
-            tp_path = take_path_arg(io, args, command_name, "--tp");
-        } else if (std.mem.eql(u8, arg, "--ssh")) {
-            ssh_path = take_path_arg(io, args, command_name, "--ssh");
+        } else if (parse_kind_flag(&inputs, io, args, command_name, arg)) {
+            continue;
         } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
             json = true;
         } else if (is_flag(arg)) {
             print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
-        } else if (file_path == null) {
-            validate_path(io, arg, command_name);
-            validate_cgmes_extension(io, arg, command_name);
-            file_path = arg;
+        } else if (is_cgmes_operand(arg)) {
+            inputs.add_positional(io, command_name, arg);
         } else if (mrid == null) {
             mrid = arg;
         } else {
@@ -731,17 +791,13 @@ fn parse_refs(io: std.Io, args: *std.process.Args.Iterator) !Command {
         }
     }
 
-    if (file_path == null) print.stderr(io, command_name ++ ": <file> is required", .{});
     if (mrid == null) print.stderr(io, command_name ++ ": <mrid> is required", .{});
 
     return .{ .refs = .{
-        .file_path = file_path.?,
+        .model_inputs = inputs.finish(io, command_name),
         .mrid = mrid.?,
         .target_type = target_type,
         .from_type = from_type,
-        .eqbd_path = eqbd_path,
-        .tp_path = tp_path,
-        .ssh_path = ssh_path,
         .json = json,
     } };
 }
@@ -749,7 +805,7 @@ fn parse_refs(io: std.Io, args: *std.process.Args.Iterator) !Command {
 fn parse_types(io: std.Io, args: *std.process.Args.Iterator) !Command {
     const command_name = "types";
 
-    var file_path: ?[]const u8 = null;
+    var inputs: InputBuilder = .{};
     var json = false;
 
     while (args.next()) |arg| {
@@ -757,22 +813,19 @@ fn parse_types(io: std.Io, args: *std.process.Args.Iterator) !Command {
             try print.write(io, help_types);
             std.process.exit(0);
         }
-        if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
+        if (parse_kind_flag(&inputs, io, args, command_name, arg)) {
+            continue;
+        } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
             json = true;
         } else if (is_flag(arg)) {
             print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
         } else {
-            if (file_path != null) print.stderr(io, command_name ++ ": unexpected argument '{s}'", .{arg});
-            validate_path(io, arg, command_name);
-            validate_cgmes_extension(io, arg, command_name);
-            file_path = arg;
+            inputs.add_positional(io, command_name, arg);
         }
     }
 
-    if (file_path == null) print.stderr(io, command_name ++ ": <file> is required", .{});
-
     return .{ .types = .{
-        .file_path = file_path.?,
+        .model_inputs = inputs.finish(io, command_name),
         .json = json,
     } };
 }
@@ -780,8 +833,8 @@ fn parse_types(io: std.Io, args: *std.process.Args.Iterator) !Command {
 fn parse_diff(io: std.Io, args: *std.process.Args.Iterator) !Command {
     const command_name = "diff";
 
-    var file_path1: ?[]const u8 = null;
-    var file_path2: ?[]const u8 = null;
+    var sides: [2]model_set.Input = undefined;
+    var sides_count: u8 = 0;
     var eqbd_path: ?[]const u8 = null;
     var mrid: ?[]const u8 = null;
     var type_filter: ?[]const u8 = null;
@@ -795,7 +848,12 @@ fn parse_diff(io: std.Io, args: *std.process.Args.Iterator) !Command {
             try print.write(io, help_diff);
             std.process.exit(0);
         }
-        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
+        if (std.mem.eql(u8, arg, "--eq")) {
+            if (sides_count >= sides.len) print.stderr(io, command_name ++ ": exactly two side operands are required", .{});
+            sides[sides_count] = .{ .path = take_path_arg(io, args, command_name, "--eq"), .override = .eq };
+            sides_count += 1;
+        } else if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
+            if (eqbd_path != null) print.stderr(io, command_name ++ ": --eqbd may be specified at most once", .{});
             eqbd_path = take_path_arg(io, args, command_name, "--eqbd");
         } else if (std.mem.eql(u8, arg, "-i") or std.mem.eql(u8, arg, "--mrid")) {
             mrid = take_value_arg(io, args, command_name, "--mrid", "an mRID value");
@@ -811,38 +869,19 @@ fn parse_diff(io: std.Io, args: *std.process.Args.Iterator) !Command {
             json = true;
         } else if (is_flag(arg)) {
             print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
-        } else if (file_path1 == null) {
-            validate_path(io, arg, command_name);
-            validate_cgmes_extension(io, arg, command_name);
-            file_path1 = arg;
-        } else if (file_path2 == null) {
-            validate_path(io, arg, command_name);
-            validate_cgmes_extension(io, arg, command_name);
-            file_path2 = arg;
         } else {
-            print.stderr(io, command_name ++ ": unexpected argument '{s}'", .{arg});
+            if (sides_count >= sides.len) print.stderr(io, command_name ++ ": exactly two side operands are required", .{});
+            validate_path(io, arg, command_name);
+            validate_cgmes_extension(io, arg, command_name);
+            sides[sides_count] = .{ .path = arg };
+            sides_count += 1;
         }
     }
 
-    if (file_path1 == null) print.stderr(io, command_name ++ ": <file1> is required", .{});
-    if (file_path2 == null) print.stderr(io, command_name ++ ": <file2> is required", .{});
-
-    // A single stdin stream cannot supply two independent operands: the left
-    // model would consume it to EOF and the right would see empty input.
-    if (io_read.is_stdin(file_path1.?) and io_read.is_stdin(file_path2.?)) {
-        print.stderr(io, command_name ++ ": '-' cannot be used for both <file1> and <file2>; stdin provides only one stream", .{});
-    }
-
-    // The format flags select one output format; combinations are ambiguous.
-    const format_flags = @as(u8, @intFromBool(patch)) + @as(u8, @intFromBool(summary)) + @as(u8, @intFromBool(json));
-    if (format_flags > 1) {
-        print.stderr(io, command_name ++ ": --patch, --summary, and --json are mutually exclusive", .{});
-    }
-    const format: Command.DiffFormat = if (patch) .patch else if (summary) .summary else if (json) .json else .eqdiff;
+    const format = validate_diff_options(io, sides, sides_count, patch, summary, json);
 
     return .{ .diff = .{
-        .file_path1 = file_path1.?,
-        .file_path2 = file_path2.?,
+        .sides = sides,
         .eqbd_path = eqbd_path,
         .mrid = mrid,
         .type_filter = type_filter,
@@ -851,12 +890,31 @@ fn parse_diff(io: std.Io, args: *std.process.Args.Iterator) !Command {
     } };
 }
 
+fn validate_diff_options(
+    io: std.Io,
+    sides: [2]model_set.Input,
+    sides_count: u8,
+    patch: bool,
+    summary: bool,
+    json: bool,
+) Command.DiffFormat {
+    if (sides_count != 2) print.stderr(io, "diff: exactly two side operands are required", .{});
+    if (io_read.is_stdin(sides[0].path) and io_read.is_stdin(sides[1].path)) {
+        print.stderr(io, "diff: '-' cannot be used for both <file1> and <file2>; stdin provides only one stream", .{});
+    }
+    const format_flags = @as(u8, @intFromBool(patch)) +
+        @as(u8, @intFromBool(summary)) +
+        @as(u8, @intFromBool(json));
+    if (format_flags > 1) {
+        print.stderr(io, "diff: --patch, --summary, and --json are mutually exclusive", .{});
+    }
+    return if (patch) .patch else if (summary) .summary else if (json) .json else .eqdiff;
+}
+
 fn parse_topology(io: std.Io, args: *std.process.Args.Iterator) !Command {
     const command_name = "topology";
 
-    var eq_path: ?[]const u8 = null;
-    var eqbd_path: ?[]const u8 = null;
-    var ssh_path: ?[]const u8 = null;
+    var inputs: InputBuilder = .{};
     var output_path: ?[]const u8 = null;
 
     while (args.next()) |arg| {
@@ -864,28 +922,21 @@ fn parse_topology(io: std.Io, args: *std.process.Args.Iterator) !Command {
             try print.write(io, help_topology);
             std.process.exit(0);
         }
-        if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
-            eqbd_path = take_path_arg(io, args, command_name, "--eqbd");
-        } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--ssh")) {
-            ssh_path = take_path_arg(io, args, command_name, "--ssh");
+        if (std.mem.eql(u8, arg, "-s")) {
+            inputs.add_flagged(io, args, command_name, "--ssh", .ssh);
+        } else if (parse_kind_flag(&inputs, io, args, command_name, arg)) {
+            continue;
         } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
             output_path = take_output_arg(io, args, command_name);
         } else if (is_flag(arg)) {
             print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
         } else {
-            if (eq_path != null) print.stderr(io, command_name ++ ": unexpected argument '{s}'", .{arg});
-            validate_path(io, arg, command_name);
-            validate_cgmes_extension(io, arg, command_name);
-            eq_path = arg;
+            inputs.add_positional(io, command_name, arg);
         }
     }
 
-    if (eq_path == null) print.stderr(io, command_name ++ ": <file> is required", .{});
-
     return .{ .topology = .{
-        .eq_path = eq_path.?,
-        .eqbd_path = eqbd_path,
-        .ssh_path = ssh_path,
+        .model_inputs = inputs.finish(io, command_name),
         .output_path = output_path,
     } };
 }
@@ -893,8 +944,7 @@ fn parse_topology(io: std.Io, args: *std.process.Args.Iterator) !Command {
 fn parse_validate(io: std.Io, args: *std.process.Args.Iterator) !Command {
     const command_name = "validate";
 
-    var eq_path: ?[]const u8 = null;
-    var eqbd_path: ?[]const u8 = null;
+    var inputs: InputBuilder = .{};
     var output_path: ?[]const u8 = null;
     var list_skipped = false;
     var rules_count: u32 = 0;
@@ -922,8 +972,8 @@ fn parse_validate(io: std.Io, args: *std.process.Args.Iterator) !Command {
             }
             rules_paths[rules_count] = path;
             rules_count += 1;
-        } else if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
-            eqbd_path = take_path_arg(io, args, command_name, "--eqbd");
+        } else if (parse_kind_flag(&inputs, io, args, command_name, arg)) {
+            continue;
         } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
             output_path = take_output_arg(io, args, command_name);
         } else if (std.mem.eql(u8, arg, "--list-skipped")) {
@@ -931,19 +981,17 @@ fn parse_validate(io: std.Io, args: *std.process.Args.Iterator) !Command {
         } else if (is_flag(arg)) {
             print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
         } else {
-            if (eq_path != null) print.stderr(io, command_name ++ ": unexpected argument '{s}'", .{arg});
-            validate_path(io, arg, command_name);
-            validate_cgmes_extension(io, arg, command_name);
-            eq_path = arg;
+            inputs.add_positional(io, command_name, arg);
         }
     }
 
-    if (eq_path == null) print.stderr(io, command_name ++ ": <file> is required", .{});
     if (rules_count == 0) print.stderr(io, command_name ++ ": at least one --rules <ttl|zip> is required", .{});
+    if (inputs.positional_count == 0 and inputs.kind_seen(.eqbd) and !inputs.kind_seen(.eq)) {
+        print.stderr(io, command_name ++ ": --eqbd without a positional merge target requires --eq", .{});
+    }
 
     return .{ .validate = .{
-        .eq_path = eq_path.?,
-        .eqbd_path = eqbd_path,
+        .model_inputs = inputs.finish(io, command_name),
         .output_path = output_path,
         .list_skipped = list_skipped,
         .rules_count = rules_count,

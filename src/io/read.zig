@@ -18,6 +18,20 @@ pub const Diagnostics = struct {
     actual_size: ?u64 = null,
 };
 
+pub const parts_per_input_max = 16;
+pub const zip_entries_scanned_max = 1024;
+
+pub const Part = struct {
+    /// Owned diagnostic name: the path for XML, `path!entry.xml` for ZIP.
+    name: []u8,
+    xml: []u8,
+
+    pub fn deinit(self: Part, gpa: std.mem.Allocator) void {
+        gpa.free(self.name);
+        gpa.free(self.xml);
+    }
+};
+
 /// The path token that means "read the primary input from stdin", letting cimd
 /// be composed in a pipeline (e.g. `unzip -p eq.zip | cimd types -`).
 pub const stdin_token = "-";
@@ -28,6 +42,65 @@ pub fn is_stdin(file_path: []const u8) bool {
 
 pub fn read_path(io: std.Io, gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
     return read_path_options(io, gpa, file_path, .{});
+}
+
+/// Read every XML document represented by one CLI input. ZIP entry order is
+/// central-directory order and is retained for deterministic reporting.
+pub fn read_parts(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    file_path: []const u8,
+    max_bytes: u64,
+) ![]Part {
+    assert(max_bytes <= max_in_memory_input_bytes);
+    if (is_stdin(file_path)) {
+        const xml = try read_stdin(io, gpa, .{ .max_bytes = max_bytes });
+        errdefer gpa.free(xml);
+        const name = try gpa.dupe(u8, file_path);
+        const result = try gpa.alloc(Part, 1);
+        result[0] = .{ .name = name, .xml = @constCast(xml) };
+        return result;
+    }
+
+    const cwd = std.Io.Dir.cwd();
+    const file = try cwd.openFile(io, file_path, .{});
+    defer file.close(io);
+
+    if (!(try zip.is_zip_file(io, file))) {
+        const xml = try read_file_to_memory_options(io, gpa, file, .{
+            .max_bytes = max_bytes,
+        });
+        errdefer gpa.free(xml);
+        const name = try gpa.dupe(u8, file_path);
+        const result = try gpa.alloc(Part, 1);
+        result[0] = .{ .name = name, .xml = xml };
+        return result;
+    }
+
+    var zip_buffer: [256 * 1024]u8 = undefined;
+    var file_reader = file.reader(io, &zip_buffer);
+    var extracted = try zip.extract_matching_files_to_memory(gpa, &file_reader, .{
+        .extension = ".xml",
+        .entries_scanned_max = zip_entries_scanned_max,
+        .files_max = parts_per_input_max,
+        .max_uncompressed_bytes = max_bytes,
+    });
+    defer extracted.deinit(gpa);
+    errdefer for (extracted.items) |entry| entry.deinit(gpa);
+
+    const result = try gpa.alloc(Part, extracted.items.len);
+    errdefer gpa.free(result);
+    var initialized: u32 = 0;
+    errdefer for (result[0..initialized]) |part| part.deinit(gpa);
+    for (extracted.items, 0..) |entry, i| {
+        const name = try std.fmt.allocPrint(gpa, "{s}!{s}", .{ file_path, entry.filename });
+        gpa.free(entry.filename);
+        extracted.items[i].filename = &.{};
+        result[i] = .{ .name = name, .xml = entry.data };
+        extracted.items[i].data = &.{};
+        initialized += 1;
+    }
+    return result;
 }
 
 pub fn read_path_options(
