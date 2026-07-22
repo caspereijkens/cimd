@@ -19,6 +19,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const crc32 = @import("crc32.zig");
 
 // returns true if 'file' starts with PK34.
 pub fn is_zip_file(io: std.Io, file: std.Io.File) !bool {
@@ -207,7 +208,7 @@ fn extract_entry_with_filename(
     errdefer gpa.free(data);
 
     try read_entry_data(entry, stream, local_data_header_offset, data);
-    if (std.hash.Crc32.hash(data) != entry.crc32) return error.ZipCrcMismatch;
+    if (crc32.hash(data) != entry.crc32) return error.ZipCrcMismatch;
 
     return .{
         .filename = filename,

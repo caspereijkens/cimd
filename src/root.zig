@@ -43,6 +43,7 @@ comptime {
     _ = @import("topology/cross_ref.zig");
     _ = @import("cgmes/ssh.zig");
     _ = @import("io/zip.zig");
+    _ = @import("io/crc32.zig");
     _ = @import("cgmes/tp.zig");
     _ = @import("convert/network.zig");
     _ = @import("convert/transformer.zig");
