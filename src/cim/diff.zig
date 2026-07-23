@@ -14,11 +14,11 @@
 
 const std = @import("std");
 
-const EQ = @import("cgmes/eq.zig").EQ;
-const tag_index = @import("cgmes/tag_index.zig");
-const cim_types = @import("cgmes/cim_types.zig");
+const CimDocument = @import("document.zig").CimDocument;
+const tag_index = @import("tag_index.zig");
+const cim_types = @import("cim_types.zig");
 const core = @import("diff_core.zig");
-const print = @import("io/print.zig");
+const writer_result = @import("writer.zig");
 
 pub const SingleDiffStatus = core.SingleDiffStatus;
 
@@ -46,8 +46,8 @@ pub const DiffOptions = struct {
 /// Returns true when any differences were found (so main.zig can exit 1).
 pub fn diff_models(
     gpa: std.mem.Allocator,
-    model1: *EQ,
-    model2: *EQ,
+    model1: *CimDocument,
+    model2: *CimDocument,
     path1: []const u8,
     path2: []const u8,
     options: DiffOptions,
@@ -80,11 +80,11 @@ pub fn diff_models(
 
 /// In text mode, buffer all object lines so the @@ TypeName @@ header can be
 /// prepended after we know whether this type has any diffs. In JSON/summary
-/// mode write directly to the real writer — no header is needed.
+/// mode write directly to the real writer -- no header is needed.
 fn diff_type(
     gpa: std.mem.Allocator,
-    model1: *EQ,
-    model2: *EQ,
+    model1: *CimDocument,
+    model2: *CimDocument,
     type_name: []const u8,
     options: DiffOptions,
     writer: *std.Io.Writer,
@@ -98,7 +98,7 @@ fn diff_type(
     const renderer = Renderer{ .format = .patch, .writer = &screen.writer };
     // The renderer writes into the in-memory `screen` buffer, so a WriteFailed
     // here is allocation exhaustion, not an output-stream error.
-    const stats = try print.allocating_writer_result(&screen, core.match_type(gpa, model1, model2, type_name, &renderer));
+    const stats = try writer_result.allocating_writer_result(&screen, core.match_type(gpa, model1, model2, type_name, &renderer));
     if (stats.any()) {
         try writer.print("\n@@ {s} @@\n", .{type_name});
         try writer.writeAll(screen.written());
@@ -149,8 +149,8 @@ const Renderer = struct {
 /// the same classification (core.match_single) and rendering as diff_models.
 pub fn diff_single(
     gpa: std.mem.Allocator,
-    model1: *EQ,
-    model2: *EQ,
+    model1: *CimDocument,
+    model2: *CimDocument,
     mrid: []const u8,
     path1: []const u8,
     path2: []const u8,
@@ -251,7 +251,7 @@ const FieldChangeIterator = struct {
             switch (std.mem.order(u8, old.?.name, new.?.name)) {
                 .eq => {
                     // A literal/reference kind flip is a removal plus an
-                    // addition, not a value change — pairing it would render
+                    // addition, not a value change -- pairing it would render
                     // a misleading from == to entry.
                     if (old.?.kind != new.?.kind) {
                         self.i += 1;

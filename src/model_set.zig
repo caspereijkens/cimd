@@ -1,15 +1,17 @@
-//! Model-set assembly between argv inputs and the existing EQ/TP/SSH model
-//! types. Extraction and header classification are eager; DocumentSet model
+//! Model-set assembly between argv inputs and the model types: a primary
+//! CimDocument plus the CGMES TP/SSH overlays. Extraction and header classification are eager; DocumentSet model
 //! parsing is deliberately lazy.
 
 const std = @import("std");
+const cim = @import("cim/cim.zig");
 const io_read = @import("io/read.zig");
 const print = @import("io/print.zig");
-const profile = @import("cgmes/profile.zig");
-const diagnostics_mod = @import("cgmes/diagnostics.zig");
-const EQ = @import("cgmes/eq.zig").EQ;
-const TP = @import("cgmes/tp.zig").TP;
-const SSH = @import("cgmes/ssh.zig").SSH;
+const profile = cim.profile;
+// `_mod` suffix: local `diagnostics` variables would shadow it.
+const diagnostics_mod = cim.diagnostics;
+const CimDocument = cim.CimDocument;
+const TP = cim.TP;
+const SSH = cim.SSH;
 const validate = @import("validate.zig");
 
 const assert = std.debug.assert;
@@ -60,13 +62,17 @@ pub const LoadedTP = struct { tp: TP, source: Source };
 pub const LoadedSSH = struct { ssh: SSH, source: Source };
 
 pub const MergedModelSet = struct {
-    model: EQ,
+    model: CimDocument,
     segments: [2]validate.DataSegment,
     segments_count: u8,
     tp: ?LoadedTP,
     ssh: ?LoadedSSH,
     primary_source: Source,
     boundary_source: ?Source,
+    /// Profile the primary part declared (or was routed to), or null when it
+    /// states none. `diff` uses it to reject comparing two different profiles;
+    /// commands whose primary is EQ by construction can ignore it.
+    primary_kind: ?Kind,
 
     pub fn deinit(self: *MergedModelSet, gpa: std.mem.Allocator) void {
         if (self.ssh) |*loaded| {
@@ -332,9 +338,9 @@ fn parse_eq(
     command_name: []const u8,
     xml: []u8,
     segments: []const validate.DataSegment,
-) EQ {
+) CimDocument {
     var diagnostics: diagnostics_mod.Diagnostics = .{};
-    return EQ.initWithDiagnostics(gpa, xml, &diagnostics) catch |err|
+    return CimDocument.initWithDiagnostics(gpa, xml, &diagnostics) catch |err|
         report_parse_error(io, command_name, segments, err, diagnostics);
 }
 
@@ -512,7 +518,7 @@ fn resolve_primary(
     const records = collected.records.items;
     var primary_index: ?u32 = null;
     switch (purpose) {
-        .convert, .topology, .diff_side => {
+        .convert, .topology => {
             primary_index = slots[@intFromEnum(Kind.eq)];
             if (primary_index == null and inputs[0].override == null and collected.input_part_counts[0] == 1) {
                 const candidate = find_input_record(records, 0).?;
@@ -525,6 +531,34 @@ fn resolve_primary(
                     .{ command_name, uri, record.part.name },
                 );
                 print.data_error(io, "{s}: an EQ part is required", .{command_name});
+            }
+        },
+        // A diff side is one document compared against a document of the same
+        // profile, and mRID matching plus statement comparison is profile-
+        // agnostic: SSH-vs-SSH (switch states, setpoints) and TP-vs-TP are as
+        // meaningful as EQ-vs-EQ. So a lone part is the primary whatever it
+        // declares. A multi-part bundle still resolves to its EQ part, keeping
+        // whole-set diffs on grid data rather than an arbitrary member.
+        .diff_side => {
+            if (collected.input_part_counts[0] == 1) {
+                const candidate = find_input_record(records, 0).?;
+                if (records[candidate].route != null or fallback_eligible(records[candidate])) {
+                    primary_index = candidate;
+                }
+            } else {
+                primary_index = slots[@intFromEnum(Kind.eq)];
+            }
+            if (primary_index == null) {
+                for (records) |record| if (unknown_uri(record)) |uri| print.data_error(
+                    io,
+                    "{s}: unknown profile URI '{s}' in '{s}'; use a kind flag to route it explicitly",
+                    .{ command_name, uri, record.part.name },
+                );
+                print.data_error(
+                    io,
+                    "{s}: side '{s}' has no EQ part; give a single-profile file or route one with a kind flag",
+                    .{ command_name, inputs[0].path },
+                );
             }
         },
         .query => {
@@ -584,6 +618,16 @@ fn assemble_merged(
 ) !MergedModelSet {
     const records = collected.records.items;
     const selection = assembly_selection(slots, primary, purpose);
+    // `diff --eqbd` is a shared boundary for two EQ sides; no other profile has
+    // one to resolve against, so merging it in would be nonsense rather than a
+    // no-op. Mirrors the plan_documents wording in resolve_merge_target.
+    if (purpose == .diff_side and selection.eqbd != null) {
+        if (records[primary].route) |kind| if (kind != .eq) print.data_error(
+            io,
+            "{s}: cannot merge a boundary into {s} part '{s}'",
+            .{ command_name, @tagName(kind), records[primary].part.name },
+        );
+    }
     try skip_unused(io, gpa, command_name, collected, primary, selection);
 
     var primary_part = collected.records.items[primary].take();
@@ -639,6 +683,7 @@ fn assemble_merged(
         .ssh = loaded_ssh,
         .primary_source = primary_source,
         .boundary_source = boundary_source,
+        .primary_kind = records[primary].route,
     };
 }
 
@@ -703,7 +748,7 @@ const DocumentPlan = struct {
 };
 
 pub const LoadedDocument = struct {
-    model: EQ,
+    model: CimDocument,
     segments: [2]validate.DataSegment,
     segments_count: u8,
     plan_index: u32,
@@ -738,8 +783,8 @@ pub const DocumentSet = struct {
         diagnostics.segments_count = description.segments_count;
         const materialized = try materialize_parts(gpa, &plan.first, if (plan.second) |*part| part else null);
 
-        // EQ.init owns `xml` from this point on, including its error paths.
-        const model = EQ.initWithDiagnostics(gpa, materialized.xml, &diagnostics.model) catch |err| {
+        // CimDocument.init owns `xml` from this point on, including its error paths.
+        const model = CimDocument.initWithDiagnostics(gpa, materialized.xml, &diagnostics.model) catch |err| {
             plan.state = .consumed;
             self.next_index += 1;
             return err;

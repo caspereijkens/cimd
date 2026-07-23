@@ -1,10 +1,11 @@
 const std = @import("std");
+const cim = @import("../cim/cim.zig");
 const iidm = @import("../iidm/model.zig");
-const tag_index = @import("../cgmes/tag_index.zig");
-const utils = @import("../cgmes/ids.zig");
-const EQ = @import("../cgmes/eq.zig").EQ;
+const tag_index = cim.tag_index;
+const utils = cim.ids;
+const CimDocument = cim.CimDocument;
 const resolve = @import("resolve.zig");
-const parse = @import("../cgmes/parse.zig");
+const parse = cim.parse;
 const Topology = resolve.Topology;
 
 const assert = std.debug.assert;
@@ -98,7 +99,7 @@ pub const CrossRef = struct {
 
     pub fn build(
         gpa: std.mem.Allocator,
-        model: *const EQ,
+        model: *const CimDocument,
         boundary_base_voltage_ids: std.StringHashMapUnmanaged(void),
     ) !CrossRef {
         var index = CrossRef.empty();
@@ -116,7 +117,7 @@ pub const CrossRef = struct {
 
     pub fn build_for_topology(
         gpa: std.mem.Allocator,
-        model: *const EQ,
+        model: *const CimDocument,
         boundary_base_voltage_ids: std.StringHashMapUnmanaged(void),
     ) !CrossRef {
         var index = CrossRef.empty();
@@ -195,14 +196,14 @@ test "cross references reject a model without terminals" {
         \\</rdf:RDF>
     ;
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
     try std.testing.expectError(error.MissingTerminals, CrossRef.build(gpa, &model, boundary_ids));
 }
 
-fn build_limit_types(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef) !void {
+fn build_limit_types(gpa: std.mem.Allocator, model: *const CimDocument, index: *CrossRef) !void {
     assert(index.limit_types.count() == 0);
     const objects = model.get_objects_by_type("OperationalLimitType");
     try index.limit_types.ensureTotalCapacity(gpa, @intCast(objects.len));
@@ -218,7 +219,7 @@ fn build_limit_types(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef)
     assert(index.limit_types.count() == objects.len);
 }
 
-fn build_terminals(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef) !void {
+fn build_terminals(gpa: std.mem.Allocator, model: *const CimDocument, index: *CrossRef) !void {
     assert(index.terminal_equipment.count() == 0);
 
     const objects = model.get_objects_by_type("Terminal");
@@ -256,7 +257,7 @@ fn build_terminals(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef) !
 
     // Sort each equipment's terminal list by sequenceNumber so that items[0] = seq 1,
     // items[1] = seq 2, etc. Terminals arrive in XML parse order which can be reversed.
-    // Single-terminal equipment (loads, generators, shunts) is skipped — no-op sort.
+    // Single-terminal equipment (loads, generators, shunts) is skipped -- no-op sort.
     var sort_it = index.equipment_terminals.valueIterator();
     while (sort_it.next()) |list| {
         if (list.items.len > 1) std.mem.sort(TerminalInfo, list.items, {}, struct {
@@ -271,7 +272,7 @@ fn build_terminals(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef) !
     assert(index.terminal_conn_node.count() <= objects.len);
 }
 
-fn build_connectivity(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef) !void {
+fn build_connectivity(gpa: std.mem.Allocator, model: *const CimDocument, index: *CrossRef) !void {
     if (index.terminal_equipment.count() == 0) return error.MissingTerminals;
     assert(index.conn_node_container.count() == 0);
     assert(index.busbar_section_in_parse_order.items.len == 0);
@@ -299,7 +300,7 @@ fn build_connectivity(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef
     for (conn_nodes) |conn_node| {
         const container_ref = try model.view(conn_node).getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
         var container_id = strip_hash(container_ref);
-        // Bay is not a valid equipment-placement container — resolve to the parent VoltageLevel.
+        // Bay is not a valid equipment-placement container -- resolve to the parent VoltageLevel.
         if (model.getObjectById(container_id)) |container_obj| {
             if (std.mem.eql(u8, container_obj.type_name, "Bay")) {
                 if (try container_obj.getReference("Bay.VoltageLevel")) |voltage_level_ref| {
@@ -320,7 +321,7 @@ fn build_connectivity(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef
     assert(index.busbar_section_in_parse_order.items.len <= busbar_sections.len);
 }
 
-fn build_operational_limits(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef) !void {
+fn build_operational_limits(gpa: std.mem.Allocator, model: *const CimDocument, index: *CrossRef) !void {
     assert(index.terminal_limit_sets.count() == 0);
     assert(index.current_limits_by_set.count() == 0);
 
@@ -354,7 +355,7 @@ fn build_operational_limits(gpa: std.mem.Allocator, model: *const EQ, index: *Cr
     assert(index.current_limits_by_set.count() <= current_lims.len);
 }
 
-fn build_curve_points(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef) !void {
+fn build_curve_points(gpa: std.mem.Allocator, model: *const CimDocument, index: *CrossRef) !void {
     assert(index.curve_points.count() == 0);
     const curve_datas = model.get_objects_by_type("CurveData");
     try index.curve_points.ensureTotalCapacity(gpa, @intCast(curve_datas.len));
@@ -387,7 +388,7 @@ fn build_curve_points(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef
 // Then if the two CN Containers are different, we union their VoltageLevels.
 // VoltageLevel union basically puts the VoltageLevel with the lower mRID as the parent.
 pub fn process_switch_type(
-    model: *const EQ,
+    model: *const CimDocument,
     index: *const CrossRef,
     switches: []const CimObject,
     parent: *std.StringHashMapUnmanaged([]const u8),
@@ -412,7 +413,7 @@ pub fn process_switch_type(
     }
 }
 
-pub fn build_voltage_limits(gpa: std.mem.Allocator, model: *const EQ, index: *CrossRef, topology: *const Topology) !void {
+pub fn build_voltage_limits(gpa: std.mem.Allocator, model: *const CimDocument, index: *CrossRef, topology: *const Topology) !void {
     assert(index.voltage_level_limits.count() == 0);
 
     const voltage_limits = model.get_objects_by_type("VoltageLimit");

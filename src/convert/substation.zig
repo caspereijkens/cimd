@@ -1,11 +1,12 @@
 const std = @import("std");
+const cim = @import("../cim/cim.zig");
 const iidm = @import("../iidm/model.zig");
-const EQ = @import("../cgmes/eq.zig").EQ;
+const CimDocument = cim.CimDocument;
 const cross_ref = @import("../topology/cross_ref.zig");
-const tag_index = @import("../cgmes/tag_index.zig");
-const utils = @import("../cgmes/ids.zig");
+const tag_index = cim.tag_index;
+const utils = cim.ids;
 const resolve = @import("../topology/resolve.zig");
-const parse = @import("../cgmes/parse.zig");
+const parse = cim.parse;
 
 const assert = std.debug.assert;
 const Topology = resolve.Topology;
@@ -15,7 +16,7 @@ const CimObjectView = tag_index.CimObjectView;
 const CrossRef = cross_ref.CrossRef;
 const strip_hash = utils.strip_hash;
 
-/// Index into `iidm.Network.substations`. `u32` is intentional — narrower than
+/// Index into `iidm.Network.substations`. `u32` is intentional -- narrower than
 /// `usize` per NASA Power of 10 (explicitly-sized integers); the upper bound is
 /// enforced by `error.TooManySubstations` in `append_substation`.
 pub const SubstationIndex = u32;
@@ -26,7 +27,7 @@ const RegionChain = struct {
     region: ?CimObjectView = null,
 };
 
-fn resolve_region_chain(model: *const EQ, substation: CimObjectView) error{MalformedTag}!RegionChain {
+fn resolve_region_chain(model: *const CimDocument, substation: CimObjectView) error{MalformedTag}!RegionChain {
     const sub_region_ref = try substation.getReference("Substation.Region") orelse return .{};
     const sub_region = model.getObjectById(strip_hash(sub_region_ref)) orelse return .{};
 
@@ -59,7 +60,7 @@ fn resolve_mrid(object: CimObjectView) error{MalformedTag}![]const u8 {
 // Records the substation's index (and all its stub IDs) into sub_id_map.
 fn append_substation(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     topology: *const Topology,
     substation: CimObjectView,
     network: *iidm.Network,
@@ -158,7 +159,7 @@ test "append_substation releases partial ownership on allocation failure" {
                 \\  </cim:Substation>
                 \\</rdf:RDF>
             ;
-            var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+            var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
             defer model.deinit(gpa);
 
             var topology = Topology.empty();
@@ -193,7 +194,7 @@ test "append_substation releases partial ownership on allocation failure" {
 
 pub fn convert_substations(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     topology: *const Topology,
     network: *iidm.Network,
     substation_id_map: *std.StringHashMapUnmanaged(SubstationIndex),

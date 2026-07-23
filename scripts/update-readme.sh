@@ -13,7 +13,7 @@ CIMD="$ROOT/zig-out/bin/cimd"
 README="$ROOT/README.md"
 
 if [[ ! -x "$CIMD" ]]; then
-  echo "error: $CIMD not found — run 'zig build' first" >&2
+  echo "error: $CIMD not found -- run 'zig build' first" >&2
   exit 1
 fi
 

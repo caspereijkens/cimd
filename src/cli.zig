@@ -52,7 +52,7 @@ const help_main = std.fmt.comptimePrint(
     \\  get        Fetch a single object or list by type from any CIM file
     \\  refs       List objects that reference a CIM object
     \\  types      List CIM types present in a CIM file
-    \\  diff       Semantic diff between two EQ profiles
+    \\  diff       Semantic diff between two CIM files of the same profile
     \\  topology   Generate TopologicalNodes from EQ (+SSH)
     \\  validate   Validate a CGMES file against a SHACL rule set
     \\  qocdc      Run Quality of CGMES Datasets and Calculations checks
@@ -106,7 +106,7 @@ const help_browse = std.fmt.comptimePrint(
     \\<mrid> may be a prefix of a full mRID; the leading underscore is optional.
     \\The prefix is matched against EQ objects and, when --tp is given,
     \\TP-added objects (e.g. TopologicalNodes). When a prefix matches more than
-    \\one object, browse opens a picker menu — flat list when few candidates,
+    \\one object, browse opens a picker menu -- flat list when few candidates,
     \\grouped by type when many.
     \\
     \\Arguments:
@@ -139,7 +139,7 @@ const help_get = std.fmt.comptimePrint(
     \\  <mrid> may be any prefix of a full mRID. For the common rdf:ID form
     \\  a leading underscore is optional: "_be60" and "be60" are equivalent.
     \\  For FullModel-style ids carried in rdf:about (e.g. "urn:uuid:484c..."),
-    \\  pass the prefix literally — "urn", "urn:uuid:484c", etc. all work. When
+    \\  pass the prefix literally -- "urn", "urn:uuid:484c", etc. all work. When
     \\  a prefix matches multiple objects, cimd prints the candidates and exits
     \\  without selecting one. Large match lists show a per-type
     \\  breakdown instead. With --json, an envelope
@@ -254,14 +254,22 @@ const help_types = std.fmt.comptimePrint(
 const help_diff =
     \\Usage: cimd diff <file1> <file2> [options]
     \\
-    \\Compare two CGMES EQ profiles semantically. Objects are matched by mRID
+    \\Compare two CGMES profiles semantically. Objects are matched by mRID
     \\across both files; properties are compared field-by-field. XML attribute
     \\order and whitespace differences are ignored.
+    \\
+    \\Both sides must be the same profile, and both must say so: if one file
+    \\declares a profile and the other declares none, route the silent one with
+    \\its kind flag. Any profile can be compared -- EQ, SSH (switch states,
+    \\setpoints), TP, SV, DL, DY, GL -- though the result is only useful where
+    \\mRIDs are stable between exports: SSH and TP patch existing EQ objects
+    \\and diff cleanly, while SV objects are re-identified on every export and
+    \\will read as wholly added and removed.
     \\
     \\By default an EQDIFF difference model (IEC 61970-552) is written to
     \\stdout (or --output): dm:forwardDifferences holds the statements to add
     \\going from <file1> to <file2>, dm:reverseDifferences the statements to
-    \\remove. Output is deterministic — the same inputs always produce a
+    \\remove. Output is deterministic -- the same inputs always produce a
     \\byte-identical file. Use --patch, --json, or --summary for a
     \\report-style view instead.
     \\
@@ -273,12 +281,19 @@ const help_diff =
 ++ help_failure_exit_codes ++
     \\
     \\Arguments:
-    \\  <file1>    First EQ profile (XML or ZIP)
-    \\  <file2>    Second EQ profile (XML or ZIP)
+    \\  <file1>    First profile (XML or ZIP); a bundle resolves to its EQ part
+    \\  <file2>    Second profile (XML or ZIP); same profile as <file1>
     \\
     \\Options:
-    \\  -b, --eqbd <file>       EQBD boundary profile (applied to both models)
-    \\      --eq <file>         Supply either side explicitly as EQ (up to twice)
+    \\  -b, --eqbd <file>       EQBD boundary profile (EQ sides only; applied
+    \\                          to both models)
+    \\      --eq, --ssh, --tp, --tpbd, --sv, --dl, --dy, --gl <file>
+    \\                          Supply a side explicitly as that profile, for
+    \\                          parts whose header states none or names an
+    \\                          unrecognized profile (up to twice). The choice
+    \\                          only has to agree between the two sides, so a
+    \\                          boundary file takes --eq here -- on diff,
+    \\                          --eqbd names the shared boundary instead
     \\  -i, --mrid <id>         Diff a single object by mRID
     \\  -t, --type <name>       Restrict diff to a CIM type and its subtypes
     \\                          With --mrid: verify the object is of this type
@@ -295,6 +310,7 @@ const help_diff =
     \\  cimd diff eq_v1.zip eq_v2.zip -t PowerTransformer
     \\  cimd diff eq_v1.zip eq_v2.zip -j | jq .
     \\  cimd diff eq_v1.zip eq_v2.zip -s
+    \\  cimd diff ssh_v1.xml ssh_v2.xml -p -t Breaker
     \\
 ;
 
@@ -302,7 +318,7 @@ const help_topology = std.fmt.comptimePrint(
     \\Usage: cimd topology <file>... [options]
     \\
     \\Generate TopologicalNodes from an EQ profile and optional SSH. Each TN is
-    \\a connected component of ConnectivityNodes joined by *closed* switches —
+    \\a connected component of ConnectivityNodes joined by *closed* switches --
     \\equivalent to a CGMES TP profile's terminal→TopologicalNode mapping.
     \\Output is JSON on stdout.
     \\
@@ -328,8 +344,8 @@ const help_validate = std.fmt.comptimePrint(
     \\Usage: cimd validate <file>... --rules <ttl|zip> [options]
     \\
     \\Validate a CGMES instance file against a SHACL rule set (e.g. the
-    \\ENTSO-E application-profile constraints). Any profile works — EQ, SSH,
-    \\TP, SV — supply the rule sets published for that profile. Rule sets
+    \\ENTSO-E application-profile constraints). Any profile works -- EQ, SSH,
+    \\TP, SV -- supply the rule sets published for that profile. Rule sets
     \\are external inputs: point --rules at any SHACL/Turtle file, or a zip
     \\containing one. Rules the engine cannot execute (sh:sparql above all)
     \\are counted and named in the report, never silently dropped.
@@ -848,10 +864,8 @@ fn parse_diff(io: std.Io, args: *std.process.Args.Iterator) !Command {
             try print.write(io, help_diff);
             std.process.exit(0);
         }
-        if (std.mem.eql(u8, arg, "--eq")) {
-            if (sides_count >= sides.len) print.stderr(io, command_name ++ ": exactly two side operands are required", .{});
-            sides[sides_count] = .{ .path = take_path_arg(io, args, command_name, "--eq"), .override = .eq };
-            sides_count += 1;
+        if (parse_diff_side(io, args, arg, &sides, &sides_count)) {
+            // Side routed by an explicit profile flag.
         } else if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--eqbd")) {
             if (eqbd_path != null) print.stderr(io, command_name ++ ": --eqbd may be specified at most once", .{});
             eqbd_path = take_path_arg(io, args, command_name, "--eqbd");
@@ -888,6 +902,58 @@ fn parse_diff(io: std.Io, args: *std.process.Args.Iterator) !Command {
         .output_path = output_path,
         .format = format,
     } };
+}
+
+/// Side-routing flags for `diff`: each names the profile a side operand should
+/// be read as, for parts whose FullModel declares none (or none we recognize).
+/// `--eqbd` is deliberately absent -- on `diff` that flag names the boundary
+/// shared by both sides, not a side.
+const diff_side_flags = [_]KindFlag{
+    .{ .name = "--eq", .kind = .eq },
+    .{ .name = "--ssh", .kind = .ssh },
+    .{ .name = "--tp", .kind = .tp },
+    .{ .name = "--tpbd", .kind = .tpbd },
+    .{ .name = "--sv", .kind = .sv },
+    .{ .name = "--dl", .kind = .dl },
+    .{ .name = "--dy", .kind = .dy },
+    .{ .name = "--gl", .kind = .gl },
+};
+
+/// Consume `arg` as a side-routing flag and its path, returning false when it
+/// is not one. Sides fill in argv order, so a flagged side takes the position
+/// it appears in: `diff a.xml --ssh b.xml` diffs a.xml (left) against b.xml.
+fn parse_diff_side(
+    io: std.Io,
+    args: *std.process.Args.Iterator,
+    arg: []const u8,
+    sides: *[2]model_set.Input,
+    sides_count: *u8,
+) bool {
+    inline for (diff_side_flags) |flag| {
+        if (std.mem.eql(u8, arg, flag.name)) {
+            if (sides_count.* >= sides.len) {
+                print.stderr(io, "diff: exactly two side operands are required", .{});
+            }
+            sides[sides_count.*] = .{
+                .path = take_path_arg(io, args, "diff", flag.name),
+                .override = flag.kind,
+            };
+            sides_count.* += 1;
+            return true;
+        }
+    }
+    return false;
+}
+
+test "every profile kind but the boundary can route a diff side" {
+    inline for (@typeInfo(model_set.Kind).@"enum".fields) |field| {
+        const kind: model_set.Kind = @enumFromInt(field.value);
+        var found = false;
+        for (diff_side_flags) |flag| {
+            if (flag.kind == kind) found = true;
+        }
+        try std.testing.expectEqual(kind != .eqbd, found);
+    }
 }
 
 fn validate_diff_options(

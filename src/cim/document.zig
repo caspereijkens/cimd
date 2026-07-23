@@ -1,14 +1,38 @@
+//! CimDocument -- one parsed CIM document, and cimd's primary parse target.
+//!
+//! Profile-agnostic: it indexes top-level objects carrying `rdf:ID` or
+//! `rdf:about`, which is every CGMES profile (EQ, SSH, TP, SV, DL, DY, GL) and
+//! any other CIM document of that shape. Nothing here knows what a profile is;
+//! routing a file to a profile is cgmes/profile.zig's job, and the
+//! CGMES-specific overlay reads live in cgmes/ssh.zig and cgmes/tp.zig.
+//!
+//! It is *not* a general RDF/XML parser, and does not resolve namespaces.
+//! Matching is on literal qualified names: `rdf:ID="`, `rdf:about="`, and a
+//! `prefix:LocalName` tag shape. A document that binds the RDF namespace to
+//! any prefix other than `rdf` is therefore not recognized -- and fails
+//! quietly, indexing zero objects rather than erroring, because "no tag here
+//! declares an id" is also what an ordinary non-object element looks like.
+//! Every CGMES export in the wild uses the `rdf:` binding, so this buys a
+//! single-pass scan with no namespace bookkeeping; the cost is that supporting
+//! other bindings later means resolving prefixes at parse time, not a doc fix.
+//!
+//! Three indexes are built in one pass over the tag boundaries: objects by
+//! document order, mRID to object, and type name to a contiguous range of
+//! objects (so `get_objects_by_type` is a slice, not a scan). Every string it
+//! hands back borrows from the `xml` buffer the document owns, so views stay
+//! valid exactly as long as the document does.
+
 const std = @import("std");
 const tag_index = @import("tag_index.zig");
 pub const CimObject = tag_index.CimObject;
 const TagBoundary = tag_index.TagBoundary;
-const cgmes_ids = @import("ids.zig");
+const ids = @import("ids.zig");
 const cim_types = @import("cim_types.zig");
 
 const assert = std.debug.assert;
 pub const Diagnostics = @import("diagnostics.zig").Diagnostics;
 
-pub const EQ = struct {
+pub const CimDocument = struct {
     objects: []CimObject,
     id_to_index: std.StringHashMap(u32),
     type_index: std.StringHashMap(TypeRange),
@@ -31,11 +55,11 @@ pub const EQ = struct {
 
     /// Takes ownership of `xml`: on success the model owns it (freed by deinit),
     /// on error it is freed before returning. Callers never need to clean up `xml`.
-    pub fn init(gpa: std.mem.Allocator, xml: []const u8) !EQ {
+    pub fn init(gpa: std.mem.Allocator, xml: []const u8) !CimDocument {
         return initWithDiagnostics(gpa, xml, null);
     }
 
-    pub fn initWithDiagnostics(gpa: std.mem.Allocator, xml: []const u8, diagnostics: ?*Diagnostics) !EQ {
+    pub fn initWithDiagnostics(gpa: std.mem.Allocator, xml: []const u8, diagnostics: ?*Diagnostics) !CimDocument {
         errdefer gpa.free(xml);
         if (xml.len == 0) return error.EmptyInput;
 
@@ -115,7 +139,7 @@ pub const EQ = struct {
             cursor.* += 1;
         }
 
-        // Every cursor must now sit at the end of its type's range — otherwise
+        // Every cursor must now sit at the end of its type's range -- otherwise
         // pass 1 and pass 3 disagreed on how many objects each type holds.
         var cursor_it = write_cursors.iterator();
         while (cursor_it.next()) |entry| {
@@ -146,7 +170,7 @@ pub const EQ = struct {
         };
     }
 
-    pub fn deinit(self: *EQ, gpa: std.mem.Allocator) void {
+    pub fn deinit(self: *CimDocument, gpa: std.mem.Allocator) void {
         self.type_index.deinit();
         self.id_to_index.deinit();
         gpa.free(self.objects);
@@ -155,8 +179,8 @@ pub const EQ = struct {
     }
 
     /// Bind a stored CimObject to this model's XML context for property access.
-    pub fn view(self: EQ, obj: CimObject) tag_index.CimObjectView {
-        // Catch the cross-EQ mix-up: passing a CimObject that was indexed against
+    pub fn view(self: CimDocument, obj: CimObject) tag_index.CimObjectView {
+        // Catch the cross-document mix-up: passing a CimObject that was indexed against
         // a different model's boundaries would otherwise slice into the wrong XML.
         assert(obj.object_tag_idx < self.boundaries.len);
         assert(obj.closing_tag_idx < self.boundaries.len);
@@ -172,7 +196,7 @@ pub const EQ = struct {
         };
     }
 
-    pub fn getObjectById(self: EQ, id: []const u8) ?tag_index.CimObjectView {
+    pub fn getObjectById(self: CimDocument, id: []const u8) ?tag_index.CimObjectView {
         const idx = self.id_to_index.get(id) orelse return null;
         const result = self.view(self.objects[idx]);
         // Pair with the index lookup: the stored object's id must round-trip.
@@ -185,30 +209,30 @@ pub const EQ = struct {
     /// `ids.id_prefix_matches`: literal startsWith (so FullModel `urn:uuid:...`
     /// ids resolve) plus a leading-underscore convenience for the rdf:ID form.
     pub fn get_object_by_id_prefix(
-        self: EQ,
+        self: CimDocument,
         gpa: std.mem.Allocator,
         id_prefix: []const u8,
     ) ![]const tag_index.CimObject {
         var matches: std.ArrayList(CimObject) = .empty;
         errdefer matches.deinit(gpa);
         for (self.objects) |obj| {
-            if (cgmes_ids.id_prefix_matches(obj.id, id_prefix)) try matches.append(gpa, obj);
+            if (ids.id_prefix_matches(obj.id, id_prefix)) try matches.append(gpa, obj);
         }
         const out = try matches.toOwnedSlice(gpa);
         // Postcondition pairs with the filter loop: a regression in the prefix
         // check would let foreign ids leak through.
-        for (out) |m| assert(cgmes_ids.id_prefix_matches(m.id, id_prefix));
+        for (out) |m| assert(ids.id_prefix_matches(m.id, id_prefix));
         return out;
     }
 
-    pub fn get_objects_by_type(self: EQ, type_name: []const u8) []const CimObject {
+    pub fn get_objects_by_type(self: CimDocument, type_name: []const u8) []const CimObject {
         const range = self.type_index.get(type_name) orelse return &[_]CimObject{};
         return self.objects[range.start .. range.start + range.len];
     }
 
     /// Count objects matching `requested_type`, including CIM subtypes.
     /// Uses the compact type index, so count-mode does not scan every object.
-    pub fn count_objects_by_type_filter(self: EQ, requested_type: []const u8) usize {
+    pub fn count_objects_by_type_filter(self: CimDocument, requested_type: []const u8) usize {
         var count: usize = 0;
         var it = self.type_index.iterator();
         while (it.next()) |entry| {
@@ -223,7 +247,7 @@ pub const EQ = struct {
     /// Return objects matching `requested_type`, including CIM subtypes.
     /// Caller owns the returned slice. Output order follows `self.objects`.
     pub fn collect_objects_by_type_filter(
-        self: EQ,
+        self: CimDocument,
         gpa: std.mem.Allocator,
         requested_type: []const u8,
     ) ![]CimObject {
@@ -245,7 +269,7 @@ pub const EQ = struct {
 
     /// Return a heap-allocated, alphabetically sorted type-count list.
     /// Caller owns the returned slice and must free it with gpa.free().
-    pub fn sorted_type_counts(self: EQ, gpa: std.mem.Allocator) ![]TypeCount {
+    pub fn sorted_type_counts(self: CimDocument, gpa: std.mem.Allocator) ![]TypeCount {
         const n = self.type_index.count();
         const out = try gpa.alloc(TypeCount, n);
         errdefer gpa.free(out);
@@ -292,7 +316,7 @@ fn extract_object_id_from_tag(xml: []const u8, tag: TagBoundary) ?[]const u8 {
 
     if (extract_attribute_from_tag(xml, tag, "rdf:about=\"")) |about| {
         if (about.len > 0) {
-            const local_id = cgmes_ids.strip_hash(about);
+            const local_id = ids.strip_hash(about);
             return if (local_id.len > 0) local_id else about;
         }
     }
@@ -300,7 +324,7 @@ fn extract_object_id_from_tag(xml: []const u8, tag: TagBoundary) ?[]const u8 {
     return null;
 }
 
-test "EQ.init rejects duplicate RDF identifiers" {
+test "CimDocument.init rejects duplicate RDF identifiers" {
     const gpa = std.testing.allocator;
     const xml =
         \\<rdf:RDF>
@@ -313,7 +337,7 @@ test "EQ.init rejects duplicate RDF identifiers" {
         \\</rdf:RDF>
     ;
 
-    try std.testing.expectError(error.DuplicateId, EQ.init(gpa, try gpa.dupe(u8, xml)));
+    try std.testing.expectError(error.DuplicateId, CimDocument.init(gpa, try gpa.dupe(u8, xml)));
 }
 
 test "EQ diagnostics record duplicate RDF identifier" {
@@ -327,7 +351,7 @@ test "EQ diagnostics record duplicate RDF identifier" {
     var diagnostics: Diagnostics = .{};
     try std.testing.expectError(
         error.DuplicateId,
-        EQ.initWithDiagnostics(gpa, try gpa.dupe(u8, xml), &diagnostics),
+        CimDocument.initWithDiagnostics(gpa, try gpa.dupe(u8, xml), &diagnostics),
     );
     try std.testing.expectEqualStrings("_DUP", diagnostics.duplicate_id());
     try std.testing.expectEqual(@as(u64, 3), diagnostics.duplicate_line);
@@ -342,7 +366,7 @@ test "EQ inventory retains identifiers that conversion cannot use" {
         \\  <cim:Substation rdf:ID="__"/>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
     try std.testing.expect(model.getObjectById("_") != null);
     try std.testing.expect(model.getObjectById("__") != null);
@@ -356,7 +380,7 @@ test "EQ inventory ignores identifier-looking text in comments" {
         \\  <cim:Substation rdf:ID="_SS1"/>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
     try std.testing.expect(model.getObjectById("_SS1") != null);
 }
@@ -364,7 +388,7 @@ test "EQ inventory ignores identifier-looking text in comments" {
 test "EQ normalizes local rdf:about identifiers for lookup and mRID resolution" {
     const gpa = std.testing.allocator;
     const xml = "<rdf:RDF><cim:Substation rdf:about=\"#_SSX\"/></rdf:RDF>";
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     const view = model.getObjectById("_SSX") orelse return error.TestFailed;
@@ -382,7 +406,7 @@ test "EQ rejects rdf:ID and local rdf:about spellings of the same identifier" {
         \\  <cim:Substation rdf:ID="_SS1"/>
         \\</rdf:RDF>
     ;
-    try std.testing.expectError(error.DuplicateId, EQ.init(gpa, try gpa.dupe(u8, xml)));
+    try std.testing.expectError(error.DuplicateId, CimDocument.init(gpa, try gpa.dupe(u8, xml)));
 }
 
 const PREFIX_TEST_XML =
@@ -401,7 +425,7 @@ const PREFIX_TEST_XML =
 
 test "get_object_by_id_prefix returns a unique match" {
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
     defer model.deinit(gpa);
 
     const matches = try model.get_object_by_id_prefix(gpa, "xyz");
@@ -412,7 +436,7 @@ test "get_object_by_id_prefix returns a unique match" {
 
 test "get_object_by_id_prefix returns all ambiguous matches" {
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
     defer model.deinit(gpa);
 
     const matches = try model.get_object_by_id_prefix(gpa, "abc");
@@ -430,7 +454,7 @@ test "get_object_by_id_prefix returns all ambiguous matches" {
 
 test "get_object_by_id_prefix returns empty slice on no match" {
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
     defer model.deinit(gpa);
 
     const matches = try model.get_object_by_id_prefix(gpa, "nope");
@@ -440,7 +464,7 @@ test "get_object_by_id_prefix returns empty slice on no match" {
 
 test "get_object_by_id_prefix accepts prefix with explicit underscore" {
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
     defer model.deinit(gpa);
 
     const matches = try model.get_object_by_id_prefix(gpa, "_xyz");
@@ -451,7 +475,7 @@ test "get_object_by_id_prefix accepts prefix with explicit underscore" {
 
 test "get_object_by_id_prefix matches full mRID" {
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
     defer model.deinit(gpa);
 
     const matches = try model.get_object_by_id_prefix(gpa, "_abc123");

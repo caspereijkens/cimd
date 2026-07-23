@@ -1,11 +1,11 @@
 const std = @import("std");
-const EQ = @import("cgmes/eq.zig").EQ;
+const CimDocument = @import("document.zig").CimDocument;
 const eqdiff = @import("eqdiff.zig");
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Run write_models on two XML strings and return (had_diffs, output).
-/// Output is written into a fixed stack buffer — tests must not exceed 16 KiB.
+/// Output is written into a fixed stack buffer -- tests must not exceed 16 KiB.
 const EqdiffResult = struct {
     had_diffs: bool,
     buf: [16384]u8,
@@ -35,9 +35,9 @@ fn run_eqdiff(
     xml2: []const u8,
     options: eqdiff.Options,
 ) !EqdiffResult {
-    var model1 = try EQ.init(gpa, try gpa.dupe(u8, xml1));
+    var model1 = try CimDocument.init(gpa, try gpa.dupe(u8, xml1));
     defer model1.deinit(gpa);
-    var model2 = try EQ.init(gpa, try gpa.dupe(u8, xml2));
+    var model2 = try CimDocument.init(gpa, try gpa.dupe(u8, xml2));
     defer model2.deinit(gpa);
 
     var result = EqdiffResult{ .had_diffs = false, .buf = undefined, .len = 0 };
@@ -140,7 +140,7 @@ test "eqdiff - FullModel-local xmlns conflicting with the root is rejected" {
     // The roots bind md to an unrelated namespace; model2's FullModel rebinds
     // it locally. Its children are copied into the header without their
     // declaring parent, so the conflicting binding cannot be represented in
-    // the merged root scope — rejected rather than silently reinterpreted.
+    // the merged root scope -- rejected rather than silently reinterpreted.
     const xml1 =
         \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:cim="http://iec.ch/TC57/CIM100#" xmlns:md="http://example.com/other#">
         \\</rdf:RDF>
@@ -160,7 +160,7 @@ test "eqdiff - FullModel-local xmlns conflicting with the root is rejected" {
 
 test "eqdiff - inputs binding one prefix to different namespaces are rejected" {
     // The inputs bind cim to different schema versions. Statements are copied
-    // verbatim, so a single merged root scope cannot keep both meanings —
+    // verbatim, so a single merged root scope cannot keep both meanings --
     // EQ-like inputs always agree per prefix, so this is rejected loudly.
     const xml1 =
         \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:cim="http://iec.ch/TC57/2013/CIM-schema-cim16#">
@@ -361,7 +361,7 @@ test "eqdiff - changed reference is copied verbatim per side" {
 
 test "eqdiff - property flipped to a reference with the same value is a statement change" {
     // Same name and lexical value, different statement kind (literal text vs
-    // rdf:resource) — a real change that must appear in both sections.
+    // rdf:resource) -- a real change that must appear in both sections.
     const xml1 = RDF_OPEN ++
         \\
         \\  <cim:Substation rdf:ID="_SS1">
@@ -471,7 +471,7 @@ test "eqdiff - adding a repeated statement emits only the new one" {
     const r = try run_eqdiff(std.testing.allocator, xml1, xml2, .{});
     try std.testing.expect(r.had_diffs);
     try std.testing.expect(r.section_contains("forwardDifferences", "rdf:resource=\"#_T3\""));
-    // T1 and T2 are unchanged — no reverse statements at all.
+    // T1 and T2 are unchanged -- no reverse statements at all.
     try std.testing.expect(!r.section_contains("forwardDifferences", "rdf:resource=\"#_T2\""));
     try std.testing.expect(!r.section_contains("reverseDifferences", "rdf:resource"));
 }
@@ -584,7 +584,7 @@ test "eqdiff - FullModel feeds the header, not the statement sections" {
 test "eqdiff - FullModel-only update still counts as a difference" {
     // Same grid data as V1; only the FullModel metadata differs. No statements
     // are emitted, but the exit-code contract promises 0 only for identical
-    // inputs — metadata-only model updates must not be hidden from automation.
+    // inputs -- metadata-only model updates must not be hidden from automation.
     const xml2 =
         \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:cim="http://iec.ch/TC57/CIM100#" xmlns:md="http://iec.ch/TC57/61970-552/ModelDescription/1#">
         \\  <md:FullModel rdf:about="urn:uuid:22222222-2222-2222-2222-222222222222">
@@ -607,7 +607,7 @@ test "eqdiff - FullModel-only update still counts as a difference" {
 }
 
 test "eqdiff - model1 FullModel-local xmlns conflicting with the root is not rejected" {
-    // model1's FullModel rebinds md locally, conflicting with the roots' md —
+    // model1's FullModel rebinds md locally, conflicting with the roots' md --
     // but nothing of it is copied verbatim: only its id, inside a generated
     // rdf:resource attribute. The diff must stay representable.
     const xml1 =
@@ -644,9 +644,9 @@ fn run_eqdiff_single(
     mrid: []const u8,
     options: eqdiff.Options,
 ) !struct { status: @import("diff.zig").SingleDiffStatus, result: EqdiffResult } {
-    var model1 = try EQ.init(gpa, try gpa.dupe(u8, xml1));
+    var model1 = try CimDocument.init(gpa, try gpa.dupe(u8, xml1));
     defer model1.deinit(gpa);
-    var model2 = try EQ.init(gpa, try gpa.dupe(u8, xml2));
+    var model2 = try CimDocument.init(gpa, try gpa.dupe(u8, xml2));
     defer model2.deinit(gpa);
 
     var result = EqdiffResult{ .had_diffs = false, .buf = undefined, .len = 0 };
@@ -716,7 +716,7 @@ test "eqdiff single - type change with same mrid emits typed remove+add" {
         \\  </cim:Disconnector>
         \\</rdf:RDF>
     ;
-    // Identical children, only the CIM type differs — must still be a diff,
+    // Identical children, only the CIM type differs -- must still be a diff,
     // expressed as a typed remove+add (a child-statement delta cannot retype).
     const r = try run_eqdiff_single(std.testing.allocator, xml1, xml2, "_SW1", .{});
     try std.testing.expect(r.status.diff);
@@ -756,9 +756,9 @@ test "eqdiff single - type filter mismatch reports actual type" {
     ;
     // Models stay alive for the whole test: the type_mismatch payload is a
     // slice into the model XML (cf. run_diff_single in test_diff.zig).
-    var model1 = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model1 = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model1.deinit(gpa);
-    var model2 = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model2 = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model2.deinit(gpa);
 
     var buf: [16384]u8 = undefined;
@@ -766,4 +766,73 @@ test "eqdiff single - type filter mismatch reports actual type" {
     const status = try eqdiff.write_single(gpa, &model1, &model2, "_SS1", .{ .type_filter = "BaseVoltage" }, &writer);
     try std.testing.expect(status == .type_mismatch);
     try std.testing.expectEqualStrings("Substation", status.type_mismatch);
+}
+
+// ── Non-EQ profiles ───────────────────────────────────────────────────────────
+//
+// IEC 61970-552 difference models are profile-neutral: the header copies the
+// target's FullModel verbatim (so an SSH input carries its own profile URI
+// through) and the body is source statements. An SSH difference model is
+// therefore produced by the same path as an EQ one.
+
+test "eqdiff - SSH switch state change splits across both sections" {
+    const xml1 = RDF_OPEN ++
+        \\
+        \\  <cim:Breaker rdf:about="#_BR1">
+        \\    <cim:Switch.open>false</cim:Switch.open>
+        \\  </cim:Breaker>
+        \\</rdf:RDF>
+    ;
+    const xml2 = RDF_OPEN ++
+        \\
+        \\  <cim:Breaker rdf:about="#_BR1">
+        \\    <cim:Switch.open>true</cim:Switch.open>
+        \\  </cim:Breaker>
+        \\</rdf:RDF>
+    ;
+    const r = try run_eqdiff(std.testing.allocator, xml1, xml2, .{});
+    try std.testing.expect(r.had_diffs);
+    // The rdf:about fragment is preserved, so the statement still points at
+    // the EQ object the SSH patch describes.
+    try std.testing.expect(r.section_contains(
+        "forwardDifferences",
+        "<rdf:Description rdf:about=\"#_BR1\">",
+    ));
+    try std.testing.expect(r.section_contains(
+        "forwardDifferences",
+        "<cim:Switch.open>true</cim:Switch.open>",
+    ));
+    try std.testing.expect(r.section_contains(
+        "reverseDifferences",
+        "<cim:Switch.open>false</cim:Switch.open>",
+    ));
+}
+
+test "eqdiff - SSH header profile is carried into the difference model" {
+    const xml1 = RDF_OPEN ++
+        \\
+        \\  <md:FullModel rdf:about="urn:uuid:m1" xmlns:md="http://iec.ch/TC57/61970-552/ModelDescription/1#">
+        \\    <md:Model.profile>http://entsoe.eu/CIM/SteadyStateHypothesis/1/1</md:Model.profile>
+        \\  </md:FullModel>
+        \\  <cim:Breaker rdf:about="#_BR1">
+        \\    <cim:Switch.open>false</cim:Switch.open>
+        \\  </cim:Breaker>
+        \\</rdf:RDF>
+    ;
+    const xml2 = RDF_OPEN ++
+        \\
+        \\  <md:FullModel rdf:about="urn:uuid:m2" xmlns:md="http://iec.ch/TC57/61970-552/ModelDescription/1#">
+        \\    <md:Model.profile>http://entsoe.eu/CIM/SteadyStateHypothesis/1/1</md:Model.profile>
+        \\  </md:FullModel>
+        \\  <cim:Breaker rdf:about="#_BR1">
+        \\    <cim:Switch.open>true</cim:Switch.open>
+        \\  </cim:Breaker>
+        \\</rdf:RDF>
+    ;
+    const r = try run_eqdiff(std.testing.allocator, xml1, xml2, .{});
+    try std.testing.expect(r.had_diffs);
+    try std.testing.expect(r.contains(
+        "<md:Model.profile>http://entsoe.eu/CIM/SteadyStateHypothesis/1/1</md:Model.profile>",
+    ));
+    try std.testing.expect(r.contains("<md:Model.Supersedes rdf:resource=\"urn:uuid:m1\"/>"));
 }

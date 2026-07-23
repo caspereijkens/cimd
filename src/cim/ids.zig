@@ -16,8 +16,8 @@ pub fn with_leading_underscore(gpa: std.mem.Allocator, id: []const u8) ![]u8 {
 
 /// Returns true if `obj_id` is matched by `prefix` under cimd's prefix-matching
 /// rules. Two forms are accepted: a literal startsWith (the only form that can
-/// match FullModel `urn:uuid:...` ids carried in rdf:about), and — as a
-/// convenience for the common rdf:ID form — a match against `_<prefix>` so
+/// match FullModel `urn:uuid:...` ids carried in rdf:about), and -- as a
+/// convenience for the common rdf:ID form -- a match against `_<prefix>` so
 /// users may type `be60a3cf` instead of `_be60a3cf-...`. The convenience form
 /// is skipped when `prefix` already starts with `_` to avoid double-prefix
 /// surprises like searching for `__be60`.
@@ -74,7 +74,7 @@ test "id_prefix_matches: FullModel urn:uuid form via literal prefix" {
 
 test "id_prefix_matches: explicit underscore prefix never double-underscores" {
     // Searching for "_urn" must not silently match "urn:uuid:..." via the
-    // convenience path — the user opted into the literal form by typing `_`.
+    // convenience path -- the user opted into the literal form by typing `_`.
     try std.testing.expect(!id_prefix_matches("urn:uuid:abc", "_urn"));
 }
 

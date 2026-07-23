@@ -1,12 +1,13 @@
 const std = @import("std");
+const cim = @import("../cim/cim.zig");
 const iidm = @import("../iidm/model.zig");
-const EQ = @import("../cgmes/eq.zig").EQ;
+const CimDocument = cim.CimDocument;
 const cross_ref = @import("../topology/cross_ref.zig");
-const tag_index = @import("../cgmes/tag_index.zig");
-const utils = @import("../cgmes/ids.zig");
+const tag_index = cim.tag_index;
+const utils = cim.ids;
 const resolve = @import("../topology/resolve.zig");
 const substation_conv = @import("substation.zig");
-const parse = @import("../cgmes/parse.zig");
+const parse = cim.parse;
 
 const assert = std.debug.assert;
 const Topology = resolve.Topology;
@@ -19,7 +20,7 @@ const strip_hash = utils.strip_hash;
 
 // Resolve the nominal voltage for a VoltageLevel.
 // VoltageLevel.BaseVoltage -> BaseVoltage.nominalVoltage -> parseFloat.
-fn resolve_nominal_voltageoltage(model: *const EQ, voltage_level: CimObjectView) !?f64 {
+fn resolve_nominal_voltageoltage(model: *const CimDocument, voltage_level: CimObjectView) !?f64 {
     const base_voltage_ref = try voltage_level.getReference("VoltageLevel.BaseVoltage") orelse return null;
     const base_voltage = model.getObjectById(strip_hash(base_voltage_ref)) orelse return null;
     const nominal_voltageoltage_str = try base_voltage.getProperty("BaseVoltage.nominalVoltage") orelse return null;
@@ -31,7 +32,7 @@ fn resolve_nominal_voltageoltage(model: *const EQ, voltage_level: CimObjectView)
 // `repr_to_stub_mrids`: representative raw VL ID → list of absorbed stub mRIDs (for aliases).
 fn append_voltage_level(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     index: *const CrossRef,
     voltage_level: CimObjectView,
     network: *iidm.Network,
@@ -140,7 +141,7 @@ fn build_voltage_limit_properties(
 
 pub fn convert_voltage_levels(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     index: *const CrossRef,
     topology: *const Topology,
     network: *iidm.Network,
@@ -195,7 +196,7 @@ pub fn convert_voltage_levels(
 
 pub fn build_voltage_level_map(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     topology: *const Topology,
     network: *iidm.Network,
     substation_id_map: *const std.StringHashMapUnmanaged(SubstationIndex),
@@ -208,7 +209,7 @@ pub fn build_voltage_level_map(
     // array. convert_substations and convert_voltage_levels must have fully
     // populated both before this runs; nothing afterwards may append to them, or
     // the next reallocation would dangle every pointer. (Equipment converters
-    // only append to the *inner* arrays — loads, switches, … — which is safe.)
+    // only append to the *inner* arrays -- loads, switches, … -- which is safe.)
     // We snapshot the substations backing pointer and assert it is unchanged on
     // exit, so a future edit that appends here fails loudly instead of silently.
     const substations_ptr = network.substations.items.ptr;

@@ -1,19 +1,20 @@
 const std = @import("std");
+const cim = @import("../cim/cim.zig");
 const iidm = @import("../iidm/model.zig");
-const EQ = @import("../cgmes/eq.zig").EQ;
+const CimDocument = cim.CimDocument;
 const cross_ref = @import("../topology/cross_ref.zig");
-const tag_index = @import("../cgmes/tag_index.zig");
-const utils = @import("../cgmes/ids.zig");
+const tag_index = cim.tag_index;
+const utils = cim.ids;
 const resolve = @import("../topology/resolve.zig");
-const parse = @import("../cgmes/parse.zig");
+const parse = cim.parse;
 
 const placement_mod = @import("placement.zig");
 
 const assert = std.debug.assert;
 
 const CimObject = tag_index.CimObject;
-const SSH = @import("../cgmes/ssh.zig").SSH;
-const CimMergedView = @import("../cgmes/ssh.zig").CimMergedView;
+const SSH = cim.SSH;
+const CimMergedView = cim.CimMergedView;
 const CrossRef = cross_ref.CrossRef;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
@@ -37,9 +38,9 @@ const VoltageLevelEquipmentCounts = struct {
 /// per-VL counts map. Uses comptime field name so the compiler resolves the
 /// field access at compile time with no runtime overhead.
 /// When `cache` is non-null, the resolved placement is recorded there (keyed by
-/// equipment id) for the convert pass to reuse — see PlacementCache.
+/// equipment id) for the convert pass to reuse -- see PlacementCache.
 fn count_equipment_for_type(
-    model: *const EQ,
+    model: *const CimDocument,
     placer: TerminalPlacer,
     comptime cim_type: []const u8,
     comptime field_name: []const u8,
@@ -58,7 +59,7 @@ fn count_equipment_for_type(
 
 /// CIM types whose placements are cached for convert reuse: busbar sections and
 /// the four injection kinds (loads/shunts/SVCs/generators). Switches are
-/// excluded — convert_switches resolves nodes directly and never queries the
+/// excluded -- convert_switches resolves nodes directly and never queries the
 /// cache, so caching them would only waste memory.
 const injection_types = [_][]const u8{
     "EnergyConsumer",
@@ -78,7 +79,7 @@ const injection_types = [_][]const u8{
 /// converters are node-breaker only).
 pub fn pre_allocate_equipment(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     placer: TerminalPlacer,
 ) !PlacementCache {
     // `placer` must be the cache-less placer: this function is what populates the
@@ -134,7 +135,7 @@ pub fn pre_allocate_equipment(
 
 pub fn convert_busbar_sections(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     placer: TerminalPlacer,
 ) !void {
     const index = placer.index;
@@ -173,7 +174,7 @@ pub fn convert_busbar_sections(
 
 pub fn convert_switches(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     placer: TerminalPlacer,
     ssh_opt: ?SSH,
 ) !void {
@@ -215,7 +216,7 @@ pub fn convert_switches(
             });
             const name = parse.non_blank(props[0]);
 
-            // Switch.open and Switch.retained are SSH attributes — EQ does not carry open state.
+            // Switch.open and Switch.retained are SSH attributes -- EQ does not carry open state.
             const open = parse.flag(props[1]);
             const retained = parse.flag(props[2]);
 
@@ -270,7 +271,7 @@ pub fn convert_switches(
 /// full passes over all terminal data that would otherwise duplicate build_node_map's work.
 pub fn convert_fictitious_switches(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     placer: TerminalPlacer,
     cn_has_switch: *const std.StringHashMapUnmanaged(void),
     cn_other_count: *const std.StringHashMapUnmanaged(u32),
@@ -283,9 +284,9 @@ pub fn convert_fictitious_switches(
         .bus_branch => unreachable, // fictitious switches are node-breaker only
     };
     // PyPowSyBl creates fictitious switches for:
-    // 1. SSH-disconnected terminals (any equipment type — ACDCTerminal.connected=false in SSH).
+    // 1. SSH-disconnected terminals (any equipment type -- ACDCTerminal.connected=false in SSH).
     // 2. Structurally isolated injection terminals (SM/LSC/SVC on a CN with no switch and
-    //    exactly one non-BBS/non-switch terminal) — these represent equipment not connected
+    //    exactly one non-BBS/non-switch terminal) -- these represent equipment not connected
     //    via any switch in the node-breaker topology.
     //
     // Loads (EnergyConsumer, ConformLoad, NonConformLoad) never receive fictitious switches.
@@ -302,13 +303,13 @@ pub fn convert_fictitious_switches(
                 const ssh_disconnected = resolve.is_ssh_terminal_disconnected(ssh_opt, t.id);
                 if (ssh_disconnected) {
                     // SSH-disconnected: always create fictitious regardless of type or CN topology.
-                    // No-switch check is skipped — pypow creates fictitious even when the
+                    // No-switch check is skipped -- pypow creates fictitious even when the
                     // CN has switch connectivity if the terminal is marked disconnected.
                 } else {
                     // Not SSH-disconnected: structural isolation check for injection types only.
                     if (!is_injection) continue;
                     if (cn_has_switch.contains(cn_id)) continue;
-                    // BBS-CN terminals always get ICs in build_node_map — no fictitious needed.
+                    // BBS-CN terminals always get ICs in build_node_map -- no fictitious needed.
                     // Non-BBS-CN: fictitious only when this is the sole non-switch/non-BBS terminal.
                     const cn_has_bbs = index.conn_node_to_busbar_section.contains(cn_id);
                     if (cn_has_bbs) continue;
@@ -376,7 +377,7 @@ fn append_injection_terminal_alias(
 
 pub fn convert_loads(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     placer: TerminalPlacer,
     ssh_opt: ?SSH,
 ) !void {
@@ -386,13 +387,13 @@ pub fn convert_loads(
 
     try convert_load_type(gpa, model, placer, ssh_opt, energy_consumers, false);
     try convert_load_type(gpa, model, placer, ssh_opt, conform_loads, false);
-    // NonConformLoad: all power is fixed by definition — p0/q0 go into fixed, variable = 0.
+    // NonConformLoad: all power is fixed by definition -- p0/q0 go into fixed, variable = 0.
     try convert_load_type(gpa, model, placer, ssh_opt, non_conform_loads, true);
 }
 
 fn convert_load_type(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     placer: TerminalPlacer,
     ssh_opt: ?SSH,
     loads: []const CimObject,
@@ -464,7 +465,7 @@ fn convert_load_type(
             }
         }
 
-        // SSH EnergyConsumer.p/q are in load convention (positive = consuming) — matches IIDM p0/q0.
+        // SSH EnergyConsumer.p/q are in load convention (positive = consuming) -- matches IIDM p0/q0.
         // When SSH is not provided, leave p0/q0 null so the fields are omitted from output.
         const p0: ?f64 = if (load_values[1]) |v|
             parse.float_or(v, 0.0)
@@ -474,8 +475,8 @@ fn convert_load_type(
         else if (ssh_opt != null) 0.0 else null;
 
         // detail extension fixed/variable split:
-        // NonConformLoad — all power is fixed by definition (does not vary with load group).
-        // ConformLoad / EnergyConsumer — fixed = pfixed (EQ), variable = p0 - pfixed.
+        // NonConformLoad -- all power is fixed by definition (does not vary with load group).
+        // ConformLoad / EnergyConsumer -- fixed = pfixed (EQ), variable = p0 - pfixed.
         const fixed_active_power: f64 = if (non_conform)
             (p0 orelse 0.0)
         else if (load_values[3]) |v|
@@ -513,7 +514,7 @@ fn convert_load_type(
 
 pub fn convert_shunts(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     placer: TerminalPlacer,
     ssh_opt: ?SSH,
 ) !void {
@@ -628,7 +629,7 @@ pub fn convert_shunts(
 }
 
 pub fn convert_static_var_compensators(
-    model: *const EQ,
+    model: *const CimDocument,
     placer: TerminalPlacer,
     ssh_opt: ?SSH,
 ) !void {
@@ -693,7 +694,7 @@ fn energy_source_from_cim_type(type_name: []const u8) iidm.EnergySource {
 
 pub fn convert_generators(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     placer: TerminalPlacer,
     ssh_opt: ?SSH,
 ) !void {
@@ -727,7 +728,7 @@ pub fn convert_generators(
         const node = placement.node;
 
         // Resolve mRID first (needed for merged view lookup), then build merged view.
-        // All subsequent attribute reads go through view — SSH values shadow EQ values.
+        // All subsequent attribute reads go through view -- SSH values shadow EQ values.
         const eq_view = model.view(machine);
         const mrid = try eq_view.mrid();
         const view = CimMergedView.init(eq_view, mrid, null, ssh_opt);

@@ -1,8 +1,9 @@
 const std = @import("std");
-const EQ = @import("../cgmes/eq.zig").EQ;
+const cim = @import("../cim/cim.zig");
+const CimDocument = cim.CimDocument;
 
-const tag_index = @import("../cgmes/tag_index.zig");
-const utils = @import("../cgmes/ids.zig");
+const tag_index = cim.tag_index;
+const utils = cim.ids;
 const units = @import("../units.zig");
 
 pub const size_limit_text_buffer_bytes = 160;
@@ -172,31 +173,9 @@ pub fn flush_file_writer(file_writer: *std.Io.File.Writer) OutputError!void {
     file_writer.flush() catch |err| return classify_output_error(err);
 }
 
-/// Translate an in-memory `Allocating` writer's `error.WriteFailed` into
-/// `error.OutOfMemory`. An `std.Io.Writer.Allocating` only fails a write when it
-/// cannot grow its backing allocation, so `WriteFailed` there unambiguously means
-/// the allocator was exhausted. Call this at the boundary where the concrete
-/// `Allocating` writer is still in scope; higher layers only see `OutOfMemory`.
-pub fn allocating_writer_result(
-    allocating: *std.Io.Writer.Allocating,
-    result: anytype,
-) (@typeInfo(@TypeOf(result)).error_union.error_set || error{OutOfMemory})!@typeInfo(@TypeOf(result)).error_union.payload {
-    // Intentional type witness: only an Allocating writer makes WriteFailed
-    // unambiguously mean allocation failure. Keep this parameter even though
-    // the generic result cannot be tied to it by Zig's type system.
-    _ = allocating;
-    return result catch |err| {
-        if (err == error.WriteFailed) return error.OutOfMemory;
-        return err;
-    };
-}
-
-test "allocating writer failure is out of memory" {
-    var allocating: std.Io.Writer.Allocating = .init(std.testing.allocator);
-    defer allocating.deinit();
-    const failed: anyerror!void = error.WriteFailed;
-    try std.testing.expectError(error.OutOfMemory, allocating_writer_result(&allocating, failed));
-}
+/// Re-exported from the library layer (cim/writer.zig), which needs it without
+/// depending on this module. CLI callers keep reaching it through `print`.
+pub const allocating_writer_result = cim.allocating_writer_result;
 
 fn classify_output_error(err: anyerror) OutputError {
     return switch (err) {
@@ -271,7 +250,7 @@ test "file writer failures are classified by output origin" {
     try std.testing.expectEqualStrings("NoSpaceLeft", output_error_cause(error.OutputNoSpaceLeft));
 }
 
-pub fn write_object_inventory_json_value(w: *std.Io.Writer, counts: []const EQ.TypeCount) !void {
+pub fn write_object_inventory_json_value(w: *std.Io.Writer, counts: []const CimDocument.TypeCount) !void {
     try w.writeByte('[');
     for (counts, 0..) |entry, i| {
         if (i > 0) try w.writeByte(',');
@@ -282,7 +261,7 @@ pub fn write_object_inventory_json_value(w: *std.Io.Writer, counts: []const EQ.T
     try w.writeByte(']');
 }
 
-pub fn write_object_inventory(w: *std.Io.Writer, counts: []const EQ.TypeCount) !void {
+pub fn write_object_inventory(w: *std.Io.Writer, counts: []const CimDocument.TypeCount) !void {
     var total: u64 = 0;
     for (counts) |entry| {
         try w.print("{s}: {d} objects\n", .{ entry.type_name, entry.count });
@@ -294,7 +273,7 @@ pub fn write_object_inventory(w: *std.Io.Writer, counts: []const EQ.TypeCount) !
 pub fn display_object_list_json(
     io: std.Io,
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     objects: []const tag_index.CimObject,
     fields: []const []const u8,
 ) !void {
@@ -313,7 +292,7 @@ pub fn display_object_list_json(
 fn write_object_list_json(
     w: *std.Io.Writer,
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     objects: []const tag_index.CimObject,
     fields: []const []const u8,
 ) !void {

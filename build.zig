@@ -167,8 +167,26 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 
+    // End-to-end CLI tests. Routing decisions (argv parsing, model-set primary
+    // selection, cross-input checks) report failure by writing to stderr and
+    // exiting, so in-process tests cannot observe them at all -- every one of
+    // those paths is `noreturn`. These tests run the real binary and assert on
+    // its exit code and diagnostics. The binary's path is wired in at build
+    // time rather than assumed to be installed.
+    const e2e_options = b.addOptions();
+    e2e_options.addOptionPath("cimd_exe", exe.getEmittedBin());
+    const e2e_mod = b.createModule(.{
+        .root_source_file = b.path("src/test_cli.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    e2e_mod.addOptions("build_options", e2e_options);
+    const e2e_tests = b.addTest(.{ .root_module = e2e_mod });
+    const run_e2e_tests = b.addRunArtifact(e2e_tests);
+    test_step.dependOn(&run_e2e_tests.step);
+
     // CIM type-table generator: regenerates the `parent_edges` body of
-    // src/cgmes/cim_types.zig from CGMES RDFS profile files, reusing the same
+    // src/cim/cim_types.zig from CGMES RDFS profile files, reusing the same
     // tag scanner cimd parses CIM with at runtime. Run with:
     //   zig build gen-cim-types -- Equipment-AP.rdf StateVariables-AP.rdf ...
     const gen_cim_types_mod = b.createModule(.{

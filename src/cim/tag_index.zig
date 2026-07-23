@@ -41,7 +41,7 @@ pub fn find_byte_simd(
     const unroll_size = VECTOR_LEN * unroll_factor;
 
     while (i + unroll_size <= haystack.len) : (i += unroll_size) {
-        // Worst case: every byte in the block matches — reserve before entering.
+        // Worst case: every byte in the block matches -- reserve before entering.
         try result.ensureUnusedCapacity(gpa, unroll_size);
         inline for (0..unroll_factor) |j| {
             const offset = i + j * VECTOR_LEN;
@@ -217,7 +217,7 @@ pub const TagBoundary = struct {
 /// Uses two SIMD passes (one per delimiter) then zips the results, skipping
 /// `<` and `>` that appear inside XML comments (`<!-- ... -->`). The comment
 /// itself is emitted as a single boundary spanning the whole section.
-/// Stray '>' characters in text content (legal per the XML spec — only '<'
+/// Stray '>' characters in text content (legal per the XML spec -- only '<'
 /// and '&' must be escaped in character data) are skipped silently.
 /// Returns ArrayList of TagBoundary in document order.
 pub fn find_tag_boundaries(
@@ -284,7 +284,7 @@ pub fn find_tag_boundaries(
         while (lt_idx < lts.len and lts[lt_idx] < close_gt) : (lt_idx += 1) {}
     }
 
-    // Any remaining '>' entries are stray (text content after the last tag) — ignore them.
+    // Any remaining '>' entries are stray (text content after the last tag) -- ignore them.
 
     return result;
 }
@@ -347,7 +347,7 @@ pub fn extract_rdf_about(slice: []const u8, start_idx: u32) error{ NoRdfAbout, M
 
 /// Extract rdf:resource value from an XML tag whose '>' position is already
 /// known (`end_idx`, the boundary's `.end`). Skips the re-scan for '>' that the
-/// start-only `extract_rdf_resource` must do — the hot reference-scanning loops
+/// start-only `extract_rdf_resource` must do -- the hot reference-scanning loops
 /// in `refs`/`get` call this with the boundary they already hold.
 /// Returns null if the tag has no rdf:resource; error.MalformedTag if malformed.
 pub fn extract_rdf_resource_within(
@@ -504,12 +504,12 @@ pub fn build_closing_index(
 
     for (boundaries, 0..) |tag, i| {
         if (xml[tag.end - 1] == '/') {
-            // Self-closing — already defaulted, nothing to push.
+            // Self-closing -- already defaulted, nothing to push.
         } else if (xml[tag.start + 1] == '!' or xml[tag.start + 1] == '?') {
             // XML comment (<!--) or processing instruction (<?).
-            // Not an element — never pushed, never popped.
+            // Not an element -- never pushed, never popped.
         } else if (xml[tag.start + 1] == '/') {
-            // Closing tag — must match the stack top; CGMES XML is always well-nested.
+            // Closing tag -- must match the stack top; CGMES XML is always well-nested.
             // Bound the type search to within this tag to prevent cross-tag colon matches.
             const tag_xml = xml[tag.start .. tag.end + 1];
             const type_name = extract_tag_type(tag_xml, 1) catch continue;
@@ -520,7 +520,7 @@ pub fn build_closing_index(
             const opener = stack.pop().?;
             closing_for[opener.idx] = @intCast(i);
         } else {
-            // Opening tag — push.
+            // Opening tag -- push.
             // Bound the type search to within this tag to prevent cross-tag colon matches
             // (e.g. a boundary created by '<->' inside an XML comment could otherwise look
             // past the boundary end and find the ':' in the following real tag's namespace).
@@ -546,8 +546,8 @@ pub fn build_closing_index(
 }
 
 /// Represents a CIM object with lazy property access
-/// Compact CIM object — indices and identity only, no embedded XML context.
-/// Cheap to copy and store. Use CimObjectView (via EQ.view) to access properties.
+/// Compact CIM object -- indices and identity only, no embedded XML context.
+/// Cheap to copy and store. Use CimObjectView (via CimDocument.view) to access properties.
 pub const CimObject = struct {
     object_tag_idx: u32,
     closing_tag_idx: u32,
@@ -573,7 +573,7 @@ pub const CimObject = struct {
 };
 
 /// Ephemeral view binding a CimObject to its XML context.
-/// Create via EQ.view(obj). Stack-allocated; do not store in arrays.
+/// Create via CimDocument.view(obj). Stack-allocated; do not store in arrays.
 pub const CimObjectView = struct {
     xml: []const u8,
     boundaries: []const TagBoundary,

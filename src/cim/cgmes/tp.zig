@@ -1,4 +1,4 @@
-//! TP — loads a CGMES TP (Topology) profile as an overlay on top of an EQ model.
+//! TP -- loads a CGMES TP (Topology) profile as an overlay on top of an EQ model.
 //!
 //! A TP profile contains two structurally distinct kinds of tags:
 //!   1. New first-class objects (identified by `rdf:ID`), typically `TopologicalNode`.
@@ -12,15 +12,15 @@
 //! (matching the `EQ` convention, so `browse` can look them up the same
 //! way the user types them).
 //!
-//! Construction is a single pre-count pass plus a single fill pass — no dynamic
+//! Construction is a single pre-count pass plus a single fill pass -- no dynamic
 //! growth post-init.
 
 const std = @import("std");
-const tag_index = @import("tag_index.zig");
-const utils = @import("ids.zig");
+const tag_index = @import("../tag_index.zig");
+const utils = @import("../ids.zig");
 
 const assert = std.debug.assert;
-pub const Diagnostics = @import("diagnostics.zig").Diagnostics;
+pub const Diagnostics = @import("../diagnostics.zig").Diagnostics;
 
 pub const CimObject = tag_index.CimObject;
 const TagBoundary = tag_index.TagBoundary;
@@ -231,7 +231,7 @@ pub const TP = struct {
     pub fn get_object_by_id(self: TP, id: []const u8) ?tag_index.CimObjectView {
         const idx = self.id_to_object.get(id) orelse return null;
         const obj = self.new_objects[idx];
-        // The stored object must round-trip — pairs with the id_to_object build.
+        // The stored object must round-trip -- pairs with the id_to_object build.
         assert(std.mem.eql(u8, obj.id, id));
         return self.view(obj);
     }
@@ -253,7 +253,7 @@ pub const TP = struct {
 };
 
 const TagKind = union(enum) {
-    /// Not a CIM object — metadata (FullModel), comment, rdf:RDF root, etc.
+    /// Not a CIM object -- metadata (FullModel), comment, rdf:RDF root, etc.
     skip,
     /// New first-class object carrying rdf:ID; payload is the raw id.
     new_object: []const u8,
@@ -331,7 +331,7 @@ test "TP.init - classifies new objects and patches separately" {
     try std.testing.expectEqual(@as(usize, 2), tp.new_objects.len);
     try std.testing.expectEqual(@as(usize, 2), tp.patches.len);
 
-    // Patches are sorted — the stripped mRIDs CN_LOAD < T_LOAD1 alphabetically.
+    // Patches are sorted -- the stripped mRIDs CN_LOAD < T_LOAD1 alphabetically.
     try std.testing.expectEqualStrings("CN_LOAD", tp.patches[0].mrid);
     try std.testing.expectEqualStrings("T_LOAD1", tp.patches[1].mrid);
 }

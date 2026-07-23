@@ -38,7 +38,7 @@ new contributors are labeled with ['good first issue'].
 ### I have a bug! / Something isn't working
 
 First, search the issue tracker for similar issues. Tip: also
-search for [closed issues] — your issue might have already
+search for [closed issues] -- your issue might have already
 been fixed!
 
 > [!NOTE]

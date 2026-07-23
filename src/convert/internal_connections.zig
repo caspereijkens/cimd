@@ -1,11 +1,11 @@
 const std = @import("std");
+const cim = @import("../cim/cim.zig");
 const iidm = @import("../iidm/model.zig");
-const EQ = @import("../cgmes/eq.zig").EQ;
+const CimDocument = cim.CimDocument;
 const cross_ref = @import("../topology/cross_ref.zig");
 
 const CrossRef = cross_ref.CrossRef;
-const cim_ssh = @import("../cgmes/ssh.zig");
-const SSH = cim_ssh.SSH;
+const SSH = cim.SSH;
 const topology = @import("../topology/resolve.zig");
 const Topology = topology.Topology;
 
@@ -19,14 +19,14 @@ const Topology = topology.Topology;
 /// VL's internalConnections array is byte-identical to PyPowSyBl.
 pub fn populate_internal_connections(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     index: *const CrossRef,
     topology_data: *const Topology,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     ssh_opt: ?SSH,
     nm_result: *const topology.NodeMapResult,
 ) !void {
-    // Per-CN Phase 2 terminal count — same prediction the original code used to
+    // Per-CN Phase 2 terminal count -- same prediction the original code used to
     // pre-allocate IC capacity. Over-approximates by SSH-disconnected count, which
     // is fine for ensureTotalCapacity.
     var conn_node_other_count: std.StringHashMapUnmanaged(u32) = .empty;

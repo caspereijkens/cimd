@@ -5,7 +5,7 @@
 //! contiguously, and named property shapes referenced by IRI are the corpus
 //! norm), then compiles it with two passes: pass 1 counts, pass 2 allocates
 //! exactly and fills. Prefix-sum cursors and paired assertions verify the
-//! passes agree; the same discipline EQ.init uses.
+//! passes agree; the same discipline CimDocument.init uses.
 //!
 //! Shapes are flattened per (target class, node shape) pair and sorted by
 //! class. Namespace variants of one CIM name collapse by local name; dedup
@@ -51,7 +51,7 @@ pub const substitutions_count_max = 256;
 
 pub const RuleSet = struct {
     /// The raw rule-set bytes. Names, IRIs, values, and messages below are
-    /// slices into this buffer (same ownership pattern as EQ.xml), except
+    /// slices into this buffer (same ownership pattern as CimDocument.xml), except
     /// strings that escape decoding or substitution rewrote; those live
     /// in `strings`.
     source: []const u8,
@@ -114,11 +114,11 @@ pub const RuleSet = struct {
     /// unsupported until a use case pays for them.
     pub const Target = union(enum) {
         /// One class name with namespace stripped, e.g. "ACLineSegment",
-        /// keyed directly into EQ.type_index / cim_types.is_a. Multi-class
+        /// keyed directly into CimDocument.type_index / cim_types.is_a. Multi-class
         /// targets are flattened before this point. A class absent
         /// from the model matches zero objects; valid, not an error.
         class: []const u8,
-        /// A single node id, resolved via EQ.getObjectById. In the corpus
+        /// A single node id, resolved via CimDocument.getObjectById. In the corpus
         /// these are synthetic hooks for dataset-level SPARQL, so they
         /// typically resolve to nothing; valid, not an error.
         node: []const u8,
@@ -247,7 +247,7 @@ pub const RuleSet = struct {
 
     /// Takes ownership of `source`: on success the RuleSet owns it (freed
     /// by deinit), on error it is freed before returning; same contract
-    /// as EQ.init. `substitutions` is the optional message-constant table;
+    /// as CimDocument.init. `substitutions` is the optional message-constant table;
     /// pass `&.{}` to report messages verbatim (the default and the corpus
     /// norm).
     pub fn load(
@@ -618,7 +618,7 @@ fn build_table(
 }
 
 /// Stable counting sort of rows by subject id, plus the per-subject ranges;
-/// the same prefix-sum-and-cursor pattern as EQ.init passes 2 and 3.
+/// the same prefix-sum-and-cursor pattern as CimDocument.init passes 2 and 3.
 fn sort_table(gpa: std.mem.Allocator, builder: *TableBuilder) !TripleTable {
     const nodes_count: u32 = @intCast(builder.nodes.items.len);
     const rows = builder.rows.items;

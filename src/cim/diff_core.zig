@@ -5,6 +5,17 @@
 //! order, whitespace, and element order are ignored while repeated same-name
 //! children (e.g. multiple Terminal references) each count individually.
 //!
+//! Matching is on the mRID exactly as the document spells it. `#_SW1` and
+//! `#SW1` are different keys and pair with nothing, so a file that drops the
+//! leading underscore reads as every object removed and re-added. That is a
+//! deliberate difference from the SSH/TP overlay loaders, which do strip it:
+//! an overlay must bind its patches onto an existing document and has no
+//! choice, whereas a diff is reporting on the files as written, and two files
+//! spelling their identifiers differently *have* differed. The failure is
+//! loud rather than silent, which is the right way round -- normalizing here
+//! would hide a real change in identifier convention behind a clean diff.
+//! Applies to every profile alike; it is not specific to any of them.
+//!
 //! This module only detects changes. Rendering lives with the output formats:
 //! the patch/json/summary reports in diff.zig and the IEC 61970-552
 //! difference model in eqdiff.zig. Both feed off the same engine, so every
@@ -14,17 +25,17 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const EQ = @import("cgmes/eq.zig").EQ;
-const tag_index = @import("cgmes/tag_index.zig");
-const cim_types = @import("cgmes/cim_types.zig");
+const CimDocument = @import("document.zig").CimDocument;
+const tag_index = @import("tag_index.zig");
+const cim_types = @import("cim_types.zig");
 
 // ── Statements ────────────────────────────────────────────────────────────────
 
 /// One child element of a CIM object.
 pub const Statement = struct {
-    /// Tag name with namespace prefix stripped — the comparison key.
+    /// Tag name with namespace prefix stripped -- the comparison key.
     name: []const u8,
-    /// Text content for property elements, rdf:resource for references —
+    /// Text content for property elements, rdf:resource for references --
     /// the comparison value.
     value: []const u8,
     /// Part of the match key alongside name and value: the CIM schema fixes
@@ -74,7 +85,7 @@ pub const StatementIterator = struct {
             const name = tag_index.extract_tag_type(self.xml, tag.start) catch continue;
 
             // Self-closing: a reference when it carries rdf:resource. The
-            // kind follows the attribute, not the syntax — a self-closing
+            // kind follows the attribute, not the syntax -- a self-closing
             // element without rdf:resource is an empty literal, equivalent
             // to <name></name>.
             if (self.xml[tag.end - 1] == '/') {
@@ -88,7 +99,7 @@ pub const StatementIterator = struct {
             }
 
             // Expanded element, closed by the next boundary. CIM properties
-            // never nest — the same assumption getAllProperties makes when
+            // never nest -- the same assumption getAllProperties makes when
             // slicing content up to the following tag. As above, the kind
             // follows the rdf:resource attribute, not the element form:
             // <name rdf:resource="#_A"></name> is the expanded serialization
@@ -126,7 +137,7 @@ pub const ChangeSet = struct {
 };
 
 /// Compare two views of the same object as multisets of (name, value)
-/// statements. Repeated child elements each count individually — keying by
+/// statements. Repeated child elements each count individually -- keying by
 /// name alone would silently drop all but the last occurrence. Both result
 /// lists are sorted by name for deterministic output.
 pub fn change_set(
@@ -146,7 +157,7 @@ pub fn change_set(
     defer gpa.free(matched);
     @memset(matched, false);
 
-    // Bounded by the object's child count squared — objects are small.
+    // Bounded by the object's child count squared -- objects are small.
     var it2 = StatementIterator.init(view2);
     outer: while (it2.next()) |new_statement| {
         for (statements1.items, matched) |old_statement, *was_matched| {
@@ -182,7 +193,7 @@ fn sort_by_name(statements: []Statement) void {
 
 /// ChangeSet for two views of the same object, or null when they are
 /// semantically identical. Fast path: byte-identical XML is semantically
-/// identical — most objects in two versions of the same grid model are
+/// identical -- most objects in two versions of the same grid model are
 /// untouched (and exporters keep formatting stable), so a single memcmp
 /// skips the statement walk for the overwhelming majority of matched objects.
 pub fn object_changes(
@@ -221,7 +232,7 @@ fn same_cim_type(a: []const u8, b: []const u8) bool {
 /// Return the counterpart only when it has the same mRID and CIM type.
 /// Missing or retyped objects both fall through to bulk remove/add handling.
 fn same_type_counterpart(
-    model: *EQ,
+    model: *CimDocument,
     id: []const u8,
     type_name: []const u8,
 ) ?tag_index.CimObjectView {
@@ -232,14 +243,14 @@ fn same_type_counterpart(
 
 /// Match one type's objects by mRID across the two models and report every
 /// difference to `emitter`, which must provide:
-///   added(view)               — object only in model2
-///   removed(view)             — object only in model1
-///   changed(view1, view2, *const ChangeSet) — object in both, statements differ
+///   added(view)               -- object only in model2
+///   removed(view)             -- object only in model1
+///   changed(view1, view2, *const ChangeSet) -- object in both, statements differ
 /// The ChangeSet is owned by this function and valid only during the call.
 pub fn match_type(
     gpa: std.mem.Allocator,
-    model1: *EQ,
-    model2: *EQ,
+    model1: *CimDocument,
+    model2: *CimDocument,
     type_name: []const u8,
     emitter: anytype,
 ) !TypeStats {
@@ -277,8 +288,8 @@ pub fn match_type(
 /// workflows. Caller owns the returned slice (names are borrowed).
 pub fn type_name_union(
     gpa: std.mem.Allocator,
-    model1: *const EQ,
-    model2: *const EQ,
+    model1: *const CimDocument,
+    model2: *const CimDocument,
 ) ![][]const u8 {
     const types1 = try model1.sorted_type_counts(gpa);
     defer gpa.free(types1);
@@ -328,7 +339,7 @@ pub const SingleDiffStatus = union(enum) {
     diff: bool,
 };
 
-/// How a single mRID relates across the two models — the shared decision
+/// How a single mRID relates across the two models -- the shared decision
 /// logic behind both single-object output modes.
 pub const SingleMatch = union(enum) {
     not_found,
@@ -339,7 +350,7 @@ pub const SingleMatch = union(enum) {
     /// Only in model1.
     removed: tag_index.CimObjectView,
     /// Same mRID, different CIM type: a replacement, not a property change.
-    /// Renderers report the old object as removed and the new one as added —
+    /// Renderers report the old object as removed and the new one as added --
     /// a child-statement delta cannot retype an object.
     replaced: struct { old: tag_index.CimObjectView, new: tag_index.CimObjectView },
     /// Same type in both models; statements may still differ.
@@ -350,8 +361,8 @@ pub const SingleMatch = union(enum) {
 /// If `type_filter` is set the object's type is verified in whichever
 /// model(s) it is found.
 pub fn match_single(
-    model1: *EQ,
-    model2: *EQ,
+    model1: *CimDocument,
+    model2: *CimDocument,
     mrid: []const u8,
     type_filter: ?[]const u8,
 ) SingleMatch {
@@ -374,7 +385,7 @@ pub fn match_single(
 // ── FullModel ─────────────────────────────────────────────────────────────────
 
 /// The exchange-metadata header object, when the model has one.
-pub fn full_model(model: *const EQ) ?tag_index.CimObjectView {
+pub fn full_model(model: *const CimDocument) ?tag_index.CimObjectView {
     const objects = model.get_objects_by_type("FullModel");
     if (objects.len == 0) return null;
     return model.view(objects[0]);
@@ -382,7 +393,7 @@ pub fn full_model(model: *const EQ) ?tag_index.CimObjectView {
 
 /// Semantic comparison of the two FullModel headers: differing presence, id,
 /// or statement multiset all count as a difference.
-pub fn full_models_differ(gpa: std.mem.Allocator, model1: *const EQ, model2: *const EQ) !bool {
+pub fn full_models_differ(gpa: std.mem.Allocator, model1: *const CimDocument, model2: *const CimDocument) !bool {
     const fm1 = full_model(model1) orelse return full_model(model2) != null;
     const fm2 = full_model(model2) orelse return true;
 

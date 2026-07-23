@@ -158,13 +158,13 @@ def main() -> int:
     cimd_total_t = Samples("cimd: TOTAL")
     pypow_total_t = Samples("pypow: load CGMES")
 
-    # First cimd run is discarded entirely — the freshly-built binary pays
+    # First cimd run is discarded entirely -- the freshly-built binary pays
     # one-time costs (dyld, code-signing cache, page-in) that aren't part
     # of steady-state conversion time.
     print("Priming cimd binary (discarded)...")
     cimd_convert(binary, args.eq, args.eqbd, args.ssh, args.tp, jiidm_path)
 
-    # warmup (excluded) — primes pypowsybl JVM and disk caches
+    # warmup (excluded) -- primes pypowsybl JVM and disk caches
     print("Warmup...")
     cimd_convert(binary, args.eq, args.eqbd, args.ssh, args.tp, jiidm_path)
     pypow_load_jiidm(jiidm_path)

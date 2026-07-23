@@ -1,12 +1,12 @@
 const std = @import("std");
-const EQ = @import("cgmes/eq.zig").EQ;
+const CimDocument = @import("document.zig").CimDocument;
 const diff = @import("diff.zig");
 const DiffOptions = diff.DiffOptions;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Run diff_models on two XML strings and return (had_diffs, output).
-/// Output is written into a fixed stack buffer — tests must not exceed 8 KiB.
+/// Output is written into a fixed stack buffer -- tests must not exceed 8 KiB.
 const DiffResult = struct {
     had_diffs: bool,
     buf: [8192]u8,
@@ -27,9 +27,9 @@ fn run_diff(
     xml2: []const u8,
     options: DiffOptions,
 ) !DiffResult {
-    var model1 = try EQ.init(gpa, try gpa.dupe(u8, xml1));
+    var model1 = try CimDocument.init(gpa, try gpa.dupe(u8, xml1));
     defer model1.deinit(gpa);
-    var model2 = try EQ.init(gpa, try gpa.dupe(u8, xml2));
+    var model2 = try CimDocument.init(gpa, try gpa.dupe(u8, xml2));
     defer model2.deinit(gpa);
 
     var result = DiffResult{ .had_diffs = false, .buf = undefined, .len = 0 };
@@ -801,7 +801,7 @@ test "diff - multiple types, mixed changes" {
     try std.testing.expect(r.contains("@@ VoltageLevel @@"));
     // PowerTransformer removed.
     try std.testing.expect(r.contains("@@ PowerTransformer @@"));
-    // Substation unchanged — no header.
+    // Substation unchanged -- no header.
     try std.testing.expect(!r.contains("@@ Substation @@"));
 }
 
@@ -860,7 +860,7 @@ test "diff - reference change detected alongside unchanged properties" {
 test "diff - property flipped to a reference with the same value is detected" {
     // <cim:X>#_A</cim:X> vs <cim:X rdf:resource="#_A"/>: same name and
     // lexical value, different statement kind. The CIM schema fixes each
-    // property's kind, so the flip is a removal plus an addition — it must
+    // property's kind, so the flip is a removal plus an addition -- it must
     // not silently match.
     const xml1 =
         \\<rdf:RDF>
@@ -889,7 +889,7 @@ test "diff - property flipped to a reference with the same value is detected" {
 
 test "diff - empty self-closing literal equals explicit empty literal" {
     // Without rdf:resource, <cim:X/> is just XML empty-element syntax for an
-    // empty literal — the kind follows the attribute, not the syntax, so the
+    // empty literal -- the kind follows the attribute, not the syntax, so the
     // two spellings must not produce a false difference.
     const xml1 =
         \\<rdf:RDF>
@@ -908,7 +908,7 @@ test "diff - empty self-closing literal equals explicit empty literal" {
     const r = try run_diff(std.testing.allocator, xml1, xml2, .{});
     try std.testing.expect(!r.had_diffs);
 
-    // An actual rdf:resource — even an empty one — is still a reference,
+    // An actual rdf:resource -- even an empty one -- is still a reference,
     // so against the empty literal the kinds differ.
     const xml3 =
         \\<rdf:RDF>
@@ -984,9 +984,9 @@ fn run_diff_single(
     mrid: []const u8,
     options: DiffOptions,
 ) !SingleResult {
-    var model1 = try EQ.init(gpa, try gpa.dupe(u8, xml1));
+    var model1 = try CimDocument.init(gpa, try gpa.dupe(u8, xml1));
     errdefer model1.deinit(gpa);
-    var model2 = try EQ.init(gpa, try gpa.dupe(u8, xml2));
+    var model2 = try CimDocument.init(gpa, try gpa.dupe(u8, xml2));
     errdefer model2.deinit(gpa);
 
     var result = SingleResult{ .status = .not_found, .buf = undefined, .len = 0 };
@@ -994,7 +994,7 @@ fn run_diff_single(
     const raw_status = try diff.diff_single(gpa, &model1, &model2, mrid, "file1.xml", "file2.xml", options, &writer);
     result.len = writer.end;
 
-    // type_mismatch payload points into model xml — dupe it before models are freed.
+    // type_mismatch payload points into model xml -- dupe it before models are freed.
     result.status = switch (raw_status) {
         .type_mismatch => |name| blk: {
             result.type_mismatch_name = try gpa.dupe(u8, name);
@@ -1080,7 +1080,7 @@ test "diff single - object only in model1 returns diff=true (removed)" {
 }
 
 test "diff single - type change with same mrid is reported as removed+added" {
-    // Identical children, only the CIM type differs — must still be a diff,
+    // Identical children, only the CIM type differs -- must still be a diff,
     // mirroring diff_models which matches within concrete types.
     const xml1 =
         \\<rdf:RDF>
@@ -1208,7 +1208,7 @@ test "diff single - type mismatch produces no output" {
 }
 
 test "diff single - type check applies to model2 when object only in model2" {
-    // Object is added (not in model1) but --type matches — should proceed normally.
+    // Object is added (not in model1) but --type matches -- should proceed normally.
     const xml1 = "<rdf:RDF></rdf:RDF>";
     const xml2 =
         \\<rdf:RDF>
@@ -1435,4 +1435,82 @@ test "diff single - summary mode identical produces no output" {
     ;
     const r = try run_diff_single(std.testing.allocator, xml, xml, "_SS1", .{ .format = .summary });
     try std.testing.expectEqual(@as(usize, 0), r.len);
+}
+
+// ── Non-EQ profiles ───────────────────────────────────────────────────────────
+//
+// SSH, TP and the other profiles carry rdf:about patches on mRIDs the EQ
+// profile owns, rather than rdf:ID-declared objects. Matching and statement
+// comparison are profile-agnostic, so these diff exactly like EQ objects.
+
+test "diff - SSH switch states differ" {
+    const xml1 =
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:about="#_BR1">
+        \\    <cim:Switch.open>false</cim:Switch.open>
+        \\  </cim:Breaker>
+        \\</rdf:RDF>
+    ;
+    const xml2 =
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:about="#_BR1">
+        \\    <cim:Switch.open>true</cim:Switch.open>
+        \\  </cim:Breaker>
+        \\</rdf:RDF>
+    ;
+    const r = try run_diff(std.testing.allocator, xml1, xml2, .{});
+    try std.testing.expect(r.had_diffs);
+    try std.testing.expect(r.contains("@@ Breaker @@"));
+    try std.testing.expect(r.contains("~ _BR1"));
+    try std.testing.expect(r.contains("  - Switch.open: \"false\""));
+    try std.testing.expect(r.contains("  + Switch.open: \"true\""));
+}
+
+test "diff - SSH type filter selects one patched type" {
+    const xml1 =
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:about="#_BR1">
+        \\    <cim:Switch.open>false</cim:Switch.open>
+        \\  </cim:Breaker>
+        \\  <cim:SynchronousMachine rdf:about="#_SM1">
+        \\    <cim:RotatingMachine.p>-10</cim:RotatingMachine.p>
+        \\  </cim:SynchronousMachine>
+        \\</rdf:RDF>
+    ;
+    const xml2 =
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:about="#_BR1">
+        \\    <cim:Switch.open>true</cim:Switch.open>
+        \\  </cim:Breaker>
+        \\  <cim:SynchronousMachine rdf:about="#_SM1">
+        \\    <cim:RotatingMachine.p>-20</cim:RotatingMachine.p>
+        \\  </cim:SynchronousMachine>
+        \\</rdf:RDF>
+    ;
+    const r = try run_diff(std.testing.allocator, xml1, xml2, .{ .type_filter = "Switch" });
+    try std.testing.expect(r.had_diffs);
+    try std.testing.expect(r.contains("~ _BR1"));
+    try std.testing.expect(!r.contains("_SM1"));
+}
+
+test "diff - TP topological node reassignment" {
+    const xml1 =
+        \\<rdf:RDF>
+        \\  <cim:Terminal rdf:about="#_T1">
+        \\    <cim:Terminal.TopologicalNode rdf:resource="#_TN1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+    const xml2 =
+        \\<rdf:RDF>
+        \\  <cim:Terminal rdf:about="#_T1">
+        \\    <cim:Terminal.TopologicalNode rdf:resource="#_TN2"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ;
+    const r = try run_diff(std.testing.allocator, xml1, xml2, .{ .format = .json });
+    try std.testing.expect(r.had_diffs);
+    try std.testing.expect(r.contains("\"property\":\"Terminal.TopologicalNode\""));
+    try std.testing.expect(r.contains("\"from\":\"#_TN1\""));
+    try std.testing.expect(r.contains("\"to\":\"#_TN2\""));
 }

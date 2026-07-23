@@ -2,9 +2,9 @@
 //!
 //! The difference model carries the statements needed to transform model1
 //! into model2:
-//!   - dm:forwardDifferences — statements present only in model2
+//!   - dm:forwardDifferences -- statements present only in model2
 //!     (added objects, new property values).
-//!   - dm:reverseDifferences — statements present only in model1
+//!   - dm:reverseDifferences -- statements present only in model1
 //!     (removed objects, old property values).
 //!
 //! Change detection (mRID matching, statement multiset comparison) lives in
@@ -30,11 +30,11 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const EQ = @import("cgmes/eq.zig").EQ;
-const tag_index = @import("cgmes/tag_index.zig");
-const cim_types = @import("cgmes/cim_types.zig");
+const CimDocument = @import("document.zig").CimDocument;
+const tag_index = @import("tag_index.zig");
+const cim_types = @import("cim_types.zig");
 const core = @import("diff_core.zig");
-const print = @import("io/print.zig");
+const writer_result = @import("writer.zig");
 
 const rdf_uri = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 const dm_uri = "http://iec.ch/2002/schema/CIM_difference_model#";
@@ -51,8 +51,8 @@ pub const Options = struct {
 /// Returns true when any differences were found (so main.zig can exit 1).
 pub fn write_models(
     gpa: std.mem.Allocator,
-    model1: *EQ,
-    model2: *EQ,
+    model1: *CimDocument,
+    model2: *CimDocument,
     options: Options,
     writer: *std.Io.Writer,
 ) !bool {
@@ -77,7 +77,7 @@ pub fn write_models(
         if (!cim_types.matches_filter(type_name, options.type_filter)) continue;
         // The emitter writes into the in-memory `forward`/`reverse` buffers, so a
         // WriteFailed here is allocation exhaustion, not an output-stream error.
-        const stats = try print.allocating_writer_result(&forward, core.match_type(gpa, model1, model2, type_name, &emitter));
+        const stats = try writer_result.allocating_writer_result(&forward, core.match_type(gpa, model1, model2, type_name, &emitter));
         if (stats.any()) had_diffs = true;
     }
 
@@ -96,8 +96,8 @@ pub fn write_models(
 /// Lookup and type-filter semantics mirror diff.diff_single.
 pub fn write_single(
     gpa: std.mem.Allocator,
-    model1: *EQ,
-    model2: *EQ,
+    model1: *CimDocument,
+    model2: *CimDocument,
     mrid: []const u8,
     options: Options,
     writer: *std.Io.Writer,
@@ -219,7 +219,7 @@ fn emit_local_xmlns(writer: *std.Io.Writer, view: tag_index.CimObjectView) !void
 /// document-relative "#_mrid"; ids that already came from an rdf:about
 /// attribute are re-emitted from the original attribute text so a
 /// document-relative fragment ("#_SS1") is preserved rather than being
-/// rewritten to a different relative URI ("_SS1") — view.id has had the
+/// rewritten to a different relative URI ("_SS1") -- view.id has had the
 /// fragment marker stripped by the parser.
 fn write_about(writer: *std.Io.Writer, view: tag_index.CimObjectView) !void {
     const tag = view.boundaries[view.object_tag_idx];
@@ -254,8 +254,8 @@ fn qualified_tag_name(xml: []const u8, tag: tag_index.TagBoundary) []const u8 {
 
 fn write_document(
     gpa: std.mem.Allocator,
-    model1: *EQ,
-    model2: *EQ,
+    model1: *CimDocument,
+    model2: *CimDocument,
     uuid: [36]u8,
     declarations: *std.ArrayList(XmlnsDecl),
     forward_body: []const u8,
@@ -346,7 +346,7 @@ fn resolve_namespace_prefix(
 
     // `preferred` is bound to a different namespace; probe a bounded set of
     // numbered alternatives. Ten collisions on one prefix family means the
-    // input is adversarial, not a grid model — fail loud.
+    // input is adversarial, not a grid model -- fail loud.
     for (0..10) |n| {
         const owned = try std.fmt.allocPrint(gpa, "xmlns:" ++ preferred ++ "{d}=\"" ++ uri ++ "\"", .{n});
         errdefer gpa.free(owned);
@@ -362,7 +362,7 @@ fn resolve_namespace_prefix(
 }
 
 /// Merge the xmlns declarations of both inputs' root elements (the first
-/// declaration of a prefix wins) plus model2's FullModel-local ones — its
+/// declaration of a prefix wins) plus model2's FullModel-local ones -- its
 /// children are copied into the header without their declaring parent.
 /// model1's FullModel is not merged: it contributes only its id, inside a
 /// generated rdf:resource attribute where prefix bindings are irrelevant,
@@ -373,8 +373,8 @@ fn resolve_namespace_prefix(
 /// namespaces cannot be represented in the single merged scope: rejected with
 /// error.ConflictingNamespaceBindings rather than silently changing what the
 /// copied statements mean. (Declarations local to an ordinary object's tag
-/// are exempt — emit_local_xmlns re-declares them on the emitted element.)
-fn merge_xmlns(gpa: std.mem.Allocator, model1: *const EQ, model2: *const EQ) !std.ArrayList(XmlnsDecl) {
+/// are exempt -- emit_local_xmlns re-declares them on the emitted element.)
+fn merge_xmlns(gpa: std.mem.Allocator, model1: *const CimDocument, model2: *const CimDocument) !std.ArrayList(XmlnsDecl) {
     var declarations: std.ArrayList(XmlnsDecl) = .empty;
     errdefer declarations.deinit(gpa);
 
@@ -464,8 +464,8 @@ const XmlnsIterator = struct {
 };
 
 /// The first real element of the document (skipping the XML declaration,
-/// comments, and doctype) — for CGMES this is rdf:RDF.
-fn root_element(model: *const EQ) ?tag_index.TagBoundary {
+/// comments, and doctype) -- for CGMES this is rdf:RDF.
+fn root_element(model: *const CimDocument) ?tag_index.TagBoundary {
     for (model.boundaries) |tag| {
         if (tag.start + 1 >= model.xml.len) return null;
         switch (model.xml[tag.start + 1]) {
@@ -482,8 +482,8 @@ fn root_element(model: *const EQ) ?tag_index.TagBoundary {
 /// the same diff invocation always produces the same document. Formatted as a
 /// version-5-style (name-based) RFC 4122 UUID.
 fn difference_model_uuid(
-    model1: *const EQ,
-    model2: *const EQ,
+    model1: *const CimDocument,
+    model2: *const CimDocument,
     options: Options,
     mrid: ?[]const u8,
 ) [36]u8 {

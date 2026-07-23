@@ -1,9 +1,10 @@
 const std = @import("std");
+const cim = @import("../cim/cim.zig");
 const iidm = @import("../iidm/model.zig");
-const EQ = @import("../cgmes/eq.zig").EQ;
-const TP = @import("../cgmes/tp.zig").TP;
-const parse = @import("../cgmes/parse.zig");
-const utils = @import("../cgmes/ids.zig");
+const CimDocument = cim.CimDocument;
+const TP = cim.TP;
+const parse = cim.parse;
+const utils = cim.ids;
 
 const assert = std.debug.assert;
 

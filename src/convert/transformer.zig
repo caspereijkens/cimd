@@ -1,11 +1,12 @@
 const std = @import("std");
+const cim = @import("../cim/cim.zig");
 const iidm = @import("../iidm/model.zig");
-const EQ = @import("../cgmes/eq.zig").EQ;
+const CimDocument = cim.CimDocument;
 const cross_ref = @import("../topology/cross_ref.zig");
-const tag_index = @import("../cgmes/tag_index.zig");
-const utils = @import("../cgmes/ids.zig");
+const tag_index = cim.tag_index;
+const utils = cim.ids;
 const topology = @import("../topology/resolve.zig");
-const parse = @import("../cgmes/parse.zig");
+const parse = cim.parse;
 
 const assert = std.debug.assert;
 const testing = std.testing;
@@ -35,7 +36,7 @@ pub fn deinit_tap_changer_info_map(gpa: std.mem.Allocator, map: *TapChangerInfoM
 
 fn build_ends_by_transformer(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
 ) !std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObjectView)) {
     var ends_by_transformer: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObjectView)) = .empty;
 
@@ -67,7 +68,7 @@ test "build_ends_by_transformer skips ends without a transformer reference" {
         \\  <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
         \\</cim:PowerTransformerEnd></rdf:RDF>
     ;
-    var model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, xml));
+    var model = try CimDocument.init(testing.allocator, try testing.allocator.dupe(u8, xml));
     defer model.deinit(testing.allocator);
     var ends_by_transformer = try build_ends_by_transformer(testing.allocator, &model);
     defer {
@@ -82,9 +83,9 @@ test "build_ends_by_transformer skips ends without a transformer reference" {
 const TapChangerCommon = struct { low_step: i32, normal_step: i32, ltc_flag: bool };
 
 fn read_tap_changer_regulating(
-    model: *const EQ,
+    model: *const CimDocument,
     tap_changer: CimObjectView,
-    ssh_opt: ?@import("../cgmes/ssh.zig").SSH,
+    ssh_opt: ?cim.SSH,
 ) !?bool {
     const control_ref = try tap_changer.getReference("TapChanger.TapChangerControl") orelse return null;
     if (ssh_opt) |ssh| {
@@ -118,7 +119,7 @@ test "blank ltcFlag keeps the tap changer disabled" {
         \\  <cim:TapChanger.ltcFlag></cim:TapChanger.ltcFlag>
         \\</cim:RatioTapChanger></rdf:RDF>
     ;
-    var model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, xml));
+    var model = try CimDocument.init(testing.allocator, try testing.allocator.dupe(u8, xml));
     defer model.deinit(testing.allocator);
     const tap_changer = model.view(model.get_objects_by_type("RatioTapChanger")[0]);
     const common = (try read_tap_changer_common(tap_changer)).?;
@@ -127,7 +128,7 @@ test "blank ltcFlag keeps the tap changer disabled" {
 
 fn append_tap_changer_info(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     map: *TapChangerInfoMap,
     end_id: []const u8,
     tap_changer_mrid: []const u8,
@@ -185,7 +186,7 @@ test "tap changer table points reject zero ratio for ratio and phase paths" {
         \\  <cim:TapChangerTablePoint.ratio>0</cim:TapChangerTablePoint.ratio>
         \\</cim:PhaseTapChangerTablePoint></rdf:RDF>
     ;
-    var model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, xml));
+    var model = try CimDocument.init(testing.allocator, try testing.allocator.dupe(u8, xml));
     defer model.deinit(testing.allocator);
     const point = model.view(model.get_objects_by_type("RatioTapChangerTablePoint")[0]);
     const phase_point = model.view(model.get_objects_by_type("PhaseTapChangerTablePoint")[0]);
@@ -204,7 +205,7 @@ const OrderedRatioStep = struct {
 
 fn build_ratio_table_points(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
 ) !std.StringHashMapUnmanaged(std.ArrayListUnmanaged(OrderedRatioStep)) {
     const tables = model.get_objects_by_type("RatioTapChangerTable");
     const points = model.get_objects_by_type("RatioTapChangerTablePoint");
@@ -230,7 +231,7 @@ fn build_ratio_table_points(
             .step = .{ .r = base.r, .x = base.x, .g = base.g, .b = base.b, .rho = rho },
         });
     }
-    // CGMES does not guarantee TablePoint XML order matches step order — sort explicitly.
+    // CGMES does not guarantee TablePoint XML order matches step order -- sort explicitly.
     var sort_it = points_by_table.valueIterator();
     while (sort_it.next()) |list| std.sort.block(OrderedRatioStep, list.items, {}, OrderedRatioStep.less_than);
     return points_by_table;
@@ -251,7 +252,7 @@ test "tap point maps tolerate dangling table references and skipped points" {
         \\  </cim:PhaseTapChangerTablePoint>
         \\</rdf:RDF>
     ;
-    var dangling_model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, dangling_xml));
+    var dangling_model = try CimDocument.init(testing.allocator, try testing.allocator.dupe(u8, dangling_xml));
     defer dangling_model.deinit(testing.allocator);
     var ratio_points = try build_ratio_table_points(testing.allocator, &dangling_model);
     defer {
@@ -278,7 +279,7 @@ test "tap point maps tolerate dangling table references and skipped points" {
         \\  </cim:RatioTapChangerTablePoint>
         \\</rdf:RDF>
     ;
-    var skipped_model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, skipped_xml));
+    var skipped_model = try CimDocument.init(testing.allocator, try testing.allocator.dupe(u8, skipped_xml));
     defer skipped_model.deinit(testing.allocator);
     var skipped_points = try build_ratio_table_points(testing.allocator, &skipped_model);
     defer skipped_points.deinit(testing.allocator);
@@ -326,7 +327,7 @@ test "build_linear_ratio_steps rejects a computed near-zero ratio" {
         \\  <cim:RatioTapChanger.stepVoltageIncrement>0.3333333</cim:RatioTapChanger.stepVoltageIncrement>
         \\</cim:RatioTapChanger></rdf:RDF>
     ;
-    var model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, xml));
+    var model = try CimDocument.init(testing.allocator, try testing.allocator.dupe(u8, xml));
     defer model.deinit(testing.allocator);
     const tap_changer = model.view(model.get_objects_by_type("RatioTapChanger")[0]);
 
@@ -355,8 +356,8 @@ const PhaseTapChangerEntry = struct {
 
 fn build_ratio_tap_changer_map(
     gpa: std.mem.Allocator,
-    model: *const EQ,
-    ssh_opt: ?@import("../cgmes/ssh.zig").SSH,
+    model: *const CimDocument,
+    ssh_opt: ?cim.SSH,
     tap_changer_info_map: ?*TapChangerInfoMap,
 ) !std.StringHashMapUnmanaged(RatioTapChangerEntry) {
     var points_by_table = try build_ratio_table_points(gpa, model);
@@ -436,8 +437,8 @@ const OrderedPhaseStep = struct {
 
 fn build_phase_tap_changer_map(
     gpa: std.mem.Allocator,
-    model: *const EQ,
-    ssh_opt: ?@import("../cgmes/ssh.zig").SSH,
+    model: *const CimDocument,
+    ssh_opt: ?cim.SSH,
     tap_changer_info_map: ?*TapChangerInfoMap,
 ) !std.StringHashMapUnmanaged(PhaseTapChangerEntry) {
     var points_by_table: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(OrderedPhaseStep)) = .empty;
@@ -478,7 +479,7 @@ fn build_phase_tap_changer_map(
         });
     }
 
-    // CGMES does not guarantee TablePoint XML order matches step order — sort explicitly.
+    // CGMES does not guarantee TablePoint XML order matches step order -- sort explicitly.
     var sort_it = points_by_table.valueIterator();
     while (sort_it.next()) |list| std.sort.block(OrderedPhaseStep, list.items, {}, OrderedPhaseStep.less_than);
 
@@ -588,7 +589,7 @@ test "build_phase_tap_changer_map unwinds entries when a later changer is invali
         \\  </cim:PhaseTapChangerTabular>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, xml));
+    var model = try CimDocument.init(testing.allocator, try testing.allocator.dupe(u8, xml));
     defer model.deinit(testing.allocator);
 
     try testing.expectError(error.InvalidIntegerValue, build_phase_tap_changer_map(testing.allocator, &model, null, null));
@@ -658,7 +659,7 @@ test "tap changer info includes only retained map entries" {
         \\  </cim:PhaseTapChangerTabular>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, xml));
+    var model = try CimDocument.init(testing.allocator, try testing.allocator.dupe(u8, xml));
     defer model.deinit(testing.allocator);
 
     var tap_changer_info_map: TapChangerInfoMap = .empty;
@@ -696,10 +697,10 @@ fn view_less_than(_: void, a: CimObjectView, b: CimObjectView) bool {
     return end_number0 < end_number1;
 }
 
-const TestEnd = struct { model: EQ, end: CimObjectView };
+const TestEnd = struct { model: CimDocument, end: CimObjectView };
 
 fn make_end(xml: []const u8) !TestEnd {
-    const model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, xml));
+    const model = try CimDocument.init(testing.allocator, try testing.allocator.dupe(u8, xml));
     return .{ .model = model, .end = model.view(model.get_objects_by_type("PowerTransformerEnd")[0]) };
 }
 
@@ -776,7 +777,7 @@ test "view_less_than: end 1 < end 3" {
     try testing.expect(!view_less_than({}, t3.end, t1.end));
 }
 
-test "view_less_than: transitivity — end1 < end2 and end2 < end3 implies end1 < end3" {
+test "view_less_than: transitivity -- end1 < end2 and end2 < end3 implies end1 < end3" {
     var t1 = try make_end(
         \\<rdf:RDF><cim:PowerTransformerEnd rdf:ID="_e1">
         \\  <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
@@ -906,7 +907,7 @@ fn pre_allocate_transformers(
 
 fn append_two_windings_transformer(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     transformer: CimObjectView,
     ends: []const CimObjectView,
     substation: *iidm.Substation,
@@ -1017,7 +1018,7 @@ fn append_two_windings_transformer(
 
 fn append_three_windings_transformer(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     transformer: CimObjectView,
     ends: []const CimObjectView,
     substation: *iidm.Substation,
@@ -1148,10 +1149,10 @@ fn append_three_windings_transformer(
 
 pub fn convert_transformers(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     substation_map: *const std.StringHashMapUnmanaged(*iidm.Substation),
     placer: TerminalPlacer,
-    ssh_opt: ?@import("../cgmes/ssh.zig").SSH,
+    ssh_opt: ?cim.SSH,
     tap_changer_info_map: ?*TapChangerInfoMap,
 ) !void {
     var ends_by_transformer: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObjectView)) = try build_ends_by_transformer(gpa, model);
@@ -1195,7 +1196,7 @@ pub fn convert_transformers(
 
 test "convert_transformers skips a transformer without ends" {
     const xml = "<rdf:RDF><cim:PowerTransformer rdf:ID=\"_transformer\"/></rdf:RDF>";
-    var model = try EQ.init(testing.allocator, try testing.allocator.dupe(u8, xml));
+    var model = try CimDocument.init(testing.allocator, try testing.allocator.dupe(u8, xml));
     defer model.deinit(testing.allocator);
 
     var index = CrossRef.empty();

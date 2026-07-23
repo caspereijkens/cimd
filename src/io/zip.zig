@@ -441,9 +441,12 @@ test "is_zip_file" {
     try std.testing.expect(!(try is_zip_file(io, file)));
 }
 
-const TestZipEntry = struct { name: []const u8, data: []const u8 };
+/// Also used by the end-to-end CLI tests (src/test_cli.zig) to build bundle
+/// fixtures: the reader under test and the writer that feeds it stay in one
+/// place, so a fixture can never drift from what extraction accepts.
+pub const TestZipEntry = struct { name: []const u8, data: []const u8 };
 
-fn make_test_stored_zip(gpa: std.mem.Allocator, entries: []const TestZipEntry) ![]u8 {
+pub fn make_test_stored_zip(gpa: std.mem.Allocator, entries: []const TestZipEntry) ![]u8 {
     var archive: std.Io.Writer.Allocating = .init(gpa);
     errdefer archive.deinit();
     const w = &archive.writer;

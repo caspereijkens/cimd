@@ -1,10 +1,10 @@
 const std = @import("std");
-const EQ = @import("cgmes/eq.zig").EQ;
+const CimDocument = @import("document.zig").CimDocument;
 const TP = @import("cgmes/tp.zig").TP;
 const SSH = @import("cgmes/ssh.zig").SSH;
-const tag_index = @import("cgmes/tag_index.zig");
-const ids = @import("cgmes/ids.zig");
-const cim_types = @import("cgmes/cim_types.zig");
+const tag_index = @import("tag_index.zig");
+const ids = @import("ids.zig");
+const cim_types = @import("cim_types.zig");
 
 const assert = std.debug.assert;
 
@@ -25,7 +25,7 @@ pub const ReverseRefIndex = struct {
 
     pub fn build(
         gpa: std.mem.Allocator,
-        model: *const EQ,
+        model: *const CimDocument,
     ) !ReverseRefIndex {
         return build_with_overlays(gpa, model, null, null);
     }
@@ -35,7 +35,7 @@ pub const ReverseRefIndex = struct {
     /// reuses this; one-shot refs uses collect_referrers_for_target instead.
     pub fn build_with_overlays(
         gpa: std.mem.Allocator,
-        model: *const EQ,
+        model: *const CimDocument,
         tp_opt: ?TP,
         ssh_opt: ?SSH,
     ) !ReverseRefIndex {
@@ -66,7 +66,7 @@ pub const ReverseRefIndex = struct {
     pub fn lookup(self: *const ReverseRefIndex, target_id: []const u8) []const ReverseRef {
         const list = self.map.get(target_id) orelse return &.{};
         // Pair with build_with_overlays's invariant: every bucket holds at least
-        // one edge — an empty hit signals index corruption.
+        // one edge -- an empty hit signals index corruption.
         assert(list.items.len > 0);
         return list.items;
     }
@@ -100,7 +100,7 @@ const EdgeSink = union(enum) {
     }
 };
 
-/// View over a TP-added (rdf:ID) object, mirroring EQ.view.
+/// View over a TP-added (rdf:ID) object, mirroring CimDocument.view.
 fn tp_object_view(tp: TP, obj: tag_index.CimObject) tag_index.CimObjectView {
     return .{
         .xml = tp.xml,
@@ -198,7 +198,7 @@ fn emit_merged_edges(
         .close_idx = p.closing_tag_idx,
     } else null else null;
 
-    // No overlay touches this object: stream EQ directly, no allocation — the
+    // No overlay touches this object: stream EQ directly, no allocation -- the
     // cost of a plain reverse scan, which is the common path.
     if (tp_range == null and ssh_range == null) {
         try stream_edges(gpa, sink, eq_range, base.id, base.type_name, null, .eq);
@@ -234,7 +234,7 @@ fn record_owners(
 }
 
 /// Emit a reverse edge per rdf:resource tag in `range`. When `owner` is given,
-/// skip names a higher-precedence layer owns — the shadowing that keeps `refs`
+/// skip names a higher-precedence layer owns -- the shadowing that keeps `refs`
 /// in step with `get` without collapsing multi-valued tags.
 fn stream_edges(
     gpa: std.mem.Allocator,
@@ -262,7 +262,7 @@ fn stream_edges(
 /// effective edge to `sink`. Keeps the two paths from disagreeing.
 fn iterate_merged_edges(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     tp_opt: ?TP,
     ssh_opt: ?SSH,
     sink: EdgeSink,
@@ -281,7 +281,7 @@ fn iterate_merged_edges(
 /// through `filter_referrers`.
 pub fn collect_referrers_for_target(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     tp_opt: ?TP,
     ssh_opt: ?SSH,
     target_id: []const u8,
@@ -298,7 +298,7 @@ pub fn collect_referrers_for_target(
 /// present) TP's new objects. Returns null if neither contains the id.
 /// EQ takes precedence; the command layer collision-checks before calling.
 pub fn resolve_object(
-    model: *const EQ,
+    model: *const CimDocument,
     tp_opt: ?TP,
     id: []const u8,
 ) ?tag_index.CimObjectView {
@@ -317,12 +317,12 @@ pub fn resolve_object(
 }
 
 /// Exact resolution honoring the underscore-optional full-id convenience: the
-/// literal id first, then — for an id typed without its leading `_` — the
+/// literal id first, then -- for an id typed without its leading `_` -- the
 /// rdf:ID form, so `A` resolves the stored `_A` (cf. ids.id_prefix_matches).
 /// Allocates only on the rare retry; the view's id slices the model, not `buf`.
 pub fn resolve_object_normalized(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     tp_opt: ?TP,
     id: []const u8,
 ) !?tag_index.CimObjectView {
@@ -344,7 +344,7 @@ pub const TpPrimaryMridCollision = struct {
 /// primary model. Navigation resolves by raw id, so this check is allocation-
 /// free and prevents EQ from silently shadowing the TP object.
 pub fn find_tp_primary_id_collision(
-    model: *const EQ,
+    model: *const CimDocument,
     tp: TP,
 ) ?tag_index.CimObject {
     for (tp.new_objects) |obj| {
@@ -358,7 +358,7 @@ pub fn find_tp_primary_id_collision(
 /// stronger check; raw-id navigation deliberately does not.
 pub fn find_tp_primary_mrid_collision(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     tp: TP,
 ) !?TpPrimaryMridCollision {
     var primary_mrids: std.StringHashMapUnmanaged(void) = .empty;
@@ -384,11 +384,11 @@ pub fn find_tp_primary_mrid_collision(
 /// (when present) TP's new objects. Returns owned slice.
 ///
 /// Without this union, `refs --tp eq _TN1` would not_found even though the
-/// reverse index is overlay-aware — TP-added objects like TopologicalNodes
+/// reverse index is overlay-aware -- TP-added objects like TopologicalNodes
 /// don't exist in EQ's tag index but must still be valid targets.
 pub fn collect_target_candidates(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     tp_opt: ?TP,
     mrid_prefix: []const u8,
 ) ![]const tag_index.CimObject {
@@ -424,7 +424,7 @@ fn append_target_candidates(
 /// Return a freshly-allocated, sorted slice of referrers filtered by
 /// `type_filter`. Sort order is (referrer_type, referrer_id, reference_name).
 /// Caller owns and must free the returned slice. The slice's strings still
-/// borrow from the underlying XML buffers — the index/model must outlive it.
+/// borrow from the underlying XML buffers -- the index/model must outlive it.
 pub fn filter_referrers(
     gpa: std.mem.Allocator,
     referrers: []const ReverseRef,
@@ -507,7 +507,7 @@ pub fn write_referrers_text(
 }
 
 /// Render the JSON form: `{"id":..,"type":..,"referrers":[{"id":..,"type":..,"reference":..}]}`.
-/// Python/jq consumers key off this schema — changing field names is a breaking
+/// Python/jq consumers key off this schema -- changing field names is a breaking
 /// change for downstream scripts. Test "writes JSON envelope" pins the shape.
 pub fn write_referrers_json(
     w: *std.Io.Writer,
@@ -553,7 +553,7 @@ test "ReverseRefIndex.build indexes EQ referrers by target id" {
         \\  </cim:Bay>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     var index = try ReverseRefIndex.build(gpa, &model);
@@ -581,7 +581,7 @@ test "ReverseRefIndex.build_with_overlays indexes TP patch referrers" {
         \\  </cim:Terminal>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, eq_xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
     defer model.deinit(gpa);
     var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
     defer tp.deinit(gpa);
@@ -612,7 +612,7 @@ test "ReverseRefIndex.build_with_overlays indexes SSH patch referrers" {
         \\  </cim:Switch>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, eq_xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
     defer model.deinit(gpa);
     var ssh = try SSH.init(gpa, try gpa.dupe(u8, ssh_xml));
     defer ssh.deinit(gpa);
@@ -643,7 +643,7 @@ test "ReverseRefIndex collects multiple referrers per target (hub case)" {
         \\  </cim:Switch>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     var index = try ReverseRefIndex.build(gpa, &model);
@@ -665,7 +665,7 @@ test "ReverseRefIndex keeps every edge of a multi-valued reference" {
         \\  </cim:Foo>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     var index = try ReverseRefIndex.build(gpa, &model);
@@ -695,7 +695,7 @@ test "ReverseRefIndex applies overlay precedence to a retargeted reference" {
         \\  </cim:Terminal>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, eq_xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
     defer model.deinit(gpa);
     var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
     defer tp.deinit(gpa);
@@ -721,7 +721,7 @@ test "collect_referrers_for_target streams multi-valued references" {
         \\  </cim:Foo>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     // The target scan must see _A even though Foo.Bar also points at _B.
@@ -741,7 +741,7 @@ test "ReverseRefIndex ignores rdf:resource inside a comment" {
         \\  </cim:Foo>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     var index = try ReverseRefIndex.build(gpa, &model);
@@ -757,7 +757,7 @@ test "resolve_object_normalized handles ids longer than any stack buffer" {
     const long = "a" ** 400;
     const xml = try std.fmt.allocPrint(gpa, "<rdf:RDF><cim:Substation rdf:ID=\"_{s}\"/></rdf:RDF>", .{long});
     defer gpa.free(xml);
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     const expected = try std.fmt.allocPrint(gpa, "_{s}", .{long});
@@ -773,7 +773,7 @@ test "resolve_object_normalized resolves a full id typed without its leading und
         \\  <cim:Substation rdf:ID="_SS1"/>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     // Literal hit when the underscore is present.
@@ -795,7 +795,7 @@ test "resolve_object_normalized prefers an exact literal hit over the underscore
         \\  <cim:VoltageLevel rdf:ID="_A"/>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     // Literal "A" is authoritative; the "_A" retry must not shadow it.
@@ -957,7 +957,7 @@ test "collect_target_candidates: TP-only target resolves under --tp" {
         \\  </cim:Terminal>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, eq_xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
     defer model.deinit(gpa);
     var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
     defer tp.deinit(gpa);
@@ -994,7 +994,7 @@ test "collect_target_candidates: EQ and TP matches both included" {
         \\  <cim:TopologicalNode rdf:ID="_X2"/>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, eq_xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
     defer model.deinit(gpa);
     var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
     defer tp.deinit(gpa);
@@ -1021,7 +1021,7 @@ test "find_tp_primary_id_collision compares raw RDF identifiers" {
         \\  <cim:TopologicalNode rdf:ID="_T1"/>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, eq_xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
     defer model.deinit(gpa);
     var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
     defer tp.deinit(gpa);
@@ -1032,7 +1032,7 @@ test "find_tp_primary_id_collision compares raw RDF identifiers" {
 
 test "find_tp_primary_id_collision allows distinct raw ids with equal mRIDs" {
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, "<rdf:RDF><cim:Terminal rdf:ID=\"_T1\"/></rdf:RDF>"));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, "<rdf:RDF><cim:Terminal rdf:ID=\"_T1\"/></rdf:RDF>"));
     defer model.deinit(gpa);
     var tp = try TP.init(gpa, try gpa.dupe(u8, "<rdf:RDF><cim:TopologicalNode rdf:ID=\"T1\"/></rdf:RDF>"));
     defer tp.deinit(gpa);
@@ -1050,7 +1050,7 @@ test "find_tp_primary_mrid_collision honors explicit primary mRID" {
         \\</rdf:RDF>
     ;
     const tp_xml = "<rdf:RDF><cim:TopologicalNode rdf:ID=\"_SHARED\"/></rdf:RDF>";
-    var model = try EQ.init(gpa, try gpa.dupe(u8, eq_xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
     defer model.deinit(gpa);
     var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
     defer tp.deinit(gpa);

@@ -150,7 +150,7 @@ pub fn matches_filter(actual_type: []const u8, type_filter: ?[]const u8) bool {
 
 // Walk the single parent chain from `actual_type` upward, looking for
 // `requested_type`. `parent_edges` is a tree (each child appears once), so
-// every type has at most one parent and this is a linear walk — no recursion.
+// every type has at most one parent and this is a linear walk -- no recursion.
 // The loop is bounded by the edge count: a well-formed chain terminates via the
 // `orelse return false` long before that, and the bound caps any malformed
 // (cyclic) table at a finite number of steps.

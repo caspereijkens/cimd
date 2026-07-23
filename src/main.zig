@@ -1,28 +1,27 @@
 const std = @import("std");
+const cim = @import("cim/cim.zig");
 const cli = @import("cli.zig");
 const print = @import("io/print.zig");
 const builtin = @import("builtin");
-const ssh_mod = @import("cgmes/ssh.zig");
-const SSH = ssh_mod.SSH;
-const tp_mod = @import("cgmes/tp.zig");
-const TP = tp_mod.TP;
+const SSH = cim.SSH;
+const TP = cim.TP;
 const io_read = @import("io/read.zig");
-const eq_mod = @import("cgmes/eq.zig");
-const diagnostics_mod = @import("cgmes/diagnostics.zig");
-const EQ = eq_mod.EQ;
-const CimObject = eq_mod.CimObject;
+// `_mod` suffix: local `diagnostics` variables would shadow it.
+const diagnostics_mod = cim.diagnostics;
+const CimDocument = cim.CimDocument;
+const CimObject = cim.CimObject;
 const browse = @import("browse.zig");
-const diff = @import("diff.zig");
-const eqdiff = @import("eqdiff.zig");
+const diff = cim.diff;
+const eqdiff = cim.eqdiff;
 const converter = @import("convert/network.zig");
 const iidm = @import("iidm/model.zig");
 const cross_ref = @import("topology/cross_ref.zig");
 const resolve = @import("topology/resolve.zig");
-const refs = @import("refs.zig");
-const tag_index = @import("cgmes/tag_index.zig");
-const ids = @import("cgmes/ids.zig");
-const cim_types = @import("cgmes/cim_types.zig");
-const CimMergedView = ssh_mod.CimMergedView;
+const refs = cim.refs;
+const tag_index = cim.tag_index;
+const ids = cim.ids;
+const cim_types = cim.cim_types;
+const CimMergedView = cim.CimMergedView;
 const qocdc = @import("qocdc.zig");
 const validate = @import("validate.zig");
 const model_set = @import("model_set.zig");
@@ -271,7 +270,7 @@ fn validate_get_args(io: std.Io, c: cli.Command.Get) void {
     };
 }
 
-fn command_get_list(io: std.Io, gpa: std.mem.Allocator, model: *const EQ, c: cli.Command.Get) !void {
+fn command_get_list(io: std.Io, gpa: std.mem.Allocator, model: *const CimDocument, c: cli.Command.Get) !void {
     assert(c.type_filter != null);
     assert(c.mrid == null);
     const type_name = c.type_filter.?;
@@ -326,7 +325,7 @@ fn parse_get_fields(
 
 fn display_get_list_text(
     io: std.Io,
-    model: *const EQ,
+    model: *const CimDocument,
     objects: []const CimObject,
     fields: []const []const u8,
 ) !void {
@@ -341,7 +340,7 @@ fn display_get_list_text(
 
 fn write_get_list_text(
     w: *std.Io.Writer,
-    model: *const EQ,
+    model: *const CimDocument,
     objects: []const CimObject,
     fields: []const []const u8,
 ) !void {
@@ -361,7 +360,7 @@ fn write_get_list_text(
 fn resolve_prefix(
     io: std.Io,
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     tp_opt: ?TP,
     mrid: []const u8,
     type_filter: ?[]const u8,
@@ -649,7 +648,7 @@ fn command_refs(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Refs) !void {
 fn reject_tp_primary_id_collision(
     io: std.Io,
     command_name: []const u8,
-    model: *const EQ,
+    model: *const CimDocument,
     tp_opt: ?TP,
     tp_path: ?[]const u8,
 ) void {
@@ -668,7 +667,7 @@ fn reject_tp_primary_mrid_collision(
     io: std.Io,
     gpa: std.mem.Allocator,
     command_name: []const u8,
-    model: *const EQ,
+    model: *const CimDocument,
     tp_opt: ?TP,
     tp_path: ?[]const u8,
 ) !void {
@@ -693,7 +692,7 @@ test "get type filter collector includes CIM subtypes" {
         \\  <cim:Substation rdf:ID="_SS1"/>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     try std.testing.expectEqual(@as(usize, 3), model.count_objects_by_type_filter("ConductingEquipment"));
@@ -726,7 +725,7 @@ test "write_object_maps_text renders sorted properties and raw references" {
         \\  </cim:ACLineSegment>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
     const view = model.getObjectById("_L1").?;
     var props = try view.getAllProperties(gpa);
@@ -761,7 +760,7 @@ test "write_object_maps_json strips reference hash and pins the shape" {
         \\  </cim:ACLineSegment>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
     const view = model.getObjectById("_L1").?;
     var props = try view.getAllProperties(gpa);
@@ -793,9 +792,10 @@ fn exit_json_error(io: std.Io, value: anytype) noreturn {
     std.process.exit(1);
 }
 
-/// The canonical (type_name, count) pair and its ordering live on EQ; alias it
+/// The canonical (type_name, count) pair and its ordering live on CimDocument;
+/// alias it
 /// so the get-ambiguity breakdown sorts and renders identically to `cimd types`.
-const TypeCount = EQ.TypeCount;
+const TypeCount = CimDocument.TypeCount;
 
 /// Aggregate `matches` into alphabetically-sorted (type_name, count) pairs.
 /// Caller owns the returned slice. Shared by the ambiguity renderers so the
@@ -883,7 +883,7 @@ fn render_type_breakdown(io: std.Io, gpa: std.mem.Allocator, prefix: []const u8,
 
     try print.stderr_info(
         io,
-        "Ambiguous prefix '{s}' matched {d} objects across {d} types — pass --type to drill in:\n",
+        "Ambiguous prefix '{s}' matched {d} objects across {d} types -- pass --type to drill in:\n",
         .{ prefix, matches.len, entries.len },
     );
 
@@ -992,8 +992,71 @@ fn load_diff_models(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Diff) !Di
     }
     var left = try model_set.load_merged(io, gpa, "diff", left_inputs[0..left_count], .diff_side);
     errdefer left.deinit(gpa);
-    const right = try model_set.load_merged(io, gpa, "diff", right_inputs[0..right_count], .diff_side);
+    var right = try model_set.load_merged(io, gpa, "diff", right_inputs[0..right_count], .diff_side);
+    errdefer right.deinit(gpa);
+    reject_mixed_profiles(io, &left, &right);
     return .{ .left = left, .right = right };
+}
+
+/// Both sides must describe the same profile: mRIDs collide across profiles by
+/// design (SSH patches carry the EQ object's mRID), so an EQ-vs-SSH diff would
+/// report every shared object as a wholesale property rewrite rather than
+/// failing.
+///
+/// A side whose header declares nothing is only accepted against another
+/// declaring nothing. Pairing it with a declared side would mean guessing that
+/// the silent one matches -- and a headerless fragment is exactly as likely to
+/// be the EQ document those SSH mRIDs point at, which diffs to the same
+/// meaningless wholesale rewrite. One kind flag settles it, so ask for one
+/// rather than guess.
+///
+/// The comparison is on `Kind`, not on the declared profile URIs, and that is
+/// deliberate. Kind is the family; several URIs map to one (EquipmentCore,
+/// Operation and ShortCircuit are all `.eq`, in both the 2.4.15 and 3.0
+/// spellings), and diffing within a family is exactly what users do: a
+/// Core-only export against a Core+ShortCircuit one, or a 2.4.15 export
+/// against its 3.0 successor. Requiring equal URI sets would reject both --
+/// the first is 22 files against 4 in the reference corpus, the second 6 more
+/// -- to catch Core-against-Operation, which occurs zero times there and which
+/// announces itself anyway, since every object reports as rewritten. Kind is
+/// the granularity that separates "different slice of the same model" from
+/// "different model", and only the latter is the silent-wrong-answer case
+/// this guard exists for.
+fn reject_mixed_profiles(io: std.Io, left: *const model_set.MergedModelSet, right: *const model_set.MergedModelSet) void {
+    if (left.primary_kind) |left_kind| {
+        if (right.primary_kind) |right_kind| {
+            if (left_kind == right_kind) return;
+            print.data_error(io, "diff: '{s}' is {s} and '{s}' is {s}; both sides must be the same profile", .{
+                left.primary_source.label(),
+                @tagName(left_kind),
+                right.primary_source.label(),
+                @tagName(right_kind),
+            });
+        }
+        require_routing(io, left.primary_source.label(), left_kind, right.primary_source.label());
+    }
+    // Left declares nothing: fine against a right that declares nothing too.
+    if (right.primary_kind) |right_kind| {
+        require_routing(io, right.primary_source.label(), right_kind, left.primary_source.label());
+    }
+}
+
+fn require_routing(io: std.Io, declared_path: []const u8, kind: model_set.Kind, silent_path: []const u8) noreturn {
+    // Every kind has a side-routing flag except eqbd, whose flag `diff` spends
+    // on the shared boundary (cli.diff_side_flags). Naming it here would send
+    // the user into a usage error, so say what can actually be done instead.
+    if (kind == .eqbd) print.data_error(
+        io,
+        "diff: '{s}' is eqbd but '{s}' declares no profile; --eqbd names the shared " ++
+            "boundary here, so a side cannot be routed as eqbd -- declare the profile in " ++
+            "'{s}'s FullModel header instead",
+        .{ declared_path, silent_path, silent_path },
+    );
+    print.data_error(
+        io,
+        "diff: '{s}' is {s} but '{s}' declares no profile; route it with --{s} so both sides are known",
+        .{ declared_path, @tagName(kind), silent_path, @tagName(kind) },
+    );
 }
 
 fn write_diff_single(
@@ -1084,7 +1147,7 @@ fn conflicting_namespaces(io: std.Io) noreturn {
     print.data_error(
         io,
         "diff: the inputs bind the same namespace prefix to different namespaces; " ++
-            "EQDIFF output cannot represent this — use --patch, --json, or --summary",
+            "EQDIFF output cannot represent this -- use --patch, --json, or --summary",
         .{},
     );
 }
@@ -1410,7 +1473,7 @@ fn invalid_model_structure(io: std.Io, command_name: []const u8, required_type: 
 fn conversion_id_error(
     io: std.Io,
     segments: []const validate.DataSegment,
-    model: *const EQ,
+    model: *const CimDocument,
     diagnostics: converter.ConversionDiagnostics,
     err: anyerror,
 ) noreturn {
@@ -1644,7 +1707,7 @@ fn input_read_error(io: std.Io, spec: InputSpec, err: anyerror, actual_size: ?u6
         else => {
             // Every remaining ZIP structural/parse/unsupported error (both std.zip
             // and our io/zip.zig name them "Zip...") means the input archive is
-            // malformed or unsupported, not an OS failure — classify as bad input.
+            // malformed or unsupported, not an OS failure -- classify as bad input.
             if (is_malformed_zip_error(err)) print.data_error(
                 io,
                 "{s}: {s} '{s}': ZIP archive is malformed or corrupt",

@@ -1,9 +1,10 @@
 const std = @import("std");
+const cim = @import("../cim/cim.zig");
 const topology = @import("resolve.zig");
-const tag_index = @import("../cgmes/tag_index.zig");
+const tag_index = cim.tag_index;
 const CrossRef = @import("cross_ref.zig").CrossRef;
-const EQ = @import("../cgmes/eq.zig").EQ;
-const SSH = @import("../cgmes/ssh.zig").SSH;
+const CimDocument = cim.CimDocument;
+const SSH = cim.SSH;
 
 const CimObject = tag_index.CimObject;
 
@@ -25,7 +26,7 @@ const EQ_MALFORMED_LATE_TOPOLOGY_REFERENCE =
 
 test "build_topological_nodes reports malformed references after cross-reference succeeds" {
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_MALFORMED_LATE_TOPOLOGY_REFERENCE));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_MALFORMED_LATE_TOPOLOGY_REFERENCE));
     defer model.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
@@ -66,7 +67,7 @@ test "union_smallest_id_wins: idempotent when already same component" {
     try std.testing.expectEqual(count, parent.count());
 }
 
-test "union_smallest_id_wins: transitive — three nodes share root" {
+test "union_smallest_id_wins: transitive -- three nodes share root" {
     var parent: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer parent.deinit(std.testing.allocator);
     try parent.ensureTotalCapacity(std.testing.allocator, 2);
@@ -230,7 +231,7 @@ const EQ_SWITCH_WITH_MISSING_CN =
 
 test "build_conn_node_root_map: ignores switch endpoints that reference missing ConnectivityNodes" {
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_SWITCH_WITH_MISSING_CN));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_SWITCH_WITH_MISSING_CN));
     defer model.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
@@ -266,7 +267,7 @@ const EQ_DIRECT_BUSBAR =
 
 test "Topology.build: direct busbar ConnectivityNode is reachable from itself" {
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_DIRECT_BUSBAR));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_DIRECT_BUSBAR));
     defer model.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
@@ -284,7 +285,7 @@ test "Topology.build: direct busbar ConnectivityNode is reachable from itself" {
 
 test "Topology.build_with_options: can skip reachable busbar index" {
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_DIRECT_BUSBAR));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_DIRECT_BUSBAR));
     defer model.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
@@ -313,7 +314,7 @@ test "topology builders tolerate a model without connectivity nodes" {
         \\</rdf:RDF>
     ;
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
@@ -361,7 +362,7 @@ const EQ_SWITCH_XML =
 
 test "is_switch_closed: open switch returns false" {
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_SWITCH_XML));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_SWITCH_XML));
     defer model.deinit(gpa);
     var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);
@@ -371,7 +372,7 @@ test "is_switch_closed: open switch returns false" {
 
 test "is_switch_closed: closed switch returns true" {
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_SWITCH_XML));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_SWITCH_XML));
     defer model.deinit(gpa);
     var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);
@@ -381,7 +382,7 @@ test "is_switch_closed: closed switch returns true" {
 
 test "is_switch_closed: no SSH patch defaults to closed" {
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_SWITCH_XML));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_SWITCH_XML));
     defer model.deinit(gpa);
     var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);
@@ -391,7 +392,7 @@ test "is_switch_closed: no SSH patch defaults to closed" {
 
 test "is_switch_closed: patch present without Switch.open defaults to closed" {
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, EQ_SWITCH_XML));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_SWITCH_XML));
     defer model.deinit(gpa);
     var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);

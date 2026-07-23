@@ -1,13 +1,14 @@
 const std = @import("std");
+const cim = @import("cim/cim.zig");
 const browse = @import("browse.zig");
-const EQ = @import("cgmes/eq.zig").EQ;
-const TP = @import("cgmes/tp.zig").TP;
-const SSH = @import("cgmes/ssh.zig").SSH;
-const refs = @import("refs.zig");
-const CimObject = @import("cgmes/eq.zig").CimObject;
+const CimDocument = cim.CimDocument;
+const TP = cim.TP;
+const SSH = cim.SSH;
+const refs = cim.refs;
+const CimObject = cim.CimObject;
 
 const BrowseFixture = struct {
-    eq: EQ,
+    eq: CimDocument,
     tp: ?TP = null,
     ssh: ?SSH = null,
 
@@ -18,7 +19,7 @@ const BrowseFixture = struct {
         ssh_xml: ?[]const u8,
     ) !BrowseFixture {
         return .{
-            .eq = try EQ.init(gpa, try gpa.dupe(u8, eq_xml)),
+            .eq = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml)),
             .tp = if (tp_xml) |xml| try TP.init(gpa, try gpa.dupe(u8, xml)) else null,
             .ssh = if (ssh_xml) |xml| try SSH.init(gpa, try gpa.dupe(u8, xml)) else null,
         };
@@ -88,7 +89,7 @@ fn expectNotContains(haystack: []const u8, needle: []const u8) !void {
 
 fn combined_candidates(
     gpa: std.mem.Allocator,
-    eq: *const EQ,
+    eq: *const CimDocument,
     tp: TP,
     prefix: []const u8,
 ) ![]const CimObject {

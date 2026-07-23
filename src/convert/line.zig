@@ -1,15 +1,15 @@
 const std = @import("std");
+const cim = @import("../cim/cim.zig");
 const iidm = @import("../iidm/model.zig");
-const eq = @import("../cgmes/eq.zig");
 const cross_ref = @import("../topology/cross_ref.zig");
-const utils = @import("../cgmes/ids.zig");
+const utils = cim.ids;
 const placement_mod = @import("placement.zig");
 const resolve = @import("../topology/resolve.zig");
-const parse = @import("../cgmes/parse.zig");
+const parse = cim.parse;
 
 const assert = std.debug.assert;
 
-const EQ = eq.EQ;
+const CimDocument = cim.CimDocument;
 const CrossRef = cross_ref.CrossRef;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
@@ -59,7 +59,7 @@ fn resolve_line_terminal(
 /// `g`/`b` are the per-side shunt admittance: an ACLineSegment splits its charging
 /// gch/bch evenly across both ends, while a SeriesCompensator has none (both 0).
 const LineSegment = struct {
-    object: eq.CimObject,
+    object: cim.CimObject,
     mrid: []const u8,
     name: ?[]const u8,
     r: f64,
@@ -76,7 +76,7 @@ const LineSegment = struct {
 /// here. Does nothing when the segment lacks exactly two placeable terminals.
 fn append_line_segment(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     network: *iidm.Network,
     placer: TerminalPlacer,
     boundary_conn_node_voltage_level_map: *const std.StringHashMapUnmanaged(u32),
@@ -163,10 +163,10 @@ fn append_line_segment(
 
 pub fn convert_lines(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     network: *iidm.Network,
     placer: TerminalPlacer,
-    ssh_opt: ?@import("../cgmes/ssh.zig").SSH,
+    ssh_opt: ?cim.SSH,
 ) !void {
     const index = placer.index;
     const voltage_level_map = placer.voltage_level_map;
@@ -205,7 +205,7 @@ pub fn convert_lines(
     }
 
     // Pass 1: collect boundary ConnectivityNode terminals in XML encounter order.
-    for ([_][]const eq.CimObject{ lines, series_compensators }) |segment_slice| {
+    for ([_][]const cim.CimObject{ lines, series_compensators }) |segment_slice| {
         for (segment_slice) |segment| {
             const segment_view = model.view(segment);
             const terminals = index.equipment_terminals.get(segment.id) orelse continue;
@@ -326,7 +326,7 @@ pub fn convert_lines(
         properties.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = "EquivalentInjection" });
         properties.appendAssumeCapacity(.{ .name = "CGMES.regulationCapability", .value = "false" });
 
-        // SSH EquivalentInjection.p/q — load convention (negative = injecting) → negate for targetP/Q.
+        // SSH EquivalentInjection.p/q -- load convention (negative = injecting) → negate for targetP/Q.
         const target_p: ?f64 = if (ssh_opt) |ssh|
             if (try ssh.getProperty(mrid, "EquivalentInjection.p")) |v|
                 -parse.float_or(v, 0.0)

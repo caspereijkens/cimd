@@ -12,11 +12,12 @@
 //! optional attribute is not checked.
 
 const std = @import("std");
+const cim = @import("cim/cim.zig");
 const assert = std.debug.assert;
-const EQ = @import("cgmes/eq.zig").EQ;
-const CimObjectView = @import("cgmes/tag_index.zig").CimObjectView;
-const tag_index = @import("cgmes/tag_index.zig");
-const cim_types = @import("cgmes/cim_types.zig");
+const CimDocument = cim.CimDocument;
+const CimObjectView = cim.CimObjectView;
+const tag_index = cim.tag_index;
+const cim_types = cim.cim_types;
 const rule_set_mod = @import("shacl/rule_set.zig");
 const RuleSet = rule_set_mod.RuleSet;
 
@@ -63,7 +64,7 @@ pub const qocdc_substitutions = [_]RuleSet.Substitution{
 pub const constraint_none = std.math.maxInt(u32);
 
 /// Whitespace wrapping pretty-printed XML text content, the same contract
-/// as cgmes/parse.zig, applied before every value comparison.
+/// as cim/parse.zig, applied before every value comparison.
 const whitespace = " \t\r\n";
 
 pub const Violation = struct {
@@ -105,7 +106,7 @@ pub const Evaluation = struct {
 /// from both, so they must outlive it.
 pub fn evaluate(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     rules: *const RuleSet,
 ) !Evaluation {
     return evaluate_with_limit(gpa, model, rules, violations_count_max);
@@ -115,7 +116,7 @@ pub fn evaluate(
 /// the limit are still counted in the severity totals and as truncated.
 pub fn evaluate_with_limit(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     rules: *const RuleSet,
     stored_max: u32,
 ) !Evaluation {
@@ -157,11 +158,11 @@ pub fn evaluate_with_limit(
 /// reference's local form would miss. The extra map is built only for ids
 /// that need stripping; empty for rdf:ID documents.
 const IdIndex = struct {
-    model: *const EQ,
+    model: *const CimDocument,
     /// strip_hash(id) → object index, only for '#'-prefixed ids.
     about: std.StringHashMap(u32),
 
-    fn init(gpa: std.mem.Allocator, model: *const EQ) !IdIndex {
+    fn init(gpa: std.mem.Allocator, model: *const CimDocument) !IdIndex {
         assert(model.objects.len <= std.math.maxInt(u32));
         var about = std.StringHashMap(u32).init(gpa);
         errdefer about.deinit();
@@ -172,7 +173,7 @@ const IdIndex = struct {
         if (total > 0) {
             try about.ensureTotalCapacity(total);
             for (model.objects, 0..) |obj, index| {
-                // EQ.init rejects duplicate raw ids, so keys are unique.
+                // CimDocument.init rejects duplicate raw ids, so keys are unique.
                 if (obj.id[0] == '#') about.putAssumeCapacity(obj.id[1..], @intCast(index));
             }
         }
@@ -208,7 +209,7 @@ const Value = struct {
 
 const Evaluator = struct {
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     rules: *const RuleSet,
     evaluation: *Evaluation,
     ids: *const IdIndex,
@@ -853,7 +854,7 @@ pub const Totals = struct {
 pub fn write_report(
     gpa: std.mem.Allocator,
     w: *std.Io.Writer,
-    model: *const EQ,
+    model: *const CimDocument,
     segments: []const DataSegment,
     entries: []const ReportEntry,
     options: ReportOptions,

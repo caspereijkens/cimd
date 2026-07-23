@@ -1,10 +1,11 @@
 const std = @import("std");
+const cim = @import("../cim/cim.zig");
 const iidm = @import("../iidm/model.zig");
-const EQ = @import("../cgmes/eq.zig").EQ;
+const CimDocument = cim.CimDocument;
 const cross_ref = @import("../topology/cross_ref.zig");
-const utils = @import("../cgmes/ids.zig");
+const utils = cim.ids;
 const topology = @import("../topology/resolve.zig");
-const tag_index = @import("../cgmes/tag_index.zig");
+const tag_index = cim.tag_index;
 const substation_conv = @import("substation.zig");
 const voltage_level_conv = @import("voltage_level.zig");
 const equipment_conv = @import("equipment.zig");
@@ -12,9 +13,9 @@ const transformer_conv = @import("transformer.zig");
 const line_conv = @import("line.zig");
 const bus_conv = @import("bus.zig");
 const placement_conv = @import("placement.zig");
-const SSH = @import("../cgmes/ssh.zig").SSH;
-const TP = @import("../cgmes/tp.zig").TP;
-const parse = @import("../cgmes/parse.zig");
+const SSH = cim.SSH;
+const TP = cim.TP;
+const parse = cim.parse;
 const populate_internal_connections = @import("internal_connections.zig").populate_internal_connections;
 
 const assert = std.debug.assert;
@@ -75,7 +76,7 @@ fn record_conversion_mrid(
 /// check over the completed network.
 fn validate_conversion_mrids(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     diagnostics: ?*ConversionDiagnostics,
 ) !void {
     var seen: std.StringHashMapUnmanaged(void) = .empty;
@@ -251,7 +252,7 @@ test "convert rejects resolved mRID collisions and empty keys" {
     };
 
     for (cases) |case| {
-        var model = try EQ.init(gpa, try gpa.dupe(u8, case.xml));
+        var model = try CimDocument.init(gpa, try gpa.dupe(u8, case.xml));
         defer model.deinit(gpa);
         var diagnostics: ConversionDiagnostics = .{};
         try std.testing.expectError(case.expected, convertWithDiagnostics(gpa, &model, null, null, false, &diagnostics));
@@ -271,7 +272,7 @@ test "conversion mRID validation ignores reference-only Line containers" {
         \\  </cim:Line>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
     try validate_conversion_mrids(gpa, &model, null);
 }
@@ -284,7 +285,7 @@ test "structural conversion errors take precedence over irrelevant mRID collisio
         \\  <cim:Line rdf:ID="_line_b"><cim:IdentifiedObject.mRID>same</cim:IdentifiedObject.mRID></cim:Line>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
     try std.testing.expectError(error.MissingSubstations, convert(gpa, &model, null, null, false));
 }
@@ -360,7 +361,7 @@ test "convert rejects a model without substations" {
         \\</rdf:RDF>
     ;
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     try std.testing.expectError(error.MissingSubstations, convert(gpa, &model, null, null, false));
@@ -383,7 +384,7 @@ test "convert rejects a model without voltage levels" {
         \\</rdf:RDF>
     ;
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     try std.testing.expectError(error.MissingVoltageLevels, convert(gpa, &model, null, null, false));
@@ -409,7 +410,7 @@ test "convert rejects voltage levels without a resolvable substation" {
         \\</rdf:RDF>
     ;
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     try std.testing.expectError(error.MissingVoltageLevels, convert(gpa, &model, null, null, false));
@@ -436,7 +437,7 @@ test "convert rejects a partially unresolved set of voltage levels" {
         \\</rdf:RDF>
     ;
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     try std.testing.expectError(error.UnresolvedVoltageLevels, convert(gpa, &model, null, null, false));
@@ -458,7 +459,7 @@ test "convert tolerates terminals without connectivity nodes" {
         \\</rdf:RDF>
     ;
     const gpa = std.testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     var network = try convert(gpa, &model, null, null, false);
@@ -550,7 +551,7 @@ fn append_metadata_model(
 ///   boundary.id   = ConductingEquipment mRID of the TieFlow.Terminal
 ///   boundary.side = sequenceNumber of the TieFlow.Terminal (1→"ONE", 2→"TWO")
 ///   boundary.ac   = true (always, as all equipment is AC in EQ profiles)
-fn convert_areas(gpa: std.mem.Allocator, model: *const EQ, ssh_opt: ?SSH, network: *iidm.Network) !void {
+fn convert_areas(gpa: std.mem.Allocator, model: *const CimDocument, ssh_opt: ?SSH, network: *iidm.Network) !void {
     const control_areas = model.get_objects_by_type("ControlArea");
     assert(network.areas.items.len == 0);
     if (control_areas.len == 0) return;
@@ -621,7 +622,7 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const EQ, ssh_opt: ?SSH, networ
 /// `tp_opt` to be non-null (CLI enforces this).
 pub fn convert(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     tp_opt: ?TP,
     ssh_opt: ?SSH,
     bus_branch: bool,
@@ -631,7 +632,7 @@ pub fn convert(
 
 pub fn convertWithDiagnostics(
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     tp_opt: ?TP,
     ssh_opt: ?SSH,
     bus_branch: bool,
@@ -716,7 +717,7 @@ pub fn convertWithDiagnostics(
     // Every declared (non-merged) VoltageLevel must resolve its Substation and
     // land in the map. A shortfall means one was skipped for a missing or
     // dangling VoltageLevel.Substation reference, so the network would be built
-    // with that level and its attached equipment silently dropped — reject it.
+    // with that level and its attached equipment silently dropped -- reject it.
     const declared_voltage_levels = model.get_objects_by_type("VoltageLevel").len - topology_data.voltage_level_merge.count();
     if (voltage_level_map.count() < declared_voltage_levels) return error.UnresolvedVoltageLevels;
 
@@ -844,7 +845,7 @@ pub fn convertWithDiagnostics(
 
     // Generator extensions: coordinatedReactiveControl (qPercent) and activePowerControl
     // (normalPF). Both are keyed by generator mRID and must be merged into a single Extension
-    // entry per generator — pypowsybl emits one combined entry, not two separate ones.
+    // entry per generator -- pypowsybl emits one combined entry, not two separate ones.
     {
         var has_crc = false;
         var has_apc = false;

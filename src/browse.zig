@@ -1,17 +1,18 @@
 const std = @import("std");
+const cim = @import("cim/cim.zig");
 const assert = std.debug.assert;
 const cli = @import("cli.zig");
-const EQ = @import("cgmes/eq.zig").EQ;
+const CimDocument = cim.CimDocument;
 
-const TP = @import("cgmes/tp.zig").TP;
-const SSH = @import("cgmes/ssh.zig").SSH;
-const tag_index = @import("cgmes/tag_index.zig");
-const refs = @import("refs.zig");
+const TP = cim.TP;
+const SSH = cim.SSH;
+const tag_index = cim.tag_index;
+const refs = cim.refs;
 const print = @import("io/print.zig");
 const extract_rdf_resource = tag_index.extract_rdf_resource;
 const extract_rdf_id = tag_index.extract_rdf_id;
-const strip_hash = @import("cgmes/ids.zig").strip_hash;
-const strip_underscore = @import("cgmes/ids.zig").strip_underscore;
+const strip_hash = cim.ids.strip_hash;
+const strip_underscore = cim.ids.strip_underscore;
 
 /// Above this referrer/match count, list-style views switch to a type-grouped
 /// summary instead of one row per item. Shared between back-refs and the
@@ -42,9 +43,9 @@ const Mode = union(enum) {
 const ListView = union(enum) {
     /// Default: grouped if over threshold, flat otherwise.
     auto,
-    /// User chose "(All)" from the grouped view — show every item flat.
+    /// User chose "(All)" from the grouped view -- show every item flat.
     all,
-    /// User chose a type — show only items of that type.
+    /// User chose a type -- show only items of that type.
     filtered: []const u8,
 
     /// The type to restrict a flat render to, or null to show everything.
@@ -95,9 +96,9 @@ fn take_input_line(input: *std.Io.Reader) ![]const u8 {
 
 fn report_input_too_long(output: *std.Io.Writer, picker: bool) !void {
     const message = if (picker)
-        "Input too long — expected a number, [b]ack, or [q]uit.\n\n"
+        "Input too long -- expected a number, [b]ack, or [q]uit.\n\n"
     else
-        "Input too long — expected one menu command per line.\n\n";
+        "Input too long -- expected one menu command per line.\n\n";
     try output.writeAll(message);
     try output.flush();
 }
@@ -144,7 +145,7 @@ pub fn browse(
     io: std.Io,
     gpa: std.mem.Allocator,
     interactive: InteractiveIo,
-    model: *const EQ,
+    model: *const CimDocument,
     tp_opt: ?TP,
     ssh_opt: ?SSH,
     mrid: []const u8,
@@ -345,7 +346,7 @@ fn render_footer(
 fn render_back_refs(
     writer: *std.Io.Writer,
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     tp_opt: ?TP,
     target: tag_index.CimObjectView,
     referrers: []const refs.ReverseRef,
@@ -372,7 +373,7 @@ fn render_back_refs(
 fn render_back_refs_flat(
     writer: *std.Io.Writer,
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     tp_opt: ?TP,
     referrers: []const refs.ReverseRef,
     filter_type: ?[]const u8,
@@ -408,7 +409,7 @@ fn render_back_refs_flat(
 fn render_back_refs_grouped(
     writer: *std.Io.Writer,
     gpa: std.mem.Allocator,
-    model: *const EQ,
+    model: *const CimDocument,
     tp_opt: ?TP,
     referrers: []const refs.ReverseRef,
     selections: *std.ArrayList(Selection),
@@ -425,7 +426,7 @@ fn render_back_refs_grouped(
         if (max_type_len < ref.referrer_type.len) max_type_len = ref.referrer_type.len;
     }
 
-    try writer.print("\n\n  {d} referrers — pick a type to drill in:\n", .{referrers.len});
+    try writer.print("\n\n  {d} referrers -- pick a type to drill in:\n", .{referrers.len});
     var counter: u32 = 1;
     var it = counts.iterator();
     while (it.next()) |entry| {
@@ -475,7 +476,7 @@ fn handle_input(
         'q' => return .quit,
         'b' => {
             if (!has_back) {
-                try output.writeAll("Already at root — [q]uit to exit.\n\n");
+                try output.writeAll("Already at root -- [q]uit to exit.\n\n");
                 return .stay;
             }
             return .back;
@@ -490,13 +491,13 @@ fn handle_input(
         },
         else => {
             if (!has_options) {
-                const msg = if (has_back) "No options — [b]ack or [q]uit\n\n" else "No options — [q]uit to exit\n\n";
+                const msg = if (has_back) "No options -- [b]ack or [q]uit\n\n" else "No options -- [q]uit to exit\n\n";
                 try output.writeAll(msg);
                 return .stay;
             }
             const n = std.fmt.parseInt(u32, input, 10) catch {
                 const suffix = if (has_back) ", [b]ack or [q]uit\n" else " or [q]uit\n";
-                try output.print("Invalid input — pick 1-{d}{s}", .{ counter - 1, suffix });
+                try output.print("Invalid input -- pick 1-{d}{s}", .{ counter - 1, suffix });
                 return .stay;
             };
             if (n == 0 or n > selections.len) {
@@ -667,7 +668,7 @@ fn render_prefix_grouped(
         if (max_type_len < m.type_name.len) max_type_len = m.type_name.len;
     }
 
-    try writer.print("\n  '{s}' matched {d} objects — pick a type to drill in:\n", .{ prefix, matches.len });
+    try writer.print("\n  '{s}' matched {d} objects -- pick a type to drill in:\n", .{ prefix, matches.len });
 
     var counter: u32 = 1;
     const n_width = std.math.log10_int(counts.size + 1) + 1;

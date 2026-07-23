@@ -1,11 +1,11 @@
 const std = @import("std");
-const tag_index = @import("tag_index.zig");
-const utils = @import("ids.zig");
+const tag_index = @import("../tag_index.zig");
+const utils = @import("../ids.zig");
 const TP = @import("tp.zig").TP;
 const TpPatch = @import("tp.zig").TpPatch;
 
 const assert = std.debug.assert;
-pub const Diagnostics = @import("diagnostics.zig").Diagnostics;
+pub const Diagnostics = @import("../diagnostics.zig").Diagnostics;
 
 pub const SshPatch = struct {
     mrid: []const u8,
@@ -85,7 +85,7 @@ pub const SSH = struct {
 
     /// Look up the patch for an mRID. Returns null if not present in SSH.
     /// Use the returned SshPatch with getPropertyFromPatch/getReferenceFromPatch
-    /// when reading multiple properties for the same object — avoids redundant
+    /// when reading multiple properties for the same object -- avoids redundant
     /// binary searches.
     pub fn find_patch(self: SSH, mrid: []const u8) ?SshPatch {
         assert(mrid.len > 0);
@@ -176,7 +176,7 @@ pub const SSH = struct {
 };
 
 /// A merged view of an EQ object with optional TP and SSH overlays.
-/// Priority for getProperty / getReference: SSH > TP > EQ — SSH shadows everything,
+/// Priority for getProperty / getReference: SSH > TP > EQ -- SSH shadows everything,
 /// TP shadows EQ, EQ is the fallback. `init` runs one find_patch per overlay and
 /// caches the result, so getProperty / getReference are free of repeated lookups.
 pub const CimMergedView = struct {
@@ -536,7 +536,7 @@ test "SSH indexes bare and underscored patch identifiers consistently" {
     }
 }
 
-const EQ = @import("eq.zig").EQ;
+const CimDocument = @import("../document.zig").CimDocument;
 
 test "CimMergedView applies SSH patches to bare EQ identifiers" {
     const gpa = std.testing.allocator;
@@ -554,7 +554,7 @@ test "CimMergedView applies SSH patches to bare EQ identifiers" {
         \\  </cim:Switch>
         \\</rdf:RDF>
     ;
-    var eq = try EQ.init(gpa, try gpa.dupe(u8, eq_xml));
+    var eq = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
     defer eq.deinit(gpa);
     var ssh = try SSH.init(gpa, try gpa.dupe(u8, ssh_xml));
     defer ssh.deinit(gpa);
@@ -591,7 +591,7 @@ test "CimMergedView.getAllProperties merges EQ + TP + SSH with SSH precedence" {
         \\  </cim:Switch>
         \\</rdf:RDF>
     ;
-    var eq = try EQ.init(gpa, try gpa.dupe(u8, eq_xml));
+    var eq = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
     defer eq.deinit(gpa);
     var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
     defer tp.deinit(gpa);
@@ -631,7 +631,7 @@ test "CimMergedView.getAllReferences merges EQ + TP with TP precedence" {
         \\  </cim:Terminal>
         \\</rdf:RDF>
     ;
-    var eq = try EQ.init(gpa, try gpa.dupe(u8, eq_xml));
+    var eq = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
     defer eq.deinit(gpa);
     var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
     defer tp.deinit(gpa);

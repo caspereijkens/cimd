@@ -6,8 +6,9 @@
 //! pass.
 
 const std = @import("std");
-const diagnostics_mod = @import("cgmes/diagnostics.zig");
-const EQ = @import("cgmes/eq.zig").EQ;
+const cim = @import("cim/cim.zig");
+const diagnostics_mod = cim.diagnostics;
+const CimDocument = cim.CimDocument;
 const RuleSet = @import("shacl/rule_set.zig").RuleSet;
 const validate = @import("validate.zig");
 
@@ -137,12 +138,12 @@ const fixture_rules =
 ;
 
 const Fixture = struct {
-    model: EQ,
+    model: CimDocument,
     rules: RuleSet,
     evaluation: validate.Evaluation,
 
     fn init(gpa: std.mem.Allocator) !Fixture {
-        var model = try EQ.init(gpa, try gpa.dupe(u8, fixture_xml));
+        var model = try CimDocument.init(gpa, try gpa.dupe(u8, fixture_xml));
         errdefer model.deinit(gpa);
         var rules = try RuleSet.load(gpa, try gpa.dupe(u8, fixture_rules), "fixture.ttl", &.{}, null);
         errdefer rules.deinit(gpa);
@@ -296,7 +297,7 @@ test "report resolves offsets into the correct data segment" {
         \\  </cim:ACLineSegment>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try std.mem.concat(gpa, u8, &.{ eq_part, eqbd_part }));
+    var model = try CimDocument.init(gpa, try std.mem.concat(gpa, u8, &.{ eq_part, eqbd_part }));
     defer model.deinit(gpa);
 
     const rules_source =
@@ -339,7 +340,7 @@ test "report resolves offsets into the correct data segment" {
 
 test "node target evaluates exactly the named object" {
     const gpa = testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, fixture_xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, fixture_xml));
     defer model.deinit(gpa);
 
     const rules_source =
@@ -385,7 +386,7 @@ test "rdf:about instance files (SSH/TP/SV) resolve references and referrers" {
         \\  </cim:TopologicalNode>
         \\</rdf:RDF>
     ;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     const rules_source =
@@ -423,7 +424,7 @@ test "rdf:about instance files (SSH/TP/SV) resolve references and referrers" {
 
 test "escape-decoded and substitution-expanded messages flow into the report" {
     const gpa = testing.allocator;
-    var model = try EQ.init(gpa, try gpa.dupe(u8, fixture_xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, fixture_xml));
     defer model.deinit(gpa);
 
     const rules_source =

@@ -3,7 +3,7 @@
 //! consulted.
 
 const std = @import("std");
-const tag_index = @import("tag_index.zig");
+const tag_index = @import("../tag_index.zig");
 
 const assert = std.debug.assert;
 const whitespace = " \t\r\n";

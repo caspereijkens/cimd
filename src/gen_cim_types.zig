@@ -1,4 +1,4 @@
-//! Generate the `parent_edges` body of `src/cgmes/cim_types.zig` from CGMES
+//! Generate the `parent_edges` body of `src/cim/cim_types.zig` from CGMES
 //! RDFS profile files.
 //!
 //! Build-time codegen tool. Run via:
@@ -22,7 +22,8 @@
 //! conventional prefixes.
 
 const std = @import("std");
-const tag_index = @import("cgmes/tag_index.zig");
+const cim = @import("cim/cim.zig");
+const tag_index = cim.tag_index;
 const read_path = @import("io/read.zig").read_path;
 
 const TagBoundary = tag_index.TagBoundary;

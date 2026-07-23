@@ -3,7 +3,7 @@
 //! `std.hash.Crc32` walks one byte at a time through a single 256-entry table,
 //! so each byte depends on the previous one and it sustains roughly 0.6 GB/s:
 //! verifying a 36 MB EQ profile at that rate costs more than the rest of the
-//! conversion. Two faster paths produce the same value — AArch64 CRC32
+//! conversion. Two faster paths produce the same value -- AArch64 CRC32
 //! instructions where the target has them, and slicing-by-8 (eight bytes per
 //! iteration from eight tables) everywhere else.
 

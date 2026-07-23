@@ -1,7 +1,7 @@
 const std = @import("std");
-const EQ = @import("eq.zig").EQ;
+const CimDocument = @import("document.zig").CimDocument;
 
-test "EQ.init - parses all top-level CIM objects" {
+test "CimDocument.init - parses all top-level CIM objects" {
     const xml =
         \\<rdf:RDF>
         \\  <cim:Substation rdf:ID="_SS1">
@@ -18,7 +18,7 @@ test "EQ.init - parses all top-level CIM objects" {
 
     const gpa = std.testing.allocator;
 
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     // Should find 3 CIM objects (not the rdf:RDF wrapper)
@@ -33,7 +33,7 @@ test "EQ.init - parses all top-level CIM objects" {
     try std.testing.expectEqual(1, voltage_levels.len);
 }
 
-test "EQ.getObjectById - finds object by ID" {
+test "CimDocument.getObjectById - finds object by ID" {
     const xml =
         \\<rdf:RDF>
         \\  <cim:Substation rdf:ID="_SS1">
@@ -47,7 +47,7 @@ test "EQ.getObjectById - finds object by ID" {
 
     const gpa = std.testing.allocator;
 
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     // Should find VL1
@@ -60,7 +60,7 @@ test "EQ.getObjectById - finds object by ID" {
     try std.testing.expect(missing == null);
 }
 
-test "EQ.get_objects_by_type - returns all objects of given type" {
+test "CimDocument.get_objects_by_type - returns all objects of given type" {
     const xml =
         \\<rdf:RDF>
         \\  <cim:Substation rdf:ID="_SS1">
@@ -80,7 +80,7 @@ test "EQ.get_objects_by_type - returns all objects of given type" {
 
     const gpa = std.testing.allocator;
 
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     // Get all Substations (should be 3)
@@ -100,7 +100,7 @@ test "EQ.get_objects_by_type - returns all objects of given type" {
     try std.testing.expectEqual(0, missing.len);
 }
 
-test "EQ.sorted_type_counts - returns sorted counts for each object type" {
+test "CimDocument.sorted_type_counts - returns sorted counts for each object type" {
     const xml =
         \\<rdf:RDF>
         \\  <cim:Substation rdf:ID="_SS1"/>
@@ -119,7 +119,7 @@ test "EQ.sorted_type_counts - returns sorted counts for each object type" {
 
     const gpa = std.testing.allocator;
 
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     const counts = try model.sorted_type_counts(gpa);
@@ -136,18 +136,18 @@ test "EQ.sorted_type_counts - returns sorted counts for each object type" {
     try std.testing.expectEqual(@as(u32, 5), counts[3].count);
 }
 
-test "EQ.init - handles empty XML" {
+test "CimDocument.init - handles empty XML" {
     const xml = "<rdf:RDF></rdf:RDF>";
 
     const gpa = std.testing.allocator;
 
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     try std.testing.expectEqual(0, model.objects.len);
 }
 
-test "EQ.init - falls back to rdf:about when rdf:ID is unusable" {
+test "CimDocument.init - falls back to rdf:about when rdf:ID is unusable" {
     const xml =
         \\<rdf:RDF>
         \\  <md:FullModel rdf:ID="" rdf:about="urn:uuid:empty-id">
@@ -161,7 +161,7 @@ test "EQ.init - falls back to rdf:about when rdf:ID is unusable" {
 
     const gpa = std.testing.allocator;
 
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     try std.testing.expectEqual(2, model.objects.len);
@@ -181,7 +181,7 @@ test "EQ objects maintain CimObject functionality" {
 
     const gpa = std.testing.allocator;
 
-    var model = try EQ.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
     const obj = model.getObjectById("_SS1") orelse return error.TestFailed;

@@ -5,7 +5,7 @@
 //! whitespace, e.g. `<cim:Switch.open>\n  true\n</cim:Switch.open>` yields
 //! "\n  true\n". `std.fmt.parseFloat`/`parseInt` reject leading/trailing
 //! whitespace (error.InvalidCharacter), and `std.mem.eql(x, "true")` silently
-//! fails on it — so untrimmed parsing either aborts the whole conversion or
+//! fails on it -- so untrimmed parsing either aborts the whole conversion or
 //! produces silently wrong values, depending on the call site.
 //!
 //! These helpers are the single source of truth for that whitespace contract:

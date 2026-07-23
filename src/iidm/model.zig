@@ -52,7 +52,7 @@ fn writeFloat(jws: anytype, value: f64) !void {
 
 /// Write an optional float to JSON
 /// Write a JSON object field + value only when value is non-null.
-/// Callers must NOT emit the objectField themselves — this helper handles both.
+/// Callers must NOT emit the objectField themselves -- this helper handles both.
 fn write_optional_float_field(jws: anytype, field_name: []const u8, value: ?f64) !void {
     if (value) |v| {
         try jws.objectField(field_name);
