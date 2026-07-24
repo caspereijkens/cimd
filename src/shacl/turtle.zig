@@ -660,7 +660,7 @@ pub const Turtle = struct {
         assert(self.source[self.pos] == '"');
         self.pos += 1;
         const start = self.pos;
-        // Skip ordinary bytes stopping only at the closer, a line break 
+        // Skip ordinary bytes stopping only at the closer, a line break
         // (illegal in a short string), or an escape.
         while (std.mem.indexOfAnyPos(u8, self.source, self.pos, "\"\n\r\\")) |stop_usize| {
             const stop: u32 = @intCast(stop_usize);
@@ -681,7 +681,7 @@ pub const Turtle = struct {
         assert(self.source[self.pos] == '"');
         self.pos += 3;
         const start = self.pos;
-        // Ordinary bytes are skipped. Only a quote (possible closer), an 
+        // Ordinary bytes are skipped. Only a quote (possible closer), an
         // escape, or a newline (line count) need handling.
         while (std.mem.indexOfAnyPos(u8, self.source, self.pos, "\"\\\n")) |stop_usize| {
             const stop: u32 = @intCast(stop_usize);
