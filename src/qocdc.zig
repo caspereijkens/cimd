@@ -14,6 +14,7 @@ const Model = cim.CimDocument;
 const CimObjectView = cim.CimObjectView;
 const cim_types = cim.cim_types;
 const ids = cim.ids;
+const ReverseRefIndex = cim.refs.ReverseRefIndex;
 
 const assert = std.debug.assert;
 
@@ -139,7 +140,7 @@ const allowed_business_processes = ReferenceStringSet.initComptime(.{
     .{ "2D", {} }, // Two days-ahead
     .{ "1D", {} }, // Day-ahead
     .{ "ID", {} }, // Intra-day
-    .{ "01", {} },
+    .{ "01", {} }, // N Hours ahead
     .{ "02", {} },
     .{ "03", {} },
     .{ "04", {} },
@@ -520,18 +521,21 @@ pub fn validate_file_version(filename: Filename) !void {
 /// IEC TS 61970-600-1:2017, IEC TS 61970-600-2:2017 where empty strings are
 /// allowed in cim:IdentifiedObject.name.
 pub fn validate_name_length(model: Model) !void {
-    for (model.objects) |object_data| {
-        if (cim_types.is_a(object_data.type_name, "ACDCTerminal")) continue;
-        if (nameless_types.get(object_data.type_name) != null) continue;
+    var groups = model.type_groups();
+    while (groups.next()) |group| {
+        if (cim_types.is_a(group.type_name, "ACDCTerminal")) continue;
+        if (nameless_types.get(group.type_name) != null) continue;
 
-        const object = model.view(object_data);
-        const name = try object.getProperty("IdentifiedObject.name") orelse {
-            std.log.err("{s}", .{object.id});
-            return error.NameLength;
-        };
-        if (name.len == 0 or name.len > name_chars_max) {
-            std.log.err("Object {s} has an invalid name: {s}", .{ object.id, name });
-            return error.NameLength;
+        for (group.objects) |object_data| {
+            const object = model.view(object_data);
+            const name = try object.getProperty("IdentifiedObject.name") orelse {
+                std.log.err("{s}", .{object.id});
+                return error.NameLength;
+            };
+            if (name.len == 0 or name.len > name_chars_max) {
+                std.log.err("Object {s} has an invalid name: {s}", .{ object.id, name });
+                return error.NameLength;
+            }
         }
     }
 }
@@ -802,8 +806,7 @@ pub fn validate_dc_equipment_containment(model: Model) error{DCEQContainment}!vo
 /// cim:VoltageLevel, cim:Bay or cim:Line. For cim:ConnectivityNodes according
 /// to EQBD, the cim:ConnectivityNode.ConnectivityNodeContainer referred to,
 /// must be of type cim:Line. Missing containment is not allowed.
-pub fn validate_conn_node_containment(model: Model) error{CNContainment}!void {
-    const profile_part = get_profile_part(model) catch return error.CNContainment;
+pub fn validate_conn_node_containment(model: Model, profile_part: cim.profile.Kind) error{CNContainment}!void {
     switch (profile_part) {
         .eq => validate_containment(model, &.{"ConnectivityNode"}, &.{ "VoltageLevel", "Bay", "Line" }, true, "ConnectivityNode.ConnectivityNodeContainer") catch
             return error.CNContainment,
@@ -818,28 +821,32 @@ pub fn validate_conn_node_containment(model: Model) error{CNContainment}!void {
 /// The value of cim:GeneratingUnit.nominalP, if provided, shall be positive
 /// and less or equal to cim:RotatingMachine.ratedS.
 pub fn validate_nominal_power(model: Model) error{GeneratingUnitNominalP}!void {
-    for (model.objects) |object_data| {
-        if (!cim_types.is_a(object_data.type_name, "GeneratingUnit")) continue;
-        const object = model.view(object_data);
+    var groups = model.type_groups();
+    while (groups.next()) |group| {
+        if (!cim_types.is_a(group.type_name, "GeneratingUnit")) continue;
 
-        const nominal_power_str = object.getProperty("GeneratingUnit.nominalP") catch continue orelse continue;
-        const nominal_power = std.fmt.parseFloat(f64, nominal_power_str) catch {
-            std.log.err("Failed to parse nominal power '{s}' of object '{s}' into a floating value.", .{ nominal_power_str, object.id });
-            return error.GeneratingUnitNominalP;
-        };
-        if (!std.math.isFinite(nominal_power) or nominal_power <= 0) {
-            std.log.err("Nominal power of object '{s}' must be a positive finite value: '{s}'.", .{ object.id, nominal_power_str });
-            return error.GeneratingUnitNominalP;
-        }
+        for (group.objects) |object_data| {
+            const object = model.view(object_data);
 
-        const apparent_power_str = object.getProperty("GeneratingUnit.ratedS") catch continue orelse continue;
-        const apparent_power = std.fmt.parseFloat(f64, apparent_power_str) catch {
-            std.log.err("Failed to parse apparent power '{s}' of object '{s}'.", .{ apparent_power_str, object.id });
-            return error.GeneratingUnitNominalP;
-        };
-        if (!std.math.isFinite(apparent_power) or nominal_power > apparent_power) {
-            std.log.err("GeneratingUnit.nominalP={d} exceeds ratedS={d} for object '{s}'.", .{ nominal_power, apparent_power, object.id });
-            return error.GeneratingUnitNominalP;
+            const nominal_power_str = object.getProperty("GeneratingUnit.nominalP") catch continue orelse continue;
+            const nominal_power = std.fmt.parseFloat(f64, nominal_power_str) catch {
+                std.log.err("Failed to parse nominal power '{s}' of object '{s}' into a floating value.", .{ nominal_power_str, object.id });
+                return error.GeneratingUnitNominalP;
+            };
+            if (!std.math.isFinite(nominal_power) or nominal_power <= 0) {
+                std.log.err("Nominal power of object '{s}' must be a positive finite value: '{s}'.", .{ object.id, nominal_power_str });
+                return error.GeneratingUnitNominalP;
+            }
+
+            const apparent_power_str = object.getProperty("GeneratingUnit.ratedS") catch continue orelse continue;
+            const apparent_power = std.fmt.parseFloat(f64, apparent_power_str) catch {
+                std.log.err("Failed to parse apparent power '{s}' of object '{s}'.", .{ apparent_power_str, object.id });
+                return error.GeneratingUnitNominalP;
+            };
+            if (!std.math.isFinite(apparent_power) or nominal_power > apparent_power) {
+                std.log.err("GeneratingUnit.nominalP={d} exceeds ratedS={d} for object '{s}'.", .{ nominal_power, apparent_power, object.id });
+                return error.GeneratingUnitNominalP;
+            }
         }
     }
 }
@@ -856,9 +863,10 @@ pub fn validate_nominal_power(model: Model) error{GeneratingUnitNominalP}!void {
 /// cim:ConductingEquipment.BaseVoltage and cim:VoltageLevel.BaseVoltage shall
 /// refer to the same cim:BaseVoltage.
 pub fn validate_conducting_equipment_base_voltage(model: Model) error{CEBaseVoltage}!void {
-    for (model.objects) |object_data| {
-        if (!cim_types.is_a(object_data.type_name, "ConductingEquipment")) continue;
-        if (matches_any_type(object_data.type_name, &.{
+    var groups = model.type_groups();
+    while (groups.next()) |group| {
+        if (!cim_types.is_a(group.type_name, "ConductingEquipment")) continue;
+        if (matches_any_type(group.type_name, &.{
             "ACLineSegment",
             "SeriesCompensator",
             "EquivalentBranch",
@@ -866,20 +874,22 @@ pub fn validate_conducting_equipment_base_voltage(model: Model) error{CEBaseVolt
             "ACDCConverter",
         })) continue;
 
-        const object = model.view(object_data);
-        const equipment_base_voltage: ?[]const u8 = if (object.getReference("ConductingEquipment.BaseVoltage") catch null) |ref|
-            ids.strip_hash(ref)
-        else
-            null;
-        const containment = resolve_container_base_voltage(model, object);
+        for (group.objects) |object_data| {
+            const object = model.view(object_data);
+            const equipment_base_voltage: ?[]const u8 = if (object.getReference("ConductingEquipment.BaseVoltage") catch null) |ref|
+                ids.strip_hash(ref)
+            else
+                null;
+            const containment = resolve_container_base_voltage(model, object);
 
-        if (equipment_base_voltage == null and !containment.in_voltage_level_or_bay) {
-            return error.CEBaseVoltage;
-        }
-        if (equipment_base_voltage) |equipment_voltage| {
-            if (containment.base_voltage) |container_voltage| {
-                if (!std.mem.eql(u8, equipment_voltage, container_voltage)) {
-                    return error.CEBaseVoltage;
+            if (equipment_base_voltage == null and !containment.in_voltage_level_or_bay) {
+                return error.CEBaseVoltage;
+            }
+            if (equipment_base_voltage) |equipment_voltage| {
+                if (containment.base_voltage) |container_voltage| {
+                    if (!std.mem.eql(u8, equipment_voltage, container_voltage)) {
+                        return error.CEBaseVoltage;
+                    }
                 }
             }
         }
@@ -893,7 +903,9 @@ pub fn validate_conducting_equipment_base_voltage(model: Model) error{CEBaseVolt
 pub fn validate_nominal_voltage(model: Model) error{NominalVoltage}!void {
     const base_voltages = model.get_objects_by_type("BaseVoltage");
     for (base_voltages) |base_voltage| {
-        const object = model.getObjectById(base_voltage.id) orelse continue;
+        // base_voltage is already a stored object of this model; view it directly
+        // instead of a redundant id_to_index lookup that can never miss.
+        const object = model.view(base_voltage);
         const nominal_voltage_str = object.getProperty("BaseVoltage.nominalVoltage") catch {
             std.log.err("Failed to parse nominal voltage for base voltage {s}", .{base_voltage.id});
             return error.NominalVoltage;
@@ -910,6 +922,105 @@ pub fn validate_nominal_voltage(model: Model) error{NominalVoltage}!void {
             return error.NominalVoltage;
         }
     }
+}
+
+/// TerminalCount1
+///
+/// Every instance of cim:RegulatingCondEq and its subclasses,
+/// cim:EnergyConsumer and its subclasses, cim:EquivalentInjection,
+/// cim:EquivalentShunt, subclasses of cim:Connector, cim:EnergySource,
+/// cim:Ground, cim:DCBusbar, cim:DCShunt, cim:DCGround shall only be referenced
+/// via a single cim:Terminal instance.
+pub fn validate_terminal_count1(model: Model, reverse_ref_index: *const ReverseRefIndex) error{TerminalCount1}!void {
+    var groups = model.type_groups();
+    while (groups.next()) |group| {
+        if (!is_terminal_count1_type(group.type_name)) continue;
+
+        for (group.objects) |object_data| {
+            var terminal_id: ?[]const u8 = null;
+            for (reverse_ref_index.lookup(object_data.id)) |reference| {
+                if (!std.mem.eql(u8, reference.referrer_type, "Terminal")) continue;
+                if (!std.mem.eql(u8, reference.reference_name, "Terminal.ConductingEquipment")) continue;
+
+                if (terminal_id) |found_id| {
+                    if (!std.mem.eql(u8, found_id, reference.referrer_id)) return error.TerminalCount1;
+                } else {
+                    terminal_id = reference.referrer_id;
+                }
+            }
+
+            if (terminal_id == null) return error.TerminalCount1;
+        }
+    }
+}
+
+fn is_terminal_count1_type(type_name: []const u8) bool {
+    if (matches_any_type(type_name, &.{
+        "RegulatingCondEq",
+        "EnergyConsumer",
+        "EquivalentInjection",
+        "EquivalentShunt",
+        "EnergySource",
+        "Ground",
+        "DCBusbar",
+        "DCShunt",
+        "DCGround",
+    })) return true;
+
+    if (std.mem.eql(u8, type_name, "Connector")) return false;
+    return cim_types.is_a(type_name, "Connector");
+}
+
+/// TerminalCount2
+///
+/// Every instance of cim:Conductor and its subclasses, cim:Switch and its
+/// subclasses, cim:SeriesCompensator, cim:EquivalentBranch, cim:DCLineSegment,
+/// cim:DCSeriesDevice, cim:DCChopper and subclasses of cim:DCSwitch, shall
+/// only be referenced via exactly two cim:Terminal instances.
+pub fn validate_terminal_count2(model: Model, reverse_ref_index: *const ReverseRefIndex) error{TerminalCount2}!void {
+    var groups = model.type_groups();
+    while (groups.next()) |group| {
+        if (!is_terminal_count2_type(group.type_name)) continue;
+
+        for (group.objects) |object_data| {
+            var terminal_ids: [2][]const u8 = undefined;
+            var terminals_found: u2 = 0;
+            for (reverse_ref_index.lookup(object_data.id)) |reference| {
+                if (!std.mem.eql(u8, reference.referrer_type, "Terminal")) continue;
+                if (!std.mem.eql(u8, reference.reference_name, "Terminal.ConductingEquipment")) continue;
+
+                var terminal_already_counted = false;
+                for (terminal_ids[0..terminals_found]) |terminal_id| {
+                    if (std.mem.eql(u8, terminal_id, reference.referrer_id)) {
+                        terminal_already_counted = true;
+                        break;
+                    }
+                }
+                if (terminal_already_counted) continue;
+                if (terminals_found == terminal_ids.len) return error.TerminalCount2;
+
+                terminal_ids[terminals_found] = reference.referrer_id;
+                terminals_found += 1;
+            }
+
+            if (terminals_found != 2) return error.TerminalCount2;
+        }
+    }
+}
+
+fn is_terminal_count2_type(type_name: []const u8) bool {
+    if (matches_any_type(type_name, &.{
+        "Conductor",
+        "Switch",
+        "SeriesCompensator",
+        "EquivalentBranch",
+        "DCLineSegment",
+        "DCSeriesDevice",
+        "DCChopper",
+    })) return true;
+
+    if (std.mem.eql(u8, type_name, "DCSwitch")) return false;
+    return cim_types.is_a(type_name, "DCSwitch");
 }
 
 const ContainerBaseVoltage = struct {
@@ -959,7 +1070,7 @@ fn voltage_level_base_voltage(voltage_level: CimObjectView) ?[]const u8 {
 fn validate_boundary_point_text_length(model: Model, comptime property: []const u8, max_len: usize) !void {
     const boundary_points = model.get_objects_by_type("BoundaryPoint");
     for (boundary_points) |boundary_point| {
-        const object = model.getObjectById(boundary_point.id) orelse continue;
+        const object = model.view(boundary_point);
         const value = object.getProperty(property) catch {
             std.log.err("Failed to parse " ++ property ++ " of object '{s}'.", .{boundary_point.id});
             return error.ParseFailed;
@@ -977,7 +1088,7 @@ fn validate_boundary_point_text_length(model: Model, comptime property: []const 
 fn validate_boundary_node_country_code(model: Model, comptime property: []const u8) !void {
     const boundary_points = model.get_objects_by_type("BoundaryPoint");
     for (boundary_points) |boundary_point| {
-        const object = model.getObjectById(boundary_point.id) orelse continue;
+        const object = model.view(boundary_point);
         const iso_country_code = object.getProperty(property) catch {
             std.log.err("Failed to parse " ++ property ++ " of object '{s}'.", .{boundary_point.id});
             return error.ParseFailed;
@@ -999,18 +1110,21 @@ pub fn validate_containment(
     container_required: bool,
     reference: []const u8,
 ) !void {
-    for (model.objects) |object_data| {
-        if (!matches_any_type(object_data.type_name, types)) continue;
+    var groups = model.type_groups();
+    while (groups.next()) |group| {
+        if (!matches_any_type(group.type_name, types)) continue;
 
-        const object = model.view(object_data);
-        const container_ref = object.getReference(reference) catch {
-            std.log.err("Failed to parse '{s}' of object '{s}'.", .{ reference, object.id });
-            return error.ParseFailed;
-        } orelse {
-            if (container_required) return error.Missing else continue;
-        };
-        const container = model.getObjectById(ids.strip_hash(container_ref)) orelse return error.Missing;
-        if (!matches_any_type(container.type_name, container_types)) return error.WrongContainer;
+        for (group.objects) |object_data| {
+            const object = model.view(object_data);
+            const container_ref = object.getReference(reference) catch {
+                std.log.err("Failed to parse '{s}' of object '{s}'.", .{ reference, object.id });
+                return error.ParseFailed;
+            } orelse {
+                if (container_required) return error.Missing else continue;
+            };
+            const container = model.getObjectById(ids.strip_hash(container_ref)) orelse return error.Missing;
+            if (!matches_any_type(container.type_name, container_types)) return error.WrongContainer;
+        }
     }
 }
 
@@ -1021,29 +1135,21 @@ fn matches_any_type(actual_type: []const u8, requested_types: []const []const u8
     return false;
 }
 
-fn get_profile_part(model: Model) !cim.profile.Kind {
-    var result: ?cim.profile.Kind = null;
-    for (model.get_objects_by_type("FullModel")) |full_model| {
-        const view = model.view(full_model);
-        const uri = try view.getProperty("Model.profile") orelse continue;
-        const kind = cim.profile.kind_from_uri(uri) orelse continue;
-        if (result) |previous| {
-            if (previous != kind) return error.TooManyProfileParts;
-        } else {
-            result = kind;
-        }
-    }
-    return result orelse error.TooManyProfileParts;
-}
-
-fn validate_grid_model_constraints(model: Model) !void {
+// PERF (structural, not yet done): every validator below makes its own pass over
+// the model. The type-filtered ones now scan type_groups (cheap: one predicate per
+// distinct type), but the ~9 containment checks plus the name/power/voltage/terminal
+// checks still traverse the object set once each. If this pipeline is hot, the next
+// lever is a single fused pass that dispatches all applicable rules per type group,
+// trading the per-validator cache sweeps for one. Measure on real NC grids before
+// taking it on -- it couples otherwise-independent rules and is a real refactor.
+fn validate_grid_model_constraints(model: Model, profile_part: ?cim.profile.Kind, reverse_ref_index: *const ReverseRefIndex) !void {
     try validate_name_length(model);
     try validate_description_length(model);
     try validate_energy_ident_coding_length(model);
     try validate_short_name_length(model);
 
-    const profile_part = try get_profile_part(model);
-    if (profile_part == .eqbd) {
+    const resolved_profile = profile_part orelse return error.TooManyProfileParts;
+    if (resolved_profile == .eqbd) {
         try validate_boundary_node_country_code_from(model);
         try validate_boundary_node_country_code_to(model);
         try validate_boundary_node_name_length_from(model);
@@ -1061,11 +1167,13 @@ fn validate_grid_model_constraints(model: Model) !void {
     try validate_ground_containment(model);
     try validate_acdc_converter_containment(model);
     try validate_dc_equipment_containment(model);
-    try validate_conn_node_containment(model);
+    try validate_conn_node_containment(model, resolved_profile);
 
     try validate_nominal_power(model);
     try validate_conducting_equipment_base_voltage(model);
     try validate_nominal_voltage(model);
+    try validate_terminal_count1(model, reverse_ref_index);
+    try validate_terminal_count2(model, reverse_ref_index);
 }
 
 fn filename_stem_from_path(file_path: []const u8) []const u8 {
@@ -1153,7 +1261,24 @@ pub fn validate(io: std.Io, gpa: std.mem.Allocator, file_path: []const u8) !void
     var model = try Model.init(gpa, try read_path(io, gpa, file_path));
     defer model.deinit(gpa);
 
-    validate_grid_model_constraints(model) catch |err|
+    var reverse_ref_index = try ReverseRefIndex.build(gpa, &model);
+    defer reverse_ref_index.deinit(gpa);
+
+    // Reuse the router's header classifier rather than re-deriving the kind by
+    // walking parsed FullModel objects. An unresolved profile (unknown URI,
+    // absent, or a malformed/ambiguous header) becomes null, which
+    // validate_grid_model_constraints reports as TooManyProfileParts.
+    const profile_part: ?cim.profile.Kind = if (cim.profile.classify(gpa, model.xml)) |header|
+        switch (header.profile) {
+            .known => |kind| kind,
+            .unknown, .absent => null,
+        }
+    else |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => null,
+    };
+
+    validate_grid_model_constraints(model, profile_part, &reverse_ref_index) catch |err|
         print.data_error(io, "qocdc: {s}", .{grid_model_error_message(err)});
 }
 
@@ -1184,6 +1309,15 @@ fn grid_model_error_message(err: anyerror) []const u8 {
         error.GeneratingUnitNominalP => "a GeneratingUnit nominalP value is invalid",
         error.CEBaseVoltage => "a ConductingEquipment BaseVoltage association is invalid",
         error.NominalVoltage => "a BaseVoltage nominalVoltage is not greater than zero",
+        error.TerminalCount1 => "a single terminal equipment that is referenced by multiple terminals",
+        error.TerminalCount2 => "a two terminal equipment that is not referenced by exactly two terminals.",
         else => @errorName(err),
     };
+}
+
+test "TerminalCount2 diagnostic describes the exact count requirement" {
+    try std.testing.expectEqualStrings(
+        "a two terminal equipment that is not referenced by exactly two terminals.",
+        grid_model_error_message(error.TerminalCount2),
+    );
 }

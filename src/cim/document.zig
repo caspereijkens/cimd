@@ -41,6 +41,34 @@ pub const CimDocument = struct {
     boundaries: []TagBoundary,
 
     const TypeRange = struct { start: u32, len: u32 };
+    pub const TypeGroup = struct {
+        type_name: []const u8,
+        objects: []const CimObject,
+    };
+    pub const TypeGroupIterator = struct {
+        model: *const CimDocument,
+        next_index: u32 = 0,
+
+        pub fn next(self: *TypeGroupIterator) ?TypeGroup {
+            const objects_count: u32 = @intCast(self.model.objects.len);
+            if (self.next_index == objects_count) return null;
+            assert(self.next_index < objects_count);
+
+            const start = self.next_index;
+            const type_name = self.model.objects[start].type_name;
+            const range = self.model.type_index.get(type_name).?;
+            assert(range.start == start);
+            assert(range.len > 0);
+            const end = start + range.len;
+            assert(end <= objects_count);
+            self.next_index = end;
+
+            const objects = self.model.objects[start..end];
+            assert(std.mem.eql(u8, objects[0].type_name, type_name));
+            assert(std.mem.eql(u8, objects[objects.len - 1].type_name, type_name));
+            return .{ .type_name = type_name, .objects = objects };
+        }
+    };
     pub const TypeCount = struct {
         type_name: []const u8,
         count: u32,
@@ -228,6 +256,13 @@ pub const CimDocument = struct {
     pub fn get_objects_by_type(self: CimDocument, type_name: []const u8) []const CimObject {
         const range = self.type_index.get(type_name) orelse return &[_]CimObject{};
         return self.objects[range.start .. range.start + range.len];
+    }
+
+    /// Iterate the document's allocation-free exact-type groups. Every object
+    /// appears once, and every returned slice contains one exact CIM type.
+    pub fn type_groups(self: *const CimDocument) TypeGroupIterator {
+        assert(self.objects.len <= std.math.maxInt(u32));
+        return .{ .model = self };
     }
 
     /// Count objects matching `requested_type`, including CIM subtypes.

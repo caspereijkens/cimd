@@ -205,6 +205,15 @@ const parent_edges = [_]ParentEdge{
     .{ .child = "WindPowerPlant", .parent = "PowerSystemResource" },
 };
 
+const ParentPair = struct { []const u8, []const u8 };
+const parent_by_child = std.StaticStringMap([]const u8).initComptime(blk: {
+    var pairs: [parent_edges.len]ParentPair = undefined;
+    for (parent_edges, 0..) |edge, index| {
+        pairs[index] = .{ edge.child, edge.parent };
+    }
+    break :blk pairs;
+});
+
 pub fn is_a(actual_type: []const u8, requested_type: []const u8) bool {
     if (std.mem.eql(u8, actual_type, requested_type)) return true;
     return has_ancestor(actual_type, requested_type);
@@ -222,9 +231,8 @@ pub fn matches_filter(actual_type: []const u8, type_filter: ?[]const u8) bool {
 // `orelse return false` long before that, and the bound caps any malformed
 // (cyclic) table at a finite number of steps.
 //
-// O(parent_edges * ancestry_depth). If this becomes hot for large library
-// callers, precompute the requested type's subtype set once and test membership
-// per object.
+// Parent lookup is static and allocation-free; the edge count remains the
+// defensive bound on a malformed cyclic table.
 fn has_ancestor(actual_type: []const u8, requested_type: []const u8) bool {
     var current = actual_type;
     for (0..parent_edges.len) |_| {
@@ -236,10 +244,7 @@ fn has_ancestor(actual_type: []const u8, requested_type: []const u8) bool {
 }
 
 fn parent_of(child: []const u8) ?[]const u8 {
-    for (parent_edges) |edge| {
-        if (std.mem.eql(u8, edge.child, child)) return edge.parent;
-    }
-    return null;
+    return parent_by_child.get(child);
 }
 
 test "is_a matches concrete type to itself" {

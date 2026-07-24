@@ -1,5 +1,7 @@
 const std = @import("std");
-const Model = @import("cim/cim.zig").CimDocument;
+const cim = @import("cim/cim.zig");
+const Model = cim.CimDocument;
+const ReverseRefIndex = cim.ReverseRefIndex;
 const parse_filename = @import("qocdc.zig").parse_filename;
 const validate = @import("qocdc.zig");
 const check_filename_consistency = validate.check_filename_consistency;
@@ -428,6 +430,28 @@ fn run_ce_base_voltage(xml: []const u8) !void {
     return validate.validate_conducting_equipment_base_voltage(model);
 }
 
+fn run_terminal_count1(xml: []const u8) !void {
+    const gpa = std.testing.allocator;
+    var model = try Model.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    var reverse_ref_index = try ReverseRefIndex.build(gpa, &model);
+    defer reverse_ref_index.deinit(gpa);
+
+    return validate.validate_terminal_count1(model, &reverse_ref_index);
+}
+
+fn run_terminal_count2(xml: []const u8) !void {
+    const gpa = std.testing.allocator;
+    var model = try Model.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    var reverse_ref_index = try ReverseRefIndex.build(gpa, &model);
+    defer reverse_ref_index.deinit(gpa);
+
+    return validate.validate_terminal_count2(model, &reverse_ref_index);
+}
+
 test "CEBaseVoltage accepts a direct BaseVoltage association" {
     try run_ce_base_voltage(
         \\<rdf:RDF>
@@ -557,6 +581,225 @@ test "CEBaseVoltage skips exempt converter and transformer classes" {
         \\  <cim:PowerTransformer rdf:ID="_PT1">
         \\    <cim:IdentifiedObject.name>PT1</cim:IdentifiedObject.name>
         \\  </cim:PowerTransformer>
+        \\</rdf:RDF>
+    );
+}
+
+test "TerminalCount1 accepts exactly one Terminal among other reference types" {
+    try run_terminal_count1(
+        \\<rdf:RDF>
+        \\  <cim:EnergyConsumer rdf:ID="_EC1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_EC1"/>
+        \\  </cim:Terminal>
+        \\  <cim:RegulatingControl rdf:ID="_RC1">
+        \\    <cim:RegulatingControl.RegulatingCondEq rdf:resource="#_EC1"/>
+        \\  </cim:RegulatingControl>
+        \\</rdf:RDF>
+    );
+}
+
+test "TerminalCount1 rejects constrained equipment without a Terminal" {
+    const constrained_types = [_][]const u8{
+        "RegulatingCondEq",
+        "SynchronousMachine",
+        "EnergyConsumer",
+        "ConformLoad",
+        "EquivalentInjection",
+        "EquivalentShunt",
+        "Junction",
+        "EnergySource",
+        "Ground",
+        "DCBusbar",
+        "DCShunt",
+        "DCGround",
+    };
+
+    const gpa = std.testing.allocator;
+    for (constrained_types) |type_name| {
+        const xml = try std.fmt.allocPrint(
+            gpa,
+            "<rdf:RDF><cim:{s} rdf:ID=\"_EQ1\"/></rdf:RDF>",
+            .{type_name},
+        );
+        defer gpa.free(xml);
+
+        try std.testing.expectError(error.TerminalCount1, run_terminal_count1(xml));
+    }
+}
+
+test "TerminalCount1 rejects multiple Terminal references" {
+    try std.testing.expectError(error.TerminalCount1, run_terminal_count1(
+        \\<rdf:RDF>
+        \\  <cim:EnergyConsumer rdf:ID="_EC1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_EC1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_EC1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ));
+}
+
+test "TerminalCount1 counts repeated associations from one Terminal once" {
+    try run_terminal_count1(
+        \\<rdf:RDF>
+        \\  <cim:EnergyConsumer rdf:ID="_EC1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_EC1"/>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_EC1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    );
+}
+
+test "TerminalCount1 ignores other references from a Terminal" {
+    try std.testing.expectError(error.TerminalCount1, run_terminal_count1(
+        \\<rdf:RDF>
+        \\  <cim:EnergyConsumer rdf:ID="_EC1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#_EC1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ));
+}
+
+test "TerminalCount1 ignores equipment outside its scope" {
+    try run_terminal_count1(
+        \\<rdf:RDF>
+        \\  <cim:Connector rdf:ID="_CON1"/>
+        \\  <cim:Breaker rdf:ID="_BRK1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BRK1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BRK1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    );
+}
+
+test "TerminalCount2 accepts exactly two Terminals among other references" {
+    try run_terminal_count2(
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_LINE1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T3">
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#_LINE1"/>
+        \\  </cim:Terminal>
+        \\  <cim:RegulatingControl rdf:ID="_RC1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\  </cim:RegulatingControl>
+        \\</rdf:RDF>
+    );
+}
+
+test "TerminalCount2 rejects fewer or more than two Terminals" {
+    try std.testing.expectError(error.TerminalCount2, run_terminal_count2(
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_LINE1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ));
+
+    try std.testing.expectError(error.TerminalCount2, run_terminal_count2(
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_LINE1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T3">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ));
+}
+
+test "TerminalCount2 counts distinct Terminal instances" {
+    try std.testing.expectError(error.TerminalCount2, run_terminal_count2(
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_LINE1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ));
+
+    try run_terminal_count2(
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_LINE1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    );
+}
+
+test "TerminalCount2 covers every listed type and known subclass" {
+    const constrained_types = [_][]const u8{
+        "Conductor",
+        "ACLineSegment",
+        "Switch",
+        "Cut",
+        "ProtectedSwitch",
+        "Breaker",
+        "DisconnectingCircuitBreaker",
+        "Disconnector",
+        "Fuse",
+        "GroundDisconnector",
+        "Jumper",
+        "LoadBreakSwitch",
+        "SeriesCompensator",
+        "EquivalentBranch",
+        "DCLineSegment",
+        "DCSeriesDevice",
+        "DCChopper",
+        "DCBreaker",
+        "DCDisconnector",
+    };
+
+    const gpa = std.testing.allocator;
+    for (constrained_types) |type_name| {
+        const xml = try std.fmt.allocPrint(
+            gpa,
+            "<rdf:RDF><cim:{s} rdf:ID=\"_EQ1\"/></rdf:RDF>",
+            .{type_name},
+        );
+        defer gpa.free(xml);
+
+        try std.testing.expectError(error.TerminalCount2, run_terminal_count2(xml));
+    }
+}
+
+test "TerminalCount2 ignores equipment outside its scope" {
+    try run_terminal_count2(
+        \\<rdf:RDF>
+        \\  <cim:ConductingEquipment rdf:ID="_CE1"/>
+        \\  <cim:Connector rdf:ID="_CON1"/>
+        \\  <cim:BusbarSection rdf:ID="_BBS1"/>
+        \\  <cim:Junction rdf:ID="_J1"/>
+        \\  <cim:DCSwitch rdf:ID="_DCS1"/>
+        \\  <cim:DCBusbar rdf:ID="_DCB1"/>
+        \\  <cim:DCGround rdf:ID="_DCG1"/>
+        \\  <cim:DCShunt rdf:ID="_DCSH1"/>
+        \\  <cim:PowerTransformer rdf:ID="_PT1"/>
         \\</rdf:RDF>
     );
 }

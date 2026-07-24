@@ -100,6 +100,49 @@ test "CimDocument.get_objects_by_type - returns all objects of given type" {
     try std.testing.expectEqual(0, missing.len);
 }
 
+test "CimDocument.type_groups - visits each exact type once without allocation" {
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:ID="_SS1"/>
+        \\  <cim:VoltageLevel rdf:ID="_VL1"/>
+        \\  <cim:Substation rdf:ID="_SS2"/>
+        \\</rdf:RDF>
+    ;
+
+    const gpa = std.testing.allocator;
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    var groups = model.type_groups();
+    var groups_count: u32 = 0;
+    var objects_count: u32 = 0;
+    var saw_substations = false;
+    var saw_voltage_levels = false;
+    while (groups.next()) |group| {
+        groups_count += 1;
+        objects_count += @intCast(group.objects.len);
+        for (group.objects) |object| {
+            try std.testing.expectEqualStrings(group.type_name, object.type_name);
+        }
+
+        if (std.mem.eql(u8, group.type_name, "Substation")) {
+            try std.testing.expectEqual(@as(usize, 2), group.objects.len);
+            saw_substations = true;
+        } else if (std.mem.eql(u8, group.type_name, "VoltageLevel")) {
+            try std.testing.expectEqual(@as(usize, 1), group.objects.len);
+            saw_voltage_levels = true;
+        } else {
+            return error.TestUnexpectedResult;
+        }
+    }
+
+    try std.testing.expectEqual(@as(u32, 2), groups_count);
+    try std.testing.expectEqual(@as(u32, 3), objects_count);
+    try std.testing.expect(saw_substations);
+    try std.testing.expect(saw_voltage_levels);
+    try std.testing.expect(groups.next() == null);
+}
+
 test "CimDocument.sorted_type_counts - returns sorted counts for each object type" {
     const xml =
         \\<rdf:RDF>
