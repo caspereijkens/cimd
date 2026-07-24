@@ -1452,8 +1452,7 @@ fn write_validation_heading(file_writer: *std.Io.File.Writer, document: model_se
 }
 
 fn command_qocdc(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Qocdc) !void {
-    _ = gpa;
-    qocdc.validate(io, c.eq_path) catch |err| input_read_error(io, .{
+    qocdc.validate(io, gpa, c.eq_path) catch |err| input_read_error(io, .{
         .command_name = "qocdc",
         .role = "input file",
         .path = c.eq_path,

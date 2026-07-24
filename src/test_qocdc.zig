@@ -1,4 +1,5 @@
 const std = @import("std");
+const Model = @import("cim/cim.zig").CimDocument;
 const parse_filename = @import("qocdc.zig").parse_filename;
 const validate = @import("qocdc.zig");
 const check_filename_consistency = validate.check_filename_consistency;
@@ -22,6 +23,16 @@ fn append_u32_le(out: *std.ArrayList(u8), gpa: std.mem.Allocator, value: u32) !v
 }
 
 fn append_local_header(out: *std.ArrayList(u8), gpa: std.mem.Allocator, name: []const u8) !u32 {
+    return append_local_header_sized(out, gpa, name, 0, 0);
+}
+
+fn append_local_header_sized(
+    out: *std.ArrayList(u8),
+    gpa: std.mem.Allocator,
+    name: []const u8,
+    size: u32,
+    crc: u32,
+) !u32 {
     std.debug.assert(name.len <= std.math.maxInt(u16));
 
     const offset: u32 = @intCast(out.items.len);
@@ -31,9 +42,9 @@ fn append_local_header(out: *std.ArrayList(u8), gpa: std.mem.Allocator, name: []
     try append_u16_le(out, gpa, 0); // compression: stored
     try append_u16_le(out, gpa, 0); // mod time
     try append_u16_le(out, gpa, 0); // mod date
-    try append_u32_le(out, gpa, 0); // CRC-32
-    try append_u32_le(out, gpa, 0); // compressed size
-    try append_u32_le(out, gpa, 0); // uncompressed size
+    try append_u32_le(out, gpa, crc);
+    try append_u32_le(out, gpa, size); // compressed size
+    try append_u32_le(out, gpa, size); // uncompressed size
     try append_u16_le(out, gpa, @intCast(name.len));
     try append_u16_le(out, gpa, 0); // extra field length
     try out.appendSlice(gpa, name);
@@ -46,6 +57,17 @@ fn append_central_header(
     name: []const u8,
     local_header_offset: u32,
 ) !void {
+    return append_central_header_sized(out, gpa, name, local_header_offset, 0, 0);
+}
+
+fn append_central_header_sized(
+    out: *std.ArrayList(u8),
+    gpa: std.mem.Allocator,
+    name: []const u8,
+    local_header_offset: u32,
+    size: u32,
+    crc: u32,
+) !void {
     std.debug.assert(name.len <= std.math.maxInt(u16));
 
     try out.appendSlice(gpa, &std.zip.central_file_header_sig);
@@ -55,9 +77,9 @@ fn append_central_header(
     try append_u16_le(out, gpa, 0); // compression: stored
     try append_u16_le(out, gpa, 0); // mod time
     try append_u16_le(out, gpa, 0); // mod date
-    try append_u32_le(out, gpa, 0); // CRC-32
-    try append_u32_le(out, gpa, 0); // compressed size
-    try append_u32_le(out, gpa, 0); // uncompressed size
+    try append_u32_le(out, gpa, crc);
+    try append_u32_le(out, gpa, size); // compressed size
+    try append_u32_le(out, gpa, size); // uncompressed size
     try append_u16_le(out, gpa, @intCast(name.len));
     try append_u16_le(out, gpa, 0); // extra field length
     try append_u16_le(out, gpa, 0); // file comment length
@@ -66,6 +88,45 @@ fn append_central_header(
     try append_u32_le(out, gpa, 0); // external file attributes
     try append_u32_le(out, gpa, local_header_offset);
     try out.appendSlice(gpa, name);
+}
+
+fn create_test_zip_with_file(
+    io: std.Io,
+    dir: std.Io.Dir,
+    zip_name: []const u8,
+    entry_name: []const u8,
+    contents: []const u8,
+    out_path: []u8,
+) ![]const u8 {
+    std.debug.assert(contents.len <= std.math.maxInt(u32));
+
+    const gpa = std.testing.allocator;
+    var zip_bytes: std.ArrayList(u8) = .empty;
+    defer zip_bytes.deinit(gpa);
+
+    const size: u32 = @intCast(contents.len);
+    const crc = std.hash.Crc32.hash(contents);
+    const local_offset = try append_local_header_sized(&zip_bytes, gpa, entry_name, size, crc);
+    try zip_bytes.appendSlice(gpa, contents);
+    const central_directory_offset: u32 = @intCast(zip_bytes.items.len);
+    try append_central_header_sized(&zip_bytes, gpa, entry_name, local_offset, size, crc);
+    const central_directory_size: u32 = @intCast(zip_bytes.items.len - central_directory_offset);
+
+    try zip_bytes.appendSlice(gpa, &std.zip.end_record_sig);
+    try append_u16_le(&zip_bytes, gpa, 0);
+    try append_u16_le(&zip_bytes, gpa, 0);
+    try append_u16_le(&zip_bytes, gpa, 1);
+    try append_u16_le(&zip_bytes, gpa, 1);
+    try append_u32_le(&zip_bytes, gpa, central_directory_size);
+    try append_u32_le(&zip_bytes, gpa, central_directory_offset);
+    try append_u16_le(&zip_bytes, gpa, 0);
+
+    var file = try dir.createFile(io, zip_name, .{ .read = true });
+    defer file.close(io);
+    try file.writeStreamingAll(io, zip_bytes.items);
+
+    const path_len = try file.realPath(io, out_path);
+    return out_path[0..path_len];
 }
 
 fn create_test_zip(
@@ -328,10 +389,24 @@ test "validate accepts zip paths with valid fileVersion" {
 
     const io = std.testing.io;
     const stem = "20260603T1325Z_1D_TTN_EQ_001";
+    const xml =
+        \\<rdf:RDF>
+        \\  <md:FullModel rdf:about="urn:uuid:test-equipment">
+        \\    <md:Model.profile>http://iec.ch/TC57/ns/CIM/CoreEquipment-EU/3.0</md:Model.profile>
+        \\  </md:FullModel>
+        \\</rdf:RDF>
+    ;
     var out_buffer: [1024]u8 = undefined;
-    const file_path = try create_test_zip(io, tmpdir.dir, stem ++ ".zip", &.{stem ++ ".xml"}, &out_buffer);
+    const file_path = try create_test_zip_with_file(
+        io,
+        tmpdir.dir,
+        stem ++ ".zip",
+        stem ++ ".xml",
+        xml,
+        &out_buffer,
+    );
 
-    try validate.validate(io, file_path);
+    try validate.validate(io, std.testing.allocator, file_path);
 }
 
 test "validate_filename rejects invalid fileVersion from zip path" {
@@ -344,4 +419,144 @@ test "validate_filename rejects invalid fileVersion from zip path" {
     const file_path = try create_test_zip(io, tmpdir.dir, stem ++ ".zip", &.{stem ++ ".xml"}, &out_buffer);
 
     try std.testing.expectError(error.FileVersion, validate.validate_filename(file_path));
+}
+
+fn run_ce_base_voltage(xml: []const u8) !void {
+    const gpa = std.testing.allocator;
+    var model = try Model.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+    return validate.validate_conducting_equipment_base_voltage(model);
+}
+
+test "CEBaseVoltage accepts a direct BaseVoltage association" {
+    try run_ce_base_voltage(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BRK1">
+        \\    <cim:ConductingEquipment.BaseVoltage rdf:resource="#_BV1"/>
+        \\  </cim:Breaker>
+        \\</rdf:RDF>
+    );
+}
+
+test "CEBaseVoltage accepts VoltageLevel containment" {
+    try run_ce_base_voltage(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BRK1">
+        \\    <cim:Equipment.EquipmentContainer rdf:resource="#_VL1"/>
+        \\  </cim:Breaker>
+        \\  <cim:VoltageLevel rdf:ID="_VL1">
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#_BV1"/>
+        \\  </cim:VoltageLevel>
+        \\</rdf:RDF>
+    );
+}
+
+test "CEBaseVoltage rejects missing association and containment" {
+    try std.testing.expectError(error.CEBaseVoltage, run_ce_base_voltage(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BRK1">
+        \\    <cim:IdentifiedObject.name>orphan</cim:IdentifiedObject.name>
+        \\  </cim:Breaker>
+        \\</rdf:RDF>
+    ));
+}
+
+test "CEBaseVoltage rejects containment outside a VoltageLevel or Bay" {
+    try std.testing.expectError(error.CEBaseVoltage, run_ce_base_voltage(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BRK1">
+        \\    <cim:Equipment.EquipmentContainer rdf:resource="#_LINE1"/>
+        \\  </cim:Breaker>
+        \\  <cim:Line rdf:ID="_LINE1">
+        \\    <cim:IdentifiedObject.name>L1</cim:IdentifiedObject.name>
+        \\  </cim:Line>
+        \\</rdf:RDF>
+    ));
+}
+
+test "CEBaseVoltage compares equipment and VoltageLevel associations" {
+    try run_ce_base_voltage(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BRK1">
+        \\    <cim:Equipment.EquipmentContainer rdf:resource="#_VL1"/>
+        \\    <cim:ConductingEquipment.BaseVoltage rdf:resource="#_BV1"/>
+        \\  </cim:Breaker>
+        \\  <cim:VoltageLevel rdf:ID="_VL1">
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#_BV1"/>
+        \\  </cim:VoltageLevel>
+        \\</rdf:RDF>
+    );
+
+    try std.testing.expectError(error.CEBaseVoltage, run_ce_base_voltage(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BRK1">
+        \\    <cim:Equipment.EquipmentContainer rdf:resource="#_VL1"/>
+        \\    <cim:ConductingEquipment.BaseVoltage rdf:resource="#_BV1"/>
+        \\  </cim:Breaker>
+        \\  <cim:VoltageLevel rdf:ID="_VL1">
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#_BV2"/>
+        \\  </cim:VoltageLevel>
+        \\</rdf:RDF>
+    ));
+}
+
+test "CEBaseVoltage resolves Bay containment through its VoltageLevel" {
+    try run_ce_base_voltage(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BRK1">
+        \\    <cim:Equipment.EquipmentContainer rdf:resource="#_BAY1"/>
+        \\    <cim:ConductingEquipment.BaseVoltage rdf:resource="#_BV1"/>
+        \\  </cim:Breaker>
+        \\  <cim:Bay rdf:ID="_BAY1">
+        \\    <cim:Bay.VoltageLevel rdf:resource="#_VL1"/>
+        \\  </cim:Bay>
+        \\  <cim:VoltageLevel rdf:ID="_VL1">
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#_BV1"/>
+        \\  </cim:VoltageLevel>
+        \\</rdf:RDF>
+    );
+
+    try std.testing.expectError(error.CEBaseVoltage, run_ce_base_voltage(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BRK1">
+        \\    <cim:Equipment.EquipmentContainer rdf:resource="#_BAY1"/>
+        \\    <cim:ConductingEquipment.BaseVoltage rdf:resource="#_BV1"/>
+        \\  </cim:Breaker>
+        \\  <cim:Bay rdf:ID="_BAY1">
+        \\    <cim:Bay.VoltageLevel rdf:resource="#_VL1"/>
+        \\  </cim:Bay>
+        \\  <cim:VoltageLevel rdf:ID="_VL1">
+        \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#_BV2"/>
+        \\  </cim:VoltageLevel>
+        \\</rdf:RDF>
+    ));
+}
+
+test "CEBaseVoltage accepts Bay containment without a BaseVoltage" {
+    try run_ce_base_voltage(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BRK1">
+        \\    <cim:Equipment.EquipmentContainer rdf:resource="#_BAY1"/>
+        \\  </cim:Breaker>
+        \\  <cim:Bay rdf:ID="_BAY1">
+        \\    <cim:Bay.VoltageLevel rdf:resource="#_VL1"/>
+        \\  </cim:Bay>
+        \\  <cim:VoltageLevel rdf:ID="_VL1">
+        \\    <cim:IdentifiedObject.name>VL1</cim:IdentifiedObject.name>
+        \\  </cim:VoltageLevel>
+        \\</rdf:RDF>
+    );
+}
+
+test "CEBaseVoltage skips exempt converter and transformer classes" {
+    try run_ce_base_voltage(
+        \\<rdf:RDF>
+        \\  <cim:VsConverter rdf:ID="_VSC1">
+        \\    <cim:IdentifiedObject.name>VSC1</cim:IdentifiedObject.name>
+        \\  </cim:VsConverter>
+        \\  <cim:PowerTransformer rdf:ID="_PT1">
+        \\    <cim:IdentifiedObject.name>PT1</cim:IdentifiedObject.name>
+        \\  </cim:PowerTransformer>
+        \\</rdf:RDF>
+    );
 }
