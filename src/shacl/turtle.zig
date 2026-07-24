@@ -603,21 +603,19 @@ pub const Turtle = struct {
         assert(self.source[self.pos] == '<');
         self.pos += 1;
         const start = self.pos;
-        while (self.pos < self.source.len) {
-            const c = self.source[self.pos];
-            if (c == '>') {
-                const text = self.source[start..self.pos];
-                self.pos += 1;
-                return text;
-            }
-            if (c == ' ' or c == '\t' or c == '\r' or c == '\n') {
-                return Error.IriContainsWhitespace;
-            }
-            if (c == '<') return Error.UnterminatedIri;
-            if (c == '\\') return Error.UnsupportedConstruct;
-            self.pos += 1;
+        // The first byte from this set decides the outcome (whitespace is the
+        // only multi-byte case).
+        const stop: u32 = @intCast(std.mem.indexOfAnyPos(u8, self.source, self.pos, "> \t\r\n<\\") orelse
+            return Error.UnterminatedIri);
+        switch (self.source[stop]) {
+            '>' => {
+                self.pos = stop + 1;
+                return self.source[start..stop];
+            },
+            '<' => return Error.UnterminatedIri,
+            '\\' => return Error.UnsupportedConstruct,
+            else => return Error.IriContainsWhitespace,
         }
-        return Error.UnterminatedIri;
     }
 
     /// Split a full IRI into (namespace, local) at the last '#' or '/',
@@ -662,18 +660,18 @@ pub const Turtle = struct {
         assert(self.source[self.pos] == '"');
         self.pos += 1;
         const start = self.pos;
-        while (self.pos < self.source.len) {
-            const c = self.source[self.pos];
-            if (c == '"') {
-                const value = self.source[start..self.pos];
-                self.pos += 1;
-                return value;
-            }
-            if (c == '\n' or c == '\r') return Error.UnterminatedString;
-            if (c == '\\') {
-                try self.validate_escape();
-            } else {
-                self.pos += 1;
+        // Skip ordinary bytes stopping only at the closer, a line break 
+        // (illegal in a short string), or an escape.
+        while (std.mem.indexOfAnyPos(u8, self.source, self.pos, "\"\n\r\\")) |stop_usize| {
+            const stop: u32 = @intCast(stop_usize);
+            self.pos = stop;
+            switch (self.source[stop]) {
+                '"' => {
+                    self.pos = stop + 1;
+                    return self.source[start..stop];
+                },
+                '\n', '\r' => return Error.UnterminatedString,
+                else => try self.validate_escape(), // '\\', advances past the escape
             }
         }
         return Error.UnterminatedString;
@@ -683,26 +681,33 @@ pub const Turtle = struct {
         assert(self.source[self.pos] == '"');
         self.pos += 3;
         const start = self.pos;
-        while (self.pos < self.source.len) {
-            const c = self.source[self.pos];
-            // Close at the first `"""` not followed by another quote, so up
-            // to two embedded quotes before the closer parse as content.
-            if (c == '"') {
-                const rest = self.source[self.pos..];
-                if (rest.len >= 3 and rest[1] == '"' and rest[2] == '"') {
-                    if (rest.len == 3 or rest[3] != '"') {
-                        const value = self.source[start..self.pos];
-                        self.pos += 3;
-                        return value;
+        // Ordinary bytes are skipped. Only a quote (possible closer), an 
+        // escape, or a newline (line count) need handling.
+        while (std.mem.indexOfAnyPos(u8, self.source, self.pos, "\"\\\n")) |stop_usize| {
+            const stop: u32 = @intCast(stop_usize);
+            switch (self.source[stop]) {
+                // Close at the first `"""` not followed by another quote, so up
+                // to two embedded quotes before the closer parse as content.
+                '"' => {
+                    const rest = self.source[stop..];
+                    if (rest.len >= 3 and rest[1] == '"' and rest[2] == '"' and
+                        (rest.len == 3 or rest[3] != '"'))
+                    {
+                        self.pos = stop + 3;
+                        return self.source[start..stop];
                     }
-                }
+                    self.pos = stop + 1;
+                },
+                '\\' => {
+                    self.pos = stop;
+                    try self.validate_escape();
+                },
+                '\n' => {
+                    self.line += 1;
+                    self.pos = stop + 1;
+                },
+                else => unreachable,
             }
-            if (c == '\\') {
-                try self.validate_escape();
-                continue;
-            }
-            if (c == '\n') self.line += 1;
-            self.pos += 1;
         }
         return Error.UnterminatedString;
     }
