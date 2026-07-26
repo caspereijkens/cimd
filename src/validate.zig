@@ -287,6 +287,21 @@ const Evaluator = struct {
             else => ChildTable.absent,
         };
 
+        // A subjects-of shape only reports on objects carrying its target
+        // property, and `evaluate_object` discards everything it staged unless
+        // the scan saw that tag. So when the document contains the tag nowhere
+        // -- `absent`, which no child id can equal -- the whole sweep is dead:
+        // it would visit every object in the document to throw all of it away.
+        // Profile-specific rule sets make this the common case, not a corner
+        // one; 133 of the reference set's 825 shapes are dead this way, which
+        // is 87M object visits.
+        if (shape.target == .subjects_of and
+            ev.subjects_id == ChildTable.absent and
+            !std.mem.eql(u8, shape.target.subjects_of, "rdf:type"))
+        {
+            return;
+        }
+
         switch (shape.target) {
             .class => |class_name| {
                 // Subtype targeting: a shape on ConductingEquipment applies
