@@ -136,6 +136,37 @@ pub fn index_of_any_pos_table(haystack: []const u8, start: usize, comptime set: 
     return null;
 }
 
+/// `index_of_any_pos_table`, vectorized: one compare per (vector x set member)
+/// instead of one load per byte, with the table version handling the tail.
+///
+/// Worth the machinery because the tag-name terminator scan is on the hottest
+/// path there is -- once per child element, for every consumer, now that the
+/// single child walk classifies each child as it goes. A tag name is ~20 bytes,
+/// so the whole scan usually resolves in the first chunk.
+pub fn index_of_any_pos_simd(haystack: []const u8, start: usize, comptime set: []const u8) ?usize {
+    comptime assert(set.len > 0);
+
+    const splats = comptime blk: {
+        var s: [set.len]Chunk = undefined;
+        for (set, 0..) |c, j| s[j] = @splat(c);
+        break :blk s;
+    };
+
+    var i: usize = start;
+    while (i + VECTOR_LEN <= haystack.len) : (i += VECTOR_LEN) {
+        const chunk: Chunk = haystack[i..][0..VECTOR_LEN].*;
+        var mask: Mask = 0;
+        inline for (splats) |splat| {
+            const eq: @Vector(VECTOR_LEN, bool) = chunk == splat;
+            mask |= @as(Mask, @bitCast(eq));
+        }
+        // Lowest set bit is the earliest matching byte in the chunk, so the
+        // first hit found is the first hit overall.
+        if (mask != 0) return i + @ctz(mask);
+    }
+    return index_of_any_pos_table(haystack, i, set);
+}
+
 /// Verify needle at position and extract quoted value if match found
 /// Returns PatternMatch if pattern matches and closing quote is found, null otherwise
 pub fn verify_and_extract_pattern(
@@ -338,9 +369,23 @@ pub fn find_tag_boundaries(
 /// and attribute-less self-closing tags like `<cim:X/>` are handled
 /// correctly. Scan stays bounded to a single tag at the call sites.
 pub fn extract_tag_type(slice: []const u8, start_idx: u32) error{MalformedTag}![]const u8 {
+    return (try extract_tag_type_terminated(slice, start_idx)).name;
+}
+
+/// `extract_tag_type`, plus the byte that ended the name. The terminator answers
+/// "can this element carry attributes at all" for free: '>' or '/' means the name
+/// ran straight into the end of the tag, so there is no room for an
+/// `rdf:resource`. `ChildIterator` uses that to skip the attribute scan on the
+/// ordinary `<cim:X.y>text</cim:X.y>` child, which is most of a CIM document --
+/// without it, classifying every child eagerly costs a second pass over each
+/// tag and shows up as a ~8% regression on `refs`.
+pub fn extract_tag_type_terminated(
+    slice: []const u8,
+    start_idx: u32,
+) error{MalformedTag}!struct { name: []const u8, terminator: u8 } {
     const colon_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, ':') orelse return error.MalformedTag;
-    const end_idx = index_of_any_pos_table(slice, colon_idx, " \t\r\n>/") orelse return error.MalformedTag;
-    return slice[colon_idx + 1 .. end_idx];
+    const end_idx = index_of_any_pos_simd(slice, colon_idx, " \t\r\n>/") orelse return error.MalformedTag;
+    return .{ .name = slice[colon_idx + 1 .. end_idx], .terminator = slice[end_idx] };
 }
 
 /// Extract rdf:ID value from an XML tag
@@ -484,6 +529,13 @@ pub inline fn is_element_open_tag(xml: []const u8, tag: TagBoundary) bool {
     return c != '/' and c != '!' and c != '?';
 }
 
+/// True when `child` can answer a text-property query: a literal, written in
+/// expanded form. A self-closing element has no text content, so it is not one
+/// even though `<name/>` is an empty literal.
+inline fn is_text_property(child: Child, name: []const u8) bool {
+    return child.kind == .property and !child.self_closing and std.mem.eql(u8, child.name, name);
+}
+
 pub fn get_property_from_indices(
     xml: []const u8,
     boundaries: []const TagBoundary,
@@ -491,22 +543,11 @@ pub fn get_property_from_indices(
     closing_tag_idx: u32,
     property_name: []const u8,
 ) error{MalformedTag}!?[]const u8 {
-    // Self-closing tags have no properties
-    if (closing_tag_idx == opening_tag_idx) return null;
-
     assert(property_name.len > 0);
-    assert(closing_tag_idx < boundaries.len);
 
-    // Neighbouring tags have no properties
-    if (closing_tag_idx == opening_tag_idx + 1) return null;
-
-    for (boundaries[opening_tag_idx + 1 .. closing_tag_idx], opening_tag_idx + 1..) |tag, i| {
-        // Skip closing, self-closing, comment and PI boundaries.
-        if (!is_element_open_tag(xml, tag) or xml[tag.end - 1] == '/') continue;
-        const tag_type = extract_tag_type(xml, tag.start) catch continue;
-        if (std.mem.eql(u8, tag_type, property_name)) {
-            return xml[tag.end + 1 .. boundaries[i + 1].start];
-        }
+    var it = ChildIterator.init_range(xml, boundaries, opening_tag_idx, closing_tag_idx);
+    while (it.next()) |child| {
+        if (is_text_property(child, property_name)) return child.value;
     }
     return null;
 }
@@ -518,22 +559,15 @@ pub fn get_reference_from_indices(
     closing_tag_idx: u32,
     property_name: []const u8,
 ) error{MalformedTag}!?[]const u8 {
-    // Self-closing tags have no properties
-    if (closing_tag_idx == opening_tag_idx) return null;
-
     assert(property_name.len > 0);
-    assert(closing_tag_idx < boundaries.len);
 
-    // Neighbouring tags have no properties
-    if (closing_tag_idx == opening_tag_idx + 1) return null;
-
-    for (boundaries[opening_tag_idx + 1 .. closing_tag_idx]) |tag| {
-        // Skip closing, comment and PI boundaries.
-        if (!is_element_open_tag(xml, tag)) continue;
-        const tag_type = extract_tag_type(xml, tag.start) catch continue;
-        if (std.mem.eql(u8, tag_type, property_name)) {
-            return extract_rdf_resource_within(xml, tag.start, tag.end);
-        }
+    var it = ChildIterator.init_range(xml, boundaries, opening_tag_idx, closing_tag_idx);
+    while (it.next()) |child| {
+        if (!std.mem.eql(u8, child.name, property_name)) continue;
+        // Asked for this name specifically, so an unreadable rdf:resource is an
+        // answer the caller must not get as "absent".
+        if (child.malformed_resource) return error.MalformedTag;
+        if (child.kind == .reference) return child.value;
     }
     return null;
 }
@@ -601,6 +635,138 @@ pub fn build_closing_index(
     return closing_for;
 }
 
+/// One child element of a CIM object -- the unit every consumer of a parsed
+/// document actually works in, and the single answer to "what is a child".
+///
+/// Every field borrows from the document's `xml`, so a `Child` stays valid
+/// exactly as long as the document does.
+pub const Child = struct {
+    /// Tag name with the namespace prefix stripped: `Terminal.ConductingEquipment`.
+    name: []const u8,
+    /// Text content for a property, the `rdf:resource` value for a reference.
+    /// Empty (not null) for an empty literal in either syntax.
+    value: []const u8,
+    /// Follows the `rdf:resource` attribute, not the element syntax.
+    kind: Kind,
+    /// The element has an `rdf:resource=` whose value never closes inside the
+    /// tag. Such a child is reported as a `.property` so tolerant walks treat it
+    /// as "not a reference" and keep going, but the flag lets a walk that is
+    /// asked for this name by name fail loudly instead: topology resolution
+    /// reports a malformed reference rather than silently building the wrong
+    /// network from a truncated export.
+    malformed_resource: bool,
+    /// Whether the element is written `<name/>`. Distinct from `kind`: a
+    /// self-closing element without `rdf:resource` is an empty literal, so the
+    /// property walks use this to keep skipping it while still calling it a
+    /// property.
+    self_closing: bool,
+    /// The complete element slice, for consumers that copy it verbatim.
+    raw: []const u8,
+
+    pub const Kind = enum {
+        /// Literal text content, including empty, in either syntax.
+        property,
+        /// Carries an `rdf:resource` attribute.
+        reference,
+    };
+};
+
+/// Walk the child elements of an object in document order.
+///
+/// This is *the* child walk. Before it there were twelve, each with its own
+/// independently written skip rules, and five of them were wrong about XML
+/// comments (see `is_element_open_tag`). Anything that needs an object's
+/// children iterates this instead of indexing `boundaries`, which is what lets
+/// the boundary array stop being part of the API later.
+///
+/// Skips comments, processing instructions and tags whose name will not parse,
+/// matching the tolerance the previous walks had: a malformed child is not a
+/// reason to fail a whole query.
+pub const ChildIterator = struct {
+    xml: []const u8,
+    boundaries: []const TagBoundary,
+    next_idx: u32,
+    end_idx: u32,
+
+    /// Iterate the children of a bound object.
+    pub fn init(view: CimObjectView) ChildIterator {
+        return init_range(view.xml, view.boundaries, view.object_tag_idx, view.closing_tag_idx);
+    }
+
+    /// Iterate the children of an element identified by its opening and closing
+    /// boundary indices. For callers that hold a span but no view -- the SSH/TP
+    /// overlay patches, which are elements inside a document they do not own.
+    pub fn init_range(
+        xml: []const u8,
+        boundaries: []const TagBoundary,
+        open_idx: u32,
+        close_idx: u32,
+    ) ChildIterator {
+        assert(close_idx >= open_idx);
+        assert(close_idx < boundaries.len);
+        return .{
+            .xml = xml,
+            .boundaries = boundaries,
+            .next_idx = open_idx + 1,
+            .end_idx = close_idx,
+        };
+    }
+
+    pub fn next(self: *ChildIterator) ?Child {
+        while (self.next_idx < self.end_idx) {
+            const i = self.next_idx;
+            const tag = self.boundaries[i];
+            self.next_idx += 1;
+
+            if (!is_element_open_tag(self.xml, tag)) continue;
+            const parsed = extract_tag_type_terminated(self.xml, tag.start) catch continue;
+            const name = parsed.name;
+
+            // No attributes, so no rdf:resource: the name ran into the end of
+            // the tag. Skips the attribute scan for the plain text-property
+            // child, which is most of a CIM document.
+            const may_have_attributes = parsed.terminator != '>' and parsed.terminator != '/';
+            var malformed_resource = false;
+            const resource = if (!may_have_attributes) null else extract_rdf_resource_within(
+                self.xml,
+                tag.start,
+                tag.end,
+            ) catch blk: {
+                malformed_resource = true;
+                break :blk null;
+            };
+            const kind: Child.Kind = if (resource != null) .reference else .property;
+
+            if (self.xml[tag.end - 1] == '/') {
+                return .{
+                    .name = name,
+                    .value = resource orelse "",
+                    .kind = kind,
+                    .malformed_resource = malformed_resource,
+                    .self_closing = true,
+                    .raw = self.xml[tag.start .. tag.end + 1],
+                };
+            }
+
+            // Expanded element, closed by the next boundary. CIM properties
+            // never nest -- the same assumption every previous walk made when
+            // slicing content up to the following tag. The closing boundary is
+            // consumed with the opener so it is not offered as a child.
+            const closing = self.boundaries[i + 1];
+            self.next_idx = i + 2;
+            return .{
+                .name = name,
+                .value = resource orelse self.xml[tag.end + 1 .. closing.start],
+                .kind = kind,
+                .malformed_resource = malformed_resource,
+                .self_closing = false,
+                .raw = self.xml[tag.start .. closing.end + 1],
+            };
+        }
+        return null;
+    }
+};
+
 /// Represents a CIM object with lazy property access
 /// Compact CIM object -- indices and identity only, no embedded XML context.
 /// Cheap to copy and store. Use CimObjectView (via CimDocument.view) to access properties.
@@ -666,23 +832,21 @@ pub const CimObjectView = struct {
         return parse.non_blank(try self.getProperty("IdentifiedObject.mRID")) orelse ids.strip_underscore(ids.strip_hash(self.id));
     }
 
+    /// Iterate this object's child elements in document order.
+    pub fn children(self: CimObjectView) ChildIterator {
+        return ChildIterator.init(self);
+    }
+
     /// Batch-fetch multiple text properties in a single scan through child tags.
     pub fn getProperties(self: CimObjectView, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
         var result: [names.len]?[]const u8 = .{null} ** names.len;
-
-        if (self.closing_tag_idx == self.object_tag_idx) return result;
-        if (self.closing_tag_idx == self.object_tag_idx + 1) return result;
-
         var found_count: usize = 0;
 
-        for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx], self.object_tag_idx + 1..) |tag, tag_idx| {
-            if (!is_element_open_tag(self.xml, tag) or self.xml[tag.end - 1] == '/') continue;
-
-            const tag_type = extract_tag_type(self.xml, tag.start) catch continue;
-
+        var it = self.children();
+        while (it.next()) |child| {
             inline for (names, 0..) |name, idx| {
-                if (result[idx] == null and std.mem.eql(u8, tag_type, name)) {
-                    result[idx] = self.xml[tag.end + 1 .. self.boundaries[tag_idx + 1].start];
+                if (result[idx] == null and is_text_property(child, name)) {
+                    result[idx] = child.value;
                     found_count += 1;
                     if (found_count == names.len) return result;
                 }
@@ -695,22 +859,20 @@ pub const CimObjectView = struct {
     /// Batch-fetch multiple rdf:resource references in a single scan through child tags.
     pub fn getReferences(self: CimObjectView, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
         var result: [names.len]?[]const u8 = .{null} ** names.len;
-
-        if (self.closing_tag_idx == self.object_tag_idx) return result;
-        if (self.closing_tag_idx == self.object_tag_idx + 1) return result;
-
         var found_count: usize = 0;
 
-        for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx]) |tag| {
-            if (!is_element_open_tag(self.xml, tag)) continue;
-
-            const tag_type = extract_tag_type(self.xml, tag.start) catch continue;
-
+        var it = self.children();
+        while (it.next()) |child| {
             inline for (names, 0..) |name, idx| {
-                if (result[idx] == null and std.mem.eql(u8, tag_type, name)) {
-                    result[idx] = try extract_rdf_resource_within(self.xml, tag.start, tag.end);
-                    found_count += 1;
-                    if (found_count == names.len) return result;
+                if (result[idx] == null and std.mem.eql(u8, child.name, name)) {
+                    // Same rule as get_reference_from_indices: a requested name
+                    // with an unreadable rdf:resource must not read as absent.
+                    if (child.malformed_resource) return error.MalformedTag;
+                    if (child.kind == .reference) {
+                        result[idx] = child.value;
+                        found_count += 1;
+                        if (found_count == names.len) return result;
+                    }
                 }
             }
         }
@@ -723,14 +885,10 @@ pub const CimObjectView = struct {
         var result = std.StringHashMap([]const u8).init(gpa);
         errdefer result.deinit();
 
-        if (self.closing_tag_idx == self.object_tag_idx) return result;
-
-        for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx], self.object_tag_idx + 1..) |tag, i| {
-            // In CIM XML, references are always self-closing; properties never are.
-            if (!is_element_open_tag(self.xml, tag) or self.xml[tag.end - 1] == '/') continue;
-            const tag_type = extract_tag_type(self.xml, tag.start) catch continue;
-            const content = self.xml[tag.end + 1 .. self.boundaries[i + 1].start];
-            try result.put(tag_type, content);
+        var it = self.children();
+        while (it.next()) |child| {
+            if (child.kind != .property or child.self_closing) continue;
+            try result.put(child.name, child.value);
         }
 
         return result;
@@ -741,17 +899,10 @@ pub const CimObjectView = struct {
         var result = std.StringHashMap([]const u8).init(gpa);
         errdefer result.deinit();
 
-        if (self.closing_tag_idx == self.object_tag_idx) return result;
-
-        for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx]) |tag| {
-            if (!is_element_open_tag(self.xml, tag)) continue;
-
-            const tag_type = extract_tag_type(self.xml, tag.start) catch continue;
-            const reference = extract_rdf_resource_within(self.xml, tag.start, tag.end) catch continue;
-
-            if (reference) |ref_value| {
-                try result.put(tag_type, ref_value);
-            }
+        var it = self.children();
+        while (it.next()) |child| {
+            if (child.kind != .reference) continue;
+            try result.put(child.name, child.value);
         }
 
         return result;

@@ -29,94 +29,19 @@ const CimDocument = @import("document.zig").CimDocument;
 const tag_index = @import("tag_index.zig");
 const cim_types = @import("cim_types.zig");
 
-// ── Statements ────────────────────────────────────────────────────────────────
+// ── Statements ─────────────────────────────────────────────────────────────────
 
-/// One child element of a CIM object.
-pub const Statement = struct {
-    /// Tag name with namespace prefix stripped -- the comparison key.
-    name: []const u8,
-    /// Text content for property elements, rdf:resource for references --
-    /// the comparison value.
-    value: []const u8,
-    /// Part of the match key alongside name and value: the CIM schema fixes
-    /// each property's kind, so a flip between <cim:X>#_A</cim:X> and
-    /// <cim:X rdf:resource="#_A"/> is a real change even when name and value
-    /// coincide lexically.
-    kind: Kind,
-    /// The complete element slice, for renderers that copy it verbatim.
-    raw: []const u8,
-
-    pub const Kind = enum {
-        /// Literal text content (including empty, in either syntax).
-        property,
-        /// Carries an rdf:resource attribute.
-        reference,
-    };
-};
-
-/// Walk the child elements of an object in document order. Skips comments,
-/// processing instructions, and malformed tags, mirroring the tolerance of
-/// CimObjectView.getAllProperties/getAllReferences.
-pub const StatementIterator = struct {
-    xml: []const u8,
-    boundaries: []const tag_index.TagBoundary,
-    next_idx: u32,
-    end_idx: u32,
-
-    pub fn init(view: tag_index.CimObjectView) StatementIterator {
-        return .{
-            .xml = view.xml,
-            .boundaries = view.boundaries,
-            .next_idx = view.object_tag_idx + 1,
-            .end_idx = view.closing_tag_idx,
-        };
-    }
-
-    pub fn next(self: *StatementIterator) ?Statement {
-        while (self.next_idx < self.end_idx) {
-            const i = self.next_idx;
-            const tag = self.boundaries[i];
-            self.next_idx += 1;
-
-            switch (self.xml[tag.start + 1]) {
-                '/', '!', '?' => continue, // closing tag, comment, or PI
-                else => {},
-            }
-            const name = tag_index.extract_tag_type(self.xml, tag.start) catch continue;
-
-            // Self-closing: a reference when it carries rdf:resource. The
-            // kind follows the attribute, not the syntax -- a self-closing
-            // element without rdf:resource is an empty literal, equivalent
-            // to <name></name>.
-            if (self.xml[tag.end - 1] == '/') {
-                const resource = tag_index.extract_rdf_resource_within(self.xml, tag.start, tag.end) catch null;
-                return .{
-                    .name = name,
-                    .value = resource orelse "",
-                    .kind = if (resource != null) .reference else .property,
-                    .raw = self.xml[tag.start .. tag.end + 1],
-                };
-            }
-
-            // Expanded element, closed by the next boundary. CIM properties
-            // never nest -- the same assumption getAllProperties makes when
-            // slicing content up to the following tag. As above, the kind
-            // follows the rdf:resource attribute, not the element form:
-            // <name rdf:resource="#_A"></name> is the expanded serialization
-            // of the self-closing reference, not a literal.
-            const closing = self.boundaries[i + 1];
-            self.next_idx = i + 2;
-            const resource = tag_index.extract_rdf_resource_within(self.xml, tag.start, tag.end) catch null;
-            return .{
-                .name = name,
-                .value = resource orelse self.xml[tag.end + 1 .. closing.start],
-                .kind = if (resource != null) .reference else .property,
-                .raw = self.xml[tag.start .. closing.end + 1],
-            };
-        }
-        return null;
-    }
-};
+/// A statement *is* a child element: this walk started here and moved into
+/// `tag_index` as the one child walk the whole codebase shares, so diff and
+/// every other consumer now agree on what a child is by construction rather
+/// than by four independently maintained skip loops. `kind` is part of the
+/// match key alongside name and value -- the CIM schema fixes each property's
+/// kind, so a flip between `<cim:X>#_A</cim:X>` and
+/// `<cim:X rdf:resource="#_A"/>` is a real change even when the two coincide
+/// lexically. `self_closing` is deliberately *not* compared: `<cim:X/>` and
+/// `<cim:X></cim:X>` are the same empty literal.
+pub const Statement = tag_index.Child;
+pub const StatementIterator = tag_index.ChildIterator;
 
 // ── Statement comparison ──────────────────────────────────────────────────────
 

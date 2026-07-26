@@ -2584,7 +2584,7 @@ test "tag_index.find_needle_anchored - matches std.mem.indexOf, including false 
     }
 }
 
-test "tag_index.index_of_any_pos_table - matches std.mem.indexOfAnyPos" {
+test "tag_index.index_of_any_pos_table/simd - match std.mem.indexOfAnyPos" {
     const set = " \t\r\n>/";
     const cases = [_][]const u8{
         "<cim:Substation rdf:ID=\"_SS1\">",
@@ -2593,14 +2593,196 @@ test "tag_index.index_of_any_pos_table - matches std.mem.indexOfAnyPos" {
         "cim:NoTerminatorHere",
         ">",
         "",
+        // Longer than one vector, so the SIMD path runs and then hands a tail
+        // to the scalar table: a hit in the first chunk, a hit only in the
+        // tail, every whitespace form, and no hit at all.
+        "<cim:VeryLongTagNameThatExceedsThirtyTwoBytesForSure>",
+        "cim:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa>",
+        "cim:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t",
+        "cim:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r",
+        "cim:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     };
     for (cases) |haystack| {
         var start: usize = 0;
         while (start <= haystack.len) : (start += 1) {
-            try std.testing.expectEqual(
-                std.mem.indexOfAnyPos(u8, haystack, start, set),
-                tag_index.index_of_any_pos_table(haystack, start, set),
-            );
+            const want = std.mem.indexOfAnyPos(u8, haystack, start, set);
+            try std.testing.expectEqual(want, tag_index.index_of_any_pos_table(haystack, start, set));
+            try std.testing.expectEqual(want, tag_index.index_of_any_pos_simd(haystack, start, set));
         }
     }
+}
+
+// ── ChildIterator ─────────────────────────────────────────────────────────────
+//
+// The one child walk. These tests pin the classification every consumer now
+// shares: what counts as a child at all, and property vs. reference.
+
+const CHILD_WALK_XML =
+    \\<cim:Terminal rdf:ID="_T1">
+    \\  <cim:Terminal.name>Feeder 1</cim:Terminal.name>
+    \\  <!-- <cim:Terminal.Ghost rdf:resource="#_GHOST"/> -->
+    \\  <?ignore-me rdf:resource="#_PI"?>
+    \\  <cim:Terminal.ConductingEquipment rdf:resource="#_CE1"/>
+    \\  <cim:Terminal.expanded rdf:resource="#_EX1"></cim:Terminal.expanded>
+    \\  <cim:Terminal.empty/>
+    \\  <cim:Terminal.blank></cim:Terminal.blank>
+    \\</cim:Terminal>
+;
+
+test "tag_index.ChildIterator - classifies every child, and only real children" {
+    const gpa = std.testing.allocator;
+
+    var boundaries = try tag_index.find_tag_boundaries(gpa, CHILD_WALK_XML);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.find_closing_tag(CHILD_WALK_XML, boundaries.items, 0);
+    const obj = try make_cim_object(CHILD_WALK_XML, boundaries.items, 0, closing);
+
+    const Expected = struct {
+        name: []const u8,
+        value: []const u8,
+        kind: tag_index.Child.Kind,
+        self_closing: bool,
+    };
+    // The comment and the PI are absent: neither is a child, however much the
+    // comment looks like one. Closing boundaries of expanded elements are
+    // consumed with their openers, so they are not offered either.
+    const expected = [_]Expected{
+        .{ .name = "Terminal.name", .value = "Feeder 1", .kind = .property, .self_closing = false },
+        .{ .name = "Terminal.ConductingEquipment", .value = "#_CE1", .kind = .reference, .self_closing = true },
+        // rdf:resource in expanded form is still a reference -- the kind follows
+        // the attribute, not the syntax.
+        .{ .name = "Terminal.expanded", .value = "#_EX1", .kind = .reference, .self_closing = false },
+        // Both spellings of an empty literal, distinguished only by self_closing.
+        .{ .name = "Terminal.empty", .value = "", .kind = .property, .self_closing = true },
+        .{ .name = "Terminal.blank", .value = "", .kind = .property, .self_closing = false },
+    };
+
+    var seen: usize = 0;
+    var it = obj.children();
+    while (it.next()) |child| : (seen += 1) {
+        try std.testing.expect(seen < expected.len);
+        const want = expected[seen];
+        try std.testing.expectEqualStrings(want.name, child.name);
+        try std.testing.expectEqualStrings(want.value, child.value);
+        try std.testing.expectEqual(want.kind, child.kind);
+        try std.testing.expectEqual(want.self_closing, child.self_closing);
+        try std.testing.expect(!child.malformed_resource);
+        // raw is the whole element, whichever form it takes.
+        try std.testing.expect(std.mem.startsWith(u8, child.raw, "<cim:"));
+        try std.testing.expect(std.mem.endsWith(u8, child.raw, ">"));
+    }
+    try std.testing.expectEqual(expected.len, seen);
+}
+
+test "tag_index.ChildIterator - raw spans the whole element in both forms" {
+    const gpa = std.testing.allocator;
+
+    var boundaries = try tag_index.find_tag_boundaries(gpa, CHILD_WALK_XML);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.find_closing_tag(CHILD_WALK_XML, boundaries.items, 0);
+    const obj = try make_cim_object(CHILD_WALK_XML, boundaries.items, 0, closing);
+
+    var it = obj.children();
+    const first = it.next().?;
+    try std.testing.expectEqualStrings(
+        "<cim:Terminal.name>Feeder 1</cim:Terminal.name>",
+        first.raw,
+    );
+    const self_closed = it.next().?;
+    try std.testing.expectEqualStrings(
+        "<cim:Terminal.ConductingEquipment rdf:resource=\"#_CE1\"/>",
+        self_closed.raw,
+    );
+    const expanded = it.next().?;
+    try std.testing.expectEqualStrings(
+        "<cim:Terminal.expanded rdf:resource=\"#_EX1\"></cim:Terminal.expanded>",
+        expanded.raw,
+    );
+}
+
+test "tag_index.ChildIterator - the six walks agree with it" {
+    const gpa = std.testing.allocator;
+
+    var boundaries = try tag_index.find_tag_boundaries(gpa, CHILD_WALK_XML);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.find_closing_tag(CHILD_WALK_XML, boundaries.items, 0);
+    const obj = try make_cim_object(CHILD_WALK_XML, boundaries.items, 0, closing);
+
+    // Text properties: expanded literals only. A self-closing element has no
+    // text content, and an rdf:resource carrier is a reference in either form.
+    var props = try obj.getAllProperties(gpa);
+    defer props.deinit();
+    try std.testing.expectEqual(@as(u32, 2), props.count());
+    try std.testing.expectEqualStrings("Feeder 1", props.get("Terminal.name").?);
+    try std.testing.expectEqualStrings("", props.get("Terminal.blank").?);
+    try std.testing.expect(props.get("Terminal.expanded") == null);
+    try std.testing.expect(props.get("Terminal.empty") == null);
+    try std.testing.expect(props.get("Terminal.Ghost") == null);
+
+    var refs = try obj.getAllReferences(gpa);
+    defer refs.deinit();
+    try std.testing.expectEqual(@as(u32, 2), refs.count());
+    try std.testing.expectEqualStrings("#_CE1", refs.get("Terminal.ConductingEquipment").?);
+    try std.testing.expectEqualStrings("#_EX1", refs.get("Terminal.expanded").?);
+    try std.testing.expect(refs.get("Terminal.Ghost") == null);
+
+    // The single-name and batch forms resolve to the same answers.
+    try std.testing.expectEqualStrings("Feeder 1", (try obj.getProperty("Terminal.name")).?);
+    try std.testing.expect((try obj.getProperty("Terminal.expanded")) == null);
+    try std.testing.expect((try obj.getProperty("Terminal.empty")) == null);
+    try std.testing.expectEqualStrings("#_EX1", (try obj.getReference("Terminal.expanded")).?);
+    try std.testing.expect((try obj.getReference("Terminal.name")) == null);
+
+    const batch_props = try obj.getProperties(.{ "Terminal.name", "Terminal.expanded", "Terminal.empty" });
+    try std.testing.expectEqualStrings("Feeder 1", batch_props[0].?);
+    try std.testing.expect(batch_props[1] == null);
+    try std.testing.expect(batch_props[2] == null);
+
+    const batch_refs = try obj.getReferences(.{ "Terminal.ConductingEquipment", "Terminal.expanded", "Terminal.name" });
+    try std.testing.expectEqualStrings("#_CE1", batch_refs[0].?);
+    try std.testing.expectEqualStrings("#_EX1", batch_refs[1].?);
+    try std.testing.expect(batch_refs[2] == null);
+}
+
+test "tag_index.ChildIterator - an unreadable rdf:resource fails the query that asked for it" {
+    const gpa = std.testing.allocator;
+
+    // The quote never closes inside the tag, so the resource value cannot be
+    // read. Topology resolution depends on hearing about this.
+    const xml =
+        \\<cim:VoltageLevel rdf:ID="_VL1">
+        \\  <cim:VoltageLevel.BaseVoltage rdf:resource="#_BV1/>
+        \\  <cim:VoltageLevel.name>VL</cim:VoltageLevel.name>
+        \\</cim:VoltageLevel>
+    ;
+
+    var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.find_closing_tag(xml, boundaries.items, 0);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
+
+    var it = obj.children();
+    const bad = it.next().?;
+    try std.testing.expectEqualStrings("VoltageLevel.BaseVoltage", bad.name);
+    try std.testing.expect(bad.malformed_resource);
+    // Reported as a property so tolerant walks treat it as "not a reference".
+    try std.testing.expectEqual(tag_index.Child.Kind.property, bad.kind);
+
+    // Asked for by name: loud.
+    try std.testing.expectError(error.MalformedTag, obj.getReference("VoltageLevel.BaseVoltage"));
+    try std.testing.expectError(error.MalformedTag, obj.getReferences(.{"VoltageLevel.BaseVoltage"}));
+
+    // Not asked for: the malformed child must not poison an unrelated query.
+    try std.testing.expectEqualStrings("VL", (try obj.getProperty("VoltageLevel.name")).?);
+    try std.testing.expect((try obj.getReference("VoltageLevel.Substation")) == null);
+
+    // Tolerant walks drop it rather than failing the whole object.
+    var refs = try obj.getAllReferences(gpa);
+    defer refs.deinit();
+    try std.testing.expectEqual(@as(u32, 0), refs.count());
 }

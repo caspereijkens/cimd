@@ -521,18 +521,19 @@ fn append_metadata_model(
     var profiles: std.ArrayListUnmanaged(iidm.ModelProfile) = .empty;
     var dependent_on: std.ArrayListUnmanaged(iidm.DependentOnModel) = .empty;
     var subset: []const u8 = "UNKNOWN";
-    for (view.boundaries[view.object_tag_idx + 1 .. view.closing_tag_idx], view.object_tag_idx + 1..) |tag, ti| {
-        if (view.xml[tag.start + 1] == '/') continue; // skip closing tags
-        const is_self_closing = view.xml[tag.end - 1] == '/';
-        const tag_type = tag_index.extract_tag_type(view.xml, tag.start) catch continue;
-        if (std.mem.eql(u8, tag_type, "Model.profile") and !is_self_closing) {
-            const content = view.xml[tag.end + 1 .. view.boundaries[ti + 1].start];
-            try profiles.append(gpa, .{ .content = content });
-            const s = profile_to_subset(content);
+    // A header can repeat both of these, so this walks children rather than
+    // asking for properties by name -- getAllProperties would keep only the
+    // last Model.profile.
+    var it = view.children();
+    while (it.next()) |child| {
+        if (child.kind == .property and !child.self_closing and
+            std.mem.eql(u8, child.name, "Model.profile"))
+        {
+            try profiles.append(gpa, .{ .content = child.value });
+            const s = profile_to_subset(child.value);
             if (!std.mem.eql(u8, s, "UNKNOWN")) subset = s;
-        } else if (std.mem.eql(u8, tag_type, "Model.DependentOn")) {
-            const ref = tag_index.extract_rdf_resource(view.xml, tag.start) catch continue;
-            if (ref) |r| try dependent_on.append(gpa, .{ .content = r });
+        } else if (child.kind == .reference and std.mem.eql(u8, child.name, "Model.DependentOn")) {
+            try dependent_on.append(gpa, .{ .content = child.value });
         }
     }
     try metadata_models.append(gpa, .{

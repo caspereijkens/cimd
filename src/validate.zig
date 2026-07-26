@@ -603,20 +603,12 @@ const ReferrerCounts = struct {
         const model = ids.model;
         assert(rc.properties.len > 0);
         assert(rc.counts.len == rc.properties.len * model.objects.len);
-        const xml = model.xml;
         for (model.objects) |obj| {
-            const view = model.view(obj);
-            var i = view.object_tag_idx + 1;
-            while (i < view.closing_tag_idx) : (i += 1) {
-                const tag = model.boundaries[i];
-                if (xml[tag.start + 1] == '/') continue;
-                if (xml[tag.start + 1] == '!' or xml[tag.start + 1] == '?') continue;
-                const tag_type = tag_index.extract_tag_type(xml, tag.start) catch continue;
-                const property_index = index_sorted(rc.properties, tag_type) orelse continue;
-                const reference =
-                    tag_index.extract_rdf_resource_within(xml, tag.start, tag.end) catch null;
-                const ref = reference orelse continue;
-                const target = ids.get(reference_local(ref)) orelse continue;
+            var it = model.view(obj).children();
+            while (it.next()) |child| {
+                if (child.kind != .reference) continue;
+                const property_index = index_sorted(rc.properties, child.name) orelse continue;
+                const target = ids.get(reference_local(child.value)) orelse continue;
                 rc.counts[property_index * rc.object_count + target] += 1;
             }
         }

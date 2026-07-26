@@ -116,42 +116,20 @@ fn tp_object_view(tp: TP, obj: tag_index.CimObject) tag_index.CimObjectView {
 const Layer = enum { ssh, tp, eq };
 
 /// The child-tag span of one object (or patch), as (xml, boundaries, range).
+/// A patch is an element inside a document `refs` does not own, so there is no
+/// view to hand around -- only the span.
 const RefRange = struct {
     xml: []const u8,
     boundaries: []const tag_index.TagBoundary,
     open_idx: u32,
     close_idx: u32,
-};
 
-/// Streams (reference_name, raw_resource) for each rdf:resource child tag in a
-/// range, tolerating comments/PIs and malformed tags. Unlike a name→value map,
-/// it preserves repeated same-name tags, so multi-valued associations keep
-/// every reverse edge.
-const ReferenceTagIterator = struct {
-    range: RefRange,
-    i: u32,
-
-    const Entry = struct { name: []const u8, resource: []const u8 };
-
-    fn init(range: RefRange) ReferenceTagIterator {
-        assert(range.close_idx >= range.open_idx);
-        return .{ .range = range, .i = range.open_idx + 1 };
-    }
-
-    fn next(self: *ReferenceTagIterator) ?Entry {
-        const xml = self.range.xml;
-        while (self.i < self.range.close_idx) {
-            const tag = self.range.boundaries[self.i];
-            self.i += 1;
-            if (xml[tag.start + 1] == '/') continue;
-            // A comment (<!--) or PI (<?) carrying rdf:resource="#_A" is not a
-            // reference; skip it as getAllProperties does.
-            if (xml[tag.start + 1] == '!' or xml[tag.start + 1] == '?') continue;
-            const resource = (tag_index.extract_rdf_resource_within(xml, tag.start, tag.end) catch continue) orelse continue;
-            const name = tag_index.extract_tag_type(xml, tag.start) catch continue;
-            return .{ .name = name, .resource = resource };
-        }
-        return null;
+    /// Walk the range's children. Reference edges are the ones with
+    /// `kind == .reference`; iterating children rather than a name→value map
+    /// preserves repeated same-name tags, so multi-valued associations keep
+    /// every reverse edge.
+    fn children(self: RefRange) tag_index.ChildIterator {
+        return tag_index.ChildIterator.init_range(self.xml, self.boundaries, self.open_idx, self.close_idx);
     }
 };
 
@@ -226,9 +204,10 @@ fn record_owners(
     layer: Layer,
     range: RefRange,
 ) !void {
-    var it = ReferenceTagIterator.init(range);
-    while (it.next()) |ref| {
-        const gop = try owner.getOrPut(gpa, ref.name);
+    var it = range.children();
+    while (it.next()) |child| {
+        if (child.kind != .reference) continue;
+        const gop = try owner.getOrPut(gpa, child.name);
         if (!gop.found_existing) gop.value_ptr.* = layer;
     }
 }
@@ -245,15 +224,16 @@ fn stream_edges(
     owner: ?*const std.StringHashMapUnmanaged(Layer),
     layer: Layer,
 ) !void {
-    var it = ReferenceTagIterator.init(range);
-    while (it.next()) |ref| {
-        if (owner) |o| if (o.get(ref.name).? != layer) continue;
-        const target = ids.strip_hash(ref.resource);
+    var it = range.children();
+    while (it.next()) |child| {
+        if (child.kind != .reference) continue;
+        if (owner) |o| if (o.get(child.name).? != layer) continue;
+        const target = ids.strip_hash(child.value);
         if (target.len == 0) continue;
         try sink.emit(gpa, target, .{
             .referrer_id = referrer_id,
             .referrer_type = referrer_type,
-            .reference_name = ref.name,
+            .reference_name = child.name,
         });
     }
 }
