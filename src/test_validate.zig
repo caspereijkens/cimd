@@ -503,3 +503,71 @@ test "the QoCDC constant table reaches users as value and unit" {
         rules.constraints[0].message,
     );
 }
+
+test "name interning: rule names absent from the document match no child" {
+    const gpa = testing.allocator;
+
+    // Every rule path below except IdentifiedObject.name is a name this
+    // document never uses, so it interns to NameTable.absent. Absent must
+    // behave exactly like "no such child": vacuous where a value is required,
+    // firing where presence is required. A commented-out child must not
+    // register either, in the closed-shape scan or the cardinality counts.
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_b1">
+        \\    <cim:IdentifiedObject.name>B1</cim:IdentifiedObject.name>
+        \\    <!-- <cim:Switch.absentHere>9</cim:Switch.absentHere> -->
+        \\  </cim:Breaker>
+        \\</rdf:RDF>
+    ;
+    const rules_source =
+        \\@prefix sh:  <http://www.w3.org/ns/shacl#> .
+        \\@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        \\@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        \\@prefix cim: <https://cim.ucaiug.io/ns#> .
+        \\@prefix ex:  <http://example.org/rules#> .
+        \\ex:Absent a sh:NodeShape ;
+        \\    sh:targetClass cim:Breaker ;
+        \\    sh:property [ sh:path cim:Switch.absentHere ; sh:minCount 1 ;
+        \\                  sh:name "absent-min" ; sh:message "m" ] ;
+        \\    sh:property [ sh:path cim:Switch.absentHere ; sh:maxCount 0 ;
+        \\                  sh:name "absent-max" ; sh:message "m" ] ;
+        \\    sh:property [ sh:path cim:Switch.absentHere ; sh:datatype xsd:float ;
+        \\                  sh:name "absent-datatype" ; sh:message "m" ] ;
+        \\    sh:property [ sh:path cim:IdentifiedObject.name ; sh:minCount 1 ;
+        \\                  sh:name "present-min" ; sh:message "m" ] .
+        \\# Closed shape whose allowed set is entirely absent from the document,
+        \\# plus the one name that is present.
+        \\ex:Closed a sh:NodeShape ;
+        \\    sh:targetClass cim:Breaker ;
+        \\    sh:closed true ;
+        \\    sh:name "closed-absent" ;
+        \\    sh:message "m" ;
+        \\    sh:property [ sh:path cim:Switch.absentHere ] ;
+        \\    sh:property [ sh:path cim:IdentifiedObject.name ] .
+    ;
+
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+    var rules = try RuleSet.load(gpa, try gpa.dupe(u8, rules_source), "fixture.ttl", &.{}, null);
+    defer rules.deinit(gpa);
+    var evaluation = try validate.evaluate(gpa, &model, &rules);
+    defer evaluation.deinit(gpa);
+
+    var absent_min: u32 = 0;
+    var others: u32 = 0;
+    for (evaluation.violations.items) |violation| {
+        const rule_name = if (violation.constraint == validate.constraint_none)
+            rules.shapes[violation.shape].name
+        else
+            rules.constraints[violation.constraint].name;
+        if (std.mem.eql(u8, rule_name, "absent-min")) absent_min += 1 else others += 1;
+    }
+
+    // minCount 1 on an absent name fires once, for _b1.
+    try testing.expectEqual(@as(u32, 1), absent_min);
+    // maxCount 0 and the datatype check are vacuous; the present name
+    // satisfies its minCount; and the comment is neither a closed-shape
+    // violation nor a value for Switch.absentHere.
+    try testing.expectEqual(@as(u32, 0), others);
+}

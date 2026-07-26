@@ -132,6 +132,9 @@ pub fn evaluate_with_limit(
     var referrers = try ReferrerCounts.build(gpa, &ids, rules);
     defer referrers.deinit(gpa);
 
+    var names = try NameTable.build(gpa, model);
+    defer names.deinit(gpa);
+
     var evaluator = Evaluator{
         .gpa = gpa,
         .model = model,
@@ -139,17 +142,111 @@ pub fn evaluate_with_limit(
         .evaluation = &evaluation,
         .ids = &ids,
         .referrers = &referrers,
+        .names = &names,
         .stored_max = stored_max,
         .counts = .empty,
         .staged = .empty,
+        .path_ids = .empty,
+        .allowed_ids = .empty,
+        .subjects_id = NameTable.absent,
     };
     defer evaluator.counts.deinit(gpa);
     defer evaluator.staged.deinit(gpa);
+    defer evaluator.path_ids.deinit(gpa);
+    defer evaluator.allowed_ids.deinit(gpa);
 
     for (rules.shapes, 0..) |shape, shape_index| {
         try evaluator.evaluate_shape(@intCast(shape_index), shape);
     }
     return evaluation;
+}
+
+/// Child-tag names interned to integer ids once per document, so the
+/// shape x object x child x constraint loop compares integers instead of
+/// re-deriving and re-comparing strings. Measured 8.70 s -> 1.91 s on a 300 MB
+/// EQ file against 825 shapes, with a byte-identical report; see
+/// docs/CIM_DESIGN_REVIEW.md.
+///
+/// The id domain is the document: ids are assigned in first-seen boundary
+/// order by one table per parse, and every string compared against a child --
+/// rule paths, closed-path sets, shape targets -- is mapped into that domain
+/// once, up front. The table itself is owned by the validation run and freed
+/// with it; parsing does not pay for it. When the parse-time child table of
+/// the design review lands, `of_boundary` is what its `name_and_kind` field
+/// replaces.
+const NameTable = struct {
+    /// Interned id per boundary index; `none` for closing tags, comments,
+    /// PIs, and tags whose name cannot be extracted.
+    of_boundary: []u32,
+    /// id → name, for violation detail text. Index 0 is unused.
+    strings: std.ArrayList([]const u8),
+    map: std.StringHashMap(u32),
+
+    /// Not a named child tag; skipped by the scan.
+    const none: u32 = 0;
+    /// A rule-set name that does not occur in this document. Distinct from
+    /// every real id, so it matches no child -- which is exactly the
+    /// document-scoped interning contract: rule strings are mapped into the
+    /// document's id space once, and unknown names get a sentinel that can
+    /// never compare equal.
+    const absent: u32 = std.math.maxInt(u32);
+
+    fn build(gpa: std.mem.Allocator, model: *const CimDocument) !NameTable {
+        var of_boundary = try gpa.alloc(u32, model.boundaries.len);
+        errdefer gpa.free(of_boundary);
+        var strings: std.ArrayList([]const u8) = .empty;
+        errdefer strings.deinit(gpa);
+        try strings.append(gpa, "");
+        var map = std.StringHashMap(u32).init(gpa);
+        errdefer map.deinit();
+
+        const xml = model.xml;
+        for (model.boundaries, 0..) |tag, i| {
+            if (!tag_index.is_element_open_tag(xml, tag)) {
+                of_boundary[i] = none;
+                continue;
+            }
+            const name = tag_index.extract_tag_type(xml, tag.start) catch {
+                of_boundary[i] = none;
+                continue;
+            };
+            const gop = try map.getOrPut(name);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = @intCast(strings.items.len);
+                try strings.append(gpa, name);
+            }
+            of_boundary[i] = gop.value_ptr.*;
+        }
+        assert(strings.items.len == map.count() + 1);
+        // No real id can collide with `absent`: every boundary spans at least
+        // "<>", so ids are bounded by xml.len / 2, and xml.len is bounded by
+        // io.read.max_in_memory_input_bytes == maxInt(u32).
+        assert(strings.items.len < absent);
+        return .{ .of_boundary = of_boundary, .strings = strings, .map = map };
+    }
+
+    fn deinit(self: *NameTable, gpa: std.mem.Allocator) void {
+        gpa.free(self.of_boundary);
+        self.strings.deinit(gpa);
+        self.map.deinit();
+    }
+
+    fn id_of(self: *const NameTable, name: []const u8) u32 {
+        return self.map.get(name) orelse absent;
+    }
+};
+
+/// Membership in a sorted id list. `NameTable.absent` entries sort to the end
+/// and are inert: no child's id is ever `absent`, so a closed-path name the
+/// document never uses can never match.
+fn contains_sorted_u32(haystack: []const u32, needle: u32) bool {
+    var low: usize = 0;
+    var high: usize = haystack.len;
+    while (low < high) {
+        const mid = low + (high - low) / 2;
+        if (haystack[mid] < needle) low = mid + 1 else high = mid;
+    }
+    return low < haystack.len and haystack[low] == needle;
 }
 
 /// Object lookup by the local (hash-stripped) form of an id. EQ stores ids
@@ -214,7 +311,17 @@ const Evaluator = struct {
     evaluation: *Evaluation,
     ids: *const IdIndex,
     referrers: *const ReferrerCounts,
+    names: *const NameTable,
     stored_max: u32,
+    /// The active shape's rule strings, mapped into the document's name-id
+    /// space once per shape so the inner loops compare u32s. Rebuilt by
+    /// `evaluate_shape`; `NameTable.absent` for a name this document never
+    /// uses, and for path kinds that do not name a child tag.
+    path_ids: std.ArrayList(u32),
+    /// The active shape's closed-path set as ids, sorted for binary search.
+    allowed_ids: std.ArrayList(u32),
+    /// The active shape's `subjects_of` target property as an id.
+    subjects_id: u32,
     /// Per-constraint occurrence counts, reset per object.
     counts: std.ArrayList(u32),
     /// Violations of the object under evaluation; committed only when the
@@ -231,6 +338,25 @@ const Evaluator = struct {
     fn evaluate_shape(ev: *Evaluator, shape_index: u32, shape: RuleSet.Shape) !void {
         const constraints = ev.constraints_of(shape);
         try ev.counts.resize(ev.gpa, constraints.len);
+
+        // Intern this shape's rule strings once per shape, rather than
+        // comparing them as strings once per (object, child, constraint).
+        try ev.path_ids.resize(ev.gpa, constraints.len);
+        for (constraints, 0..) |constraint, i| {
+            ev.path_ids.items[i] = switch (constraint.path_kind) {
+                .direct, .ref_type => ev.names.id_of(constraint.path),
+                .own_type, .inverse => NameTable.absent,
+            };
+        }
+        const allowed = ev.rules.closed_paths_of(shape);
+        try ev.allowed_ids.resize(ev.gpa, allowed.len);
+        for (allowed, 0..) |path, i| ev.allowed_ids.items[i] = ev.names.id_of(path);
+        std.mem.sort(u32, ev.allowed_ids.items, {}, std.sort.asc(u32));
+        ev.subjects_id = switch (shape.target) {
+            .subjects_of => |property| ev.names.id_of(property),
+            else => NameTable.absent,
+        };
+
         switch (shape.target) {
             .class => |class_name| {
                 // Subtype targeting: a shape on ConductingEquipment applies
@@ -316,34 +442,31 @@ const Evaluator = struct {
         view: CimObjectView,
         matched: *bool,
     ) !void {
-        const xml = ev.model.xml;
-        const allowed = ev.rules.closed_paths_of(shape);
+        const allowed_ids = ev.allowed_ids.items;
 
         var i = view.object_tag_idx + 1;
         while (i < view.closing_tag_idx) : (i += 1) {
-            const tag = ev.model.boundaries[i];
-            if (xml[tag.start + 1] == '/') continue;
-            if (xml[tag.start + 1] == '!' or xml[tag.start + 1] == '?') continue;
-            const tag_type = tag_index.extract_tag_type(xml, tag.start) catch continue;
+            // One array read replaces the lead-byte probes and
+            // extract_tag_type: `none` covers closing tags, comments, PIs and
+            // unparseable names, exactly as tag_index.is_element_open_tag does.
+            const name_id = ev.names.of_boundary[i];
+            if (name_id == NameTable.none) continue;
 
             if (shape.target == .subjects_of) {
-                if (std.mem.eql(u8, tag_type, shape.target.subjects_of)) matched.* = true;
+                if (name_id == ev.subjects_id) matched.* = true;
             }
             if (shape.closed_paths != null) {
                 // Property-not-in-profile: every child tag must be in the
                 // allowed set.
-                if (!contains_sorted(allowed, tag_type)) {
-                    try ev.stage(shape_index, constraint_none, view, tag_type);
+                if (!contains_sorted_u32(allowed_ids, name_id)) {
+                    try ev.stage(shape_index, constraint_none, view, ev.names.strings.items[name_id]);
                 }
             }
             // The value is extracted at most once per child tag, and only
             // when some constraint actually needs it.
             var value: ?Value = null;
             for (constraints, 0..) |constraint, ci| {
-                const on_this_tag = switch (constraint.path_kind) {
-                    .direct, .ref_type => std.mem.eql(u8, constraint.path, tag_type),
-                    .own_type, .inverse => false,
-                };
+                const on_this_tag = ev.path_ids.items[ci] == name_id;
                 if (!on_this_tag) continue;
                 if (value == null) value = ev.child_value(i);
                 // Violations carry the global index into rules.constraints.
