@@ -328,7 +328,7 @@ pub const CimDocument = struct {
 
 fn extract_attribute_from_tag(xml: []const u8, tag: TagBoundary, comptime pattern: []const u8) ?[]const u8 {
     const tag_content = xml[tag.start..tag.end];
-    const pattern_offset = std.mem.indexOf(u8, tag_content, pattern) orelse return null;
+    const pattern_offset = tag_index.find_needle_anchored(tag_content, pattern) orelse return null;
     const value_start = tag.start + pattern_offset + pattern.len;
     const value_end = std.mem.indexOfScalarPos(u8, xml, value_start, '"') orelse return null;
     if (value_end >= tag.end) return null;

@@ -2556,3 +2556,51 @@ test "tag_index.CimObject - getReferences on self-closing tag returns all null" 
     try std.testing.expect(refs[0] == null);
     try std.testing.expect(refs[1] == null);
 }
+
+test "tag_index.find_needle_anchored - matches std.mem.indexOf, including false anchors" {
+    const needle = "rdf:ID=\"";
+    const cases = [_][]const u8{
+        // Plain hit, hit at offset 0, hit at the very end of the haystack.
+        "<cim:Substation rdf:ID=\"_SS1\">",
+        "rdf:ID=\"_a\">",
+        "<cim:X rdf:ID=\"",
+        // False anchors on 'r' before the real match -- the case a naive
+        // anchored scan gets wrong by giving up at the first candidate.
+        "<cim:X r rdf:ID=\"_a\">",
+        "<cim:X rdf: rdf:ID=\"_a\">",
+        "<cim:X rdf:IDx=\"1\" rdf:ID=\"_a\">",
+        "rrrrrrdf:ID=\"_a\">",
+        // No match at all, including a truncated needle at the end.
+        "<cim:X rdf:about=\"#_a\"/>",
+        "<cim:X rdf:ID=",
+        "rdf",
+        "",
+    };
+    for (cases) |haystack| {
+        try std.testing.expectEqual(
+            std.mem.indexOf(u8, haystack, needle),
+            tag_index.find_needle_anchored(haystack, needle),
+        );
+    }
+}
+
+test "tag_index.index_of_any_pos_table - matches std.mem.indexOfAnyPos" {
+    const set = " \t\r\n>/";
+    const cases = [_][]const u8{
+        "<cim:Substation rdf:ID=\"_SS1\">",
+        "<cim:X/>",
+        "<rdf:RDF\n  xmlns=\"x\">",
+        "cim:NoTerminatorHere",
+        ">",
+        "",
+    };
+    for (cases) |haystack| {
+        var start: usize = 0;
+        while (start <= haystack.len) : (start += 1) {
+            try std.testing.expectEqual(
+                std.mem.indexOfAnyPos(u8, haystack, start, set),
+                tag_index.index_of_any_pos_table(haystack, start, set),
+            );
+        }
+    }
+}

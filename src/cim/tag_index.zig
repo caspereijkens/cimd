@@ -94,6 +94,48 @@ pub const PatternMatch = struct {
     value_len: u32,
 };
 
+/// Find `needle` in `haystack`, anchored on its first byte.
+///
+/// `std.mem.indexOf` dispatches to Boyer-Moore-Horspool once the haystack
+/// exceeds 52 bytes, and builds a 256-entry skip table *per call*. An XML tag
+/// is around 80 bytes, so every attribute lookup paid for a table it then used
+/// for a handful of comparisons: 69 ns against 9.6 ns for this scan, measured
+/// on one 78-byte tag. Anchoring on the needle's first byte keeps the inner
+/// `eql` rare, since every pattern here starts with the 'r' of "rdf:".
+///
+/// The needle is comptime so the length is known at the compare.
+pub fn find_needle_anchored(haystack: []const u8, comptime needle: []const u8) ?usize {
+    comptime assert(needle.len > 0);
+    if (haystack.len < needle.len) return null;
+
+    // Only positions where the whole needle still fits are candidates.
+    const limit = haystack.len - needle.len;
+    var i: usize = 0;
+    while (i <= limit) {
+        const hit = std.mem.indexOfScalarPos(u8, haystack[0 .. limit + 1], i, needle[0]) orelse
+            return null;
+        if (std.mem.eql(u8, haystack[hit..][0..needle.len], needle)) return hit;
+        i = hit + 1;
+    }
+    return null;
+}
+
+/// First byte at or after `start` that belongs to `set`, via a comptime lookup
+/// table. `std.mem.indexOfAnyPos` is a scalar loop over the needle set, so it
+/// costs one compare per (byte x set member); this costs one load per byte.
+pub fn index_of_any_pos_table(haystack: []const u8, start: usize, comptime set: []const u8) ?usize {
+    const table = comptime blk: {
+        var t = [_]bool{false} ** 256;
+        for (set) |c| t[c] = true;
+        break :blk t;
+    };
+    var i: usize = start;
+    while (i < haystack.len) : (i += 1) {
+        if (table[haystack[i]]) return i;
+    }
+    return null;
+}
+
 /// Verify needle at position and extract quoted value if match found
 /// Returns PatternMatch if pattern matches and closing quote is found, null otherwise
 pub fn verify_and_extract_pattern(
@@ -297,7 +339,7 @@ pub fn find_tag_boundaries(
 /// correctly. Scan stays bounded to a single tag at the call sites.
 pub fn extract_tag_type(slice: []const u8, start_idx: u32) error{MalformedTag}![]const u8 {
     const colon_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, ':') orelse return error.MalformedTag;
-    const end_idx = std.mem.indexOfAnyPos(u8, slice, colon_idx, " \t\r\n>/") orelse return error.MalformedTag;
+    const end_idx = index_of_any_pos_table(slice, colon_idx, " \t\r\n>/") orelse return error.MalformedTag;
     return slice[colon_idx + 1 .. end_idx];
 }
 
@@ -311,7 +353,7 @@ pub fn extract_rdf_id(slice: []const u8, start_idx: u32) error{ NoRdfId, Malform
     const pattern = "rdf:ID=\"";
 
     const tag_content = slice[start_idx..gt_idx];
-    const pattern_offset = std.mem.indexOf(u8, tag_content, pattern) orelse return error.NoRdfId;
+    const pattern_offset = find_needle_anchored(tag_content, pattern) orelse return error.NoRdfId;
     const pattern_start_idx = start_idx + pattern_offset;
 
     const value_start_idx = pattern_start_idx + pattern.len;
@@ -333,7 +375,7 @@ pub fn extract_rdf_about(slice: []const u8, start_idx: u32) error{ NoRdfAbout, M
     const pattern = "rdf:about=\"";
 
     const tag_content = slice[start_idx..gt_idx];
-    const pattern_offset = std.mem.indexOf(u8, tag_content, pattern) orelse return error.NoRdfAbout;
+    const pattern_offset = find_needle_anchored(tag_content, pattern) orelse return error.NoRdfAbout;
     const pattern_start_idx = start_idx + pattern_offset;
 
     const value_start_idx = pattern_start_idx + pattern.len;
@@ -361,7 +403,7 @@ pub fn extract_rdf_resource_within(
     const pattern = "rdf:resource=\"";
 
     const tag_content = slice[start_idx..end_idx];
-    const pattern_offset = std.mem.indexOf(u8, tag_content, pattern) orelse return null;
+    const pattern_offset = find_needle_anchored(tag_content, pattern) orelse return null;
     const pattern_start_idx = start_idx + pattern_offset;
 
     const value_start_idx = pattern_start_idx + pattern.len;
