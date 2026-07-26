@@ -45,6 +45,13 @@ pub const CimObjectView = @import("tag_index.zig").CimObjectView;
 pub const TagBoundary = @import("tag_index.zig").TagBoundary;
 pub const Diagnostics = @import("diagnostics.zig").Diagnostics;
 
+/// Opt-in index over a document's children: interned names, precomputed kinds
+/// and value spans. For consumers that walk the same object many times -- SHACL
+/// validation walks it once per shape -- where re-parsing through
+/// `view.children()` dominates. Built and owned by the run that wants it, so
+/// commands that read each child once do not pay for it. See child_table.zig.
+pub const ChildTable = @import("child_table.zig").ChildTable;
+
 /// Raw tag scanning: boundaries, tag types, rdf attribute extraction. The
 /// layer under CimDocument, exposed because callers legitimately scan XML that
 /// is not a CIM document -- the CIM type-table generator reads RDFS schema

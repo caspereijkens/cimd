@@ -815,6 +815,13 @@ pub const CimObjectView = struct {
         return self.xml[start .. end + 1];
     }
 
+    /// Byte offset of the object's opening '<' in the document, for source
+    /// positions in diagnostics and reports. Exposed so a caller that only wants
+    /// "where is this object" does not have to index `boundaries` to get it.
+    pub fn xml_offset(self: CimObjectView) u32 {
+        return self.boundaries[self.object_tag_idx].start;
+    }
+
     /// Get a text property value by name.
     pub fn getProperty(self: CimObjectView, property_name: []const u8) error{MalformedTag}!?[]const u8 {
         return get_property_from_indices(self.xml, self.boundaries, self.object_tag_idx, self.closing_tag_idx, property_name);

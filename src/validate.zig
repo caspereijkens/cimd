@@ -16,6 +16,7 @@ const cim = @import("cim/cim.zig");
 const assert = std.debug.assert;
 const CimDocument = cim.CimDocument;
 const CimObjectView = cim.CimObjectView;
+const ChildTable = cim.ChildTable;
 const tag_index = cim.tag_index;
 const cim_types = cim.cim_types;
 const rule_set_mod = @import("shacl/rule_set.zig");
@@ -132,8 +133,12 @@ pub fn evaluate_with_limit(
     var referrers = try ReferrerCounts.build(gpa, &ids, rules);
     defer referrers.deinit(gpa);
 
-    var names = try NameTable.build(gpa, model);
-    defer names.deinit(gpa);
+    // Interned child names, kinds and value spans, built once for the run. The
+    // shape x object x child x constraint loop below compares u32 ids instead of
+    // re-deriving and re-comparing strings; see cim/child_table.zig for why this
+    // is opt-in rather than part of the parse.
+    var children = try ChildTable.build(gpa, model);
+    defer children.deinit(gpa);
 
     var evaluator = Evaluator{
         .gpa = gpa,
@@ -142,13 +147,13 @@ pub fn evaluate_with_limit(
         .evaluation = &evaluation,
         .ids = &ids,
         .referrers = &referrers,
-        .names = &names,
+        .children = &children,
         .stored_max = stored_max,
         .counts = .empty,
         .staged = .empty,
         .path_ids = .empty,
         .allowed_ids = .empty,
-        .subjects_id = NameTable.absent,
+        .subjects_id = ChildTable.absent,
     };
     defer evaluator.counts.deinit(gpa);
     defer evaluator.staged.deinit(gpa);
@@ -161,82 +166,7 @@ pub fn evaluate_with_limit(
     return evaluation;
 }
 
-/// Child-tag names interned to integer ids once per document, so the
-/// shape x object x child x constraint loop compares integers instead of
-/// re-deriving and re-comparing strings. Measured 8.70 s -> 1.91 s on a 300 MB
-/// EQ file against 825 shapes, with a byte-identical report; see
-/// docs/CIM_DESIGN_REVIEW.md.
-///
-/// The id domain is the document: ids are assigned in first-seen boundary
-/// order by one table per parse, and every string compared against a child --
-/// rule paths, closed-path sets, shape targets -- is mapped into that domain
-/// once, up front. The table itself is owned by the validation run and freed
-/// with it; parsing does not pay for it. When the parse-time child table of
-/// the design review lands, `of_boundary` is what its `name_and_kind` field
-/// replaces.
-const NameTable = struct {
-    /// Interned id per boundary index; `none` for closing tags, comments,
-    /// PIs, and tags whose name cannot be extracted.
-    of_boundary: []u32,
-    /// id → name, for violation detail text. Index 0 is unused.
-    strings: std.ArrayList([]const u8),
-    map: std.StringHashMap(u32),
-
-    /// Not a named child tag; skipped by the scan.
-    const none: u32 = 0;
-    /// A rule-set name that does not occur in this document. Distinct from
-    /// every real id, so it matches no child -- which is exactly the
-    /// document-scoped interning contract: rule strings are mapped into the
-    /// document's id space once, and unknown names get a sentinel that can
-    /// never compare equal.
-    const absent: u32 = std.math.maxInt(u32);
-
-    fn build(gpa: std.mem.Allocator, model: *const CimDocument) !NameTable {
-        var of_boundary = try gpa.alloc(u32, model.boundaries.len);
-        errdefer gpa.free(of_boundary);
-        var strings: std.ArrayList([]const u8) = .empty;
-        errdefer strings.deinit(gpa);
-        try strings.append(gpa, "");
-        var map = std.StringHashMap(u32).init(gpa);
-        errdefer map.deinit();
-
-        const xml = model.xml;
-        for (model.boundaries, 0..) |tag, i| {
-            if (!tag_index.is_element_open_tag(xml, tag)) {
-                of_boundary[i] = none;
-                continue;
-            }
-            const name = tag_index.extract_tag_type(xml, tag.start) catch {
-                of_boundary[i] = none;
-                continue;
-            };
-            const gop = try map.getOrPut(name);
-            if (!gop.found_existing) {
-                gop.value_ptr.* = @intCast(strings.items.len);
-                try strings.append(gpa, name);
-            }
-            of_boundary[i] = gop.value_ptr.*;
-        }
-        assert(strings.items.len == map.count() + 1);
-        // No real id can collide with `absent`: every boundary spans at least
-        // "<>", so ids are bounded by xml.len / 2, and xml.len is bounded by
-        // io.read.max_in_memory_input_bytes == maxInt(u32).
-        assert(strings.items.len < absent);
-        return .{ .of_boundary = of_boundary, .strings = strings, .map = map };
-    }
-
-    fn deinit(self: *NameTable, gpa: std.mem.Allocator) void {
-        gpa.free(self.of_boundary);
-        self.strings.deinit(gpa);
-        self.map.deinit();
-    }
-
-    fn id_of(self: *const NameTable, name: []const u8) u32 {
-        return self.map.get(name) orelse absent;
-    }
-};
-
-/// Membership in a sorted id list. `NameTable.absent` entries sort to the end
+/// Membership in a sorted id list. `ChildTable.absent` entries sort to the end
 /// and are inert: no child's id is ever `absent`, so a closed-path name the
 /// document never uses can never match.
 fn contains_sorted_u32(haystack: []const u32, needle: u32) bool {
@@ -311,11 +241,11 @@ const Evaluator = struct {
     evaluation: *Evaluation,
     ids: *const IdIndex,
     referrers: *const ReferrerCounts,
-    names: *const NameTable,
+    children: *const ChildTable,
     stored_max: u32,
     /// The active shape's rule strings, mapped into the document's name-id
     /// space once per shape so the inner loops compare u32s. Rebuilt by
-    /// `evaluate_shape`; `NameTable.absent` for a name this document never
+    /// `evaluate_shape`; `ChildTable.absent` for a name this document never
     /// uses, and for path kinds that do not name a child tag.
     path_ids: std.ArrayList(u32),
     /// The active shape's closed-path set as ids, sorted for binary search.
@@ -344,17 +274,17 @@ const Evaluator = struct {
         try ev.path_ids.resize(ev.gpa, constraints.len);
         for (constraints, 0..) |constraint, i| {
             ev.path_ids.items[i] = switch (constraint.path_kind) {
-                .direct, .ref_type => ev.names.id_of(constraint.path),
-                .own_type, .inverse => NameTable.absent,
+                .direct, .ref_type => ev.children.id_of(constraint.path),
+                .own_type, .inverse => ChildTable.absent,
             };
         }
         const allowed = ev.rules.closed_paths_of(shape);
         try ev.allowed_ids.resize(ev.gpa, allowed.len);
-        for (allowed, 0..) |path, i| ev.allowed_ids.items[i] = ev.names.id_of(path);
+        for (allowed, 0..) |path, i| ev.allowed_ids.items[i] = ev.children.id_of(path);
         std.mem.sort(u32, ev.allowed_ids.items, {}, std.sort.asc(u32));
         ev.subjects_id = switch (shape.target) {
-            .subjects_of => |property| ev.names.id_of(property),
-            else => NameTable.absent,
+            .subjects_of => |property| ev.children.id_of(property),
+            else => ChildTable.absent,
         };
 
         switch (shape.target) {
@@ -403,7 +333,7 @@ const Evaluator = struct {
             // once the scan sees that child tag.
             .subjects_of => |property| std.mem.eql(u8, property, "rdf:type"),
         };
-        try ev.scan_children(shape_index, shape, constraints, view, &matched);
+        try ev.scan_children(shape_index, shape, constraints, view, object_index, &matched);
 
         for (constraints, 0..) |constraint, i| {
             // Violations carry the global index into rules.constraints.
@@ -440,17 +370,18 @@ const Evaluator = struct {
         shape: RuleSet.Shape,
         constraints: []const RuleSet.Constraint,
         view: CimObjectView,
+        object_index: u32,
         matched: *bool,
     ) !void {
         const allowed_ids = ev.allowed_ids.items;
+        const children = ev.children.children_of(object_index);
 
-        var i = view.object_tag_idx + 1;
-        while (i < view.closing_tag_idx) : (i += 1) {
-            // One array read replaces the lead-byte probes and
-            // extract_tag_type: `none` covers closing tags, comments, PIs and
-            // unparseable names, exactly as tag_index.is_element_open_tag does.
-            const name_id = ev.names.of_boundary[i];
-            if (name_id == NameTable.none) continue;
+        for (children.tags, 0..) |tag, ci_child| {
+            // Contiguous and already filtered: closing tags, comments, PIs and
+            // unparseable names are not in the table at all, so there is no
+            // per-entry skip test and no stride over boundaries that are not
+            // children.
+            const name_id = ChildTable.name_id(tag);
 
             if (shape.target == .subjects_of) {
                 if (name_id == ev.subjects_id) matched.* = true;
@@ -459,16 +390,17 @@ const Evaluator = struct {
                 // Property-not-in-profile: every child tag must be in the
                 // allowed set.
                 if (!contains_sorted_u32(allowed_ids, name_id)) {
-                    try ev.stage(shape_index, constraint_none, view, ev.names.strings.items[name_id]);
+                    try ev.stage(shape_index, constraint_none, view, ev.children.name_of(name_id));
                 }
             }
             // The value is extracted at most once per child tag, and only
-            // when some constraint actually needs it.
+            // when some constraint actually needs it -- which is why the spans
+            // live in a second array the hot scan above never touches.
             var value: ?Value = null;
             for (constraints, 0..) |constraint, ci| {
                 const on_this_tag = ev.path_ids.items[ci] == name_id;
                 if (!on_this_tag) continue;
-                if (value == null) value = ev.child_value(i);
+                if (value == null) value = ev.child_value(tag, children.spans[ci_child]);
                 // Violations carry the global index into rules.constraints.
                 const global: u32 = shape.constraints.start + @as(u32, @intCast(ci));
                 switch (constraint.path_kind) {
@@ -491,19 +423,19 @@ const Evaluator = struct {
     }
 
     /// The occurrence's value: rdf:resource references by target local
-    /// name, text content trimmed. In CIM XML references are self-closing
-    /// child tags; properties carry text up to their closing tag.
-    fn child_value(ev: *const Evaluator, boundary_index: u32) Value {
-        const xml = ev.model.xml;
-        const tag = ev.model.boundaries[boundary_index];
-        const reference = tag_index.extract_rdf_resource_within(xml, tag.start, tag.end) catch null;
-        if (reference) |ref| {
-            return .{ .comparable = reference_local(ref), .kind = .reference };
+    /// name, text content trimmed.
+    ///
+    /// The kind and the value span are both decided at table-build time, so what
+    /// used to be an `rdf:resource` scan plus a lead-byte probe per visit is now
+    /// a bit test and a slice. Trimming stays here rather than in the table
+    /// because the trimmed form is what *validation* compares; the table keeps
+    /// the value as `ChildIterator` defines it.
+    fn child_value(ev: *const Evaluator, tag: u32, span: ChildTable.Span) Value {
+        const raw = ev.children.value_of(span);
+        if (ChildTable.is_reference(tag)) {
+            return .{ .comparable = reference_local(raw), .kind = .reference };
         }
-        if (xml[tag.end - 1] == '/') return .{ .comparable = "", .kind = .text };
-        assert(boundary_index + 1 < ev.model.boundaries.len);
-        const content = xml[tag.end + 1 .. ev.model.boundaries[boundary_index + 1].start];
-        return .{ .comparable = std.mem.trim(u8, content, whitespace), .kind = .text };
+        return .{ .comparable = std.mem.trim(u8, raw, whitespace), .kind = .text };
     }
 
     fn resolve_reference_type(ev: *const Evaluator, value: Value) ?[]const u8 {
@@ -533,7 +465,7 @@ const Evaluator = struct {
         try ev.staged.append(ev.gpa, .{
             .shape = shape_index,
             .constraint = constraint_index,
-            .offset = ev.model.boundaries[view.object_tag_idx].start,
+            .offset = view.xml_offset(),
             .object_id = view.id,
             .detail = detail,
         });

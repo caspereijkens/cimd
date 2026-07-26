@@ -11,6 +11,7 @@ comptime {
     _ = @import("test_document.zig");
     _ = @import("test_ids.zig");
     _ = @import("test_tag_index.zig");
+    _ = @import("test_child_table.zig");
     _ = @import("test_diff.zig");
     _ = @import("test_eqdiff.zig");
     _ = @import("cim_types.zig");
