@@ -424,6 +424,24 @@ pub fn find_closing_tag(
     return result_idx;
 }
 
+/// True when a boundary is an element opening tag, i.e. a candidate child of the
+/// object being walked. False for closing tags, comments and processing
+/// instructions.
+///
+/// The comment case is load-bearing, not defensive: `find_tag_boundaries` emits
+/// a comment as one boundary spanning the whole `<!-- ... -->` section, so a
+/// commented-out child would otherwise be read as a live one. `extract_tag_type`
+/// also scans forward past the boundary for its ':', so an ordinary comment can
+/// take its name -- and a property walk its value -- from the following tag.
+///
+/// Every child walk must apply this; property walks additionally skip
+/// self-closing tags, which cannot carry a text value.
+pub inline fn is_element_open_tag(xml: []const u8, tag: TagBoundary) bool {
+    assert(tag.start + 1 < xml.len);
+    const c = xml[tag.start + 1];
+    return c != '/' and c != '!' and c != '?';
+}
+
 pub fn get_property_from_indices(
     xml: []const u8,
     boundaries: []const TagBoundary,
@@ -441,10 +459,8 @@ pub fn get_property_from_indices(
     if (closing_tag_idx == opening_tag_idx + 1) return null;
 
     for (boundaries[opening_tag_idx + 1 .. closing_tag_idx], opening_tag_idx + 1..) |tag, i| {
-        if (xml[tag.start + 1] == '/' or xml[tag.end - 1] == '/') {
-            // Skip closing and self-closing tags
-            continue;
-        }
+        // Skip closing, self-closing, comment and PI boundaries.
+        if (!is_element_open_tag(xml, tag) or xml[tag.end - 1] == '/') continue;
         const tag_type = extract_tag_type(xml, tag.start) catch continue;
         if (std.mem.eql(u8, tag_type, property_name)) {
             return xml[tag.end + 1 .. boundaries[i + 1].start];
@@ -470,10 +486,8 @@ pub fn get_reference_from_indices(
     if (closing_tag_idx == opening_tag_idx + 1) return null;
 
     for (boundaries[opening_tag_idx + 1 .. closing_tag_idx]) |tag| {
-        if (xml[tag.start + 1] == '/') {
-            // Skip closing tags
-            continue;
-        }
+        // Skip closing, comment and PI boundaries.
+        if (!is_element_open_tag(xml, tag)) continue;
         const tag_type = extract_tag_type(xml, tag.start) catch continue;
         if (std.mem.eql(u8, tag_type, property_name)) {
             return extract_rdf_resource_within(xml, tag.start, tag.end);
@@ -620,7 +634,7 @@ pub const CimObjectView = struct {
         var found_count: usize = 0;
 
         for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx], self.object_tag_idx + 1..) |tag, tag_idx| {
-            if (self.xml[tag.start + 1] == '/' or self.xml[tag.end - 1] == '/') continue;
+            if (!is_element_open_tag(self.xml, tag) or self.xml[tag.end - 1] == '/') continue;
 
             const tag_type = extract_tag_type(self.xml, tag.start) catch continue;
 
@@ -646,7 +660,7 @@ pub const CimObjectView = struct {
         var found_count: usize = 0;
 
         for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx]) |tag| {
-            if (self.xml[tag.start + 1] == '/') continue;
+            if (!is_element_open_tag(self.xml, tag)) continue;
 
             const tag_type = extract_tag_type(self.xml, tag.start) catch continue;
 
@@ -671,10 +685,7 @@ pub const CimObjectView = struct {
 
         for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx], self.object_tag_idx + 1..) |tag, i| {
             // In CIM XML, references are always self-closing; properties never are.
-            if (self.xml[tag.start + 1] == '/' or self.xml[tag.end - 1] == '/') continue;
-            // Tolerate comments (<!--), PIs (<?), and malformed tags so a stray
-            // comment inside an object can't abort the scan (cf. getAllReferences).
-            if (self.xml[tag.start + 1] == '!' or self.xml[tag.start + 1] == '?') continue;
+            if (!is_element_open_tag(self.xml, tag) or self.xml[tag.end - 1] == '/') continue;
             const tag_type = extract_tag_type(self.xml, tag.start) catch continue;
             const content = self.xml[tag.end + 1 .. self.boundaries[i + 1].start];
             try result.put(tag_type, content);
@@ -691,7 +702,7 @@ pub const CimObjectView = struct {
         if (self.closing_tag_idx == self.object_tag_idx) return result;
 
         for (self.boundaries[self.object_tag_idx + 1 .. self.closing_tag_idx]) |tag| {
-            if (self.xml[tag.start + 1] == '/') continue;
+            if (!is_element_open_tag(self.xml, tag)) continue;
 
             const tag_type = extract_tag_type(self.xml, tag.start) catch continue;
             const reference = extract_rdf_resource_within(self.xml, tag.start, tag.end) catch continue;

@@ -2315,6 +2315,81 @@ test "CimObject.getAllProperties - handles mixed properties and references" {
     try std.testing.expectEqualStrings("#_Node1", refs.get("Terminal.ConnectivityNode").?);
 }
 
+test "CimObject child walks - a commented-out child is not a live child" {
+    const gpa = std.testing.allocator;
+
+    // Every walk sees the comment as one boundary spanning `<!-- ... -->`.
+    // Reading it as an element yields a reference and a property that the
+    // document does not assert, and `extract_tag_type` on the bare comment
+    // takes its name from the tag that follows it.
+    const xml =
+        \\<cim:Terminal rdf:ID="_T1">
+        \\  <!-- <cim:Terminal.ConductingEquipment rdf:resource="#_Stale"/> -->
+        \\  <!-- <cim:IdentifiedObject.name>Stale</cim:IdentifiedObject.name> -->
+        \\  <!-- plain prose, no markup at all -->
+        \\  <cim:Terminal.ConnectivityNode rdf:resource="#_Node1"/>
+        \\  <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\</cim:Terminal>
+    ;
+
+    var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.find_closing_tag(xml, boundaries.items, 0);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
+
+    // getAllReferences / getAllProperties
+    var refs = try obj.getAllReferences(gpa);
+    defer refs.deinit();
+    try std.testing.expectEqual(1, refs.count());
+    try std.testing.expectEqualStrings("#_Node1", refs.get("Terminal.ConnectivityNode").?);
+    try std.testing.expect(refs.get("Terminal.ConductingEquipment") == null);
+
+    var props = try obj.getAllProperties(gpa);
+    defer props.deinit();
+    try std.testing.expectEqual(1, props.count());
+    try std.testing.expectEqualStrings("1", props.get("ACDCTerminal.sequenceNumber").?);
+    try std.testing.expect(props.get("IdentifiedObject.name") == null);
+
+    // Single-name lookups
+    try std.testing.expect(try obj.getReference("Terminal.ConductingEquipment") == null);
+    try std.testing.expect(try obj.getProperty("IdentifiedObject.name") == null);
+    try std.testing.expectEqualStrings("#_Node1", (try obj.getReference("Terminal.ConnectivityNode")).?);
+
+    // Batch lookups
+    const batch_refs = try obj.getReferences(.{ "Terminal.ConductingEquipment", "Terminal.ConnectivityNode" });
+    try std.testing.expect(batch_refs[0] == null);
+    try std.testing.expectEqualStrings("#_Node1", batch_refs[1].?);
+
+    const batch_props = try obj.getProperties(.{ "IdentifiedObject.name", "ACDCTerminal.sequenceNumber" });
+    try std.testing.expect(batch_props[0] == null);
+    try std.testing.expectEqualStrings("1", batch_props[1].?);
+}
+
+test "CimObject child walks - a PI inside an object is not a child" {
+    const gpa = std.testing.allocator;
+
+    const xml =
+        \\<cim:Terminal rdf:ID="_T1">
+        \\  <?cim:IdentifiedObject.name value="Stale"?>
+        \\  <cim:IdentifiedObject.name>Real</cim:IdentifiedObject.name>
+        \\</cim:Terminal>
+    ;
+
+    var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing = try tag_index.find_closing_tag(xml, boundaries.items, 0);
+    const obj = try make_cim_object(xml, boundaries.items, 0, closing);
+
+    try std.testing.expectEqualStrings("Real", (try obj.getProperty("IdentifiedObject.name")).?);
+
+    var props = try obj.getAllProperties(gpa);
+    defer props.deinit();
+    try std.testing.expectEqual(1, props.count());
+    try std.testing.expectEqualStrings("Real", props.get("IdentifiedObject.name").?);
+}
+
 test "tag_index.CimObject - getProperties batch matches individual getProperty" {
     const gpa = std.testing.allocator;
 
