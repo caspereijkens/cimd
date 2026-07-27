@@ -37,7 +37,7 @@ fn resolve_line_terminal(
     assert(terminal.id.len > 0);
 
     // Regular placement via placer.
-    if (try placer.resolve_terminal(terminal.id, terminal.conn_node_id)) |placement| {
+    if (try placer.resolve_terminal(terminal.id, terminal.conn_node_id, terminal.ordinal)) |placement| {
         return .{
             .voltage_level_id = placement.voltage_level.id,
             .node = placement.node,

@@ -42,19 +42,18 @@ pub const PlacementCache = std.StringHashMapUnmanaged(Placement);
 /// Returns null if the CN has no container, no matching VL, or no node assignment.
 /// Boundary CN endpoints (container = ACLineSegment, not in voltage_level_map) return null.
 pub fn resolve_terminal_placement(
-    terminal_id: []const u8,
+    terminal_ordinal: u32,
     conn_node_id: []const u8,
     index: *const CrossRef,
     topology: *const Topology,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
     node_map: *const resolve.NodeMap,
 ) ?Placement {
-    assert(terminal_id.len > 0);
     assert(conn_node_id.len > 0);
     const container_id = index.conn_node_container.get(conn_node_id) orelse return null;
     const repr_voltage_level_id = resolve.find_root(&topology.voltage_level_merge, container_id);
     const voltage_level = voltage_level_map.get(repr_voltage_level_id) orelse return null;
-    const node = node_map.get(terminal_id) orelse return null;
+    const node = node_map.get(terminal_ordinal) orelse return null;
     return .{ .repr_voltage_level_id = repr_voltage_level_id, .voltage_level = voltage_level, .node = node };
 }
 
@@ -82,12 +81,22 @@ pub const TerminalPlacer = struct {
         bus_map: *const bus_conv.BusMap,
     };
 
-    pub fn resolve_terminal(self: TerminalPlacer, terminal_id: []const u8, conn_node_id: ?[]const u8) !?Placement {
+    /// `terminal_ordinal` is null only where `conn_node_id` is too -- both come
+    /// from the same `TerminalInfo` or the same `terminal_conn_node` entry -- so
+    /// node-breaker's early return on a missing ordinal is the null the
+    /// `node_map` miss used to produce.
+    pub fn resolve_terminal(
+        self: TerminalPlacer,
+        terminal_id: []const u8,
+        conn_node_id: ?[]const u8,
+        terminal_ordinal: ?u32,
+    ) !?Placement {
         assert(terminal_id.len > 0);
         switch (self.mode) {
             .node_breaker => |node_map| {
                 const cn = conn_node_id orelse return null;
-                return resolve_terminal_placement(terminal_id, cn, self.index, self.topology, self.voltage_level_map, node_map);
+                const ordinal = terminal_ordinal orelse return null;
+                return resolve_terminal_placement(ordinal, cn, self.index, self.topology, self.voltage_level_map, node_map);
             },
             .bus_branch => |bb| {
                 const terminal_mrid = strip_underscore(terminal_id);
@@ -112,7 +121,7 @@ pub const TerminalPlacer = struct {
         const terminals = self.index.equipment_terminals.get(equipment_id) orelse return null;
         if (terminals.items.len == 0) return null;
         const term = terminals.items[0];
-        return self.resolve_terminal(term.id, term.conn_node_id);
+        return self.resolve_terminal(term.id, term.conn_node_id, term.ordinal);
     }
 };
 

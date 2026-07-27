@@ -865,9 +865,15 @@ fn resolve_end_placement(
 ) !?Placement {
     const terminal_ref = try end.getReference("TransformerEnd.Terminal") orelse return null;
     const terminal_id = strip_hash(terminal_ref);
-    // terminal_conn_node may be missing in bus-branch mode (no CN); placer handles that.
-    const conn_node_id = placer.index.terminal_conn_node.get(terminal_id);
-    return placer.resolve_terminal(terminal_id, conn_node_id);
+    // terminal_conn_node may be missing in bus-branch mode (no CN); placer handles
+    // that. One lookup yields both the CN and the ordinal, so the node comes out
+    // of NodeMap without hashing the id a second time.
+    const terminal_ref_info = placer.index.terminal_conn_node.get(terminal_id);
+    return placer.resolve_terminal(
+        terminal_id,
+        if (terminal_ref_info) |info| info.conn_node_id else null,
+        if (terminal_ref_info) |info| info.ordinal else null,
+    );
 }
 
 fn pre_allocate_transformers(

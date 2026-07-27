@@ -97,12 +97,59 @@ pub const TopologicalNode = struct {
     }
 };
 
-/// Maps terminal raw ID → IIDM node number within its VoltageLevel.
+/// Maps `TerminalInfo.ordinal` → IIDM node number within its VoltageLevel.
 /// All equipment (busbar sections, switches, generators, loads, etc.) looks up its
 /// terminal here to find its node number. BusbarSection and switch terminals map
 /// to the CN node. All other non-BusbarSection, non-switch terminals get a dedicated
 /// node with an internal connection back to the CN node.
-pub const NodeMap = std.StringHashMapUnmanaged(u32);
+///
+/// A dense array rather than a `StringHashMapUnmanaged(u32)` keyed on the raw id.
+/// Ordinals are assigned by `build_terminals` as it walks the Terminal objects, so
+/// every reader and writer already holds one and nothing has to be hashed. This was
+/// 294k of `convert`'s 882k string lookups, removed at no added cost.
+pub const NodeMap = struct {
+    /// One entry per Terminal; `unassigned` where no node was given out.
+    nodes: []u32,
+    assigned: u32,
+
+    /// Node numbers are per-VoltageLevel and small, so the top of the range is
+    /// free to mean "absent". `convert_fictitious_switches` separately rejects a
+    /// real node of `maxInt(u32)` as an overflow, so the two cannot be confused.
+    pub const unassigned: u32 = std.math.maxInt(u32);
+
+    pub const empty: NodeMap = .{ .nodes = &.{}, .assigned = 0 };
+
+    pub fn init(gpa: std.mem.Allocator, terminal_count: u32) !NodeMap {
+        const nodes = try gpa.alloc(u32, terminal_count);
+        @memset(nodes, unassigned);
+        return .{ .nodes = nodes, .assigned = 0 };
+    }
+
+    pub fn deinit(self: *NodeMap, gpa: std.mem.Allocator) void {
+        gpa.free(self.nodes);
+        self.* = .empty;
+    }
+
+    pub fn get(self: NodeMap, ordinal: u32) ?u32 {
+        assert(ordinal < self.nodes.len);
+        const node = self.nodes[ordinal];
+        return if (node == unassigned) null else node;
+    }
+
+    /// Last write wins, matching the `put` it replaces. `assigned` counts
+    /// distinct terminals given a node, not writes, so `count` still means what
+    /// the hash map's did.
+    pub fn put(self: *NodeMap, ordinal: u32, node: u32) void {
+        assert(ordinal < self.nodes.len);
+        assert(node != unassigned);
+        if (self.nodes[ordinal] == unassigned) self.assigned += 1;
+        self.nodes[ordinal] = node;
+    }
+
+    pub fn count(self: NodeMap) u32 {
+        return self.assigned;
+    }
+};
 
 pub fn is_switch_type(type_name: []const u8) bool {
     for (switch_types) |switch_type| {
@@ -295,8 +342,8 @@ pub fn build_reachable_busbar_section_index(gpa: std.mem.Allocator, model: *cons
         for (switches) |@"switch"| {
             const terminals = index.equipment_terminals.get(@"switch".id) orelse continue;
             if (terminals.items.len != 2) continue;
-            const conn_node0 = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
-            const conn_node1 = index.terminal_conn_node.get(terminals.items[1].id) orelse continue;
+            const conn_node0 = terminals.items[0].conn_node_id orelse continue;
+            const conn_node1 = terminals.items[1].conn_node_id orelse continue;
             if (!parent.contains(conn_node0)) continue;
             if (!parent.contains(conn_node1)) continue;
             union_smallest_id_wins(&parent, conn_node0, conn_node1);
@@ -384,7 +431,7 @@ fn count_non_switch_non_busbar_terminals(gpa: std.mem.Allocator, model: *const C
     try counts.ensureTotalCapacity(gpa, @intCast(index.terminal_conn_node.count()));
 
     for (model.get_objects_by_type("Terminal")) |terminal| {
-        const conn_node_id = index.terminal_conn_node.get(terminal.id) orelse continue;
+        const conn_node_id = (index.terminal_conn_node.get(terminal.id) orelse continue).conn_node_id;
         const equipment_id = index.terminal_equipment.get(terminal.id) orelse continue;
         const equipment = model.getObjectById(equipment_id) orelse continue;
         if (is_node_map_base_equipment_type(equipment.type_name)) continue;
@@ -429,7 +476,7 @@ fn map_busbar_section_terminals(
         const terminals = index.equipment_terminals.get(busbar_section.id) orelse continue;
         for (terminals.items) |terminal| {
             const base_node = conn_node_base_nodes.get(terminal.conn_node_id orelse continue) orelse continue;
-            node_map.putAssumeCapacity(terminal.id, base_node);
+            node_map.put(terminal.ordinal, base_node);
         }
     }
 }
@@ -447,7 +494,7 @@ fn map_switch_terminals(
             for (terminals.items) |terminal| {
                 const conn_node_id = terminal.conn_node_id orelse continue;
                 const base_node = conn_node_base_nodes.get(conn_node_id) orelse continue;
-                node_map.putAssumeCapacity(terminal.id, base_node);
+                node_map.put(terminal.ordinal, base_node);
                 conn_node_has_switch.putAssumeCapacity(conn_node_id, {});
             }
         }
@@ -494,9 +541,9 @@ fn map_phase2_equipment_terminals(
                 if (has_busbar_section or conn_node_first_seen.contains(conn_node_id) or ssh_disconnected) {
                     const terminal_node = voltage_level_ctr.*;
                     voltage_level_ctr.* += 1;
-                    node_map.putAssumeCapacity(terminal.id, terminal_node);
+                    node_map.put(terminal.ordinal, terminal_node);
                 } else {
-                    node_map.putAssumeCapacity(terminal.id, base_node);
+                    node_map.put(terminal.ordinal, base_node);
                     conn_node_first_seen.putAssumeCapacity(conn_node_id, {});
                 }
             }
@@ -557,9 +604,8 @@ pub fn build_node_map(
     errdefer conn_node_other_count.deinit(gpa);
     try conn_node_other_count.ensureTotalCapacity(gpa, @intCast(index.conn_node_container.count()));
 
-    var node_map: NodeMap = .empty;
+    var node_map: NodeMap = try .init(gpa, index.terminal_count);
     errdefer node_map.deinit(gpa);
-    try node_map.ensureTotalCapacity(gpa, @intCast(index.terminal_conn_node.count()));
 
     // Phase 1: BusbarSection and switch terminals → CN base node.
     map_busbar_section_terminals(model, index, &conn_node_base_nodes, &node_map);
@@ -629,8 +675,8 @@ fn union_closed_switch_conn_nodes(
             const terminals = index.equipment_terminals.get(@"switch".id) orelse continue;
             if (terminals.items.len != 2) continue;
 
-            const conn_node0 = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
-            const conn_node1 = index.terminal_conn_node.get(terminals.items[1].id) orelse continue;
+            const conn_node0 = terminals.items[0].conn_node_id orelse continue;
+            const conn_node1 = terminals.items[1].conn_node_id orelse continue;
             // A CN may be absent from `parent` if the EQ references a CN object that doesn't
             // exist (malformed input, or partial profile). Skip rather than insert a phantom root.
             if (!parent.contains(conn_node0)) continue;

@@ -192,8 +192,8 @@ pub fn convert_switches(
 
             if (terminals.items.len < 2) continue;
 
-            const node0 = node_map.get(terminals.items[0].id) orelse continue;
-            const node1 = node_map.get(terminals.items[1].id) orelse continue;
+            const node0 = node_map.get(terminals.items[0].ordinal) orelse continue;
+            const node1 = node_map.get(terminals.items[1].ordinal) orelse continue;
 
             const conn_node0_id = terminals.items[0].conn_node_id orelse continue;
             const container0_id = index.conn_node_container.get(conn_node0_id) orelse continue;
@@ -326,7 +326,7 @@ pub fn convert_fictitious_switches(
                 const t_view = model.getObjectById(t.id) orelse continue;
                 const t_mrid = try t_view.mrid();
 
-                const terminal_node = node_map.get(t.id) orelse 0;
+                const terminal_node = node_map.get(t.ordinal) orelse 0;
                 if (terminal_node == std.math.maxInt(u32)) return error.NodeIdOverflow;
                 const isolated_node = terminal_node + 1;
 
@@ -571,8 +571,8 @@ pub fn convert_shunts(
                         const rt_equipment = index.terminal_equipment.get(rt_id) orelse "";
                         const is_local = std.mem.eql(u8, rt_equipment, shunt.id);
                         if (!is_local) {
-                            if (index.terminal_conn_node.get(rt_id)) |conn_node_id| {
-                                regulating_terminal = placer.topology.conn_node_reachable_busbar_section.get(conn_node_id);
+                            if (index.terminal_conn_node.get(rt_id)) |rt_info| {
+                                regulating_terminal = placer.topology.conn_node_reachable_busbar_section.get(rt_info.conn_node_id);
                             }
                         }
                     }
@@ -872,8 +872,8 @@ pub fn convert_generators(
                         // If RC terminal is on this machine → local regulation (null).
                         if (!std.mem.eql(u8, rt_eq, machine.id)) {
                             const rt_conn_node = index.terminal_conn_node.get(rt_id);
-                            if (rt_conn_node) |conn_node_id| {
-                                regulating_terminal = placer.topology.conn_node_reachable_busbar_section.get(conn_node_id);
+                            if (rt_conn_node) |rt_info| {
+                                regulating_terminal = placer.topology.conn_node_reachable_busbar_section.get(rt_info.conn_node_id);
                             }
                         }
                     }

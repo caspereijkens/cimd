@@ -20,6 +20,18 @@ pub const TerminalInfo = struct {
     id: []const u8,
     conn_node_id: ?[]const u8, // null if terminal has no ConnectivityNode.
     sequence: u32,
+    /// Position of this Terminal in `get_objects_by_type("Terminal")`, assigned
+    /// by `build_terminals`. Dense over Terminals, so it indexes `NodeMap`
+    /// directly and no id has to be hashed to find a terminal's node.
+    ordinal: u32,
+};
+
+/// What one Terminal id resolves to. Carries the ordinal alongside the
+/// ConnectivityNode so a caller starting from a `TransformerEnd.Terminal`
+/// reference pays one hash instead of two.
+pub const TerminalRef = struct {
+    conn_node_id: []const u8,
+    ordinal: u32,
 };
 
 pub const LimitTypeInfo = struct {
@@ -46,7 +58,7 @@ pub const BusbarSectionEntry = struct {
 pub const CrossRef = struct {
     // Terminal lookups (one entry per Terminal)
     terminal_equipment: std.StringHashMapUnmanaged([]const u8),
-    terminal_conn_node: std.StringHashMapUnmanaged([]const u8),
+    terminal_conn_node: std.StringHashMapUnmanaged(TerminalRef),
     terminal_sequence: std.StringHashMapUnmanaged(u32),
 
     // Equipment → its terminals, in sequence order (one list per equipment)
@@ -79,6 +91,9 @@ pub const CrossRef = struct {
     // BaseVoltage mRIDs from the EQBD boundary file
     boundary_base_voltage_ids: std.StringHashMapUnmanaged(void),
 
+    // Number of Terminals, and so the size of the TerminalInfo.ordinal space.
+    terminal_count: u32,
+
     pub fn empty() CrossRef {
         return .{
             .terminal_equipment = .empty,
@@ -94,6 +109,7 @@ pub const CrossRef = struct {
             .voltage_level_limits = .empty,
             .curve_points = .empty,
             .boundary_base_voltage_ids = .empty,
+            .terminal_count = 0,
         };
     }
 
@@ -229,12 +245,15 @@ fn build_terminals(gpa: std.mem.Allocator, model: *const CimDocument, index: *Cr
     try index.terminal_sequence.ensureTotalCapacity(gpa, @intCast(objects.len));
     try index.equipment_terminals.ensureTotalCapacity(gpa, @intCast(objects.len));
 
-    for (objects) |obj| {
+    index.terminal_count = @intCast(objects.len);
+
+    for (objects, 0..) |obj, position| {
+        const ordinal: u32 = @intCast(position);
         const view = model.view(obj);
         const conn_node_ref = try view.getReference("Terminal.ConnectivityNode");
         const conn_node_id: ?[]const u8 = if (conn_node_ref) |ref| strip_hash(ref) else null;
         if (conn_node_id) |id| {
-            index.terminal_conn_node.putAssumeCapacity(obj.id, id);
+            index.terminal_conn_node.putAssumeCapacity(obj.id, .{ .conn_node_id = id, .ordinal = ordinal });
         }
 
         const sequence = try parse.int_strict(u32, try view.getProperty("ACDCTerminal.sequenceNumber"), 1);
@@ -252,6 +271,7 @@ fn build_terminals(gpa: std.mem.Allocator, model: *const CimDocument, index: *Cr
             .id = obj.id,
             .conn_node_id = conn_node_id,
             .sequence = sequence,
+            .ordinal = ordinal,
         });
     }
 
@@ -286,7 +306,7 @@ fn build_connectivity(gpa: std.mem.Allocator, model: *const CimDocument, index: 
             // TODO add log message
             continue;
         }
-        const conn_node_id = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
+        const conn_node_id = terminals.items[0].conn_node_id orelse continue;
 
         const busbar_section_mrid = try model.view(busbar_section).mrid();
         index.conn_node_to_busbar_section.putAssumeCapacity(conn_node_id, busbar_section_mrid);
@@ -397,8 +417,8 @@ pub fn process_switch_type(
         const terminals = index.equipment_terminals.get(@"switch".id) orelse continue;
         if (terminals.items.len != 2) continue; // TODO log a warning?
 
-        const conn_node0 = index.terminal_conn_node.get(terminals.items[0].id) orelse continue;
-        const conn_node1 = index.terminal_conn_node.get(terminals.items[1].id) orelse continue;
+        const conn_node0 = terminals.items[0].conn_node_id orelse continue;
+        const conn_node1 = terminals.items[1].conn_node_id orelse continue;
 
         const container0 = index.conn_node_container.get(conn_node0) orelse continue;
         const container1 = index.conn_node_container.get(conn_node1) orelse continue;
@@ -426,7 +446,7 @@ pub fn build_voltage_limits(gpa: std.mem.Allocator, model: *const CimDocument, i
         const terminal_ref = try limit_set.getReference("OperationalLimitSet.Terminal") orelse continue;
 
         const terminal_id = strip_hash(terminal_ref);
-        const conn_node_id = index.terminal_conn_node.get(terminal_id) orelse continue;
+        const conn_node_id = (index.terminal_conn_node.get(terminal_id) orelse continue).conn_node_id;
         // Resolve container via CN, falling back to terminal equipment's EquipmentContainer
         // when the CN has no ConnectivityNode element (only referenced in Terminal elements).
         const raw_container_id: []const u8 = if (index.conn_node_container.get(conn_node_id)) |id| id else blk: {

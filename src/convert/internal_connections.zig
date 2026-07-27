@@ -37,7 +37,7 @@ pub fn populate_internal_connections(
     try conn_node_other_count.ensureTotalCapacity(gpa, @intCast(index.terminal_conn_node.count()));
 
     for (model.get_objects_by_type("Terminal")) |terminal| {
-        const conn_node_id = index.terminal_conn_node.get(terminal.id) orelse continue;
+        const conn_node_id = (index.terminal_conn_node.get(terminal.id) orelse continue).conn_node_id;
         const equipment_id = index.terminal_equipment.get(terminal.id) orelse continue;
         const equipment = model.getObjectById(equipment_id) orelse continue;
         if (topology.is_switch_type(equipment.type_name)) continue;
@@ -78,7 +78,7 @@ pub fn populate_internal_connections(
             for (terminals.items) |t| {
                 const conn_node_id = t.conn_node_id orelse continue;
                 const base_node = nm_result.conn_node_base_nodes.get(conn_node_id) orelse continue;
-                const terminal_node = nm_result.node_map.get(t.id) orelse continue;
+                const terminal_node = nm_result.node_map.get(t.ordinal) orelse continue;
                 if (terminal_node == base_node) continue;
                 if (topology.is_ssh_terminal_disconnected(ssh_opt, t.id)) continue;
 
