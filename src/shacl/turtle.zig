@@ -2,7 +2,7 @@
 //!
 //! Produces RDF triples from a bounded subset of Turtle 1.1. This module
 //! knows nothing about SHACL; it yields triples; rule_set.zig interprets
-//! them. The mechanism/meaning separation mirrors tag_index.zig vs eq.zig.
+//! them. The mechanism/meaning separation mirrors xml_scan.zig vs tag_index.zig.
 //!
 //! Zero-copy: every namespace, local name, and literal value is a slice into
 //! `source` (the caller keeps the buffer alive). IRIs are split into

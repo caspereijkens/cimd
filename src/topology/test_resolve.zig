@@ -1,12 +1,11 @@
 const std = @import("std");
 const cim = @import("../cim/cim.zig");
 const topology = @import("resolve.zig");
-const tag_index = cim.tag_index;
 const CrossRef = @import("cross_ref.zig").CrossRef;
 const CimDocument = cim.CimDocument;
 const Overlay = cim.Overlay;
 
-const CimObject = tag_index.CimObject;
+const CimObject = cim.CimObject;
 
 const EQ_MALFORMED_LATE_TOPOLOGY_REFERENCE =
     \\<rdf:RDF>

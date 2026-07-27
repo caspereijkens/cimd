@@ -3,7 +3,6 @@ const cim = @import("../cim/cim.zig");
 const iidm = @import("../iidm/model.zig");
 const CimDocument = cim.CimDocument;
 const cross_ref = @import("../topology/cross_ref.zig");
-const tag_index = cim.tag_index;
 const utils = cim.ids;
 const resolve = @import("../topology/resolve.zig");
 const parse = cim.parse;
@@ -12,7 +11,7 @@ const placement_mod = @import("placement.zig");
 
 const assert = std.debug.assert;
 
-const CimObject = tag_index.CimObject;
+const CimObject = cim.CimObject;
 const Overlay = cim.Overlay;
 const CimMergedView = cim.CimMergedView;
 const CrossRef = cross_ref.CrossRef;

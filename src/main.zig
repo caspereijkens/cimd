@@ -17,7 +17,6 @@ const iidm = @import("iidm/model.zig");
 const cross_ref = @import("topology/cross_ref.zig");
 const resolve = @import("topology/resolve.zig");
 const refs = cim.refs;
-const tag_index = cim.tag_index;
 const ids = cim.ids;
 const cim_types = cim.cim_types;
 const CimMergedView = cim.CimMergedView;
@@ -491,7 +490,7 @@ fn render_target_ambiguity(
 fn display_get_object(
     io: std.Io,
     gpa: std.mem.Allocator,
-    object: tag_index.CimObjectView,
+    object: cim.CimObjectView,
     tp_opt: ?Overlay,
     ssh_opt: ?Overlay,
     json: bool,

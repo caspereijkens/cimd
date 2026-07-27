@@ -26,6 +26,7 @@
 
 const std = @import("std");
 const tag_index = @import("../tag_index.zig");
+const xml_scan = @import("../xml_scan.zig");
 const ids = @import("../ids.zig");
 const CimDocument = @import("../document.zig").CimDocument;
 
@@ -33,7 +34,7 @@ const assert = std.debug.assert;
 pub const Diagnostics = @import("../diagnostics.zig").Diagnostics;
 
 pub const CimObject = tag_index.CimObject;
-const TagBoundary = tag_index.TagBoundary;
+const TagBoundary = xml_scan.TagBoundary;
 
 /// How an `rdf:ID` element in an overlay is read. The single behavioural
 /// difference between the CGMES supplementary profiles cimd overlays.
@@ -324,7 +325,7 @@ const Classification = union(enum) {
 fn classify(doc: CimDocument, obj: CimObject, policy: IdPolicy) Classification {
     const tag_start = doc.boundaries[obj.object_tag_idx].start;
 
-    if (tag_index.extract_rdf_id(doc.xml, tag_start)) |raw| {
+    if (xml_scan.extract_rdf_id(doc.xml, tag_start)) |raw| {
         if (raw.len > 0) switch (policy) {
             .id_declares_object => return .declares,
             .id_names_patch => {
@@ -334,7 +335,7 @@ fn classify(doc: CimDocument, obj: CimObject, policy: IdPolicy) Classification {
         };
     } else |_| {}
 
-    if (tag_index.extract_rdf_about(doc.xml, tag_start)) |raw| {
+    if (xml_scan.extract_rdf_about(doc.xml, tag_start)) |raw| {
         if (raw.len > 1 and raw[0] == '#') {
             const mrid = ids.strip_underscore(ids.strip_hash(raw));
             if (mrid.len > 0) return .{ .patch = mrid };
@@ -347,10 +348,10 @@ fn classify(doc: CimDocument, obj: CimObject, policy: IdPolicy) Classification {
 /// The identifier as the file spells it, for a duplicate-key report. Both
 /// attribute forms can name a patch, so both are candidates.
 fn raw_patch_id(xml: []const u8, tag_start: u32) ?[]const u8 {
-    if (tag_index.extract_rdf_id(xml, tag_start)) |raw| {
+    if (xml_scan.extract_rdf_id(xml, tag_start)) |raw| {
         if (ids.strip_underscore(raw).len > 0) return raw;
     } else |_| {}
-    if (tag_index.extract_rdf_about(xml, tag_start)) |raw| {
+    if (xml_scan.extract_rdf_about(xml, tag_start)) |raw| {
         if (raw.len > 1 and raw[0] == '#' and
             ids.strip_underscore(ids.strip_hash(raw)).len > 0) return raw;
     } else |_| {}

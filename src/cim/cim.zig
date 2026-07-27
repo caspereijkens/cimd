@@ -42,8 +42,12 @@
 pub const CimDocument = @import("document.zig").CimDocument;
 pub const CimObject = @import("tag_index.zig").CimObject;
 pub const CimObjectView = @import("tag_index.zig").CimObjectView;
-pub const TagBoundary = @import("tag_index.zig").TagBoundary;
 pub const Diagnostics = @import("diagnostics.zig").Diagnostics;
+
+/// One child element of an object, and the walk that yields them. This is the
+/// level a CIM consumer works at; nothing here needs a tag boundary.
+pub const Child = @import("tag_index.zig").Child;
+pub const ChildIterator = @import("tag_index.zig").ChildIterator;
 
 /// Opt-in index over a document's children: interned names, precomputed kinds
 /// and value spans. For consumers that walk the same object many times -- SHACL
@@ -52,11 +56,18 @@ pub const Diagnostics = @import("diagnostics.zig").Diagnostics;
 /// commands that read each child once do not pay for it. See child_table.zig.
 pub const ChildTable = @import("child_table.zig").ChildTable;
 
-/// Raw tag scanning: boundaries, tag types, rdf attribute extraction. The
-/// layer under CimDocument, exposed because callers legitimately scan XML that
-/// is not a CIM document -- the CIM type-table generator reads RDFS schema
-/// files with it, and SHACL evaluation walks tags the index does not model.
-pub const tag_index = @import("tag_index.zig");
+/// Raw XML and RDF/XML scanning: tag boundaries, tag types, rdf attribute
+/// extraction. The layer under CimDocument, and a module a CIM consumer has no
+/// reason to import -- `CimDocument`, `CimObjectView` and `view.children()`
+/// above cover working with a parsed document. It is exported for the callers
+/// that scan XML this library does not model: the type-table generator reads
+/// RDFS schema files, `profile` reads a FullModel header, `browse` slices
+/// source text for display, `validate` counts newlines for line numbers.
+///
+/// The CIM object layer is deliberately *not* exported alongside it. Its types
+/// are named individually above, so `TagBoundary` is reachable only through
+/// this module and a consumer that indexes boundaries has to say that it does.
+pub const xml_scan = @import("xml_scan.zig");
 /// Source positions for error reporting (duplicate-id offsets, line numbers).
 pub const diagnostics = @import("diagnostics.zig");
 /// CIM class ancestry: `is_a`, `matches_filter` for type filtering.

@@ -17,7 +17,7 @@ const assert = std.debug.assert;
 const CimDocument = cim.CimDocument;
 const CimObjectView = cim.CimObjectView;
 const ChildTable = cim.ChildTable;
-const tag_index = cim.tag_index;
+const xml_scan = cim.xml_scan;
 const cim_types = cim.cim_types;
 const rule_set_mod = @import("shacl/rule_set.zig");
 const RuleSet = rule_set_mod.RuleSet;
@@ -939,7 +939,7 @@ pub fn write_report(
         totals.infos += entry.evaluation.infos_total;
         for (entry.evaluation.violations.items) |violation| {
             if (newlines == null) {
-                newlines = try tag_index.find_byte_simd(gpa, model.xml, '\n');
+                newlines = try xml_scan.find_byte_simd(gpa, model.xml, '\n');
             }
             try write_violation(w, entry.rules, segments, newlines.?.items, violation);
         }

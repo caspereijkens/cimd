@@ -1,7 +1,6 @@
 const std = @import("std");
 const cim = @import("../cim/cim.zig");
 const iidm = @import("../iidm/model.zig");
-const tag_index = cim.tag_index;
 const utils = cim.ids;
 const CimDocument = cim.CimDocument;
 const resolve = @import("resolve.zig");
@@ -13,8 +12,8 @@ const assert = std.debug.assert;
 const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
-const CimObject = tag_index.CimObject;
-const CimObjectView = tag_index.CimObjectView;
+const CimObject = cim.CimObject;
+const CimObjectView = cim.CimObjectView;
 
 pub const TerminalInfo = struct {
     id: []const u8,

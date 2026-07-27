@@ -2,7 +2,6 @@ const std = @import("std");
 const cim = @import("../cim/cim.zig");
 const CimDocument = cim.CimDocument;
 
-const tag_index = cim.tag_index;
 const utils = cim.ids;
 const units = @import("../units.zig");
 
@@ -274,7 +273,7 @@ pub fn display_object_list_json(
     io: std.Io,
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    objects: []const tag_index.CimObject,
+    objects: []const cim.CimObject,
     fields: []const []const u8,
 ) !void {
     var write_buffer: [64 * 1024]u8 = undefined;
@@ -293,7 +292,7 @@ fn write_object_list_json(
     w: *std.Io.Writer,
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    objects: []const tag_index.CimObject,
+    objects: []const cim.CimObject,
     fields: []const []const u8,
 ) !void {
     try w.writeByte('[');
@@ -333,7 +332,7 @@ fn write_object_list_json(
 fn write_object_full_json(
     w: *std.Io.Writer,
     gpa: std.mem.Allocator,
-    obj: tag_index.CimObjectView,
+    obj: cim.CimObjectView,
 ) !void {
     var props = try obj.getAllProperties(gpa);
     defer props.deinit();

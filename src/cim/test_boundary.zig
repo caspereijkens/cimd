@@ -34,6 +34,11 @@ const facade = library_root ++ "/cim.zig";
 /// whole suite into each of them.
 const test_entry = library_root ++ "/test_all.zig";
 
+/// The bottom layer: raw XML scanning, which knows nothing about CIM. Split out
+/// of tag_index.zig so a CIM consumer never has to import it; see the "raw
+/// scanning stays the bottom layer" test below for what keeps it split.
+const scanner = library_root ++ "/xml_scan.zig";
+
 const Scope = enum { library, application };
 
 /// Run `check` over every .zig file in `scope`, with a repo-relative path.
@@ -302,4 +307,37 @@ test "application code imports only the library facade" {
             }
         }
     }.check);
+}
+
+test "raw scanning stays the bottom layer" {
+    // xml_scan.zig exists so that "find a tag in some bytes" and "read a CIM
+    // object" are two different requests, and only the second one is on the
+    // facade. That holds only while the dependency runs one way: the moment
+    // this file imports a sibling, the two layers are one again and the
+    // facade's promise -- that a CIM consumer never needs a TagBoundary --
+    // becomes documentation. A reverse import is also the cheapest way for it
+    // to happen, since everything it would reach for is one directory away.
+    const gpa = std.testing.allocator;
+    const source = try std.Io.Dir.cwd().readFileAlloc(io, scanner, gpa, .limited(1 << 20));
+    defer gpa.free(source);
+
+    const code = try blank_comments(gpa, source);
+    defer gpa.free(code);
+
+    var seen: u32 = 0;
+    var it: ImportIterator = .{ .source = code };
+    while (it.next()) |import| {
+        seen += 1;
+        if (std.mem.eql(u8, import.path, "std")) continue;
+        std.debug.print(
+            "\n{s}:{d}: import of '{s}'\n" ++
+                "Raw scanning is the layer everything else is built on, so it may\n" ++
+                "import nothing but std. Whatever it needs from above belongs in\n" ++
+                "the caller, or it is not raw scanning.\n",
+            .{ scanner, import.line, import.path },
+        );
+        return error.ScannerDependsUpward;
+    }
+    // A renamed or moved file would import nothing and pass silently.
+    try std.testing.expect(seen >= 1);
 }

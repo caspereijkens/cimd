@@ -5,7 +5,7 @@ const CimDocument = cim.CimDocument;
 const cross_ref = @import("../topology/cross_ref.zig");
 const utils = cim.ids;
 const topology = @import("../topology/resolve.zig");
-const tag_index = cim.tag_index;
+const xml_scan = cim.xml_scan;
 const substation_conv = @import("substation.zig");
 const voltage_level_conv = @import("voltage_level.zig");
 const equipment_conv = @import("equipment.zig");
@@ -44,7 +44,7 @@ const standalone_iidm_source_types = [_][]const u8{
 
 fn record_conversion_mrid(
     seen: *std.StringHashMapUnmanaged(void),
-    view: tag_index.CimObjectView,
+    view: cim.CimObjectView,
     diagnostics: ?*ConversionDiagnostics,
 ) !void {
     const mrid = try view.mrid();
@@ -507,7 +507,7 @@ fn extension_version(extension_name: []const u8) []const u8 {
 /// Append one MetadataModel entry derived from a FullModel CimObjectView.
 fn append_metadata_model(
     gpa: std.mem.Allocator,
-    view: tag_index.CimObjectView,
+    view: cim.CimObjectView,
     metadata_models: *std.ArrayListUnmanaged(iidm.MetadataModel),
 ) !void {
     assert(view.id.len > 0);
@@ -659,7 +659,7 @@ pub fn convertWithDiagnostics(
 
     // ---- FullModel metadata: id, caseDate, forecastDistance ----
     const full_models = model.get_objects_by_type("FullModel");
-    const eq_full_model: ?tag_index.CimObjectView = if (full_models.len > 0) model.view(full_models[0]) else null;
+    const eq_full_model: ?cim.CimObjectView = if (full_models.len > 0) model.view(full_models[0]) else null;
     const network_id = if (eq_full_model) |full_model_view| full_model_view.id else "unknown";
     const scenario_time: ?[]const u8 = blk: {
         if (ssh_opt) |ssh| {
@@ -902,7 +902,7 @@ pub fn convertWithDiagnostics(
         }
 
         const full_model_count = full_models.len;
-        const ssh_full_model_view: ?tag_index.CimObjectView = if (ssh_opt) |ssh| ssh.getFullModelView() else null;
+        const ssh_full_model_view: ?cim.CimObjectView = if (ssh_opt) |ssh| ssh.getFullModelView() else null;
         const expected_model_count = full_model_count + @as(usize, if (ssh_full_model_view != null) 1 else 0);
 
         // full_models[0] is the EQ FullModel; full_models[1..] are dependency
@@ -1046,21 +1046,21 @@ test "append_metadata_model: reads id/version/subset/profiles/DependentOn" {
         \\  </md:FullModel>
         \\</rdf:RDF>
     ;
-    var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
+    var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
     defer boundaries.deinit(gpa);
 
     // Find FullModel tag and its closing tag.
     var fm_tag_idx: u32 = 0;
     var fm_closing_idx: u32 = 0;
     for (boundaries.items, 0..) |tag, i| {
-        const type_name = tag_index.extract_tag_type(xml, tag.start) catch continue;
+        const type_name = xml_scan.extract_tag_type(xml, tag.start) catch continue;
         if (!std.mem.eql(u8, type_name, "FullModel")) continue;
         fm_tag_idx = @intCast(i);
-        fm_closing_idx = try tag_index.find_closing_tag(xml, boundaries.items, fm_tag_idx);
+        fm_closing_idx = try xml_scan.find_closing_tag(xml, boundaries.items, fm_tag_idx);
         break;
     }
 
-    const view = tag_index.CimObjectView{
+    const view = cim.CimObjectView{
         .xml = xml,
         .boundaries = boundaries.items,
         .object_tag_idx = fm_tag_idx,

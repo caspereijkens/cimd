@@ -32,6 +32,7 @@ const assert = std.debug.assert;
 
 const CimDocument = @import("document.zig").CimDocument;
 const tag_index = @import("tag_index.zig");
+const xml_scan = @import("xml_scan.zig");
 const cim_types = @import("cim_types.zig");
 const core = @import("diff_core.zig");
 const writer_result = @import("writer.zig");
@@ -243,7 +244,7 @@ fn attribute_value(tag: []const u8, comptime pattern: []const u8) ?[]const u8 {
 }
 
 /// Tag name including its namespace prefix, e.g. "cim:Substation".
-fn qualified_tag_name(xml: []const u8, tag: tag_index.TagBoundary) []const u8 {
+fn qualified_tag_name(xml: []const u8, tag: xml_scan.TagBoundary) []const u8 {
     const inner = xml[tag.start + 1 .. tag.end];
     const end = std.mem.indexOfAny(u8, inner, " \t\r\n/") orelse inner.len;
     assert(end > 0);
@@ -465,7 +466,7 @@ const XmlnsIterator = struct {
 
 /// The first real element of the document (skipping the XML declaration,
 /// comments, and doctype) -- for CGMES this is rdf:RDF.
-fn root_element(model: *const CimDocument) ?tag_index.TagBoundary {
+fn root_element(model: *const CimDocument) ?xml_scan.TagBoundary {
     for (model.boundaries) |tag| {
         if (tag.start + 1 >= model.xml.len) return null;
         switch (model.xml[tag.start + 1]) {

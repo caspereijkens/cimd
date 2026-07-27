@@ -3,7 +3,6 @@ const cim = @import("../cim/cim.zig");
 const utils = cim.ids;
 const CimDocument = cim.CimDocument;
 const cross_ref = @import("cross_ref.zig");
-const tag_index = cim.tag_index;
 const parse = cim.parse;
 
 const assert = std.debug.assert;
@@ -14,8 +13,8 @@ const strip_underscore = utils.strip_underscore;
 const Overlay = cim.Overlay;
 const CimMergedView = cim.CimMergedView;
 const CrossRef = cross_ref.CrossRef;
-const CimObjectView = tag_index.CimObjectView;
-const CimObject = tag_index.CimObject;
+const CimObjectView = cim.CimObjectView;
+const CimObject = cim.CimObject;
 
 const IdMap = std.StringHashMapUnmanaged([]const u8);
 const CountMap = std.StringHashMapUnmanaged(u32);

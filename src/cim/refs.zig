@@ -2,6 +2,7 @@ const std = @import("std");
 const CimDocument = @import("document.zig").CimDocument;
 const Overlay = @import("cgmes/overlay.zig").Overlay;
 const tag_index = @import("tag_index.zig");
+const xml_scan = @import("xml_scan.zig");
 const ids = @import("ids.zig");
 const cim_types = @import("cim_types.zig");
 
@@ -119,7 +120,7 @@ const Layer = enum { ssh, tp, eq };
 /// view to hand around -- only the span.
 const RefRange = struct {
     xml: []const u8,
-    boundaries: []const tag_index.TagBoundary,
+    boundaries: []const xml_scan.TagBoundary,
     open_idx: u32,
     close_idx: u32,
 

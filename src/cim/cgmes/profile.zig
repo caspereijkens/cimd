@@ -3,7 +3,7 @@
 //! consulted.
 
 const std = @import("std");
-const tag_index = @import("../tag_index.zig");
+const xml_scan = @import("../xml_scan.zig");
 
 const assert = std.debug.assert;
 const whitespace = " \t\r\n";
@@ -179,7 +179,7 @@ fn is_name_byte(byte: u8) bool {
 }
 
 fn classify_range(gpa: std.mem.Allocator, xml: []const u8) !Header {
-    var boundaries = tag_index.find_tag_boundaries(gpa, xml) catch |err| switch (err) {
+    var boundaries = xml_scan.find_tag_boundaries(gpa, xml) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.MalformedHeader,
     };
@@ -188,7 +188,7 @@ fn classify_range(gpa: std.mem.Allocator, xml: []const u8) !Header {
     var full_model_index: ?u32 = null;
     for (boundaries.items, 0..) |tag, i| {
         if (xml[tag.start + 1] == '/' or xml[tag.start + 1] == '!' or xml[tag.start + 1] == '?') continue;
-        const type_name = tag_index.extract_tag_type(xml, tag.start) catch continue;
+        const type_name = xml_scan.extract_tag_type(xml, tag.start) catch continue;
         if (!std.mem.eql(u8, type_name, "FullModel")) continue;
         if (full_model_index != null) return error.AmbiguousHeader;
         full_model_index = @intCast(i);
@@ -197,9 +197,9 @@ fn classify_range(gpa: std.mem.Allocator, xml: []const u8) !Header {
     const opening_index = full_model_index orelse return error.NoFullModel;
     const opening = boundaries.items[opening_index];
     if (xml[opening.end - 1] == '/') return error.MalformedHeader;
-    const closing_index = tag_index.find_closing_tag(xml, boundaries.items, opening_index) catch
+    const closing_index = xml_scan.find_closing_tag(xml, boundaries.items, opening_index) catch
         return error.MalformedHeader;
-    const model_id = tag_index.extract_rdf_about(xml, opening.start) catch
+    const model_id = xml_scan.extract_rdf_about(xml, opening.start) catch
         return error.MalformedHeader;
 
     var profile_count: u8 = 0;
@@ -209,12 +209,12 @@ fn classify_range(gpa: std.mem.Allocator, xml: []const u8) !Header {
     while (i < closing_index) : (i += 1) {
         const tag = boundaries.items[i];
         if (xml[tag.start + 1] == '/' or xml[tag.start + 1] == '!' or xml[tag.start + 1] == '?') continue;
-        const type_name = tag_index.extract_tag_type(xml, tag.start) catch continue;
+        const type_name = xml_scan.extract_tag_type(xml, tag.start) catch continue;
         if (!std.mem.eql(u8, type_name, "Model.profile")) continue;
         if (profile_count >= profile_uris_max) return error.AmbiguousHeader;
         profile_count += 1;
         if (xml[tag.end - 1] == '/') return error.MalformedHeader;
-        const value_closing = tag_index.find_closing_tag(xml, boundaries.items, @intCast(i)) catch
+        const value_closing = xml_scan.find_closing_tag(xml, boundaries.items, @intCast(i)) catch
             return error.MalformedHeader;
         if (value_closing <= i) return error.MalformedHeader;
         const value = std.mem.trim(u8, xml[tag.end + 1 .. boundaries.items[value_closing].start], whitespace);

@@ -3,7 +3,6 @@ const cim = @import("../cim/cim.zig");
 const iidm = @import("../iidm/model.zig");
 const CimDocument = cim.CimDocument;
 const cross_ref = @import("../topology/cross_ref.zig");
-const tag_index = cim.tag_index;
 const utils = cim.ids;
 const resolve = @import("../topology/resolve.zig");
 const parse = cim.parse;
@@ -11,8 +10,8 @@ const parse = cim.parse;
 const assert = std.debug.assert;
 const Topology = resolve.Topology;
 
-const CimObject = tag_index.CimObject;
-const CimObjectView = tag_index.CimObjectView;
+const CimObject = cim.CimObject;
+const CimObjectView = cim.CimObjectView;
 const CrossRef = cross_ref.CrossRef;
 const strip_hash = utils.strip_hash;
 

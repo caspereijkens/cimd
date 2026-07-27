@@ -25,8 +25,9 @@
 
 const std = @import("std");
 const tag_index = @import("tag_index.zig");
+const xml_scan = @import("xml_scan.zig");
 pub const CimObject = tag_index.CimObject;
-const TagBoundary = tag_index.TagBoundary;
+const TagBoundary = xml_scan.TagBoundary;
 const ids = @import("ids.zig");
 const cim_types = @import("cim_types.zig");
 
@@ -92,7 +93,7 @@ pub const CimDocument = struct {
         errdefer gpa.free(xml);
         if (xml.len == 0) return error.EmptyInput;
 
-        var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
+        var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
         errdefer boundaries.deinit(gpa);
 
         var objects: std.ArrayList(tag_index.CimObject) = .empty;
@@ -101,7 +102,7 @@ pub const CimDocument = struct {
         var id_to_index = std.StringHashMap(u32).init(gpa);
         errdefer id_to_index.deinit();
 
-        const closing_for = try tag_index.build_closing_index(gpa, xml, boundaries.items);
+        const closing_for = try xml_scan.build_closing_index(gpa, xml, boundaries.items);
         defer gpa.free(closing_for);
 
         // Pass 1: collect objects and count per type.
@@ -329,7 +330,7 @@ pub const CimDocument = struct {
 
 fn extract_attribute_from_tag(xml: []const u8, tag: TagBoundary, comptime pattern: []const u8) ?[]const u8 {
     const tag_content = xml[tag.start..tag.end];
-    const pattern_offset = tag_index.find_needle_anchored(tag_content, pattern) orelse return null;
+    const pattern_offset = xml_scan.find_needle_anchored(tag_content, pattern) orelse return null;
     const value_start = tag.start + pattern_offset + pattern.len;
     const value_end = std.mem.indexOfScalarPos(u8, xml, value_start, '"') orelse return null;
     if (value_end >= tag.end) return null;
