@@ -4,7 +4,8 @@
 //! `rdf:about`, which is every CGMES profile (EQ, SSH, TP, SV, DL, DY, GL) and
 //! any other CIM document of that shape. Nothing here knows what a profile is;
 //! routing a file to a profile is cgmes/profile.zig's job, and the
-//! CGMES-specific overlay reads live in cgmes/ssh.zig and cgmes/tp.zig.
+//! CGMES-specific overlay reads live in cgmes/overlay.zig, which is this
+//! same parse plus an index on the normalized mRID.
 //!
 //! It is *not* a general RDF/XML parser, and does not resolve namespaces.
 //! Matching is on literal qualified names: `rdf:ID="`, `rdf:about="`, and a

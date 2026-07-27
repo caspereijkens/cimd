@@ -85,7 +85,7 @@ const TapChangerCommon = struct { low_step: i32, normal_step: i32, ltc_flag: boo
 fn read_tap_changer_regulating(
     model: *const CimDocument,
     tap_changer: CimObjectView,
-    ssh_opt: ?cim.SSH,
+    ssh_opt: ?cim.Overlay,
 ) !?bool {
     const control_ref = try tap_changer.getReference("TapChanger.TapChangerControl") orelse return null;
     if (ssh_opt) |ssh| {
@@ -357,7 +357,7 @@ const PhaseTapChangerEntry = struct {
 fn build_ratio_tap_changer_map(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    ssh_opt: ?cim.SSH,
+    ssh_opt: ?cim.Overlay,
     tap_changer_info_map: ?*TapChangerInfoMap,
 ) !std.StringHashMapUnmanaged(RatioTapChangerEntry) {
     var points_by_table = try build_ratio_table_points(gpa, model);
@@ -438,7 +438,7 @@ const OrderedPhaseStep = struct {
 fn build_phase_tap_changer_map(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    ssh_opt: ?cim.SSH,
+    ssh_opt: ?cim.Overlay,
     tap_changer_info_map: ?*TapChangerInfoMap,
 ) !std.StringHashMapUnmanaged(PhaseTapChangerEntry) {
     var points_by_table: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(OrderedPhaseStep)) = .empty;
@@ -1152,7 +1152,7 @@ pub fn convert_transformers(
     model: *const CimDocument,
     substation_map: *const std.StringHashMapUnmanaged(*iidm.Substation),
     placer: TerminalPlacer,
-    ssh_opt: ?cim.SSH,
+    ssh_opt: ?cim.Overlay,
     tap_changer_info_map: ?*TapChangerInfoMap,
 ) !void {
     var ends_by_transformer: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObjectView)) = try build_ends_by_transformer(gpa, model);

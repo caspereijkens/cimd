@@ -2,7 +2,7 @@ const std = @import("std");
 const cim = @import("../cim/cim.zig");
 const iidm = @import("../iidm/model.zig");
 const CimDocument = cim.CimDocument;
-const TP = cim.TP;
+const Overlay = cim.Overlay;
 const parse = cim.parse;
 const utils = cim.ids;
 
@@ -34,7 +34,7 @@ pub const BusMap = std.StringHashMapUnmanaged(BusPlacement);
 /// Caller owns the returned BusMap and must call .deinit(gpa).
 pub fn convert_buses(
     gpa: std.mem.Allocator,
-    tp: TP,
+    tp: Overlay,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
 ) !BusMap {
     var bus_map: BusMap = .empty;
@@ -97,7 +97,7 @@ pub fn convert_buses(
 /// BusPlacement the terminal sits on. Returns null if the terminal has no
 /// patch, no TopologicalNode reference, or the TN doesn't map to a known VL.
 pub fn resolve_terminal_bus(
-    tp: TP,
+    tp: Overlay,
     bus_map: *const BusMap,
     terminal_mrid_stripped: []const u8,
 ) !?BusPlacement {

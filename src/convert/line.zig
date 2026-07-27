@@ -166,7 +166,7 @@ pub fn convert_lines(
     model: *const CimDocument,
     network: *iidm.Network,
     placer: TerminalPlacer,
-    ssh_opt: ?cim.SSH,
+    ssh_opt: ?cim.Overlay,
 ) !void {
     const index = placer.index;
     const voltage_level_map = placer.voltage_level_map;

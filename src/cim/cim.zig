@@ -73,10 +73,13 @@ pub const parse = @import("parse.zig");
 
 /// Classify a part from its FullModel header (profile URIs to a Kind).
 pub const profile = @import("cgmes/profile.zig");
-pub const TP = @import("cgmes/tp.zig").TP;
-pub const SSH = @import("cgmes/ssh.zig").SSH;
+/// A supplementary part (TP, SSH) read as patches on a primary document: a
+/// `CimDocument` plus an index on the normalized mRID. One type for both
+/// profiles; `Overlay.IdPolicy` names the one way they differ.
+pub const Overlay = @import("cgmes/overlay.zig").Overlay;
+pub const IdPolicy = @import("cgmes/overlay.zig").IdPolicy;
 /// Merged read across a document plus its TP/SSH overlays, SSH > TP > document.
-pub const CimMergedView = @import("cgmes/ssh.zig").CimMergedView;
+pub const CimMergedView = @import("cgmes/overlay.zig").CimMergedView;
 
 // ── References ────────────────────────────────────────────────────────────────
 //

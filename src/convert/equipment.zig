@@ -13,7 +13,7 @@ const placement_mod = @import("placement.zig");
 const assert = std.debug.assert;
 
 const CimObject = tag_index.CimObject;
-const SSH = cim.SSH;
+const Overlay = cim.Overlay;
 const CimMergedView = cim.CimMergedView;
 const CrossRef = cross_ref.CrossRef;
 const strip_hash = utils.strip_hash;
@@ -176,7 +176,7 @@ pub fn convert_switches(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
     placer: TerminalPlacer,
-    ssh_opt: ?SSH,
+    ssh_opt: ?Overlay,
 ) !void {
     const index = placer.index;
     const voltage_level_map = placer.voltage_level_map;
@@ -275,7 +275,7 @@ pub fn convert_fictitious_switches(
     placer: TerminalPlacer,
     cn_has_switch: *const std.StringHashMapUnmanaged(void),
     cn_other_count: *const std.StringHashMapUnmanaged(u32),
-    ssh_opt: ?SSH,
+    ssh_opt: ?Overlay,
 ) !void {
     const index = placer.index;
     const voltage_level_map = placer.voltage_level_map;
@@ -379,7 +379,7 @@ pub fn convert_loads(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
     placer: TerminalPlacer,
-    ssh_opt: ?SSH,
+    ssh_opt: ?Overlay,
 ) !void {
     const energy_consumers = model.get_objects_by_type("EnergyConsumer");
     const conform_loads = model.get_objects_by_type("ConformLoad");
@@ -395,7 +395,7 @@ fn convert_load_type(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
     placer: TerminalPlacer,
-    ssh_opt: ?SSH,
+    ssh_opt: ?Overlay,
     loads: []const CimObject,
     non_conform: bool,
 ) !void {
@@ -516,7 +516,7 @@ pub fn convert_shunts(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
     placer: TerminalPlacer,
-    ssh_opt: ?SSH,
+    ssh_opt: ?Overlay,
 ) !void {
     const index = placer.index;
     const shunts = model.get_objects_by_type("LinearShuntCompensator");
@@ -631,7 +631,7 @@ pub fn convert_shunts(
 pub fn convert_static_var_compensators(
     model: *const CimDocument,
     placer: TerminalPlacer,
-    ssh_opt: ?SSH,
+    ssh_opt: ?Overlay,
 ) !void {
     const static_var_compensators = model.get_objects_by_type("StaticVarCompensator");
 
@@ -696,7 +696,7 @@ pub fn convert_generators(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
     placer: TerminalPlacer,
-    ssh_opt: ?SSH,
+    ssh_opt: ?Overlay,
 ) !void {
     const index = placer.index;
     const machines = model.get_objects_by_type("SynchronousMachine");

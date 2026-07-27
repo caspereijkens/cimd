@@ -95,7 +95,7 @@ test "contains_path compares whole components" {
     // '/' is a separator on every target cimd releases for, Windows included.
     try std.testing.expect(contains_path("/a/src/cim", "/a/src/cim"));
     try std.testing.expect(contains_path("/a/src/cim", "/a/src/cim/refs.zig"));
-    try std.testing.expect(contains_path("/a/src/cim", "/a/src/cim/cgmes/tp.zig"));
+    try std.testing.expect(contains_path("/a/src/cim", "/a/src/cim/cgmes/overlay.zig"));
     try std.testing.expect(!contains_path("/a/src/cim", "/a/src/cimd/foo.zig"));
     try std.testing.expect(!contains_path("/a/src/cim", "/a/src/cim-extra.zig"));
     try std.testing.expect(!contains_path("/a/src/cim", "/a/src/io/print.zig"));

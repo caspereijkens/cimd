@@ -6,7 +6,7 @@ const CimDocument = cim.CimDocument;
 
 const utils = cim.ids;
 const bus_conv = @import("bus.zig");
-const TP = cim.TP;
+const Overlay = cim.Overlay;
 const resolve = @import("../topology/resolve.zig");
 const parse = cim.parse;
 
@@ -78,7 +78,7 @@ pub const TerminalPlacer = struct {
     };
 
     pub const BusBranch = struct {
-        tp: TP,
+        tp: Overlay,
         bus_map: *const bus_conv.BusMap,
     };
 

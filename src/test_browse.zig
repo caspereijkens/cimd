@@ -2,15 +2,14 @@ const std = @import("std");
 const cim = @import("cim/cim.zig");
 const browse = @import("browse.zig");
 const CimDocument = cim.CimDocument;
-const TP = cim.TP;
-const SSH = cim.SSH;
+const Overlay = cim.Overlay;
 const refs = cim.refs;
 const CimObject = cim.CimObject;
 
 const BrowseFixture = struct {
     eq: CimDocument,
-    tp: ?TP = null,
-    ssh: ?SSH = null,
+    tp: ?Overlay = null,
+    ssh: ?Overlay = null,
 
     fn init(
         gpa: std.mem.Allocator,
@@ -20,8 +19,8 @@ const BrowseFixture = struct {
     ) !BrowseFixture {
         return .{
             .eq = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml)),
-            .tp = if (tp_xml) |xml| try TP.init(gpa, try gpa.dupe(u8, xml)) else null,
-            .ssh = if (ssh_xml) |xml| try SSH.init(gpa, try gpa.dupe(u8, xml)) else null,
+            .tp = if (tp_xml) |xml| try Overlay.init_tp(gpa, try gpa.dupe(u8, xml)) else null,
+            .ssh = if (ssh_xml) |xml| try Overlay.init_ssh(gpa, try gpa.dupe(u8, xml)) else null,
         };
     }
 
@@ -90,7 +89,7 @@ fn expectNotContains(haystack: []const u8, needle: []const u8) !void {
 fn combined_candidates(
     gpa: std.mem.Allocator,
     eq: *const CimDocument,
-    tp: TP,
+    tp: Overlay,
     prefix: []const u8,
 ) ![]const CimObject {
     return refs.collect_target_candidates(gpa, eq, tp, prefix);

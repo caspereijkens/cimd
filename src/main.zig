@@ -3,8 +3,7 @@ const cim = @import("cim/cim.zig");
 const cli = @import("cli.zig");
 const print = @import("io/print.zig");
 const builtin = @import("builtin");
-const SSH = cim.SSH;
-const TP = cim.TP;
+const Overlay = cim.Overlay;
 const io_read = @import("io/read.zig");
 // `_mod` suffix: local `diagnostics` variables would shadow it.
 const diagnostics_mod = cim.diagnostics;
@@ -108,8 +107,8 @@ fn command_convert(io: std.Io, parent_gpa: std.mem.Allocator, c: cli.Command.Con
     defer inputs.deinit(gpa);
     const model = &inputs.model;
     const segments = inputs.segments[0..inputs.segments_count];
-    const tp_opt: ?TP = if (inputs.tp) |loaded| loaded.tp else null;
-    const ssh_opt: ?SSH = if (inputs.ssh) |loaded| loaded.ssh else null;
+    const tp_opt: ?Overlay = if (inputs.tp) |loaded| loaded.overlay else null;
+    const ssh_opt: ?Overlay = if (inputs.ssh) |loaded| loaded.overlay else null;
     const primary_path = inputs.primary_source.label();
     const tp_path: ?[]const u8 = if (inputs.tp) |loaded| loaded.source.label() else null;
 
@@ -190,8 +189,8 @@ fn print_conversion_summary(io: std.Io, network: *const iidm.Network, has_tp: bo
 fn command_browse(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Browse) !void {
     var inputs = try model_set.load_merged(io, gpa, "browse", c.model_inputs.slice(), .query);
     defer inputs.deinit(gpa);
-    const tp_opt: ?TP = if (inputs.tp) |loaded| loaded.tp else null;
-    const ssh_opt: ?SSH = if (inputs.ssh) |loaded| loaded.ssh else null;
+    const tp_opt: ?Overlay = if (inputs.tp) |loaded| loaded.overlay else null;
+    const ssh_opt: ?Overlay = if (inputs.ssh) |loaded| loaded.overlay else null;
     const tp_path: ?[]const u8 = if (inputs.tp) |loaded| loaded.source.label() else null;
     const primary_path = inputs.primary_source.label();
 
@@ -232,8 +231,8 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
     if (c.mrid == null and (inputs.tp != null or inputs.ssh != null)) {
         print.stderr(io, "get: list mode does not merge supplementary TP or SSH parts", .{});
     }
-    const tp_opt: ?TP = if (inputs.tp) |loaded| loaded.tp else null;
-    const ssh_opt: ?SSH = if (inputs.ssh) |loaded| loaded.ssh else null;
+    const tp_opt: ?Overlay = if (inputs.tp) |loaded| loaded.overlay else null;
+    const ssh_opt: ?Overlay = if (inputs.ssh) |loaded| loaded.overlay else null;
     const tp_path: ?[]const u8 = if (inputs.tp) |loaded| loaded.source.label() else null;
     const primary_path = inputs.primary_source.label();
     reject_tp_primary_id_collision(io, "get", &inputs.model, tp_opt, tp_path);
@@ -361,7 +360,7 @@ fn resolve_prefix(
     io: std.Io,
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    tp_opt: ?TP,
+    tp_opt: ?Overlay,
     mrid: []const u8,
     type_filter: ?[]const u8,
     json: bool,
@@ -493,8 +492,8 @@ fn display_get_object(
     io: std.Io,
     gpa: std.mem.Allocator,
     object: tag_index.CimObjectView,
-    tp_opt: ?TP,
-    ssh_opt: ?SSH,
+    tp_opt: ?Overlay,
+    ssh_opt: ?Overlay,
     json: bool,
 ) !void {
     assert(object.id.len > 0);
@@ -606,8 +605,8 @@ fn command_refs(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Refs) !void {
 
     var inputs = try model_set.load_merged(io, gpa, "refs", c.model_inputs.slice(), .query);
     defer inputs.deinit(gpa);
-    const tp_opt: ?TP = if (inputs.tp) |loaded| loaded.tp else null;
-    const ssh_opt: ?SSH = if (inputs.ssh) |loaded| loaded.ssh else null;
+    const tp_opt: ?Overlay = if (inputs.tp) |loaded| loaded.overlay else null;
+    const ssh_opt: ?Overlay = if (inputs.ssh) |loaded| loaded.overlay else null;
     const tp_path: ?[]const u8 = if (inputs.tp) |loaded| loaded.source.label() else null;
     const primary_path = inputs.primary_source.label();
     reject_tp_primary_id_collision(io, "refs", &inputs.model, tp_opt, tp_path);
@@ -649,7 +648,7 @@ fn reject_tp_primary_id_collision(
     io: std.Io,
     command_name: []const u8,
     model: *const CimDocument,
-    tp_opt: ?TP,
+    tp_opt: ?Overlay,
     tp_path: ?[]const u8,
 ) void {
     if (tp_opt) |tp| if (refs.find_tp_primary_id_collision(model, tp)) |object| {
@@ -668,7 +667,7 @@ fn reject_tp_primary_mrid_collision(
     gpa: std.mem.Allocator,
     command_name: []const u8,
     model: *const CimDocument,
-    tp_opt: ?TP,
+    tp_opt: ?Overlay,
     tp_path: ?[]const u8,
 ) !void {
     if (tp_opt) |tp| if (try refs.find_tp_primary_mrid_collision(gpa, model, tp)) |collision| {
@@ -1301,7 +1300,7 @@ fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology)
     var inputs = try model_set.load_merged(io, gpa, "topology", c.model_inputs.slice(), .topology);
     defer inputs.deinit(gpa);
     const model = &inputs.model;
-    const ssh_opt: ?SSH = if (inputs.ssh) |loaded| loaded.ssh else null;
+    const ssh_opt: ?Overlay = if (inputs.ssh) |loaded| loaded.overlay else null;
     const primary_path = inputs.primary_source.label();
 
     const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
@@ -1315,7 +1314,7 @@ fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology)
         return model_operation_error(io, "topology", primary_path, err);
     defer topology.deinit(gpa);
 
-    const ssh_ptr: ?*const SSH = if (ssh_opt) |*s| s else null;
+    const ssh_ptr: ?*const Overlay = if (ssh_opt) |*s| s else null;
     var nodes = resolve.build_topological_nodes(gpa, model, &index, &topology, ssh_ptr) catch |err|
         return model_operation_error(io, "topology", primary_path, err);
     defer nodes.deinit(gpa);

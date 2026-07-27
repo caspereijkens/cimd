@@ -4,8 +4,7 @@ const assert = std.debug.assert;
 const cli = @import("cli.zig");
 const CimDocument = cim.CimDocument;
 
-const TP = cim.TP;
-const SSH = cim.SSH;
+const Overlay = cim.Overlay;
 const tag_index = cim.tag_index;
 const refs = cim.refs;
 const print = @import("io/print.zig");
@@ -146,8 +145,8 @@ pub fn browse(
     gpa: std.mem.Allocator,
     interactive: InteractiveIo,
     model: *const CimDocument,
-    tp_opt: ?TP,
-    ssh_opt: ?SSH,
+    tp_opt: ?Overlay,
+    ssh_opt: ?Overlay,
     mrid: []const u8,
 ) !void {
     var trace: std.ArrayList(Breadcrumb) = .empty;
@@ -241,8 +240,8 @@ fn tag_slice(
 fn render_regular(
     writer: *std.Io.Writer,
     gpa: std.mem.Allocator,
-    tp_opt: ?TP,
-    ssh_opt: ?SSH,
+    tp_opt: ?Overlay,
+    ssh_opt: ?Overlay,
     object: tag_index.CimObjectView,
     selections: *std.ArrayList(Selection),
 ) !u32 {
@@ -347,7 +346,7 @@ fn render_back_refs(
     writer: *std.Io.Writer,
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    tp_opt: ?TP,
+    tp_opt: ?Overlay,
     target: tag_index.CimObjectView,
     referrers: []const refs.ReverseRef,
     view: ListView,
@@ -374,7 +373,7 @@ fn render_back_refs_flat(
     writer: *std.Io.Writer,
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    tp_opt: ?TP,
+    tp_opt: ?Overlay,
     referrers: []const refs.ReverseRef,
     filter_type: ?[]const u8,
     selections: *std.ArrayList(Selection),
@@ -410,7 +409,7 @@ fn render_back_refs_grouped(
     writer: *std.Io.Writer,
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    tp_opt: ?TP,
+    tp_opt: ?Overlay,
     referrers: []const refs.ReverseRef,
     selections: *std.ArrayList(Selection),
 ) !u32 {

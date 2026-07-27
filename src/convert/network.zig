@@ -13,8 +13,7 @@ const transformer_conv = @import("transformer.zig");
 const line_conv = @import("line.zig");
 const bus_conv = @import("bus.zig");
 const placement_conv = @import("placement.zig");
-const SSH = cim.SSH;
-const TP = cim.TP;
+const Overlay = cim.Overlay;
 const parse = cim.parse;
 const populate_internal_connections = @import("internal_connections.zig").populate_internal_connections;
 
@@ -552,7 +551,7 @@ fn append_metadata_model(
 ///   boundary.id   = ConductingEquipment mRID of the TieFlow.Terminal
 ///   boundary.side = sequenceNumber of the TieFlow.Terminal (1→"ONE", 2→"TWO")
 ///   boundary.ac   = true (always, as all equipment is AC in EQ profiles)
-fn convert_areas(gpa: std.mem.Allocator, model: *const CimDocument, ssh_opt: ?SSH, network: *iidm.Network) !void {
+fn convert_areas(gpa: std.mem.Allocator, model: *const CimDocument, ssh_opt: ?Overlay, network: *iidm.Network) !void {
     const control_areas = model.get_objects_by_type("ControlArea");
     assert(network.areas.items.len == 0);
     if (control_areas.len == 0) return;
@@ -624,8 +623,8 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimDocument, ssh_opt: ?SS
 pub fn convert(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    tp_opt: ?TP,
-    ssh_opt: ?SSH,
+    tp_opt: ?Overlay,
+    ssh_opt: ?Overlay,
     bus_branch: bool,
 ) !iidm.Network {
     return convertWithDiagnostics(gpa, model, tp_opt, ssh_opt, bus_branch, null);
@@ -634,8 +633,8 @@ pub fn convert(
 pub fn convertWithDiagnostics(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    tp_opt: ?TP,
-    ssh_opt: ?SSH,
+    tp_opt: ?Overlay,
+    ssh_opt: ?Overlay,
     bus_branch: bool,
     diagnostics: ?*ConversionDiagnostics,
 ) !iidm.Network {
@@ -903,7 +902,7 @@ pub fn convertWithDiagnostics(
         }
 
         const full_model_count = full_models.len;
-        const ssh_full_model_view: ?tag_index.CimObjectView = if (ssh_opt) |ssh| try ssh.getFullModelView() else null;
+        const ssh_full_model_view: ?tag_index.CimObjectView = if (ssh_opt) |ssh| ssh.getFullModelView() else null;
         const expected_model_count = full_model_count + @as(usize, if (ssh_full_model_view != null) 1 else 0);
 
         // full_models[0] is the EQ FullModel; full_models[1..] are dependency

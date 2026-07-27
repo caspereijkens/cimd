@@ -10,8 +10,7 @@ const profile = cim.profile;
 // `_mod` suffix: local `diagnostics` variables would shadow it.
 const diagnostics_mod = cim.diagnostics;
 const CimDocument = cim.CimDocument;
-const TP = cim.TP;
-const SSH = cim.SSH;
+const Overlay = cim.Overlay;
 const validate = @import("validate.zig");
 
 const assert = std.debug.assert;
@@ -58,15 +57,14 @@ pub const Source = struct {
     }
 };
 
-pub const LoadedTP = struct { tp: TP, source: Source };
-pub const LoadedSSH = struct { ssh: SSH, source: Source };
+pub const LoadedOverlay = struct { overlay: Overlay, source: Source };
 
 pub const MergedModelSet = struct {
     model: CimDocument,
     segments: [2]validate.DataSegment,
     segments_count: u8,
-    tp: ?LoadedTP,
-    ssh: ?LoadedSSH,
+    tp: ?LoadedOverlay,
+    ssh: ?LoadedOverlay,
     primary_source: Source,
     boundary_source: ?Source,
     /// Profile the primary part declared (or was routed to), or null when it
@@ -76,11 +74,11 @@ pub const MergedModelSet = struct {
 
     pub fn deinit(self: *MergedModelSet, gpa: std.mem.Allocator) void {
         if (self.ssh) |*loaded| {
-            loaded.ssh.deinit(gpa);
+            loaded.overlay.deinit(gpa);
             loaded.source.deinit(gpa);
         }
         if (self.tp) |*loaded| {
-            loaded.tp.deinit(gpa);
+            loaded.overlay.deinit(gpa);
             loaded.source.deinit(gpa);
         }
         self.model.deinit(gpa);
@@ -344,17 +342,17 @@ fn parse_eq(
         report_parse_error(io, command_name, segments, err, diagnostics);
 }
 
-fn parse_tp(io: std.Io, gpa: std.mem.Allocator, command_name: []const u8, part: io_read.Part, source: Source) TP {
+fn parse_overlay(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    command_name: []const u8,
+    part: io_read.Part,
+    source: Source,
+    policy: cim.IdPolicy,
+) Overlay {
     var diagnostics: diagnostics_mod.Diagnostics = .{};
     const segments = [_]validate.DataSegment{.{ .name = source.label(), .start = 0, .line_start = 1 }};
-    return TP.initWithDiagnostics(gpa, part.xml, &diagnostics) catch |err|
-        report_parse_error(io, command_name, &segments, err, diagnostics);
-}
-
-fn parse_ssh(io: std.Io, gpa: std.mem.Allocator, command_name: []const u8, part: io_read.Part, source: Source) SSH {
-    var diagnostics: diagnostics_mod.Diagnostics = .{};
-    const segments = [_]validate.DataSegment{.{ .name = source.label(), .start = 0, .line_start = 1 }};
-    return SSH.initWithDiagnostics(gpa, part.xml, &diagnostics) catch |err|
+    return Overlay.initWithDiagnostics(gpa, part.xml, policy, &diagnostics) catch |err|
         report_parse_error(io, command_name, &segments, err, diagnostics);
 }
 
@@ -659,17 +657,23 @@ fn assemble_merged(
         materialized.xml,
         materialized.segments[0..materialized.segments_count],
     );
-    var loaded_tp: ?LoadedTP = null;
+    var loaded_tp: ?LoadedOverlay = null;
     if (selection.consume_tp) if (selection.tp) |index| {
         const part = collected.records.items[index].take();
         const source = source_from_part(part, inputs[records[index].input_index].path);
-        loaded_tp = .{ .tp = parse_tp(io, gpa, command_name, part, source), .source = source };
+        loaded_tp = .{
+            .overlay = parse_overlay(io, gpa, command_name, part, source, .id_declares_object),
+            .source = source,
+        };
     };
-    var loaded_ssh: ?LoadedSSH = null;
+    var loaded_ssh: ?LoadedOverlay = null;
     if (selection.consume_ssh) if (selection.ssh) |index| {
         const part = collected.records.items[index].take();
         const source = source_from_part(part, inputs[records[index].input_index].path);
-        loaded_ssh = .{ .ssh = parse_ssh(io, gpa, command_name, part, source), .source = source };
+        loaded_ssh = .{
+            .overlay = parse_overlay(io, gpa, command_name, part, source, .id_names_patch),
+            .source = source,
+        };
     };
 
     if (purpose == .topology) assert(loaded_tp == null);

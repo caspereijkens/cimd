@@ -19,6 +19,5 @@ comptime {
     _ = @import("refs.zig");
     _ = @import("writer.zig");
     _ = @import("cgmes/profile.zig");
-    _ = @import("cgmes/ssh.zig");
-    _ = @import("cgmes/tp.zig");
+    _ = @import("cgmes/overlay.zig");
 }
