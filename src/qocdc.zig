@@ -14,6 +14,7 @@ const Model = cim.CimDocument;
 const CimObject = cim.CimObject;
 const cim_types = cim.cim_types;
 const ids = cim.ids;
+const parse = cim.parse;
 const ReverseRefIndex = cim.refs.ReverseRefIndex;
 
 const assert = std.debug.assert;
@@ -304,7 +305,7 @@ pub fn parse_filename(filename: []const u8) !Filename {
     };
 }
 
-pub fn check_filename_consistency(io: std.Io, file_path: []const u8) !void {
+pub fn validate_filename_consistency(io: std.Io, file_path: []const u8) !void {
     const cwd = std.Io.Dir.cwd();
     const file = try cwd.openFile(io, file_path, .{});
     defer file.close(io);
@@ -334,8 +335,6 @@ pub fn check_filename_consistency(io: std.Io, file_path: []const u8) !void {
         return error.NotZipArchive;
     }
 }
-
-pub const validate_filename_consistency = check_filename_consistency;
 
 fn is_digits(value: []const u8) bool {
     for (value) |byte| {
@@ -1023,6 +1022,51 @@ fn is_terminal_count2_type(type_name: []const u8) bool {
     return cim_types.is_a(type_name, "DCSwitch");
 }
 
+/// TerminalSeqNum
+///
+/// Every instance of cim:Terminal must have a cim:Terminal.sequenceNumber if
+/// it belongs to a cim:EquivalentBranch or a cim:ACLineSegment with
+/// cim:MutualCoupling.
+pub fn validate_terminal_seq_num(model: Model, reverse_ref_index: *const ReverseRefIndex) error{TerminalSeqNum}!void {
+    var groups = model.type_groups();
+    while (groups.next()) |group| {
+        const equivalent_branch = cim_types.is_a(group.type_name, "EquivalentBranch");
+        const ac_line_segment = cim_types.is_a(group.type_name, "ACLineSegment");
+        if (!equivalent_branch and !ac_line_segment) continue;
+
+        for (group.objects) |object_data| {
+            if (!equivalent_branch and !has_mutual_coupling(object_data, reverse_ref_index)) continue;
+
+            for (reverse_ref_index.lookup(object_data.id())) |reverse_ref| {
+                if (!std.mem.eql(u8, reverse_ref.referrer_type, "Terminal")) continue;
+                if (!std.mem.eql(u8, reverse_ref.reference_name, "Terminal.ConductingEquipment")) continue;
+
+                const terminal = model.object_by_id(reverse_ref.referrer_id) orelse continue;
+                const seq_num = terminal.property("ACDCTerminal.sequenceNumber") catch return error.TerminalSeqNum;
+                _ = parse.int_req(u32, seq_num orelse return error.TerminalSeqNum) catch
+                    return error.TerminalSeqNum;
+            }
+        }
+    }
+}
+
+fn has_mutual_coupling(line: CimObject, reverse_ref_index: *const ReverseRefIndex) bool {
+    for (reverse_ref_index.lookup(line.id())) |terminal_ref| {
+        if (!std.mem.eql(u8, terminal_ref.referrer_type, "Terminal")) continue;
+        if (!std.mem.eql(u8, terminal_ref.reference_name, "Terminal.ConductingEquipment")) continue;
+
+        for (reverse_ref_index.lookup(terminal_ref.referrer_id)) |coupling_ref| {
+            if (!cim_types.is_a(coupling_ref.referrer_type, "MutualCoupling")) continue;
+            if (std.mem.eql(u8, coupling_ref.reference_name, "MutualCoupling.First_Terminal") or
+                std.mem.eql(u8, coupling_ref.reference_name, "MutualCoupling.Second_Terminal"))
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 const ContainerBaseVoltage = struct {
     /// True when the equipment is contained in a cim:VoltageLevel or cim:Bay
     /// (the containment that satisfies CEBaseVoltage's existence clause).
@@ -1174,6 +1218,7 @@ fn validate_grid_model_constraints(model: Model, profile_part: ?cim.profile.Kind
     try validate_nominal_voltage(model);
     try validate_terminal_count1(model, reverse_ref_index);
     try validate_terminal_count2(model, reverse_ref_index);
+    try validate_terminal_seq_num(model, reverse_ref_index);
 }
 
 fn filename_stem_from_path(file_path: []const u8) []const u8 {
@@ -1198,7 +1243,7 @@ fn validate_filename_parts(filename: Filename) !void {
 
 pub fn validate(io: std.Io, gpa: std.mem.Allocator, file_path: []const u8) !void {
     const filename = filename_stem_from_path(file_path);
-    check_filename_consistency(io, file_path) catch |err| {
+    validate_filename_consistency(io, file_path) catch |err| {
         switch (err) {
             error.FileNameConsistency => print.data_error(
                 io,
@@ -1311,6 +1356,7 @@ fn grid_model_error_message(err: anyerror) []const u8 {
         error.NominalVoltage => "a BaseVoltage nominalVoltage is not greater than zero",
         error.TerminalCount1 => "a single terminal equipment that is referenced by multiple terminals",
         error.TerminalCount2 => "a two terminal equipment that is not referenced by exactly two terminals.",
+        error.TerminalSeqNum => "a cim:Terminal of either an cim:EquivalentBranch or a cim:ACLineSegment with cim:MutualCoupling that does not have a sequence number declared.",
         else => @errorName(err),
     };
 }

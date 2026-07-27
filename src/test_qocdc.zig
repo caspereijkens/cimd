@@ -4,7 +4,7 @@ const Model = cim.CimDocument;
 const ReverseRefIndex = cim.ReverseRefIndex;
 const parse_filename = @import("qocdc.zig").parse_filename;
 const validate = @import("qocdc.zig");
-const check_filename_consistency = validate.check_filename_consistency;
+const validate_filename_consistency = validate.validate_filename_consistency;
 const check_effective_datetime = validate.check_effective_datetime;
 const validate_sourcing_actor = validate.validate_sourcing_actor;
 const validate_cgm_region = validate.validate_cgm_region;
@@ -215,7 +215,7 @@ test "FileNameConsistency" {
     var out_buffer: [1024]u8 = undefined;
     const file_path = try create_test_zip(io, tmpdir.dir, filename, &.{"my_filename.xml"}, &out_buffer);
 
-    try check_filename_consistency(io, file_path);
+    try validate_filename_consistency(io, file_path);
 }
 
 test "FileNameConsistency rejects zip containers with multiple files" {
@@ -233,7 +233,7 @@ test "FileNameConsistency rejects zip containers with multiple files" {
         &out_buffer,
     );
 
-    try std.testing.expectError(error.FileNameConsistency, check_filename_consistency(io, file_path));
+    try std.testing.expectError(error.FileNameConsistency, validate_filename_consistency(io, file_path));
 }
 
 test "FileNameConsistency rejects a plain file as not a ZIP archive" {
@@ -249,7 +249,7 @@ test "FileNameConsistency rejects a plain file as not a ZIP archive" {
     const path_len = try file.realPath(io, &path_buffer);
     try std.testing.expectError(
         error.NotZipArchive,
-        check_filename_consistency(io, path_buffer[0..path_len]),
+        validate_filename_consistency(io, path_buffer[0..path_len]),
     );
 }
 
@@ -450,6 +450,17 @@ fn run_terminal_count2(xml: []const u8) !void {
     defer reverse_ref_index.deinit(gpa);
 
     return validate.validate_terminal_count2(model, &reverse_ref_index);
+}
+
+fn run_terminal_seq_num(xml: []const u8) !void {
+    const gpa = std.testing.allocator;
+    var model = try Model.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    var reverse_ref_index = try ReverseRefIndex.build(gpa, &model);
+    defer reverse_ref_index.deinit(gpa);
+
+    return validate.validate_terminal_seq_num(model, &reverse_ref_index);
 }
 
 test "CEBaseVoltage accepts a direct BaseVoltage association" {
@@ -800,6 +811,106 @@ test "TerminalCount2 ignores equipment outside its scope" {
         \\  <cim:DCGround rdf:ID="_DCG1"/>
         \\  <cim:DCShunt rdf:ID="_DCSH1"/>
         \\  <cim:PowerTransformer rdf:ID="_PT1"/>
+        \\</rdf:RDF>
+    );
+}
+
+test "TerminalSeqNum accepts an uncoupled ACLineSegment without sequence numbers" {
+    try run_terminal_seq_num(
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_LINE1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    );
+}
+
+test "TerminalSeqNum requires sequence numbers for EquivalentBranch terminals" {
+    try std.testing.expectError(error.TerminalSeqNum, run_terminal_seq_num(
+        \\<rdf:RDF>
+        \\  <cim:EquivalentBranch rdf:ID="_BRANCH1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BRANCH1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ));
+}
+
+test "TerminalSeqNum accepts whitespace around a valid integer" {
+    try run_terminal_seq_num(
+        \\<rdf:RDF>
+        \\  <cim:EquivalentBranch rdf:ID="_BRANCH1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BRANCH1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber> 1 </cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    );
+}
+
+test "TerminalSeqNum rejects a non-integer sequence number" {
+    try std.testing.expectError(error.TerminalSeqNum, run_terminal_seq_num(
+        \\<rdf:RDF>
+        \\  <cim:EquivalentBranch rdf:ID="_BRANCH1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BRANCH1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>first</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ));
+}
+
+test "TerminalSeqNum ignores non-equipment references from a Terminal" {
+    try run_terminal_seq_num(
+        \\<rdf:RDF>
+        \\  <cim:EquivalentBranch rdf:ID="_BRANCH1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#_BRANCH1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    );
+}
+
+test "TerminalSeqNum requires sequence numbers for mutually coupled AC lines" {
+    try std.testing.expectError(error.TerminalSeqNum, run_terminal_seq_num(
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_LINE1"/>
+        \\  <cim:ACLineSegment rdf:ID="_LINE2"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE2"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\  <cim:MutualCoupling rdf:ID="_MC1">
+        \\    <cim:MutualCoupling.First_Terminal rdf:resource="#_T1"/>
+        \\    <cim:MutualCoupling.Second_Terminal rdf:resource="#_T2"/>
+        \\  </cim:MutualCoupling>
+        \\</rdf:RDF>
+    ));
+}
+
+test "TerminalSeqNum accepts mutually coupled AC lines with sequence numbers" {
+    try run_terminal_seq_num(
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_LINE1"/>
+        \\  <cim:ACLineSegment rdf:ID="_LINE2"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>
+        \\      1
+        \\    </cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE2"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\  <cim:MutualCoupling rdf:ID="_MC1">
+        \\    <cim:MutualCoupling.First_Terminal rdf:resource="#_T1"/>
+        \\    <cim:MutualCoupling.Second_Terminal rdf:resource="#_T2"/>
+        \\  </cim:MutualCoupling>
         \\</rdf:RDF>
     );
 }
