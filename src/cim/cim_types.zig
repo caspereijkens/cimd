@@ -205,18 +205,52 @@ const parent_edges = [_]ParentEdge{
     .{ .child = "WindPowerPlant", .parent = "PowerSystemResource" },
 };
 
-const ParentPair = struct { []const u8, []const u8 };
-const parent_by_child = std.StaticStringMap([]const u8).initComptime(blk: {
-    var pairs: [parent_edges.len]ParentPair = undefined;
-    for (parent_edges, 0..) |edge, index| {
-        pairs[index] = .{ edge.child, edge.parent };
-    }
+// ── Type ids and ancestor masks ───────────────────────────────────────────────
+//
+// Precomputing transitive ancestor masks makes id-based ancestry a bit test and
+// proves the generated hierarchy is acyclic at compile time.
+
+/// Opaque because ids may change when `parent_edges` is regenerated.
+pub const TypeId = enum(u16) { _ };
+
+const type_count: u16 = count_distinct_names();
+const type_names: [type_count][]const u8 = collect_distinct_names();
+
+const TypeSet = std.bit_set.IntegerBitSet(type_count);
+
+// One past the last valid id, so the sentinel cannot collide with a class.
+const no_parent: u16 = type_count;
+const parent_ids: [type_count]u16 = build_parent_ids();
+
+const ancestor_masks: [type_count]TypeSet = build_ancestor_masks();
+
+const name_to_id = std.StaticStringMap(TypeId).initComptime(blk: {
+    var pairs: [type_count]struct { []const u8, TypeId } = undefined;
+    for (type_names, 0..) |name, index| pairs[index] = .{ name, @enumFromInt(index) };
     break :blk pairs;
 });
 
+/// Unknown classes return null so vendor extensions remain unrelated leaves
+/// without requiring per-document interning.
+pub fn type_id(type_name: []const u8) ?TypeId {
+    return name_to_id.get(type_name);
+}
+
+/// Whether `actual` is `requested` or one of its subtypes. One bit test.
+pub fn is_a_id(actual: TypeId, requested: TypeId) bool {
+    return ancestor_masks[@intFromEnum(actual)].isSet(@intFromEnum(requested));
+}
+
 pub fn is_a(actual_type: []const u8, requested_type: []const u8) bool {
+    // Preserve fast exact matches and let unknown extension classes match
+    // themselves without entering the known-type tables.
     if (std.mem.eql(u8, actual_type, requested_type)) return true;
-    return has_ancestor(actual_type, requested_type);
+
+    if (type_id(actual_type)) |actual| {
+        if (type_id(requested_type)) |requested| return is_a_id(actual, requested);
+    }
+    // Extension classes have no known ancestry.
+    return false;
 }
 
 pub fn matches_filter(actual_type: []const u8, type_filter: ?[]const u8) bool {
@@ -224,27 +258,89 @@ pub fn matches_filter(actual_type: []const u8, type_filter: ?[]const u8) bool {
     return is_a(actual_type, requested);
 }
 
-// Walk the single parent chain from `actual_type` upward, looking for
-// `requested_type`. `parent_edges` is a tree (each child appears once), so
-// every type has at most one parent and this is a linear walk -- no recursion.
-// The loop is bounded by the edge count: a well-formed chain terminates via the
-// `orelse return false` long before that, and the bound caps any malformed
-// (cyclic) table at a finite number of steps.
-//
-// Parent lookup is static and allocation-free; the edge count remains the
-// defensive bound on a malformed cyclic table.
-fn has_ancestor(actual_type: []const u8, requested_type: []const u8) bool {
-    var current = actual_type;
-    for (0..parent_edges.len) |_| {
-        const parent = parent_of(current) orelse return false;
-        if (std.mem.eql(u8, parent, requested_type)) return true;
-        current = parent;
+fn count_distinct_names() u16 {
+    @setEvalBranchQuota(500_000);
+    var seen: [parent_edges.len * 2][]const u8 = undefined;
+    var count: u16 = 0;
+    for (parent_edges) |edge| {
+        for ([_][]const u8{ edge.child, edge.parent }) |name| {
+            if (index_of_name(seen[0..count], name) == null) {
+                seen[count] = name;
+                count += 1;
+            }
+        }
     }
-    return false;
+    return count;
 }
 
-fn parent_of(child: []const u8) ?[]const u8 {
-    return parent_by_child.get(child);
+fn collect_distinct_names() [type_count][]const u8 {
+    @setEvalBranchQuota(500_000);
+    var names: [type_count][]const u8 = undefined;
+    var count: u16 = 0;
+    for (parent_edges) |edge| {
+        for ([_][]const u8{ edge.child, edge.parent }) |name| {
+            if (index_of_name(names[0..count], name) == null) {
+                names[count] = name;
+                count += 1;
+            }
+        }
+    }
+    return names;
+}
+
+fn build_parent_ids() [type_count]u16 {
+    @setEvalBranchQuota(500_000);
+    var parents: [type_count]u16 = @splat(no_parent);
+    for (parent_edges) |edge| {
+        const child = index_of_name(&type_names, edge.child).?;
+        const parent = index_of_name(&type_names, edge.parent).?;
+        if (parents[child] != no_parent) {
+            @compileError("parent_edges gives '" ++ edge.child ++ "' more than one parent");
+        }
+        if (child == parent) @compileError("parent_edges makes '" ++ edge.child ++ "' its own parent");
+        parents[child] = parent;
+    }
+    return parents;
+}
+
+// Resolve the closure at comptime so a cycle fails the build instead of
+// requiring a defensive runtime walk bound.
+fn build_ancestor_masks() [type_count]TypeSet {
+    @setEvalBranchQuota(500_000);
+    var masks: [type_count]TypeSet = @splat(TypeSet.initEmpty());
+    var resolved: [type_count]bool = @splat(false);
+    var chain: [type_count]u16 = undefined;
+
+    for (0..type_count) |start| {
+        var length: u16 = 0;
+        var current: u16 = @intCast(start);
+        while (!resolved[current]) {
+            if (length == type_count) {
+                @compileError("parent_edges is cyclic, reachable from '" ++ type_names[start] ++ "'");
+            }
+            chain[length] = current;
+            length += 1;
+            if (parent_ids[current] == no_parent) break;
+            current = parent_ids[current];
+        }
+        while (length > 0) {
+            length -= 1;
+            const class = chain[length];
+            const parent = parent_ids[class];
+            var mask = if (parent == no_parent) TypeSet.initEmpty() else masks[parent];
+            mask.set(class);
+            masks[class] = mask;
+            resolved[class] = true;
+        }
+    }
+    return masks;
+}
+
+fn index_of_name(names: []const []const u8, name: []const u8) ?u16 {
+    for (names, 0..) |candidate, index| {
+        if (std.mem.eql(u8, candidate, name)) return @intCast(index);
+    }
+    return null;
 }
 
 test "is_a matches concrete type to itself" {
@@ -275,4 +371,66 @@ test "is_a chains GeneratingUnit through Equipment" {
 test "is_a returns false for unknown types" {
     try std.testing.expect(!is_a("ACLineSegment", "NotARealType"));
     try std.testing.expect(!is_a("AlsoNotReal", "Equipment"));
+}
+
+test "is_a treats an extension class as its own unrelated leaf" {
+    // Unknown extensions must still support exact-type filters.
+    try std.testing.expect(type_id("VendorSpecialThing") == null);
+    try std.testing.expect(is_a("VendorSpecialThing", "VendorSpecialThing"));
+    try std.testing.expect(!is_a("VendorSpecialThing", "IdentifiedObject"));
+    try std.testing.expect(!is_a("IdentifiedObject", "VendorSpecialThing"));
+}
+
+test "type_id resolves every class named in parent_edges" {
+    for (parent_edges) |edge| {
+        try std.testing.expect(type_id(edge.child) != null);
+        try std.testing.expect(type_id(edge.parent) != null);
+    }
+}
+
+// Compare every pair to catch mistakes in the generated closure.
+test "ancestor masks agree with a parent-chain walk on all class pairs" {
+    for (type_names) |actual| {
+        for (type_names) |requested| {
+            const expected = std.mem.eql(u8, actual, requested) or
+                walks_to(actual, requested);
+            try std.testing.expectEqual(expected, is_a(actual, requested));
+        }
+    }
+}
+
+// Keep the reference walk bounded independently of the acyclicity proof it
+// tests.
+fn walks_to(actual_type: []const u8, requested_type: []const u8) bool {
+    var current = actual_type;
+    for (0..parent_edges.len) |_| {
+        const child_id = type_id(current) orelse return false;
+        const parent_id = parent_ids[@intFromEnum(child_id)];
+        if (parent_id == no_parent) return false;
+        const parent = type_names[parent_id];
+        if (std.mem.eql(u8, parent, requested_type)) return true;
+        current = parent;
+    }
+    return false;
+}
+
+test "every class is in its own ancestor mask" {
+    for (type_names, 0..) |_, index| {
+        const id: TypeId = @enumFromInt(index);
+        try std.testing.expect(is_a_id(id, id));
+    }
+}
+
+test "a class's mask contains its parent's" {
+    for (parent_ids, 0..) |parent, child| {
+        if (parent == no_parent) continue;
+        const child_mask = ancestor_masks[child];
+        const parent_mask = ancestor_masks[parent];
+        try std.testing.expectEqual(parent_mask.mask, child_mask.mask & parent_mask.mask);
+    }
+}
+
+test "matches_filter with no filter matches everything" {
+    try std.testing.expect(matches_filter("Breaker", null));
+    try std.testing.expect(matches_filter("VendorSpecialThing", null));
 }
