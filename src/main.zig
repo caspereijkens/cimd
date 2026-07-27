@@ -58,6 +58,9 @@ fn main_impl(init: std.process.Init) !void {
     var args = try init.minimal.args.iterateAllocator(gpa);
     defer args.deinit();
     const command = try cli.parse_args(io, &args);
+    // After parsing, so --stats is known; before the command, so no diagnostic
+    // is written against an unsettled policy.
+    print.resolve_stats(io);
     const name = @tagName(command);
 
     run_command(io, gpa, command) catch |err| {

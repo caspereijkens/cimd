@@ -58,6 +58,13 @@ const help_main = std.fmt.comptimePrint(
     \\  qocdc      Run Quality of CGMES Datasets and Calculations checks
     \\  version    Print version information
     \\
+    \\Global options:
+    \\      --stats <when>   When to print human-readable summaries to stderr:
+    \\                       auto (default) prints them only when stdout is a
+    \\                       terminal, so piped or redirected data stays clean;
+    \\                       always prints them regardless (useful in CI logs);
+    \\                       never suppresses them. Errors are always shown.
+    \\
     \\Use 'cimd <command> --help' for more information about a command.
     \\
 ,
@@ -72,6 +79,10 @@ const help_convert = std.fmt.comptimePrint(
     \\
     \\Convert a CGMES EQ profile to JIIDM JSON format.
     \\Output is written to stdout unless --output is given.
+    \\
+    \\A network summary is printed to stderr when stdout is a terminal, so
+    \\`cimd convert eq.zip | jq` emits nothing but JSON. See --stats in
+    \\`cimd --help` to force it on or off.
     \\
     \\Arguments:
     \\  <file>...               CGMES parts or a bundle (XML or ZIP)
@@ -672,6 +683,8 @@ fn parse_convert(io: std.Io, args: *std.process.Args.Iterator) !Command {
             output_path = take_output_arg(io, args, command_name);
         } else if (std.mem.eql(u8, arg, "--bus-branch")) {
             bus_branch = true;
+        } else if (parse_stats_flag(io, args, command_name, arg)) {
+            continue;
         } else if (is_flag(arg)) {
             print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
         } else {
@@ -702,6 +715,8 @@ fn parse_browse(io: std.Io, args: *std.process.Args.Iterator) !Command {
         } else if (std.mem.eql(u8, arg, "-s")) {
             inputs.add_flagged(io, args, command_name, "--ssh", .ssh);
         } else if (parse_kind_flag(&inputs, io, args, command_name, arg)) {
+            continue;
+        } else if (parse_stats_flag(io, args, command_name, arg)) {
             continue;
         } else if (is_flag(arg)) {
             print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
@@ -750,6 +765,8 @@ fn parse_get(io: std.Io, args: *std.process.Args.Iterator) !Command {
             continue;
         } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
             json = true;
+        } else if (parse_stats_flag(io, args, command_name, arg)) {
+            continue;
         } else if (is_flag(arg)) {
             print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
         } else if (is_cgmes_operand(arg)) {
@@ -796,6 +813,8 @@ fn parse_refs(io: std.Io, args: *std.process.Args.Iterator) !Command {
             continue;
         } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
             json = true;
+        } else if (parse_stats_flag(io, args, command_name, arg)) {
+            continue;
         } else if (is_flag(arg)) {
             print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
         } else if (is_cgmes_operand(arg)) {
@@ -833,6 +852,8 @@ fn parse_types(io: std.Io, args: *std.process.Args.Iterator) !Command {
             continue;
         } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
             json = true;
+        } else if (parse_stats_flag(io, args, command_name, arg)) {
+            continue;
         } else if (is_flag(arg)) {
             print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
         } else {
@@ -881,6 +902,8 @@ fn parse_diff(io: std.Io, args: *std.process.Args.Iterator) !Command {
             summary = true;
         } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
             json = true;
+        } else if (parse_stats_flag(io, args, command_name, arg)) {
+            continue;
         } else if (is_flag(arg)) {
             print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
         } else {
@@ -994,6 +1017,8 @@ fn parse_topology(io: std.Io, args: *std.process.Args.Iterator) !Command {
             continue;
         } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
             output_path = take_output_arg(io, args, command_name);
+        } else if (parse_stats_flag(io, args, command_name, arg)) {
+            continue;
         } else if (is_flag(arg)) {
             print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
         } else {
@@ -1044,6 +1069,8 @@ fn parse_validate(io: std.Io, args: *std.process.Args.Iterator) !Command {
             output_path = take_output_arg(io, args, command_name);
         } else if (std.mem.eql(u8, arg, "--list-skipped")) {
             list_skipped = true;
+        } else if (parse_stats_flag(io, args, command_name, arg)) {
+            continue;
         } else if (is_flag(arg)) {
             print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
         } else {
@@ -1075,6 +1102,9 @@ fn parse_qocdc(io: std.Io, args: *std.process.Args.Iterator) !Command {
             try print.write(io, help_qocdc);
             std.process.exit(0);
         }
+        if (parse_stats_flag(io, args, command_name, arg)) {
+            continue;
+        }
         if (is_flag(arg)) {
             print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
         } else {
@@ -1104,6 +1134,8 @@ fn parse_version(io: std.Io, args: *std.process.Args.Iterator) !Command {
             verbose = true;
         } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
             json = true;
+        } else if (parse_stats_flag(io, args, "version", arg)) {
+            continue;
         } else {
             print.stderr(io, "version: unknown option '{s}'", .{arg});
         }
@@ -1180,6 +1212,33 @@ fn take_output_arg(
 
 inline fn is_flag(arg: []const u8) bool {
     return arg.len > 1 and arg[0] == '-';
+}
+
+/// Match `--stats <mode>` or `--stats=<mode>` and apply it. Returns whether
+/// `arg` was the flag, so a parse loop can `continue`; same shape as
+/// `parse_kind_flag`. Every command accepts it because the setting is
+/// process-wide, not per-command.
+fn parse_stats_flag(
+    io: std.Io,
+    args: *std.process.Args.Iterator,
+    comptime command_name: []const u8,
+    arg: []const u8,
+) bool {
+    const stats_values = "auto, always or never";
+    const value = if (std.mem.eql(u8, arg, "--stats"))
+        take_value_arg(io, args, command_name, "--stats", stats_values)
+    else if (std.mem.startsWith(u8, arg, "--stats="))
+        arg["--stats=".len..]
+    else
+        return false;
+
+    const mode = std.meta.stringToEnum(print.StatsMode, value) orelse print.stderr(
+        io,
+        command_name ++ ": --stats: expected " ++ stats_values ++ ", got '{s}'",
+        .{value},
+    );
+    print.set_stats_mode(mode);
+    return true;
 }
 
 fn validate_path(io: std.Io, path: []const u8, comptime command_name: []const u8) void {

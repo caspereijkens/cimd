@@ -725,7 +725,7 @@ fn skip_unused(
     for (collected.records.items, 0..) |record, index| {
         if (consumed[index]) continue;
         const kind = record.route orelse continue;
-        try print.stderr_info(io, "{s}: skipping {s} part '{s}' (not used by this command)\n", .{
+        try print.warn(io, "{s}: skipping {s} part '{s}' (not used by this command)\n", .{
             command_name, @tagName(kind), record.part.name,
         });
         collected.records.items[index].deinit(gpa);

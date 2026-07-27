@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const cim = @import("../cim/cim.zig");
 const CimDocument = cim.CimDocument;
 
@@ -112,9 +113,68 @@ pub fn size_limit_text_comptime(comptime max_bytes: u64) []const u8 {
     return std.fmt.comptimePrint("{s}", .{text});
 }
 
-/// Write informational (non-error) output to stderr. Returns an error on write failure.
-/// Use for diagnostic/progress output that should not pollute stdout data.
+/// When human-readable diagnostics are written to stderr.
+///
+/// `auto` prints them only when stdout is a terminal. A summary describes the
+/// data the command just produced, so it is addressed to whoever is reading
+/// that data; when stdout is a pipe or a file, that reader is a machine and the
+/// summary is noise competing for the terminal. Redirecting the data with
+/// `--output` leaves stdout a terminal, so the summary still appears -- which is
+/// the case that wants it most, since the data itself never reaches the screen.
+pub const StatsMode = enum { auto, always, never };
+
+/// Process-wide output policy: requested during argument parsing, settled once
+/// by `resolve_stats` before any command runs, then read-only. Global rather
+/// than a parameter threaded through eighteen call sites across four modules,
+/// none of which make the decision.
+var stats_mode: StatsMode = .auto;
+var stats_visible: bool = true;
+var stats_resolved: bool = false;
+
+/// Record the requested mode. Argument parsing calls this; the terminal check
+/// is deliberately not done here, so parsing stays free of I/O.
+pub fn set_stats_mode(mode: StatsMode) void {
+    assert(!stats_resolved);
+    stats_mode = mode;
+}
+
+/// Settle whether diagnostics are visible. Called exactly once, after parsing
+/// and before the command runs, so every later `stderr_info` is a branch on an
+/// answer already known. A terminal check that fails is not worth reporting:
+/// treat an undeterminable stdout as not-a-terminal, the quieter reading.
+pub fn resolve_stats(io: std.Io) void {
+    assert(!stats_resolved);
+    stats_visible = switch (stats_mode) {
+        .always => true,
+        .never => false,
+        .auto => std.Io.File.stdout().isTty(io) catch false,
+    };
+    stats_resolved = true;
+}
+
+/// Write a summary of what the command produced to stderr. Suppressed under
+/// `--stats never`, and by default when stdout is not a terminal.
+///
+/// Only for output that restates the result: a caller who cannot see it has
+/// lost nothing, because the data on stdout still says it. Anything reporting
+/// that input was ignored or adjusted is a `warn`, and anything reporting
+/// failure is an `exit_message`; neither may be silenced.
 pub fn stderr_info(io: std.Io, comptime fmt_str: []const u8, args: anytype) !void {
+    if (!stats_visible) return;
+    return write_stderr(io, fmt_str, args);
+}
+
+/// Write a warning to stderr. Never suppressed, whatever `--stats` says.
+///
+/// A warning means the command did something other than what the arguments
+/// literally asked -- ignored a part, fell back to a default. Gating that
+/// behind a terminal check would hide the mistake exactly when it is least
+/// likely to be noticed: in a pipeline or a CI job, where nobody is watching.
+pub fn warn(io: std.Io, comptime fmt_str: []const u8, args: anytype) !void {
+    return write_stderr(io, fmt_str, args);
+}
+
+fn write_stderr(io: std.Io, comptime fmt_str: []const u8, args: anytype) !void {
     var buffer: [4096]u8 = undefined;
     var file_writer = std.Io.File.Writer.initStreaming(std.Io.File.stderr(), io, &buffer);
     file_writer_result(&file_writer, file_writer.interface.print(fmt_str, args)) catch |err| switch (err) {

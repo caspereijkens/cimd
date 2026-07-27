@@ -511,3 +511,48 @@ test "diff compares unrecognized profiles routed under one agreed kind" {
     try std.testing.expect(result.stdout_contains("- IdentifiedObject.name: \"North\""));
     try std.testing.expect(result.stdout_contains("+ IdentifiedObject.name: \"South\""));
 }
+
+/// Every subcommand `cimd --help` lists. `--stats` is documented there as a
+/// global option, so a wrapper may append it to any of these.
+const advertised_commands = [_][]const u8{
+    "convert", "browse",   "get",      "refs",  "types",
+    "diff",    "topology", "validate", "qocdc", "version",
+};
+
+test "every advertised subcommand accepts the global --stats flag" {
+    const gpa = std.testing.allocator;
+
+    // The parse loops are near-identical but not identical, so a flag added to
+    // "each" of them by hand skips the ones shaped differently. Assert the
+    // documented scope instead of trusting the edit.
+    for (advertised_commands) |command| {
+        for ([_][]const u8{ "--stats=never", "--stats" }) |spelling| {
+            var args: std.ArrayList([]const u8) = .empty;
+            defer args.deinit(gpa);
+            try args.append(gpa, command);
+            try args.append(gpa, spelling);
+            // `--stats` without `=` takes the mode as the next argument.
+            if (spelling.len == "--stats".len) try args.append(gpa, "never");
+
+            var result = try run(gpa, args.items);
+            defer result.deinit(gpa);
+            // Most of these still fail for want of a file; what must not appear
+            // is a complaint about the flag itself.
+            if (result.stderr_contains("unknown option '--stats")) {
+                std.debug.print(
+                    "'{s} {s}' rejected --stats: {s}\n",
+                    .{ command, spelling, result.stderr },
+                );
+                return error.StatsFlagRejected;
+            }
+        }
+    }
+}
+
+test "--stats rejects a mode it does not define" {
+    const gpa = std.testing.allocator;
+    var result = try run(gpa, &.{ "types", "--stats=loud" });
+    defer result.deinit(gpa);
+    try std.testing.expectEqual(@as(u8, exit_usage), result.code);
+    try std.testing.expect(result.stderr_contains("expected auto, always or never"));
+}
