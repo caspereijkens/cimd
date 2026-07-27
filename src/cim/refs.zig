@@ -100,18 +100,6 @@ const EdgeSink = union(enum) {
     }
 };
 
-/// View over a TP-added (rdf:ID) object, mirroring CimDocument.view.
-fn tp_object_view(tp: Overlay, obj: tag_index.CimObject) tag_index.CimObjectView {
-    return .{
-        .xml = tp.xml,
-        .boundaries = tp.boundaries,
-        .object_tag_idx = obj.object_tag_idx,
-        .closing_tag_idx = obj.closing_tag_idx,
-        .id = obj.id,
-        .type_name = obj.type_name,
-    };
-}
-
 /// Precedence order for overlay references: SSH shadows TP shadows EQ.
 const Layer = enum { ssh, tp, eq };
 
@@ -140,16 +128,16 @@ const RefRange = struct {
 fn emit_merged_edges(
     gpa: std.mem.Allocator,
     sink: EdgeSink,
-    base: tag_index.CimObjectView,
+    base: tag_index.CimObject,
     tp_opt: ?Overlay,
     ssh_opt: ?Overlay,
 ) !void {
-    assert(base.id.len > 0);
-    assert(base.type_name.len > 0);
+    assert(base.id().len > 0);
+    assert(base.type_name().len > 0);
 
     const eq_range: RefRange = .{
-        .xml = base.xml,
-        .boundaries = base.boundaries,
+        .xml = base.context.xml,
+        .boundaries = base.context.boundaries,
         .open_idx = base.object_tag_idx,
         .close_idx = base.closing_tag_idx,
     };
@@ -158,7 +146,7 @@ fn emit_merged_edges(
     // a patch lookup would need. The common `cimd refs` path, kept at plain
     // reverse-scan cost.
     if (tp_opt == null and ssh_opt == null) {
-        try stream_edges(gpa, sink, eq_range, base.id, base.type_name, null, .eq);
+        try stream_edges(gpa, sink, eq_range, base.id(), base.type_name(), null, .eq);
         return;
     }
 
@@ -179,7 +167,7 @@ fn emit_merged_edges(
     // No overlay touches this object: stream EQ directly, no allocation -- the
     // cost of a plain reverse scan, which is the common path.
     if (tp_range == null and ssh_range == null) {
-        try stream_edges(gpa, sink, eq_range, base.id, base.type_name, null, .eq);
+        try stream_edges(gpa, sink, eq_range, base.id(), base.type_name(), null, .eq);
         return;
     }
 
@@ -191,9 +179,9 @@ fn emit_merged_edges(
     if (tp_range) |r| try record_owners(gpa, &owner, .tp, r);
     try record_owners(gpa, &owner, .eq, eq_range);
 
-    if (ssh_range) |r| try stream_edges(gpa, sink, r, base.id, base.type_name, &owner, .ssh);
-    if (tp_range) |r| try stream_edges(gpa, sink, r, base.id, base.type_name, &owner, .tp);
-    try stream_edges(gpa, sink, eq_range, base.id, base.type_name, &owner, .eq);
+    if (ssh_range) |r| try stream_edges(gpa, sink, r, base.id(), base.type_name(), &owner, .ssh);
+    if (tp_range) |r| try stream_edges(gpa, sink, r, base.id(), base.type_name(), &owner, .tp);
+    try stream_edges(gpa, sink, eq_range, base.id(), base.type_name(), &owner, .eq);
 }
 
 /// Claim `layer` as owner of each reference name in `range` unless a
@@ -248,11 +236,11 @@ fn iterate_merged_edges(
     sink: EdgeSink,
 ) !void {
     for (model.objects) |obj| {
-        try emit_merged_edges(gpa, sink, model.view(obj), tp_opt, ssh_opt);
+        try emit_merged_edges(gpa, sink, obj, tp_opt, ssh_opt);
     }
     // TP-added objects are referrers too; TP can't patch itself, so overlay = SSH.
     if (tp_opt) |tp| for (tp.new_objects) |obj| {
-        try emit_merged_edges(gpa, sink, tp_object_view(tp, obj), null, ssh_opt);
+        try emit_merged_edges(gpa, sink, obj, null, ssh_opt);
     };
 }
 
@@ -281,15 +269,15 @@ pub fn resolve_object(
     model: *const CimDocument,
     tp_opt: ?Overlay,
     id: []const u8,
-) ?tag_index.CimObjectView {
-    if (model.getObjectById(id)) |view| {
+) ?tag_index.CimObject {
+    if (model.object_by_id(id)) |view| {
         // Round-trip pair: the EQ index must hand us back the same id.
-        assert(std.mem.eql(u8, view.id, id));
+        assert(std.mem.eql(u8, view.id(), id));
         return view;
     }
     if (tp_opt) |tp| {
-        if (tp.get_object_by_id(id)) |view| {
-            assert(std.mem.eql(u8, view.id, id));
+        if (tp.object_by_id(id)) |view| {
+            assert(std.mem.eql(u8, view.id(), id));
             return view;
         }
     }
@@ -305,7 +293,7 @@ pub fn resolve_object_normalized(
     model: *const CimDocument,
     tp_opt: ?Overlay,
     id: []const u8,
-) !?tag_index.CimObjectView {
+) !?tag_index.CimObject {
     if (resolve_object(model, tp_opt, id)) |view| return view;
     if (id.len > 0 and id[0] != '_') {
         const prefixed = try ids.with_leading_underscore(gpa, id);
@@ -328,7 +316,7 @@ pub fn find_tp_primary_id_collision(
     tp: Overlay,
 ) ?tag_index.CimObject {
     for (tp.new_objects) |obj| {
-        if (model.getObjectById(obj.id) != null) return obj;
+        if (model.object_by_id(obj.id()) != null) return obj;
     }
     return null;
 }
@@ -346,13 +334,13 @@ pub fn find_tp_primary_mrid_collision(
     try primary_mrids.ensureTotalCapacity(gpa, @intCast(model.objects.len));
 
     for (model.objects) |obj| {
-        const mrid = try model.view(obj).mrid();
+        const mrid = try obj.mrid();
         if (mrid.len == 0) continue;
         primary_mrids.putAssumeCapacity(mrid, {});
     }
 
     for (tp.new_objects) |obj| {
-        const mrid = try tp.view(obj).mrid();
+        const mrid = try obj.mrid();
         if (mrid.len > 0 and primary_mrids.contains(mrid)) {
             return .{ .object = obj, .mrid = mrid };
         }
@@ -382,8 +370,8 @@ pub fn collect_target_candidates(
     // Downstream consumers (lookup, display, mrid stripping) all require a
     // non-empty id; any empty here means an upstream parser admitted garbage.
     for (out) |obj| {
-        assert(obj.id.len > 0);
-        assert(obj.type_name.len > 0);
+        assert(obj.id().len > 0);
+        assert(obj.type_name().len > 0);
     }
     return out;
 }
@@ -396,9 +384,9 @@ fn append_target_candidates(
 ) !void {
     const start_len = matches.items.len;
     for (objects) |obj| {
-        if (ids.id_prefix_matches(obj.id, mrid_prefix)) try matches.append(gpa, obj);
+        if (ids.id_prefix_matches(obj.id(), mrid_prefix)) try matches.append(gpa, obj);
     }
-    for (matches.items[start_len..]) |obj| assert(ids.id_prefix_matches(obj.id, mrid_prefix));
+    for (matches.items[start_len..]) |obj| assert(ids.id_prefix_matches(obj.id(), mrid_prefix));
 }
 
 /// Return a freshly-allocated, sorted slice of referrers filtered by
@@ -743,7 +731,7 @@ test "resolve_object_normalized handles ids longer than any stack buffer" {
     const expected = try std.fmt.allocPrint(gpa, "_{s}", .{long});
     defer gpa.free(expected);
     const hit = try resolve_object_normalized(gpa, &model, null, long) orelse return error.NotFound;
-    try std.testing.expectEqualStrings(expected, hit.id);
+    try std.testing.expectEqualStrings(expected, hit.id());
 }
 
 test "resolve_object_normalized resolves a full id typed without its leading underscore" {
@@ -758,11 +746,11 @@ test "resolve_object_normalized resolves a full id typed without its leading und
 
     // Literal hit when the underscore is present.
     const exact = try resolve_object_normalized(gpa, &model, null, "_SS1") orelse return error.NotFound;
-    try std.testing.expectEqualStrings("_SS1", exact.id);
+    try std.testing.expectEqualStrings("_SS1", exact.id());
 
     // Underscore-optional convenience: "SS1" resolves the stored "_SS1".
     const convenient = try resolve_object_normalized(gpa, &model, null, "SS1") orelse return error.NotFound;
-    try std.testing.expectEqualStrings("_SS1", convenient.id);
+    try std.testing.expectEqualStrings("_SS1", convenient.id());
 
     try std.testing.expect(try resolve_object_normalized(gpa, &model, null, "SS9") == null);
 }
@@ -780,8 +768,8 @@ test "resolve_object_normalized prefers an exact literal hit over the underscore
 
     // Literal "A" is authoritative; the "_A" retry must not shadow it.
     const hit = try resolve_object_normalized(gpa, &model, null, "A") orelse return error.NotFound;
-    try std.testing.expectEqualStrings("A", hit.id);
-    try std.testing.expectEqualStrings("Substation", hit.type_name);
+    try std.testing.expectEqualStrings("A", hit.id());
+    try std.testing.expectEqualStrings("Substation", hit.type_name());
 }
 
 test "filter_referrers: no filter returns all, sorted by (type, id, ref)" {
@@ -951,13 +939,13 @@ test "collect_target_candidates: TP-only target resolves under --tp" {
     const with_tp = try collect_target_candidates(gpa, &model, tp, "TN1");
     defer gpa.free(with_tp);
     try std.testing.expectEqual(@as(usize, 1), with_tp.len);
-    try std.testing.expectEqualStrings("_TN1", with_tp[0].id);
-    try std.testing.expectEqualStrings("TopologicalNode", with_tp[0].type_name);
+    try std.testing.expectEqualStrings("_TN1", with_tp[0].id());
+    try std.testing.expectEqualStrings("TopologicalNode", with_tp[0].type_name());
 
     // The overlay-aware index then finds the patched Terminal as its referrer.
     var index = try ReverseRefIndex.build_with_overlays(gpa, &model, tp, null);
     defer index.deinit(gpa);
-    const refs = index.lookup(with_tp[0].id);
+    const refs = index.lookup(with_tp[0].id());
     try std.testing.expectEqual(@as(usize, 1), refs.len);
     try std.testing.expectEqualStrings("_T1", refs[0].referrer_id);
 }
@@ -983,8 +971,8 @@ test "collect_target_candidates: EQ and TP matches both included" {
     defer gpa.free(matches);
     try std.testing.expectEqual(@as(usize, 2), matches.len);
     // EQ matches come first by construction.
-    try std.testing.expectEqualStrings("_X1", matches[0].id);
-    try std.testing.expectEqualStrings("_X2", matches[1].id);
+    try std.testing.expectEqualStrings("_X1", matches[0].id());
+    try std.testing.expectEqualStrings("_X2", matches[1].id());
 }
 
 test "find_tp_primary_id_collision compares raw RDF identifiers" {
@@ -1007,7 +995,7 @@ test "find_tp_primary_id_collision compares raw RDF identifiers" {
     defer tp.deinit(gpa);
 
     const collision = find_tp_primary_id_collision(&model, tp) orelse return error.TestExpectedCollision;
-    try std.testing.expectEqualStrings("_T1", collision.id);
+    try std.testing.expectEqualStrings("_T1", collision.id());
 }
 
 test "find_tp_primary_id_collision allows distinct raw ids with equal mRIDs" {

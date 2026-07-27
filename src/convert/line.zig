@@ -76,7 +76,6 @@ const LineSegment = struct {
 /// here. Does nothing when the segment lacks exactly two placeable terminals.
 fn append_line_segment(
     gpa: std.mem.Allocator,
-    model: *const CimDocument,
     network: *iidm.Network,
     placer: TerminalPlacer,
     boundary_conn_node_voltage_level_map: *const std.StringHashMapUnmanaged(u32),
@@ -85,7 +84,7 @@ fn append_line_segment(
 ) !void {
     const index = placer.index;
 
-    const terminals = index.equipment_terminals.get(segment.object.id) orelse return;
+    const terminals = index.equipment_terminals.get(segment.object.id()) orelse return;
     if (terminals.items.len != 2) return;
 
     const placement_1 = try resolve_line_terminal(
@@ -117,12 +116,12 @@ fn append_line_segment(
     properties.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = segment.original_class });
 
     // operational limits groups for each terminal
-    var op_lims_groups_1 = try placement_mod.build_op_lims(gpa, model, index, terminals.items[0].id);
+    var op_lims_groups_1 = try placement_mod.build_op_lims(gpa, index, terminals.items[0].id);
     errdefer {
         for (op_lims_groups_1.items) |*group| group.deinit(gpa);
         op_lims_groups_1.deinit(gpa);
     }
-    var op_lims_groups_2 = try placement_mod.build_op_lims(gpa, model, index, terminals.items[1].id);
+    var op_lims_groups_2 = try placement_mod.build_op_lims(gpa, index, terminals.items[1].id);
     errdefer {
         for (op_lims_groups_2.items) |*group| group.deinit(gpa);
         op_lims_groups_2.deinit(gpa);
@@ -170,8 +169,8 @@ pub fn convert_lines(
 ) !void {
     const index = placer.index;
     const voltage_level_map = placer.voltage_level_map;
-    const lines = model.get_objects_by_type("ACLineSegment");
-    const series_compensators = model.get_objects_by_type("SeriesCompensator");
+    const lines = model.objects_by_type("ACLineSegment");
+    const series_compensators = model.objects_by_type("SeriesCompensator");
     assert(lines.len == 0 or index.equipment_terminals.count() > 0);
 
     // ---- Fictitious VLs for boundary ConnectivityNodes ----
@@ -207,8 +206,7 @@ pub fn convert_lines(
     // Pass 1: collect boundary ConnectivityNode terminals in XML encounter order.
     for ([_][]const cim.CimObject{ lines, series_compensators }) |segment_slice| {
         for (segment_slice) |segment| {
-            const segment_view = model.view(segment);
-            const terminals = index.equipment_terminals.get(segment.id) orelse continue;
+            const terminals = index.equipment_terminals.get(segment.id()) orelse continue;
             for (terminals.items) |terminal| {
                 const conn_node_id = terminal.conn_node_id orelse continue;
                 const container_id = index.conn_node_container.get(conn_node_id) orelse continue;
@@ -219,24 +217,24 @@ pub fn convert_lines(
                 const boundary_conn_node_entry = try boundary_conn_node_info.getOrPut(gpa, conn_node_id);
                 if (!boundary_conn_node_entry.found_existing) {
                     // First encounter: collect metadata from this segment's view.
-                    const conn_node_object = model.getObjectById(conn_node_id).?;
+                    const conn_node_object = model.object_by_id(conn_node_id).?;
                     const conn_node_mrid = try conn_node_object.mrid();
-                    const container_object_opt = model.getObjectById(container_id);
+                    const container_object_opt = model.object_by_id(container_id);
                     const container_mrid: []const u8 = blk: {
                         if (container_object_opt) |container_object| {
-                            if (parse.non_blank(try container_object.getProperty("IdentifiedObject.mRID"))) |container_mrid_value| break :blk container_mrid_value;
+                            if (parse.non_blank(try container_object.property("IdentifiedObject.mRID"))) |container_mrid_value| break :blk container_mrid_value;
                         }
                         break :blk strip_underscore(container_id);
                     };
                     const conn_node_name: ?[]const u8 = blk: {
                         const container_object = container_object_opt orelse break :blk null;
-                        break :blk parse.non_blank(try container_object.getProperty("IdentifiedObject.name"));
+                        break :blk parse.non_blank(try container_object.property("IdentifiedObject.name"));
                     };
                     var nominal_voltage: ?f64 = null;
-                    if (try segment_view.getReference("ConductingEquipment.BaseVoltage")) |base_voltage_ref| {
+                    if (try segment.reference("ConductingEquipment.BaseVoltage")) |base_voltage_ref| {
                         const base_voltage_id = strip_hash(base_voltage_ref);
-                        if (model.getObjectById(base_voltage_id)) |base_voltage_object| {
-                            nominal_voltage = parse.float_opt(try base_voltage_object.getProperty("BaseVoltage.nominalVoltage"));
+                        if (model.object_by_id(base_voltage_id)) |base_voltage_object| {
+                            nominal_voltage = parse.float_opt(try base_voltage_object.property("BaseVoltage.nominalVoltage"));
                         }
                     }
                     boundary_conn_node_entry.value_ptr.* = .{
@@ -302,12 +300,11 @@ pub fn convert_lines(
     // at node 0 (the hub) of the fictitious VL for its boundary ConnectivityNode.
     // pypowsybl always names them "BoundaryInjectionEq" and uses ±Double.MAX_VALUE
     // for minP/maxP and minQ/maxQ (unconstrained boundary injection).
-    const equivalent_injections = model.get_objects_by_type("EquivalentInjection");
+    const equivalent_injections = model.objects_by_type("EquivalentInjection");
     for (equivalent_injections) |equivalent_injection| {
-        const equivalent_injection_view = model.view(equivalent_injection);
-        const mrid = try equivalent_injection_view.mrid();
+        const mrid = try equivalent_injection.mrid();
 
-        const equivalent_injection_terminals = index.equipment_terminals.get(equivalent_injection.id) orelse continue;
+        const equivalent_injection_terminals = index.equipment_terminals.get(equivalent_injection.id()) orelse continue;
         if (equivalent_injection_terminals.items.len == 0) continue;
         const terminal = equivalent_injection_terminals.items[0];
         const conn_node_id = terminal.conn_node_id orelse continue;
@@ -328,14 +325,14 @@ pub fn convert_lines(
 
         // SSH EquivalentInjection.p/q -- load convention (negative = injecting) → negate for targetP/Q.
         const target_p: ?f64 = if (ssh_opt) |ssh|
-            if (try ssh.getProperty(mrid, "EquivalentInjection.p")) |v|
+            if (try ssh.property(mrid, "EquivalentInjection.p")) |v|
                 -parse.float_or(v, 0.0)
             else
                 null
         else
             null;
         const target_q: ?f64 = if (ssh_opt) |ssh|
-            if (try ssh.getProperty(mrid, "EquivalentInjection.q")) |v|
+            if (try ssh.property(mrid, "EquivalentInjection.q")) |v|
                 -parse.float_or(v, 0.0)
             else
                 null
@@ -368,8 +365,7 @@ pub fn convert_lines(
     assert(network.lines.capacity >= lines.len + series_compensators.len);
 
     for (lines) |line| {
-        const line_view = model.view(line);
-        const props = try line_view.getProperties(.{
+        const props = try line.properties(.{
             "IdentifiedObject.name",
             "ACLineSegment.r",
             "ACLineSegment.x",
@@ -377,9 +373,9 @@ pub fn convert_lines(
             "ACLineSegment.bch",
         });
         // ACLineSegment shunt admittance (gch/bch) is split evenly across both ends.
-        try append_line_segment(gpa, model, network, placer, &boundary_conn_node_voltage_level_map, &terminal_node_map, .{
+        try append_line_segment(gpa, network, placer, &boundary_conn_node_voltage_level_map, &terminal_node_map, .{
             .object = line,
-            .mrid = try line_view.mrid(),
+            .mrid = try line.mrid(),
             .name = parse.non_blank(props[0]),
             .r = try parse.float_strict(props[1], 0.0),
             .x = try parse.float_strict(props[2], 0.0),
@@ -392,15 +388,14 @@ pub fn convert_lines(
     // ---- Convert SeriesCompensators (pypowsybl treats them as IIDM Lines) ----
     // SeriesCompensator has r/x but no shunt admittance (charging conductance/susceptance = 0.0).
     for (series_compensators) |series_compensator| {
-        const series_compensator_view = model.view(series_compensator);
-        const props = try series_compensator_view.getProperties(.{
+        const props = try series_compensator.properties(.{
             "IdentifiedObject.name",
             "SeriesCompensator.r",
             "SeriesCompensator.x",
         });
-        try append_line_segment(gpa, model, network, placer, &boundary_conn_node_voltage_level_map, &terminal_node_map, .{
+        try append_line_segment(gpa, network, placer, &boundary_conn_node_voltage_level_map, &terminal_node_map, .{
             .object = series_compensator,
-            .mrid = try series_compensator_view.mrid(),
+            .mrid = try series_compensator.mrid(),
             .name = parse.non_blank(props[0]),
             .r = try parse.float_strict(props[1], 0.0),
             .x = try parse.float_strict(props[2], 0.0),

@@ -160,7 +160,7 @@ pub const Overlay = struct {
         for (new_objects, 0..) |obj, i| {
             // Pairs with `CimDocument`'s duplicate-id rejection: the raw ids of
             // declared objects are already known distinct, so no entry can clash.
-            id_to_object.putAssumeCapacityNoClobber(obj.id, @intCast(i));
+            id_to_object.putAssumeCapacityNoClobber(obj.id(), @intCast(i));
         }
 
         std.mem.sort(Patch, patches, {}, patch_before);
@@ -227,7 +227,7 @@ pub const Overlay = struct {
     }
 
     /// Read a text property from a patch returned by `find_patch`.
-    pub fn getPropertyFromPatch(self: Overlay, patch: Patch, property_name: []const u8) !?[]const u8 {
+    pub fn property_from_patch(self: Overlay, patch: Patch, property_name: []const u8) !?[]const u8 {
         return tag_index.get_property_from_indices(
             self.xml,
             self.boundaries,
@@ -238,7 +238,7 @@ pub const Overlay = struct {
     }
 
     /// Read an `rdf:resource` reference from a patch returned by `find_patch`.
-    pub fn getReferenceFromPatch(self: Overlay, patch: Patch, reference_name: []const u8) !?[]const u8 {
+    pub fn reference_from_patch(self: Overlay, patch: Patch, reference_name: []const u8) !?[]const u8 {
         return tag_index.get_reference_from_indices(
             self.xml,
             self.boundaries,
@@ -249,34 +249,34 @@ pub const Overlay = struct {
     }
 
     /// Convenience wrapper for a single lookup. For several properties on the
-    /// same object, use `find_patch` + `getPropertyFromPatch` and pay for one
+    /// same object, use `find_patch` + `property_from_patch` and pay for one
     /// binary search.
-    pub fn getProperty(self: Overlay, mrid: []const u8, property_name: []const u8) !?[]const u8 {
+    pub fn property(self: Overlay, mrid: []const u8, property_name: []const u8) !?[]const u8 {
         const patch = self.find_patch(mrid) orelse return null;
-        return self.getPropertyFromPatch(patch, property_name);
+        return self.property_from_patch(patch, property_name);
     }
 
     /// Convenience wrapper for a single reference lookup.
-    pub fn getReference(self: Overlay, mrid: []const u8, reference_name: []const u8) !?[]const u8 {
+    pub fn reference(self: Overlay, mrid: []const u8, reference_name: []const u8) !?[]const u8 {
         const patch = self.find_patch(mrid) orelse return null;
-        return self.getReferenceFromPatch(patch, reference_name);
+        return self.reference_from_patch(patch, reference_name);
     }
 
     /// Look up an object this part declares, by raw `rdf:ID` (leading
     /// underscore included). Patched objects are deliberately not reachable
     /// here -- they belong to the primary part.
-    pub fn get_object_by_id(self: Overlay, id: []const u8) ?tag_index.CimObjectView {
+    pub fn object_by_id(self: Overlay, id: []const u8) ?tag_index.CimObject {
         const idx = self.id_to_object.get(id) orelse return null;
         const obj = self.new_objects[idx];
         // The stored object must round-trip -- pairs with the id_to_object build.
-        assert(std.mem.eql(u8, obj.id, id));
-        return self.view(obj);
+        assert(std.mem.eql(u8, obj.id(), id));
+        return obj;
     }
 
     /// Declared objects whose id starts with `id_prefix`, in document order.
     /// The caller owns the returned slice. Matching follows
     /// `ids.id_prefix_matches`.
-    pub fn get_object_by_id_prefix(
+    pub fn objects_by_id_prefix(
         self: Overlay,
         gpa: std.mem.Allocator,
         id_prefix: []const u8,
@@ -284,29 +284,24 @@ pub const Overlay = struct {
         var matches: std.ArrayList(CimObject) = .empty;
         errdefer matches.deinit(gpa);
         for (self.new_objects) |obj| {
-            if (ids.id_prefix_matches(obj.id, id_prefix)) try matches.append(gpa, obj);
+            if (ids.id_prefix_matches(obj.id(), id_prefix)) try matches.append(gpa, obj);
         }
         return matches.toOwnedSlice(gpa);
     }
 
-    /// Bind a stored object to this part's XML context.
-    pub fn view(self: Overlay, obj: CimObject) tag_index.CimObjectView {
-        return self.doc.view(obj);
-    }
-
     /// The part's `FullModel` metadata element, or null if it carries none.
-    pub fn getFullModelView(self: Overlay) ?tag_index.CimObjectView {
-        const group = self.doc.get_objects_by_type("FullModel");
+    pub fn full_model(self: Overlay) ?tag_index.CimObject {
+        const group = self.doc.objects_by_type("FullModel");
         if (group.len == 0) return null;
-        return self.doc.view(group[0]);
+        return group[0];
     }
 
     /// Read a property off the part's `FullModel`. Null when the element is
     /// absent or does not carry that property.
-    pub fn getFullModelProperty(self: Overlay, property_name: []const u8) !?[]const u8 {
+    pub fn full_model_property(self: Overlay, property_name: []const u8) !?[]const u8 {
         assert(property_name.len > 0);
-        const full_model = self.getFullModelView() orelse return null;
-        return full_model.getProperty(property_name);
+        const metadata = self.full_model() orelse return null;
+        return metadata.property(property_name);
     }
 };
 
@@ -371,7 +366,7 @@ fn object_before(_: void, a: CimObject, b: CimObject) bool {
 /// primary part. `init` runs one `find_patch` per overlay and caches the hit, so
 /// the accessors below repeat no lookups.
 pub const CimMergedView = struct {
-    eq: tag_index.CimObjectView,
+    eq: tag_index.CimObject,
     tp: ?Context,
     ssh: ?Context,
 
@@ -382,16 +377,16 @@ pub const CimMergedView = struct {
     };
 
     pub fn init(
-        eq: tag_index.CimObjectView,
+        eq: tag_index.CimObject,
         mrid: []const u8,
         tp_opt: ?Overlay,
         ssh_opt: ?Overlay,
     ) CimMergedView {
         assert(mrid.len > 0);
-        assert(eq.id.len > 0);
+        assert(eq.id().len > 0);
         // mrid need not equal strip_underscore(eq.id): in CGMES the mRID may
         // differ from rdf:ID, and overlays key by mRID. Callers resolve it via
-        // CimObjectView.mrid, so such models merge consistently across commands.
+        // CimObject.mrid, so such models merge consistently across commands.
         return .{
             .eq = eq,
             .tp = context_for(tp_opt, mrid),
@@ -406,36 +401,34 @@ pub const CimMergedView = struct {
     }
 
     /// Get a text property. SSH value takes priority, then TP, then the primary.
-    pub fn getProperty(self: CimMergedView, name: []const u8) !?[]const u8 {
+    pub fn property(self: CimMergedView, name: []const u8) !?[]const u8 {
         if (self.ssh) |s| {
-            if (try patch_view(s).getProperty(name)) |v| return v;
+            if (try patch_view(s).property(name)) |v| return v;
         }
         if (self.tp) |t| {
-            if (try patch_view(t).getProperty(name)) |v| return v;
+            if (try patch_view(t).property(name)) |v| return v;
         }
-        return self.eq.getProperty(name);
+        return self.eq.property(name);
     }
 
     /// Get an rdf:resource reference. SSH value takes priority, then TP, then
     /// the primary.
-    pub fn getReference(self: CimMergedView, name: []const u8) !?[]const u8 {
+    pub fn reference(self: CimMergedView, name: []const u8) !?[]const u8 {
         if (self.ssh) |s| {
-            if (try patch_view(s).getReference(name)) |v| return v;
+            if (try patch_view(s).reference(name)) |v| return v;
         }
         if (self.tp) |t| {
-            if (try patch_view(t).getReference(name)) |v| return v;
+            if (try patch_view(t).reference(name)) |v| return v;
         }
-        return self.eq.getReference(name);
+        return self.eq.reference(name);
     }
 
-    fn patch_view(ctx: Context) tag_index.CimObjectView {
+    fn patch_view(ctx: Context) tag_index.ElementView {
         return .{
             .xml = ctx.xml,
             .boundaries = ctx.boundaries,
             .object_tag_idx = ctx.patch.patch_tag_idx,
             .closing_tag_idx = ctx.patch.closing_tag_idx,
-            .id = ctx.patch.mrid,
-            .type_name = "",
         };
     }
 
@@ -446,38 +439,38 @@ pub const CimMergedView = struct {
     }
 
     /// Batch-fetch text properties. SSH values take priority, then TP.
-    pub fn getProperties(self: CimMergedView, comptime names: anytype) ![names.len]?[]const u8 {
-        var result = try self.eq.getProperties(names);
-        if (self.tp) |t| apply_overrides(&result, try patch_view(t).getProperties(names), names);
-        if (self.ssh) |s| apply_overrides(&result, try patch_view(s).getProperties(names), names);
+    pub fn properties(self: CimMergedView, comptime names: anytype) ![names.len]?[]const u8 {
+        var result = try self.eq.properties(names);
+        if (self.tp) |t| apply_overrides(&result, try patch_view(t).properties(names), names);
+        if (self.ssh) |s| apply_overrides(&result, try patch_view(s).properties(names), names);
         return result;
     }
 
     /// Batch-fetch rdf:resource references. SSH values take priority, then TP.
-    pub fn getReferences(self: CimMergedView, comptime names: anytype) ![names.len]?[]const u8 {
-        var result = try self.eq.getReferences(names);
-        if (self.tp) |t| apply_overrides(&result, try patch_view(t).getReferences(names), names);
-        if (self.ssh) |s| apply_overrides(&result, try patch_view(s).getReferences(names), names);
+    pub fn references(self: CimMergedView, comptime names: anytype) ![names.len]?[]const u8 {
+        var result = try self.eq.references(names);
+        if (self.tp) |t| apply_overrides(&result, try patch_view(t).references(names), names);
+        if (self.ssh) |s| apply_overrides(&result, try patch_view(s).references(names), names);
         return result;
     }
 
     /// The union of primary + TP + SSH properties, SSH > TP > primary.
     /// Caller owns the returned map; values borrow from the underlying XML.
-    pub fn getAllProperties(self: CimMergedView, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
-        var result = try self.eq.getAllProperties(gpa);
+    pub fn all_properties(self: CimMergedView, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
+        var result = try self.eq.all_properties(gpa);
         errdefer result.deinit();
-        if (self.tp) |t| try overlay_into(&result, patch_view(t).getAllProperties(gpa));
-        if (self.ssh) |s| try overlay_into(&result, patch_view(s).getAllProperties(gpa));
+        if (self.tp) |t| try overlay_into(&result, patch_view(t).all_properties(gpa));
+        if (self.ssh) |s| try overlay_into(&result, patch_view(s).all_properties(gpa));
         return result;
     }
 
     /// The union of primary + TP + SSH references, SSH > TP > primary.
     /// Caller owns the returned map; values borrow from the underlying XML.
-    pub fn getAllReferences(self: CimMergedView, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
-        var result = try self.eq.getAllReferences(gpa);
+    pub fn all_references(self: CimMergedView, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
+        var result = try self.eq.all_references(gpa);
         errdefer result.deinit();
-        if (self.tp) |t| try overlay_into(&result, patch_view(t).getAllReferences(gpa));
-        if (self.ssh) |s| try overlay_into(&result, patch_view(s).getAllReferences(gpa));
+        if (self.tp) |t| try overlay_into(&result, patch_view(t).all_references(gpa));
+        if (self.ssh) |s| try overlay_into(&result, patch_view(s).all_references(gpa));
         return result;
     }
 
@@ -524,8 +517,8 @@ test "an overlay separates declared objects from patches under the TP policy" {
     try testing.expectEqual(@as(usize, 2), tp.new_objects.len);
     try testing.expectEqual(@as(usize, 2), tp.patches.len);
     // Declared objects keep the part's order, not `doc.objects`' type grouping.
-    try testing.expectEqualStrings("_TN1", tp.new_objects[0].id);
-    try testing.expectEqualStrings("_TN2", tp.new_objects[1].id);
+    try testing.expectEqualStrings("_TN1", tp.new_objects[0].id());
+    try testing.expectEqualStrings("_TN2", tp.new_objects[1].id());
 
     // Patches are sorted -- the stripped mRIDs CN_LOAD < T_LOAD1 alphabetically.
     try testing.expectEqualStrings("CN_LOAD", tp.patches[0].mrid);
@@ -546,14 +539,14 @@ test "the same rdf:ID is a patch under SSH and a declared object under TP" {
     try testing.expectEqual(@as(usize, 1), ssh.patches.len);
     try testing.expectEqual(@as(usize, 0), ssh.new_objects.len);
     try testing.expect(ssh.find_patch("SW1") != null);
-    try testing.expectEqual(@as(?tag_index.CimObjectView, null), ssh.get_object_by_id("_SW1"));
+    try testing.expectEqual(@as(?tag_index.CimObject, null), ssh.object_by_id("_SW1"));
 
     var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, xml));
     defer tp.deinit(gpa);
     try testing.expectEqual(@as(usize, 0), tp.patches.len);
     try testing.expectEqual(@as(usize, 1), tp.new_objects.len);
     try testing.expectEqual(@as(?Patch, null), tp.find_patch("SW1"));
-    try testing.expect(tp.get_object_by_id("_SW1") != null);
+    try testing.expect(tp.object_by_id("_SW1") != null);
 }
 
 test "find_patch resolves a Terminal patch and its TopologicalNode reference" {
@@ -569,7 +562,7 @@ test "find_patch resolves a Terminal patch and its TopologicalNode reference" {
     defer tp.deinit(gpa);
 
     const patch = tp.find_patch("T_LOAD1") orelse return error.TestFailed;
-    const tn_ref = try tp.getReferenceFromPatch(patch, "Terminal.TopologicalNode");
+    const tn_ref = try tp.reference_from_patch(patch, "Terminal.TopologicalNode");
     try testing.expect(tn_ref != null);
     try testing.expectEqualStrings("#_TN1", tn_ref.?);
 
@@ -577,7 +570,7 @@ test "find_patch resolves a Terminal patch and its TopologicalNode reference" {
     try testing.expectEqual(@as(?Patch, null), tp.find_patch("not_there"));
 }
 
-test "get_object_by_id returns a declared object by raw rdf:ID" {
+test "object_by_id returns a declared object by raw rdf:ID" {
     const gpa = testing.allocator;
     const xml =
         \\<rdf:RDF>
@@ -590,18 +583,18 @@ test "get_object_by_id returns a declared object by raw rdf:ID" {
     var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, xml));
     defer tp.deinit(gpa);
 
-    const view = tp.get_object_by_id("_TN1") orelse return error.TestFailed;
-    try testing.expectEqualStrings("TopologicalNode", view.type_name);
-    try testing.expectEqualStrings("_TN1", view.id);
-    const name = try view.getProperty("IdentifiedObject.name");
+    const view = tp.object_by_id("_TN1") orelse return error.TestFailed;
+    try testing.expectEqualStrings("TopologicalNode", view.type_name());
+    try testing.expectEqualStrings("_TN1", view.id());
+    const name = try view.property("IdentifiedObject.name");
     try testing.expect(name != null);
     try testing.expectEqualStrings("Bus 1", std.mem.trim(u8, name.?, " \t\r\n"));
 
     // Unknown id yields null.
-    try testing.expectEqual(@as(?tag_index.CimObjectView, null), tp.get_object_by_id("_nope"));
+    try testing.expectEqual(@as(?tag_index.CimObject, null), tp.object_by_id("_nope"));
 }
 
-test "get_object_by_id_prefix matches declared objects; leading _ optional" {
+test "objects_by_id_prefix matches declared objects; leading _ optional" {
     const gpa = testing.allocator;
     const xml =
         \\<rdf:RDF>
@@ -613,16 +606,16 @@ test "get_object_by_id_prefix matches declared objects; leading _ optional" {
     var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, xml));
     defer tp.deinit(gpa);
 
-    const ambiguous = try tp.get_object_by_id_prefix(gpa, "TN_abc");
+    const ambiguous = try tp.objects_by_id_prefix(gpa, "TN_abc");
     defer gpa.free(ambiguous);
     try testing.expectEqual(@as(usize, 2), ambiguous.len);
 
-    const unique = try tp.get_object_by_id_prefix(gpa, "_TN_xyz");
+    const unique = try tp.objects_by_id_prefix(gpa, "_TN_xyz");
     defer gpa.free(unique);
     try testing.expectEqual(@as(usize, 1), unique.len);
-    try testing.expectEqualStrings("_TN_xyz", unique[0].id);
+    try testing.expectEqualStrings("_TN_xyz", unique[0].id());
 
-    const none = try tp.get_object_by_id_prefix(gpa, "nope");
+    const none = try tp.objects_by_id_prefix(gpa, "nope");
     defer gpa.free(none);
     try testing.expectEqual(@as(usize, 0), none.len);
 }
@@ -634,7 +627,7 @@ test "a declared object keeps a raw id that normalizes to nothing" {
     var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, xml));
     defer tp.deinit(gpa);
     try testing.expectEqual(@as(usize, 1), tp.new_objects.len);
-    try testing.expectEqualStrings("_", tp.new_objects[0].id);
+    try testing.expectEqualStrings("_", tp.new_objects[0].id());
 }
 
 test "an identifier that normalizes to an empty key is not a patch" {
@@ -660,7 +653,7 @@ test "bare and underscored patch identifiers index to the same key" {
         var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, xml));
         defer ssh.deinit(gpa);
         const patch = ssh.find_patch("SW1") orelse return error.TestFailed;
-        const value = try ssh.getPropertyFromPatch(patch, "Switch.open") orelse return error.TestFailed;
+        const value = try ssh.property_from_patch(patch, "Switch.open") orelse return error.TestFailed;
         try testing.expectEqualStrings("true", value);
     }
 }
@@ -680,7 +673,7 @@ test "metadata tags are neither patches nor declared objects" {
     try testing.expectEqual(@as(usize, 0), tp.new_objects.len);
     try testing.expectEqual(@as(usize, 0), tp.patches.len);
     // It is still an object of the part -- that is how FullModel is read.
-    try testing.expect(tp.getFullModelView() != null);
+    try testing.expect(tp.full_model() != null);
 }
 
 test "duplicate declared rdf:IDs are rejected with a diagnostic" {
@@ -755,7 +748,7 @@ test "sharing the parser makes an overlay reject a doubly-spelled id" {
     try testing.expectError(error.DuplicateId, Overlay.init_tp(gpa, try gpa.dupe(u8, xml)));
 }
 
-test "getFullModelView returns the metadata element with its urn id" {
+test "full_model returns the metadata element with its urn id" {
     const gpa = testing.allocator;
     const xml =
         \\<rdf:RDF>
@@ -770,16 +763,16 @@ test "getFullModelView returns the metadata element with its urn id" {
     var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, xml));
     defer ssh.deinit(gpa);
 
-    const view = ssh.getFullModelView();
+    const view = ssh.full_model();
     try testing.expect(view != null);
-    try testing.expectEqualStrings("urn:uuid:view-test-1", view.?.id);
-    try testing.expectEqualStrings("FullModel", view.?.type_name);
-    const st = try view.?.getProperty("Model.scenarioTime");
+    try testing.expectEqualStrings("urn:uuid:view-test-1", view.?.id());
+    try testing.expectEqualStrings("FullModel", view.?.type_name());
+    const st = try view.?.property("Model.scenarioTime");
     try testing.expect(st != null);
     try testing.expectEqualStrings("2024-06-01T00:00:00Z", std.mem.trim(u8, st.?, " \t\r\n"));
 }
 
-test "getFullModelProperty reads times, and yields null without a FullModel" {
+test "full_model_property reads times, and yields null without a FullModel" {
     const gpa = testing.allocator;
     const with_model =
         \\<rdf:RDF>
@@ -795,20 +788,20 @@ test "getFullModelProperty reads times, and yields null without a FullModel" {
     var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, with_model));
     defer ssh.deinit(gpa);
 
-    const scenario_time = try ssh.getFullModelProperty("Model.scenarioTime");
+    const scenario_time = try ssh.full_model_property("Model.scenarioTime");
     try testing.expect(scenario_time != null);
     try testing.expectEqualStrings("2023-01-01T12:00:00Z", std.mem.trim(u8, scenario_time.?, " \t\r\n"));
-    const created = try ssh.getFullModelProperty("Model.created");
+    const created = try ssh.full_model_property("Model.created");
     try testing.expect(created != null);
     try testing.expectEqualStrings("2023-01-01T10:00:00Z", std.mem.trim(u8, created.?, " \t\r\n"));
     // Present FullModel, absent property.
-    try testing.expectEqual(@as(?[]const u8, null), try ssh.getFullModelProperty("Model.version"));
+    try testing.expectEqual(@as(?[]const u8, null), try ssh.full_model_property("Model.version"));
 
     const without_model = "<rdf:RDF><cim:Switch rdf:ID=\"_sw1\"/></rdf:RDF>";
     var bare = try Overlay.init_ssh(gpa, try gpa.dupe(u8, without_model));
     defer bare.deinit(gpa);
-    try testing.expectEqual(@as(?tag_index.CimObjectView, null), bare.getFullModelView());
-    try testing.expectEqual(@as(?[]const u8, null), try bare.getFullModelProperty("Model.scenarioTime"));
+    try testing.expectEqual(@as(?tag_index.CimObject, null), bare.full_model());
+    try testing.expectEqual(@as(?[]const u8, null), try bare.full_model_property("Model.scenarioTime"));
 }
 
 test "CimMergedView applies SSH patches to bare EQ identifiers" {
@@ -832,13 +825,13 @@ test "CimMergedView applies SSH patches to bare EQ identifiers" {
     var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, ssh_xml));
     defer ssh.deinit(gpa);
 
-    const view = eq.getObjectById("SW1") orelse return error.TestFailed;
+    const view = eq.object_by_id("SW1") orelse return error.TestFailed;
     const mrid = try view.mrid();
     const merged = CimMergedView.init(view, mrid, null, ssh);
-    try testing.expectEqualStrings("true", (try merged.getProperty("Switch.open")).?);
+    try testing.expectEqualStrings("true", (try merged.property("Switch.open")).?);
 }
 
-test "CimMergedView.getAllProperties merges EQ + TP + SSH with SSH precedence" {
+test "CimMergedView.all_properties merges EQ + TP + SSH with SSH precedence" {
     const gpa = testing.allocator;
     const eq_xml =
         \\<rdf:RDF>
@@ -871,10 +864,10 @@ test "CimMergedView.getAllProperties merges EQ + TP + SSH with SSH precedence" {
     var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, ssh_xml));
     defer ssh.deinit(gpa);
 
-    const view = eq.getObjectById("_SW1").?;
+    const view = eq.object_by_id("_SW1").?;
     const merged = CimMergedView.init(view, "SW1", tp, ssh);
 
-    var props = try merged.getAllProperties(gpa);
+    var props = try merged.all_properties(gpa);
     defer props.deinit();
 
     // EQ-only key preserved.
@@ -887,7 +880,7 @@ test "CimMergedView.getAllProperties merges EQ + TP + SSH with SSH precedence" {
     try testing.expectEqualStrings("true", props.get("Switch.open").?);
 }
 
-test "CimMergedView.getAllReferences merges EQ + TP with TP precedence" {
+test "CimMergedView.all_references merges EQ + TP with TP precedence" {
     const gpa = testing.allocator;
     const eq_xml =
         \\<rdf:RDF>
@@ -909,10 +902,10 @@ test "CimMergedView.getAllReferences merges EQ + TP with TP precedence" {
     var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, tp_xml));
     defer tp.deinit(gpa);
 
-    const view = eq.getObjectById("_T1").?;
+    const view = eq.object_by_id("_T1").?;
     const merged = CimMergedView.init(view, "T1", tp, null);
 
-    var refs = try merged.getAllReferences(gpa);
+    var refs = try merged.all_references(gpa);
     defer refs.deinit();
 
     // TP-added reference visible.

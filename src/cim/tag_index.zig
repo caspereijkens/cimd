@@ -123,8 +123,8 @@ pub const ChildIterator = struct {
     next_idx: u32,
     end_idx: u32,
 
-    /// Iterate the children of a bound object.
-    pub fn init(view: CimObjectView) ChildIterator {
+    /// Iterate the children of a bound element.
+    pub fn init(view: ElementView) ChildIterator {
         return init_range(view.xml, view.boundaries, view.object_tag_idx, view.closing_tag_idx);
     }
 
@@ -202,48 +202,158 @@ pub const ChildIterator = struct {
     }
 };
 
-/// Represents a CIM object with lazy property access
-/// Compact CIM object -- indices and identity only, no embedded XML context.
-/// Cheap to copy and store. Use CimObjectView (via CimDocument.view) to access properties.
+/// The document storage shared by every object. Allocated separately from
+/// CimDocument so an object remains bound to the same storage when its owning
+/// document is moved.
+pub const ObjectContext = struct {
+    xml: []const u8,
+    boundaries: []const TagBoundary,
+};
+
+/// One document-bound CIM object.
+///
+/// Identity and type are stored as slices, not as u32 spans resolved through
+/// `context`. Spans would make the record 32 bytes instead of 48, but `id` and
+/// `type_name` sit in every hot loop the library has -- the parse's type-count,
+/// type-sort and id-index passes, and every type filter -- and there they feed
+/// straight into string hashing and comparison. A stored slice arrives as one
+/// load; a span has to be rebuilt from a base and two offsets at each of those
+/// call sites. Measured on a 300 MB EQ, spans cost 5% of `cimd types` and 3% of
+/// `cimd convert`. Holding the XML base pointer inline to shorten the load chain
+/// does not recover it -- the arithmetic is the cost, not the indirection.
 pub const CimObject = struct {
+    context: *const ObjectContext,
     object_tag_idx: u32,
     closing_tag_idx: u32,
-    id: []const u8,
-    type_name: []const u8,
+    id_slice: []const u8,
+    type_slice: []const u8,
 
-    /// xml and boundaries are needed only to extract type_name; they are not stored.
     pub fn init(
-        xml: []const u8,
-        boundaries: []const TagBoundary,
+        context: *const ObjectContext,
         object_tag_idx: u32,
         closing_tag_idx: u32,
-        id: []const u8,
+        object_id: []const u8,
     ) error{MalformedTag}!CimObject {
-        assert(id.len > 0);
+        assert(object_id.len > 0);
+        assert(object_tag_idx < context.boundaries.len);
+        assert(closing_tag_idx < context.boundaries.len);
+        assert(closing_tag_idx >= object_tag_idx);
+        // Both must borrow from the document, or the object outlives its own
+        // strings. `init` is the one place this can be established, so it is
+        // established here rather than re-checked at every read.
+        assert(within(context.xml, object_id));
+
+        const object_type = try extract_tag_type(
+            context.xml,
+            context.boundaries[object_tag_idx].start,
+        );
+        assert(within(context.xml, object_type));
         return .{
+            .context = context,
             .object_tag_idx = object_tag_idx,
             .closing_tag_idx = closing_tag_idx,
-            .id = id,
-            .type_name = try extract_tag_type(xml, boundaries[object_tag_idx].start),
+            .id_slice = object_id,
+            .type_slice = object_type,
+        };
+    }
+
+    pub inline fn id(self: CimObject) []const u8 {
+        return self.id_slice;
+    }
+
+    pub inline fn type_name(self: CimObject) []const u8 {
+        return self.type_slice;
+    }
+
+    pub inline fn raw_xml(self: CimObject) []const u8 {
+        return self.element_view().raw_xml();
+    }
+
+    pub inline fn xml_offset(self: CimObject) u32 {
+        return self.element_view().xml_offset();
+    }
+
+    pub inline fn property(self: CimObject, property_name: []const u8) error{MalformedTag}!?[]const u8 {
+        return self.element_view().property(property_name);
+    }
+
+    pub inline fn reference(self: CimObject, property_name: []const u8) error{MalformedTag}!?[]const u8 {
+        return self.element_view().reference(property_name);
+    }
+
+    /// The key SSH/TP overlays use to patch this object: explicit
+    /// IdentifiedObject.mRID, else the local RDF identifier with its leading
+    /// hash and underscore stripped. Single source of truth for overlay keying.
+    pub fn mrid(self: CimObject) error{MalformedTag}![]const u8 {
+        return parse.non_blank(try self.property("IdentifiedObject.mRID")) orelse
+            ids.strip_underscore(ids.strip_hash(self.id()));
+    }
+
+    pub inline fn children(self: CimObject) ChildIterator {
+        return self.element_view().children();
+    }
+
+    pub inline fn properties(self: CimObject, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
+        return self.element_view().properties(names);
+    }
+
+    pub inline fn references(self: CimObject, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
+        return self.element_view().references(names);
+    }
+
+    pub inline fn all_properties(self: CimObject, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
+        return self.element_view().all_properties(gpa);
+    }
+
+    pub inline fn all_references(self: CimObject, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
+        return self.element_view().all_references(gpa);
+    }
+
+    inline fn element_view(self: CimObject) ElementView {
+        return .{
+            .xml = self.context.xml,
+            .boundaries = self.context.boundaries,
+            .object_tag_idx = self.object_tag_idx,
+            .closing_tag_idx = self.closing_tag_idx,
         };
     }
 };
 
-/// Ephemeral view binding a CimObject to its XML context.
-/// Create via CimDocument.view(obj). Stack-allocated; do not store in arrays.
-pub const CimObjectView = struct {
+comptime {
+    const fields_size =
+        @sizeOf(*const ObjectContext) +
+        2 * @sizeOf(u32) +
+        2 * @sizeOf([]const u8);
+    assert(@sizeOf(CimObject) == std.mem.alignForward(
+        usize,
+        fields_size,
+        @alignOf(CimObject),
+    ));
+}
+
+/// Whether `value` is a subslice of `source`. The invariant behind storing
+/// borrowed slices on an object: they stay valid exactly as long as the
+/// document's `xml` does, and no longer.
+fn within(source: []const u8, value: []const u8) bool {
+    const source_address = @intFromPtr(source.ptr);
+    const value_address = @intFromPtr(value.ptr);
+    return value_address >= source_address and
+        value_address + value.len <= source_address + source.len;
+}
+
+/// Internal bound element span. Overlay patches use the same child queries as
+/// objects but are not themselves objects declared by the document.
+pub const ElementView = struct {
     xml: []const u8,
     boundaries: []const TagBoundary,
     object_tag_idx: u32,
     closing_tag_idx: u32,
-    id: []const u8,
-    type_name: []const u8,
 
     /// The object's raw XML slice, from its opening '<' to its closing '>'
     /// (inclusive). Byte-equal slices are semantically equal objects, which
     /// diff uses as a fast path, and eqdiff emission copies child elements
     /// verbatim out of this region.
-    pub fn raw_xml(self: CimObjectView) []const u8 {
+    pub fn raw_xml(self: ElementView) []const u8 {
         const start = self.boundaries[self.object_tag_idx].start;
         const end = self.boundaries[self.closing_tag_idx].end;
         assert(end > start);
@@ -253,34 +363,27 @@ pub const CimObjectView = struct {
     /// Byte offset of the object's opening '<' in the document, for source
     /// positions in diagnostics and reports. Exposed so a caller that only wants
     /// "where is this object" does not have to index `boundaries` to get it.
-    pub fn xml_offset(self: CimObjectView) u32 {
+    pub fn xml_offset(self: ElementView) u32 {
         return self.boundaries[self.object_tag_idx].start;
     }
 
     /// Get a text property value by name.
-    pub fn getProperty(self: CimObjectView, property_name: []const u8) error{MalformedTag}!?[]const u8 {
+    pub fn property(self: ElementView, property_name: []const u8) error{MalformedTag}!?[]const u8 {
         return get_property_from_indices(self.xml, self.boundaries, self.object_tag_idx, self.closing_tag_idx, property_name);
     }
 
     /// Get a reference (rdf:resource) value by name.
-    pub fn getReference(self: CimObjectView, property_name: []const u8) error{MalformedTag}!?[]const u8 {
+    pub fn reference(self: ElementView, property_name: []const u8) error{MalformedTag}!?[]const u8 {
         return get_reference_from_indices(self.xml, self.boundaries, self.object_tag_idx, self.closing_tag_idx, property_name);
     }
 
-    /// The key SSH/TP overlays use to patch this object: explicit
-    /// IdentifiedObject.mRID, else the local RDF identifier with its leading
-    /// hash and underscore stripped. Single source of truth for overlay keying.
-    pub fn mrid(self: CimObjectView) error{MalformedTag}![]const u8 {
-        return parse.non_blank(try self.getProperty("IdentifiedObject.mRID")) orelse ids.strip_underscore(ids.strip_hash(self.id));
-    }
-
     /// Iterate this object's child elements in document order.
-    pub fn children(self: CimObjectView) ChildIterator {
+    pub fn children(self: ElementView) ChildIterator {
         return ChildIterator.init(self);
     }
 
     /// Batch-fetch multiple text properties in a single scan through child tags.
-    pub fn getProperties(self: CimObjectView, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
+    pub fn properties(self: ElementView, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
         var result: [names.len]?[]const u8 = .{null} ** names.len;
         var found_count: usize = 0;
 
@@ -299,7 +402,7 @@ pub const CimObjectView = struct {
     }
 
     /// Batch-fetch multiple rdf:resource references in a single scan through child tags.
-    pub fn getReferences(self: CimObjectView, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
+    pub fn references(self: ElementView, comptime names: anytype) error{MalformedTag}![names.len]?[]const u8 {
         var result: [names.len]?[]const u8 = .{null} ** names.len;
         var found_count: usize = 0;
 
@@ -323,7 +426,7 @@ pub const CimObjectView = struct {
     }
 
     /// Get all text properties (not references) as a HashMap.
-    pub fn getAllProperties(self: CimObjectView, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
+    pub fn all_properties(self: ElementView, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
         var result = std.StringHashMap([]const u8).init(gpa);
         errdefer result.deinit();
 
@@ -337,7 +440,7 @@ pub const CimObjectView = struct {
     }
 
     /// Get all rdf:resource references as a HashMap.
-    pub fn getAllReferences(self: CimObjectView, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
+    pub fn all_references(self: ElementView, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
         var result = std.StringHashMap([]const u8).init(gpa);
         errdefer result.deinit();
 

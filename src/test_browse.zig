@@ -215,7 +215,7 @@ test "prefix picker flat below threshold" {
     , null, null);
     defer fixture.deinit(gpa);
 
-    const matches = try fixture.eq.get_object_by_id_prefix(gpa, "P");
+    const matches = try fixture.eq.objects_by_id_prefix(gpa, "P");
     defer gpa.free(matches);
     const result = try run_pick_session(gpa, "P", matches, "1\n");
     defer gpa.free(result.output);
@@ -237,7 +237,7 @@ test "prefix picker EOF and q exit without a selection" {
     , null, null);
     defer fixture.deinit(gpa);
 
-    const matches = try fixture.eq.get_object_by_id_prefix(gpa, "P");
+    const matches = try fixture.eq.objects_by_id_prefix(gpa, "P");
     defer gpa.free(matches);
     var output: std.Io.Writer.Allocating = .init(gpa);
     defer output.deinit();
@@ -273,7 +273,7 @@ test "prefix picker grouped above threshold and drill-down" {
     , null, null);
     defer fixture.deinit(gpa);
 
-    const matches = try fixture.eq.get_object_by_id_prefix(gpa, "P");
+    const matches = try fixture.eq.objects_by_id_prefix(gpa, "P");
     defer gpa.free(matches);
     const result = try run_pick_session(gpa, "P", matches, "1\n1\n");
     defer gpa.free(result.output);
@@ -412,7 +412,7 @@ test "prefix picker can expand grouped overview to flat all" {
     , null, null);
     defer fixture.deinit(gpa);
 
-    const matches = try fixture.eq.get_object_by_id_prefix(gpa, "Q");
+    const matches = try fixture.eq.objects_by_id_prefix(gpa, "Q");
     defer gpa.free(matches);
     const result = try run_pick_session(gpa, "Q", matches, "3\n10\n");
     defer gpa.free(result.output);

@@ -132,7 +132,6 @@ pub const TerminalPlacer = struct {
 ///   CGMES.OperationalLimitSetRdfID, CGMES.OperationalLimit_CurrentLimit_patl.
 pub fn build_op_lims(
     gpa: std.mem.Allocator,
-    model: *const CimDocument,
     index: *const CrossRef,
     terminal_id: []const u8,
 ) !std.ArrayListUnmanaged(iidm.OperationalLimitsGroup) {
@@ -147,25 +146,23 @@ pub fn build_op_lims(
     try groups.ensureTotalCapacity(gpa, limit_sets.items.len);
 
     for (limit_sets.items) |set| {
-        const set_view = model.view(set);
-        const set_mrid = try set_view.mrid();
-        const set_name = parse.non_blank(try set_view.getProperty("IdentifiedObject.name")) orelse set_mrid;
+        const set_mrid = try set.mrid();
+        const set_name = parse.non_blank(try set.property("IdentifiedObject.name")) orelse set_mrid;
 
         var patl_value: ?f64 = null;
         var patl_cl_mrid: ?[]const u8 = null;
 
-        if (index.current_limits_by_set.get(set.id)) |current_limits| {
+        if (index.current_limits_by_set.get(set.id())) |current_limits| {
             for (current_limits.items) |current_limit| {
-                const current_limit_view = model.view(current_limit);
-                const type_ref = try current_limit_view.getReference("OperationalLimit.OperationalLimitType") orelse continue;
+                const type_ref = try current_limit.reference("OperationalLimit.OperationalLimitType") orelse continue;
                 const type_id = strip_hash(type_ref);
                 const type_info = index.limit_types.get(type_id) orelse continue;
                 if (!type_info.is_infinite) continue; // skip TATLs for now (none in dataset)
 
-                const value_str = parse.non_blank(try current_limit_view.getProperty("CurrentLimit.value")) orelse
-                    parse.non_blank(try current_limit_view.getProperty("CurrentLimit.normalValue")) orelse continue;
+                const value_str = parse.non_blank(try current_limit.property("CurrentLimit.value")) orelse
+                    parse.non_blank(try current_limit.property("CurrentLimit.normalValue")) orelse continue;
                 patl_value = try parse.float_req(value_str);
-                patl_cl_mrid = try current_limit_view.mrid();
+                patl_cl_mrid = try current_limit.mrid();
                 break;
             }
         }

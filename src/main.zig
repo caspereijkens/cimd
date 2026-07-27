@@ -244,8 +244,8 @@ fn command_get(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Get) !void {
         const object = refs.resolve_object(&inputs.model, tp_opt, target.id) orelse unreachable;
         // Pair the resolution: resolve_prefix already verified the id resolves;
         // the same lookup here must return the same identity.
-        assert(std.mem.eql(u8, object.id, target.id));
-        assert(std.mem.eql(u8, object.type_name, target.type_name));
+        assert(std.mem.eql(u8, object.id(), target.id));
+        assert(std.mem.eql(u8, object.type_name(), target.type_name));
         display_get_object(io, gpa, object, tp_opt, ssh_opt, c.json) catch |err|
             return model_operation_error(io, "get", primary_path, err);
         return;
@@ -294,9 +294,9 @@ fn command_get_list(io: std.Io, gpa: std.mem.Allocator, model: *const CimDocumen
     var fields: std.ArrayList([]const u8) = .initBuffer(&fields_buf);
     parse_get_fields(io, c.fields, !c.json, &fields);
     if (c.json) {
-        try print.display_object_list_json(io, gpa, model, objects, fields.items);
+        try print.display_object_list_json(io, gpa, objects, fields.items);
     } else {
-        try display_get_list_text(io, model, objects, fields.items);
+        try display_get_list_text(io, objects, fields.items);
     }
 }
 
@@ -314,7 +314,7 @@ fn parse_get_fields(
     var it = std.mem.splitScalar(u8, fs, ',');
     while (it.next()) |f| {
         const name = std.mem.trim(u8, f, " ");
-        // An empty entry (e.g. a doubled comma) would reach getProperty("")'s assert.
+        // An empty entry (e.g. a doubled comma) would reach property("")'s assert.
         if (name.len == 0) print.stderr(io, "get: --fields: empty field name", .{});
         fields.appendBounded(name) catch
             print.stderr(io, "get: --fields: too many fields (max 32)", .{});
@@ -323,7 +323,6 @@ fn parse_get_fields(
 
 fn display_get_list_text(
     io: std.Io,
-    model: *const CimDocument,
     objects: []const CimObject,
     fields: []const []const u8,
 ) !void {
@@ -331,24 +330,22 @@ fn display_get_list_text(
     var file_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &write_buffer);
     try print.file_writer_result(
         &file_writer,
-        write_get_list_text(&file_writer.interface, model, objects, fields),
+        write_get_list_text(&file_writer.interface, objects, fields),
     );
     try print.flush_file_writer(&file_writer);
 }
 
 fn write_get_list_text(
     w: *std.Io.Writer,
-    model: *const CimDocument,
     objects: []const CimObject,
     fields: []const []const u8,
 ) !void {
     for (objects) |obj| {
-        const view = model.view(obj);
-        try w.print("{s}", .{obj.id});
+        try w.print("{s}", .{obj.id()});
         for (fields) |field| {
             // Fall back to a reference when the field isn't a text property, so
             // rdf:resource fields show their target instead of a bare N/A.
-            const val = (try view.getProperty(field)) orelse (try view.getReference(field)) orelse "N/A";
+            const val = (try obj.property(field)) orelse (try obj.reference(field)) orelse "N/A";
             try w.print(" | {s}", .{val});
         }
         try w.writeByte('\n');
@@ -372,15 +369,15 @@ fn resolve_prefix(
     // falling through to surface a prefix sibling of the requested type.
     if (try refs.resolve_object_normalized(gpa, model, tp_opt, mrid)) |object| {
         // Interactive picks take any exact hit; one-shot commands enforce --type.
-        if (interactive != null or cim_types.matches_filter(object.type_name, type_filter))
-            return .{ .id = object.id, .type_name = object.type_name };
+        if (interactive != null or cim_types.matches_filter(object.type_name(), type_filter))
+            return .{ .id = object.id(), .type_name = object.type_name() };
         const requested_type = type_filter.?;
         exit_not_found(
             io,
             json,
-            .{ .@"error" = "type_mismatch", .prefix = mrid, .id = object.id, .actual_type = object.type_name, .requested_type = requested_type },
+            .{ .@"error" = "type_mismatch", .prefix = mrid, .id = object.id(), .actual_type = object.type_name(), .requested_type = requested_type },
             "Object '{s}' is of type '{s}', not '{s}'",
-            .{ mrid, object.type_name, requested_type },
+            .{ mrid, object.type_name(), requested_type },
         );
     }
 
@@ -391,7 +388,7 @@ fn resolve_prefix(
     defer filtered_list.deinit(gpa);
     const filtered_matches: []const CimObject = if (type_filter == null) all_matches else blk: {
         for (all_matches) |m| {
-            if (cim_types.matches_filter(m.type_name, type_filter)) try filtered_list.append(gpa, m);
+            if (cim_types.matches_filter(m.type_name(), type_filter)) try filtered_list.append(gpa, m);
         }
         break :blk filtered_list.items;
     };
@@ -412,9 +409,9 @@ fn resolve_prefix(
             exit_not_found(
                 io,
                 json,
-                .{ .@"error" = "type_mismatch", .prefix = mrid, .id = m.id, .actual_type = m.type_name, .requested_type = requested_type },
+                .{ .@"error" = "type_mismatch", .prefix = mrid, .id = m.id(), .actual_type = m.type_name(), .requested_type = requested_type },
                 "Object '{s}' is of type '{s}', not '{s}'",
-                .{ mrid, m.type_name, requested_type },
+                .{ mrid, m.type_name(), requested_type },
             );
         }
         exit_not_found(
@@ -440,11 +437,11 @@ fn resolve_prefix(
     // both returned. The remaining match must carry the identity downstream
     // expects to render.
     assert(filtered_matches.len == 1);
-    assert(filtered_matches[0].id.len > 0);
-    assert(filtered_matches[0].type_name.len > 0);
+    assert(filtered_matches[0].id().len > 0);
+    assert(filtered_matches[0].type_name().len > 0);
     return .{
-        .id = filtered_matches[0].id,
-        .type_name = filtered_matches[0].type_name,
+        .id = filtered_matches[0].id(),
+        .type_name = filtered_matches[0].type_name(),
     };
 }
 
@@ -461,7 +458,7 @@ fn exit_not_found(
 
 fn find_type_name(matches: []const CimObject, id: []const u8) ?[]const u8 {
     for (matches) |match| {
-        if (std.mem.eql(u8, match.id, id)) return match.type_name;
+        if (std.mem.eql(u8, match.id(), id)) return match.type_name();
     }
     return null;
 }
@@ -478,33 +475,33 @@ fn render_target_ambiguity(
         try render_ambiguous_json(io, gpa, mrid, matches);
     } else if (type_filter) |t| {
         try print.stderr_info(io, "Ambiguous prefix '{s}' matched {d} objects of type '{s}':\n", .{ mrid, matches.len, t });
-        for (matches) |m| try print.stdout(io, "{s} | {s}\n", .{ m.id, m.type_name });
+        for (matches) |m| try print.stdout(io, "{s} | {s}\n", .{ m.id(), m.type_name() });
     } else if (matches.len > browse.group_threshold) {
         try render_type_breakdown(io, gpa, mrid, matches);
     } else {
         try print.stderr_info(io, "Ambiguous prefix '{s}' matched {d} objects:\n", .{ mrid, matches.len });
-        for (matches) |m| try print.stdout(io, "{s} | {s}\n", .{ m.id, m.type_name });
+        for (matches) |m| try print.stdout(io, "{s} | {s}\n", .{ m.id(), m.type_name() });
     }
 }
 
 fn display_get_object(
     io: std.Io,
     gpa: std.mem.Allocator,
-    object: cim.CimObjectView,
+    object: cim.CimObject,
     tp_opt: ?Overlay,
     ssh_opt: ?Overlay,
     json: bool,
 ) !void {
-    assert(object.id.len > 0);
-    assert(object.type_name.len > 0);
+    assert(object.id().len > 0);
+    assert(object.type_name().len > 0);
 
     // A merged view with no TP/SSH overlay degenerates to the plain EQ view:
-    // getAllProperties/getAllReferences return the EQ maps unchanged and skip
+    // all_properties/all_references return the EQ maps unchanged and skip
     // every overlay allocation, so this single path serves both cases.
     const merged = CimMergedView.init(object, try object.mrid(), tp_opt, ssh_opt);
-    var props = try merged.getAllProperties(gpa);
+    var props = try merged.all_properties(gpa);
     defer props.deinit();
-    var references = try merged.getAllReferences(gpa);
+    var references = try merged.all_references(gpa);
     defer references.deinit();
 
     var write_buffer: [16 * 1024]u8 = undefined;
@@ -513,12 +510,12 @@ fn display_get_object(
     if (json) {
         try print.file_writer_result(
             &file_writer,
-            write_object_maps_json(w, object.id, object.type_name, props, references),
+            write_object_maps_json(w, object.id(), object.type_name(), props, references),
         );
     } else {
         try print.file_writer_result(
             &file_writer,
-            write_object_maps_text(w, gpa, object.id, object.type_name, props, references),
+            write_object_maps_text(w, gpa, object.id(), object.type_name(), props, references),
         );
     }
     try print.flush_file_writer(&file_writer);
@@ -656,7 +653,7 @@ fn reject_tp_primary_id_collision(
         print.data_error(
             io,
             "{s}: RDF identifier collision: '{s}' is defined in both the primary file and TP profile '{s}' at line {d}",
-            .{ command_name, object.id, tp_path orelse "(unknown)", line },
+            .{ command_name, object.id(), tp_path orelse "(unknown)", line },
         );
     };
 }
@@ -703,9 +700,9 @@ test "get type filter collector includes CIM subtypes" {
     var found_line_segment = false;
     var found_machine = false;
     for (objects) |obj| {
-        if (std.mem.eql(u8, obj.type_name, "PowerTransformer")) found_power_transformer = true;
-        if (std.mem.eql(u8, obj.type_name, "ACLineSegment")) found_line_segment = true;
-        if (std.mem.eql(u8, obj.type_name, "SynchronousMachine")) found_machine = true;
+        if (std.mem.eql(u8, obj.type_name(), "PowerTransformer")) found_power_transformer = true;
+        if (std.mem.eql(u8, obj.type_name(), "ACLineSegment")) found_line_segment = true;
+        if (std.mem.eql(u8, obj.type_name(), "SynchronousMachine")) found_machine = true;
     }
     try std.testing.expect(found_power_transformer);
     try std.testing.expect(found_line_segment);
@@ -725,15 +722,15 @@ test "write_object_maps_text renders sorted properties and raw references" {
     ;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
-    const view = model.getObjectById("_L1").?;
-    var props = try view.getAllProperties(gpa);
+    const view = model.object_by_id("_L1").?;
+    var props = try view.all_properties(gpa);
     defer props.deinit();
-    var references = try view.getAllReferences(gpa);
+    var references = try view.all_references(gpa);
     defer references.deinit();
 
     var buf: [1024]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
-    try write_object_maps_text(&w, gpa, view.id, view.type_name, props, references);
+    try write_object_maps_text(&w, gpa, view.id(), view.type_name(), props, references);
     // Properties are sorted (length < name); references print raw (with '#').
     try std.testing.expectEqualStrings(
         "Type: ACLineSegment\n" ++
@@ -760,15 +757,15 @@ test "write_object_maps_json strips reference hash and pins the shape" {
     ;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
-    const view = model.getObjectById("_L1").?;
-    var props = try view.getAllProperties(gpa);
+    const view = model.object_by_id("_L1").?;
+    var props = try view.all_properties(gpa);
     defer props.deinit();
-    var references = try view.getAllReferences(gpa);
+    var references = try view.all_references(gpa);
     defer references.deinit();
 
     var buf: [1024]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
-    try write_object_maps_json(&w, view.id, view.type_name, props, references);
+    try write_object_maps_json(&w, view.id(), view.type_name(), props, references);
     try std.testing.expectEqualStrings(
         "{\"id\":\"_L1\",\"type\":\"ACLineSegment\"," ++
             "\"properties\":{\"IdentifiedObject.name\":\"Line 1\"}," ++
@@ -802,7 +799,7 @@ fn sorted_type_counts_of(gpa: std.mem.Allocator, matches: []const CimObject) ![]
     var counts: std.StringHashMap(u32) = .init(gpa);
     defer counts.deinit();
     for (matches) |m| {
-        const gop = try counts.getOrPut(m.type_name);
+        const gop = try counts.getOrPut(m.type_name());
         if (!gop.found_existing) gop.value_ptr.* = 0;
         gop.value_ptr.* += 1;
     }
@@ -853,9 +850,9 @@ fn write_ambiguous_json(
     for (matches, 0..) |m, j| {
         if (j > 0) try w.writeByte(',');
         try w.writeAll("{\"id\":");
-        try std.json.Stringify.value(m.id, .{}, w);
+        try std.json.Stringify.value(m.id(), .{}, w);
         try w.writeAll(",\"type\":");
-        try std.json.Stringify.value(m.type_name, .{}, w);
+        try std.json.Stringify.value(m.type_name(), .{}, w);
         try w.writeByte('}');
     }
     try w.writeAll("],\"types\":[");

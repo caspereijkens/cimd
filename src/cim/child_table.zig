@@ -106,7 +106,7 @@ pub const ChildTable = struct {
         const xml = model.xml;
         for (model.objects, 0..) |obj, i| {
             child_start[i] = @intCast(tags.items.len);
-            var it = model.view(obj).children();
+            var it = obj.children();
             while (it.next()) |child| {
                 const gop = try map.getOrPut(child.name);
                 if (!gop.found_existing) {

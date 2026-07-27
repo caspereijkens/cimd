@@ -11,7 +11,7 @@ const zip = @import("io/zip.zig");
 const read_path = @import("io/read.zig").read_path;
 
 const Model = cim.CimDocument;
-const CimObjectView = cim.CimObjectView;
+const CimObject = cim.CimObject;
 const cim_types = cim.cim_types;
 const ids = cim.ids;
 const ReverseRefIndex = cim.refs.ReverseRefIndex;
@@ -527,13 +527,13 @@ pub fn validate_name_length(model: Model) !void {
         if (nameless_types.get(group.type_name) != null) continue;
 
         for (group.objects) |object_data| {
-            const object = model.view(object_data);
-            const name = try object.getProperty("IdentifiedObject.name") orelse {
-                std.log.err("{s}", .{object.id});
+            const object = object_data;
+            const name = try object.property("IdentifiedObject.name") orelse {
+                std.log.err("{s}", .{object.id()});
                 return error.NameLength;
             };
             if (name.len == 0 or name.len > name_chars_max) {
-                std.log.err("Object {s} has an invalid name: {s}", .{ object.id, name });
+                std.log.err("Object {s} has an invalid name: {s}", .{ object.id(), name });
                 return error.NameLength;
             }
         }
@@ -547,13 +547,13 @@ pub fn validate_name_length(model: Model) !void {
 /// characters.
 pub fn validate_short_name_length(model: Model) !void {
     for (model.objects) |object_data| {
-        const object = model.view(object_data);
-        const short_name = object.getProperty("IdentifiedObject.shortName") catch {
-            std.log.err("Failed to parse short name of object '{s}'.", .{object.id});
+        const object = object_data;
+        const short_name = object.property("IdentifiedObject.shortName") catch {
+            std.log.err("Failed to parse short name of object '{s}'.", .{object.id()});
             return error.ShortNameLength;
         } orelse continue;
         if (short_name.len > short_name_chars_max) {
-            std.log.err("Short name of object '{s}' too long: '{s}'", .{ object.id, short_name });
+            std.log.err("Short name of object '{s}' too long: '{s}'", .{ object.id(), short_name });
             return error.ShortNameLength;
         }
     }
@@ -568,13 +568,13 @@ pub fn validate_short_name_length(model: Model) !void {
 /// have this.
 pub fn validate_energy_ident_coding_length(model: Model) !void {
     for (model.objects) |object_data| {
-        const object = model.view(object_data);
-        const energy_ident_code = object.getProperty("IdentifiedObject.energyIdentCodeEic") catch {
-            std.log.err("Failed to parse energyIdentCodeEic of object '{s}'.", .{object.id});
+        const object = object_data;
+        const energy_ident_code = object.property("IdentifiedObject.energyIdentCodeEic") catch {
+            std.log.err("Failed to parse energyIdentCodeEic of object '{s}'.", .{object.id()});
             return error.EICLength;
         } orelse continue;
         if (energy_ident_code.len != eic_chars_max) {
-            std.log.err("EnergyIdentCodeEic of object '{s}' is not exactly {d} characters: '{s}'", .{ object.id, eic_chars_max, energy_ident_code });
+            std.log.err("EnergyIdentCodeEic of object '{s}' is not exactly {d} characters: '{s}'", .{ object.id(), eic_chars_max, energy_ident_code });
             return error.EICLength;
         }
     }
@@ -588,13 +588,13 @@ pub fn validate_energy_ident_coding_length(model: Model) !void {
 /// NOTE: this only checks length, not the absence of a description.
 pub fn validate_description_length(model: Model) !void {
     for (model.objects) |object_data| {
-        const object = model.view(object_data);
-        const description = object.getProperty("IdentifiedObject.description") catch {
-            std.log.err("Failed to parse description of object '{s}'.", .{object.id});
+        const object = object_data;
+        const description = object.property("IdentifiedObject.description") catch {
+            std.log.err("Failed to parse description of object '{s}'.", .{object.id()});
             return error.DescriptionLength;
         } orelse continue;
         if (description.len > description_chars_max) {
-            std.log.err("Description of object '{s}' too long: '{s}'", .{ object.id, description });
+            std.log.err("Description of object '{s}' too long: '{s}'", .{ object.id(), description });
             return error.DescriptionLength;
         }
     }
@@ -826,25 +826,25 @@ pub fn validate_nominal_power(model: Model) error{GeneratingUnitNominalP}!void {
         if (!cim_types.is_a(group.type_name, "GeneratingUnit")) continue;
 
         for (group.objects) |object_data| {
-            const object = model.view(object_data);
+            const object = object_data;
 
-            const nominal_power_str = object.getProperty("GeneratingUnit.nominalP") catch continue orelse continue;
+            const nominal_power_str = object.property("GeneratingUnit.nominalP") catch continue orelse continue;
             const nominal_power = std.fmt.parseFloat(f64, nominal_power_str) catch {
-                std.log.err("Failed to parse nominal power '{s}' of object '{s}' into a floating value.", .{ nominal_power_str, object.id });
+                std.log.err("Failed to parse nominal power '{s}' of object '{s}' into a floating value.", .{ nominal_power_str, object.id() });
                 return error.GeneratingUnitNominalP;
             };
             if (!std.math.isFinite(nominal_power) or nominal_power <= 0) {
-                std.log.err("Nominal power of object '{s}' must be a positive finite value: '{s}'.", .{ object.id, nominal_power_str });
+                std.log.err("Nominal power of object '{s}' must be a positive finite value: '{s}'.", .{ object.id(), nominal_power_str });
                 return error.GeneratingUnitNominalP;
             }
 
-            const apparent_power_str = object.getProperty("GeneratingUnit.ratedS") catch continue orelse continue;
+            const apparent_power_str = object.property("GeneratingUnit.ratedS") catch continue orelse continue;
             const apparent_power = std.fmt.parseFloat(f64, apparent_power_str) catch {
-                std.log.err("Failed to parse apparent power '{s}' of object '{s}'.", .{ apparent_power_str, object.id });
+                std.log.err("Failed to parse apparent power '{s}' of object '{s}'.", .{ apparent_power_str, object.id() });
                 return error.GeneratingUnitNominalP;
             };
             if (!std.math.isFinite(apparent_power) or nominal_power > apparent_power) {
-                std.log.err("GeneratingUnit.nominalP={d} exceeds ratedS={d} for object '{s}'.", .{ nominal_power, apparent_power, object.id });
+                std.log.err("GeneratingUnit.nominalP={d} exceeds ratedS={d} for object '{s}'.", .{ nominal_power, apparent_power, object.id() });
                 return error.GeneratingUnitNominalP;
             }
         }
@@ -875,8 +875,8 @@ pub fn validate_conducting_equipment_base_voltage(model: Model) error{CEBaseVolt
         })) continue;
 
         for (group.objects) |object_data| {
-            const object = model.view(object_data);
-            const equipment_base_voltage: ?[]const u8 = if (object.getReference("ConductingEquipment.BaseVoltage") catch null) |ref|
+            const object = object_data;
+            const equipment_base_voltage: ?[]const u8 = if (object.reference("ConductingEquipment.BaseVoltage") catch null) |ref|
                 ids.strip_hash(ref)
             else
                 null;
@@ -901,16 +901,16 @@ pub fn validate_conducting_equipment_base_voltage(model: Model) error{CEBaseVolt
 /// For every instance of cim:BaseVoltage, the cim:BaseVoltage.nominalVoltage
 /// value must be greater than zero.
 pub fn validate_nominal_voltage(model: Model) error{NominalVoltage}!void {
-    const base_voltages = model.get_objects_by_type("BaseVoltage");
+    const base_voltages = model.objects_by_type("BaseVoltage");
     for (base_voltages) |base_voltage| {
         // base_voltage is already a stored object of this model; view it directly
         // instead of a redundant id_to_index lookup that can never miss.
-        const object = model.view(base_voltage);
-        const nominal_voltage_str = object.getProperty("BaseVoltage.nominalVoltage") catch {
-            std.log.err("Failed to parse nominal voltage for base voltage {s}", .{base_voltage.id});
+        const object = base_voltage;
+        const nominal_voltage_str = object.property("BaseVoltage.nominalVoltage") catch {
+            std.log.err("Failed to parse nominal voltage for base voltage {s}", .{base_voltage.id()});
             return error.NominalVoltage;
         } orelse {
-            std.log.err("No nominal voltage found for base voltage {s}", .{base_voltage.id});
+            std.log.err("No nominal voltage found for base voltage {s}", .{base_voltage.id()});
             return error.NominalVoltage;
         };
         const nominal_voltage = std.fmt.parseFloat(f64, nominal_voltage_str) catch {
@@ -938,7 +938,7 @@ pub fn validate_terminal_count1(model: Model, reverse_ref_index: *const ReverseR
 
         for (group.objects) |object_data| {
             var terminal_id: ?[]const u8 = null;
-            for (reverse_ref_index.lookup(object_data.id)) |reference| {
+            for (reverse_ref_index.lookup(object_data.id())) |reference| {
                 if (!std.mem.eql(u8, reference.referrer_type, "Terminal")) continue;
                 if (!std.mem.eql(u8, reference.reference_name, "Terminal.ConductingEquipment")) continue;
 
@@ -985,7 +985,7 @@ pub fn validate_terminal_count2(model: Model, reverse_ref_index: *const ReverseR
         for (group.objects) |object_data| {
             var terminal_ids: [2][]const u8 = undefined;
             var terminals_found: u2 = 0;
-            for (reverse_ref_index.lookup(object_data.id)) |reference| {
+            for (reverse_ref_index.lookup(object_data.id())) |reference| {
                 if (!std.mem.eql(u8, reference.referrer_type, "Terminal")) continue;
                 if (!std.mem.eql(u8, reference.reference_name, "Terminal.ConductingEquipment")) continue;
 
@@ -1039,22 +1039,22 @@ const ContainerBaseVoltage = struct {
 /// own but carries no BaseVoltage, so we follow cim:Bay.VoltageLevel to the
 /// parent VoltageLevel (mirroring topology/cross_ref.zig). Any container that is
 /// neither a VoltageLevel nor a Bay does not satisfy the containment clause.
-fn resolve_container_base_voltage(model: Model, object: CimObjectView) ContainerBaseVoltage {
+fn resolve_container_base_voltage(model: Model, object: CimObject) ContainerBaseVoltage {
     const none: ContainerBaseVoltage = .{ .in_voltage_level_or_bay = false, .base_voltage = null };
 
-    const container_ref = (object.getReference("Equipment.EquipmentContainer") catch return none) orelse return none;
-    const container = model.getObjectById(ids.strip_hash(container_ref)) orelse return none;
+    const container_ref = (object.reference("Equipment.EquipmentContainer") catch return none) orelse return none;
+    const container = model.object_by_id(ids.strip_hash(container_ref)) orelse return none;
 
-    if (std.mem.eql(u8, container.type_name, "VoltageLevel")) {
+    if (std.mem.eql(u8, container.type_name(), "VoltageLevel")) {
         return .{ .in_voltage_level_or_bay = true, .base_voltage = voltage_level_base_voltage(container) };
     }
 
-    if (std.mem.eql(u8, container.type_name, "Bay")) {
-        const voltage_level_ref = (container.getReference("Bay.VoltageLevel") catch null) orelse
+    if (std.mem.eql(u8, container.type_name(), "Bay")) {
+        const voltage_level_ref = (container.reference("Bay.VoltageLevel") catch null) orelse
             return .{ .in_voltage_level_or_bay = true, .base_voltage = null };
-        const voltage_level = model.getObjectById(ids.strip_hash(voltage_level_ref)) orelse
+        const voltage_level = model.object_by_id(ids.strip_hash(voltage_level_ref)) orelse
             return .{ .in_voltage_level_or_bay = true, .base_voltage = null };
-        if (!std.mem.eql(u8, voltage_level.type_name, "VoltageLevel"))
+        if (!std.mem.eql(u8, voltage_level.type_name(), "VoltageLevel"))
             return .{ .in_voltage_level_or_bay = true, .base_voltage = null };
         return .{ .in_voltage_level_or_bay = true, .base_voltage = voltage_level_base_voltage(voltage_level) };
     }
@@ -1062,42 +1062,42 @@ fn resolve_container_base_voltage(model: Model, object: CimObjectView) Container
     return none;
 }
 
-fn voltage_level_base_voltage(voltage_level: CimObjectView) ?[]const u8 {
-    const ref = (voltage_level.getReference("VoltageLevel.BaseVoltage") catch return null) orelse return null;
+fn voltage_level_base_voltage(voltage_level: CimObject) ?[]const u8 {
+    const ref = (voltage_level.reference("VoltageLevel.BaseVoltage") catch return null) orelse return null;
     return ids.strip_hash(ref);
 }
 
 fn validate_boundary_point_text_length(model: Model, comptime property: []const u8, max_len: usize) !void {
-    const boundary_points = model.get_objects_by_type("BoundaryPoint");
+    const boundary_points = model.objects_by_type("BoundaryPoint");
     for (boundary_points) |boundary_point| {
-        const object = model.view(boundary_point);
-        const value = object.getProperty(property) catch {
-            std.log.err("Failed to parse " ++ property ++ " of object '{s}'.", .{boundary_point.id});
+        const object = boundary_point;
+        const value = object.property(property) catch {
+            std.log.err("Failed to parse " ++ property ++ " of object '{s}'.", .{boundary_point.id()});
             return error.ParseFailed;
         } orelse {
-            std.log.err("Object '{s}':", .{object.id});
+            std.log.err("Object '{s}':", .{object.id()});
             return error.Missing;
         };
         if (value.len > max_len) {
-            std.log.err("Object {s} name too long: {s}", .{ boundary_point.id, value });
+            std.log.err("Object {s} name too long: {s}", .{ boundary_point.id(), value });
             return error.TooLong;
         }
     }
 }
 
 fn validate_boundary_node_country_code(model: Model, comptime property: []const u8) !void {
-    const boundary_points = model.get_objects_by_type("BoundaryPoint");
+    const boundary_points = model.objects_by_type("BoundaryPoint");
     for (boundary_points) |boundary_point| {
-        const object = model.view(boundary_point);
-        const iso_country_code = object.getProperty(property) catch {
-            std.log.err("Failed to parse " ++ property ++ " of object '{s}'.", .{boundary_point.id});
+        const object = boundary_point;
+        const iso_country_code = object.property(property) catch {
+            std.log.err("Failed to parse " ++ property ++ " of object '{s}'.", .{boundary_point.id()});
             return error.ParseFailed;
         } orelse {
-            std.log.err("Object '{s}':", .{object.id});
+            std.log.err("Object '{s}':", .{object.id()});
             return error.Missing;
         };
         _ = iso_country_codes.get(iso_country_code) orelse {
-            std.log.err("Object '{s}':", .{object.id});
+            std.log.err("Object '{s}':", .{object.id()});
             return error.UnknownCountryCode;
         };
     }
@@ -1115,15 +1115,15 @@ pub fn validate_containment(
         if (!matches_any_type(group.type_name, types)) continue;
 
         for (group.objects) |object_data| {
-            const object = model.view(object_data);
-            const container_ref = object.getReference(reference) catch {
-                std.log.err("Failed to parse '{s}' of object '{s}'.", .{ reference, object.id });
+            const object = object_data;
+            const container_ref = object.reference(reference) catch {
+                std.log.err("Failed to parse '{s}' of object '{s}'.", .{ reference, object.id() });
                 return error.ParseFailed;
             } orelse {
                 if (container_required) return error.Missing else continue;
             };
-            const container = model.getObjectById(ids.strip_hash(container_ref)) orelse return error.Missing;
-            if (!matches_any_type(container.type_name, container_types)) return error.WrongContainer;
+            const container = model.object_by_id(ids.strip_hash(container_ref)) orelse return error.Missing;
+            if (!matches_any_type(container.type_name(), container_types)) return error.WrongContainer;
         }
     }
 }

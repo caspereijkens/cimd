@@ -41,7 +41,6 @@
 
 pub const CimDocument = @import("document.zig").CimDocument;
 pub const CimObject = @import("tag_index.zig").CimObject;
-pub const CimObjectView = @import("tag_index.zig").CimObjectView;
 pub const Diagnostics = @import("diagnostics.zig").Diagnostics;
 
 /// One child element of an object, and the walk that yields them. This is the
@@ -52,13 +51,13 @@ pub const ChildIterator = @import("tag_index.zig").ChildIterator;
 /// Opt-in index over a document's children: interned names, precomputed kinds
 /// and value spans. For consumers that walk the same object many times -- SHACL
 /// validation walks it once per shape -- where re-parsing through
-/// `view.children()` dominates. Built and owned by the run that wants it, so
+/// `object.children()` dominates. Built and owned by the run that wants it, so
 /// commands that read each child once do not pay for it. See child_table.zig.
 pub const ChildTable = @import("child_table.zig").ChildTable;
 
 /// Raw XML and RDF/XML scanning: tag boundaries, tag types, rdf attribute
 /// extraction. The layer under CimDocument, and a module a CIM consumer has no
-/// reason to import -- `CimDocument`, `CimObjectView` and `view.children()`
+/// reason to import -- `CimDocument`, `CimObject` and `object.children()`
 /// above cover working with a parsed document. It is exported for the callers
 /// that scan XML this library does not model: the type-table generator reads
 /// RDFS schema files, `profile` reads a FullModel header, `browse` slices

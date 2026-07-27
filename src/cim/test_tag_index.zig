@@ -6,30 +6,63 @@ const std = @import("std");
 const assert = std.debug.assert;
 const tag_index = @import("tag_index.zig");
 const xml_scan = @import("xml_scan.zig");
-const CimObject = tag_index.CimObject;
-const CimObjectView = tag_index.CimObjectView;
+const ElementView = tag_index.ElementView;
 
-/// Test helper: extract id from the tag at tag_idx, then build a CimObjectView.
-/// Mirrors the two-step pattern that CimDocument.init uses in production.
+const TestObject = struct {
+    element: ElementView,
+    id: []const u8,
+    type_name: []const u8,
+
+    fn property(self: TestObject, name: []const u8) !?[]const u8 {
+        return self.element.property(name);
+    }
+
+    fn reference(self: TestObject, name: []const u8) !?[]const u8 {
+        return self.element.reference(name);
+    }
+
+    fn children(self: TestObject) tag_index.ChildIterator {
+        return self.element.children();
+    }
+
+    fn properties(self: TestObject, comptime names: anytype) ![names.len]?[]const u8 {
+        return self.element.properties(names);
+    }
+
+    fn references(self: TestObject, comptime names: anytype) ![names.len]?[]const u8 {
+        return self.element.references(names);
+    }
+
+    fn all_properties(self: TestObject, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
+        return self.element.all_properties(gpa);
+    }
+
+    fn all_references(self: TestObject, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
+        return self.element.all_references(gpa);
+    }
+};
+
+/// Test helper: bind one parsed element span for object-query tests.
 fn make_cim_object(
     xml: []const u8,
     boundaries: []const xml_scan.TagBoundary,
     tag_idx: u32,
     closing_idx: u32,
-) !CimObjectView {
+) !TestObject {
     const start = boundaries[tag_idx].start;
     const id = xml_scan.extract_rdf_id(xml, start) catch |err| switch (err) {
         error.NoRdfId => try xml_scan.extract_rdf_about(xml, start),
         error.MalformedTag => return error.MalformedTag,
     };
-    const obj = try CimObject.init(xml, boundaries, tag_idx, closing_idx, id);
     return .{
-        .xml = xml,
-        .boundaries = boundaries,
-        .object_tag_idx = obj.object_tag_idx,
-        .closing_tag_idx = obj.closing_tag_idx,
-        .id = obj.id,
-        .type_name = obj.type_name,
+        .element = .{
+            .xml = xml,
+            .boundaries = boundaries,
+            .object_tag_idx = tag_idx,
+            .closing_tag_idx = closing_idx,
+        },
+        .id = id,
+        .type_name = try xml_scan.extract_tag_type(xml, boundaries[tag_idx].start),
     };
 }
 
@@ -646,7 +679,7 @@ test "tag_index.CimObject - create simple object" {
     try std.testing.expectEqualStrings("Substation", obj.type_name);
 }
 
-test "tag_index.CimObject - getProperty returns text content" {
+test "tag_index.CimObject - property returns text content" {
     const gpa = std.testing.allocator;
 
     const xml =
@@ -663,16 +696,16 @@ test "tag_index.CimObject - getProperty returns text content" {
     const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     // Get properties
-    const name = try obj.getProperty("IdentifiedObject.name");
+    const name = try obj.property("IdentifiedObject.name");
     try std.testing.expect(name != null);
     try std.testing.expectEqualStrings("North Station", name.?);
 
-    const desc = try obj.getProperty("IdentifiedObject.description");
+    const desc = try obj.property("IdentifiedObject.description");
     try std.testing.expect(desc != null);
     try std.testing.expectEqualStrings("Main substation", desc.?);
 }
 
-test "tag_index.CimObject - getProperty returns null when not found" {
+test "tag_index.CimObject - property returns null when not found" {
     const gpa = std.testing.allocator;
 
     const xml =
@@ -687,11 +720,11 @@ test "tag_index.CimObject - getProperty returns null when not found" {
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
     const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
-    const result = try obj.getProperty("NonExistent.property");
+    const result = try obj.property("NonExistent.property");
     try std.testing.expectEqual(@as(?[]const u8, null), result);
 }
 
-test "tag_index.CimObject - getReference returns rdf:resource value" {
+test "tag_index.CimObject - reference returns rdf:resource value" {
     const gpa = std.testing.allocator;
 
     const xml =
@@ -712,16 +745,16 @@ test "tag_index.CimObject - getReference returns rdf:resource value" {
     try std.testing.expectEqualStrings("Terminal", obj.type_name);
 
     // Get references
-    const conn_node = try obj.getReference("Terminal.ConnectivityNode");
+    const conn_node = try obj.reference("Terminal.ConnectivityNode");
     try std.testing.expect(conn_node != null);
     try std.testing.expectEqualStrings("#_CN1", conn_node.?);
 
-    const ce = try obj.getReference("Terminal.ConductingEquipment");
+    const ce = try obj.reference("Terminal.ConductingEquipment");
     try std.testing.expect(ce != null);
     try std.testing.expectEqualStrings("#_CE1", ce.?);
 }
 
-test "tag_index.CimObject - getReference returns null when not found" {
+test "tag_index.CimObject - reference returns null when not found" {
     const gpa = std.testing.allocator;
 
     const xml =
@@ -736,7 +769,7 @@ test "tag_index.CimObject - getReference returns null when not found" {
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
     const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
-    const result = try obj.getReference("NonExistent.property");
+    const result = try obj.reference("NonExistent.property");
     try std.testing.expectEqual(@as(?[]const u8, null), result);
 }
 
@@ -762,16 +795,16 @@ test "tag_index.CimObject - mixed properties and references" {
     try std.testing.expectEqualStrings("ACLineSegment", obj.type_name);
 
     // Get text properties
-    const name = try obj.getProperty("IdentifiedObject.name");
+    const name = try obj.property("IdentifiedObject.name");
     try std.testing.expect(name != null);
     try std.testing.expectEqualStrings("Line 1", name.?);
 
-    const r = try obj.getProperty("ACLineSegment.r");
+    const r = try obj.property("ACLineSegment.r");
     try std.testing.expect(r != null);
     try std.testing.expectEqualStrings("0.5", r.?);
 
     // Get reference
-    const bv = try obj.getReference("ACLineSegment.BaseVoltage");
+    const bv = try obj.reference("ACLineSegment.BaseVoltage");
     try std.testing.expect(bv != null);
     try std.testing.expectEqualStrings("#_BV1", bv.?);
 }
@@ -790,7 +823,7 @@ test "tag_index.CimObject - empty object (no properties)" {
     try std.testing.expectEqualStrings("_O1", obj.id);
     try std.testing.expectEqualStrings("Object", obj.type_name);
 
-    const prop = try obj.getProperty("Any.property");
+    const prop = try obj.property("Any.property");
     try std.testing.expectEqual(@as(?[]const u8, null), prop);
 }
 
@@ -847,7 +880,7 @@ test "tag_index.CimObject - multiple objects from same XML" {
     try std.testing.expectEqualStrings("_SS1", obj1.id);
     try std.testing.expectEqualStrings("Substation", obj1.type_name);
 
-    const name1 = try obj1.getProperty("IdentifiedObject.name");
+    const name1 = try obj1.property("IdentifiedObject.name");
     try std.testing.expect(name1 != null);
     try std.testing.expectEqualStrings("Station 1", name1.?);
 
@@ -858,13 +891,13 @@ test "tag_index.CimObject - multiple objects from same XML" {
     try std.testing.expectEqualStrings("_SS2", obj2.id);
     try std.testing.expectEqualStrings("Substation", obj2.type_name);
 
-    const name2 = try obj2.getProperty("IdentifiedObject.name");
+    const name2 = try obj2.property("IdentifiedObject.name");
     try std.testing.expect(name2 != null);
     try std.testing.expectEqualStrings("Station 2", name2.?);
 
     // Verify they share the same xml and boundaries references
-    try std.testing.expectEqual(obj1.xml.ptr, obj2.xml.ptr);
-    try std.testing.expectEqual(obj1.boundaries.ptr, obj2.boundaries.ptr);
+    try std.testing.expectEqual(obj1.element.xml.ptr, obj2.element.xml.ptr);
+    try std.testing.expectEqual(obj1.element.boundaries.ptr, obj2.element.boundaries.ptr);
 }
 
 test "tag_index.CimObject - self-closing tag" {
@@ -892,15 +925,15 @@ test "tag_index.CimObject - self-closing tag" {
     try std.testing.expectEqualStrings("Substation", obj.type_name);
 
     // Self-closing tags should have no properties
-    const prop = try obj.getProperty("SomeProperty");
+    const prop = try obj.property("SomeProperty");
     try std.testing.expect(prop == null);
 
     // Self-closing tags should have no references
-    const ref = try obj.getReference("SomeReference");
+    const ref = try obj.reference("SomeReference");
     try std.testing.expect(ref == null);
 }
 
-test "tag_index.CimObject - getProperty on self-closing tag returns null" {
+test "tag_index.CimObject - property on self-closing tag returns null" {
     const gpa = std.testing.allocator;
 
     const xml = "<cim:Terminal rdf:ID=\"_T1\"/>";
@@ -915,17 +948,17 @@ test "tag_index.CimObject - getProperty on self-closing tag returns null" {
     const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     // Verify self-closing
-    try std.testing.expectEqual(obj.object_tag_idx, obj.closing_tag_idx);
+    try std.testing.expectEqual(obj.element.object_tag_idx, obj.element.closing_tag_idx);
 
     // All property lookups should return null
-    const name = try obj.getProperty("IdentifiedObject.name");
+    const name = try obj.property("IdentifiedObject.name");
     try std.testing.expect(name == null);
 
-    const desc = try obj.getProperty("IdentifiedObject.description");
+    const desc = try obj.property("IdentifiedObject.description");
     try std.testing.expect(desc == null);
 }
 
-test "tag_index.CimObject - getReference on self-closing tag returns null" {
+test "tag_index.CimObject - reference on self-closing tag returns null" {
     const gpa = std.testing.allocator;
 
     const xml = "<cim:Terminal rdf:ID=\"_T1\"/>";
@@ -940,13 +973,13 @@ test "tag_index.CimObject - getReference on self-closing tag returns null" {
     const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     // Verify self-closing
-    try std.testing.expectEqual(obj.object_tag_idx, obj.closing_tag_idx);
+    try std.testing.expectEqual(obj.element.object_tag_idx, obj.element.closing_tag_idx);
 
     // All reference lookups should return null
-    const ref1 = try obj.getReference("Terminal.ConductingEquipment");
+    const ref1 = try obj.reference("Terminal.ConductingEquipment");
     try std.testing.expect(ref1 == null);
 
-    const ref2 = try obj.getReference("Terminal.ConnectivityNode");
+    const ref2 = try obj.reference("Terminal.ConnectivityNode");
     try std.testing.expect(ref2 == null);
 }
 
@@ -976,7 +1009,7 @@ test "tag_index.get_reference_from_indices - self-closing tag returns null" {
     try std.testing.expect(result == null);
 }
 
-test "CimObject.getAllProperties - returns all text properties" {
+test "CimObject.all_properties - returns all text properties" {
     const gpa = std.testing.allocator;
 
     const xml =
@@ -993,7 +1026,7 @@ test "CimObject.getAllProperties - returns all text properties" {
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
     const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
-    var props = try obj.getAllProperties(gpa);
+    var props = try obj.all_properties(gpa);
     defer props.deinit();
 
     // Should have 2 properties (not the reference)
@@ -1012,7 +1045,7 @@ test "CimObject.getAllProperties - returns all text properties" {
     try std.testing.expect(props.get("Substation.Region") == null);
 }
 
-test "CimObject.getAllReferences - returns all rdf:resource references" {
+test "CimObject.all_references - returns all rdf:resource references" {
     const gpa = std.testing.allocator;
 
     const xml =
@@ -1029,7 +1062,7 @@ test "CimObject.getAllReferences - returns all rdf:resource references" {
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
     const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
-    var refs = try obj.getAllReferences(gpa);
+    var refs = try obj.all_references(gpa);
     defer refs.deinit();
 
     // Should have 2 references
@@ -1048,7 +1081,7 @@ test "CimObject.getAllReferences - returns all rdf:resource references" {
     try std.testing.expect(refs.get("IdentifiedObject.name") == null);
 }
 
-test "CimObject.getAllProperties - empty object returns empty map" {
+test "CimObject.all_properties - empty object returns empty map" {
     const gpa = std.testing.allocator;
 
     const xml = "<cim:Substation rdf:ID=\"_SS1\"/>";
@@ -1062,13 +1095,13 @@ test "CimObject.getAllProperties - empty object returns empty map" {
     };
     const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
-    var props = try obj.getAllProperties(gpa);
+    var props = try obj.all_properties(gpa);
     defer props.deinit();
 
     try std.testing.expectEqual(0, props.count());
 }
 
-test "CimObject.getAllReferences - empty object returns empty map" {
+test "CimObject.all_references - empty object returns empty map" {
     const gpa = std.testing.allocator;
 
     const xml = "<cim:Substation rdf:ID=\"_SS1\"/>";
@@ -1082,13 +1115,13 @@ test "CimObject.getAllReferences - empty object returns empty map" {
     };
     const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
-    var refs = try obj.getAllReferences(gpa);
+    var refs = try obj.all_references(gpa);
     defer refs.deinit();
 
     try std.testing.expectEqual(0, refs.count());
 }
 
-test "CimObject.getAllProperties - handles mixed properties and references" {
+test "CimObject.all_properties - handles mixed properties and references" {
     const gpa = std.testing.allocator;
 
     const xml =
@@ -1106,10 +1139,10 @@ test "CimObject.getAllProperties - handles mixed properties and references" {
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
     const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
-    var props = try obj.getAllProperties(gpa);
+    var props = try obj.all_properties(gpa);
     defer props.deinit();
 
-    var refs = try obj.getAllReferences(gpa);
+    var refs = try obj.all_references(gpa);
     defer refs.deinit();
 
     // Should have 2 properties
@@ -1146,30 +1179,30 @@ test "CimObject child walks - a commented-out child is not a live child" {
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
     const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
-    // getAllReferences / getAllProperties
-    var refs = try obj.getAllReferences(gpa);
+    // all_references / all_properties
+    var refs = try obj.all_references(gpa);
     defer refs.deinit();
     try std.testing.expectEqual(1, refs.count());
     try std.testing.expectEqualStrings("#_Node1", refs.get("Terminal.ConnectivityNode").?);
     try std.testing.expect(refs.get("Terminal.ConductingEquipment") == null);
 
-    var props = try obj.getAllProperties(gpa);
+    var props = try obj.all_properties(gpa);
     defer props.deinit();
     try std.testing.expectEqual(1, props.count());
     try std.testing.expectEqualStrings("1", props.get("ACDCTerminal.sequenceNumber").?);
     try std.testing.expect(props.get("IdentifiedObject.name") == null);
 
     // Single-name lookups
-    try std.testing.expect(try obj.getReference("Terminal.ConductingEquipment") == null);
-    try std.testing.expect(try obj.getProperty("IdentifiedObject.name") == null);
-    try std.testing.expectEqualStrings("#_Node1", (try obj.getReference("Terminal.ConnectivityNode")).?);
+    try std.testing.expect(try obj.reference("Terminal.ConductingEquipment") == null);
+    try std.testing.expect(try obj.property("IdentifiedObject.name") == null);
+    try std.testing.expectEqualStrings("#_Node1", (try obj.reference("Terminal.ConnectivityNode")).?);
 
     // Batch lookups
-    const batch_refs = try obj.getReferences(.{ "Terminal.ConductingEquipment", "Terminal.ConnectivityNode" });
+    const batch_refs = try obj.references(.{ "Terminal.ConductingEquipment", "Terminal.ConnectivityNode" });
     try std.testing.expect(batch_refs[0] == null);
     try std.testing.expectEqualStrings("#_Node1", batch_refs[1].?);
 
-    const batch_props = try obj.getProperties(.{ "IdentifiedObject.name", "ACDCTerminal.sequenceNumber" });
+    const batch_props = try obj.properties(.{ "IdentifiedObject.name", "ACDCTerminal.sequenceNumber" });
     try std.testing.expect(batch_props[0] == null);
     try std.testing.expectEqualStrings("1", batch_props[1].?);
 }
@@ -1190,15 +1223,15 @@ test "CimObject child walks - a PI inside an object is not a child" {
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
     const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
-    try std.testing.expectEqualStrings("Real", (try obj.getProperty("IdentifiedObject.name")).?);
+    try std.testing.expectEqualStrings("Real", (try obj.property("IdentifiedObject.name")).?);
 
-    var props = try obj.getAllProperties(gpa);
+    var props = try obj.all_properties(gpa);
     defer props.deinit();
     try std.testing.expectEqual(1, props.count());
     try std.testing.expectEqualStrings("Real", props.get("IdentifiedObject.name").?);
 }
 
-test "tag_index.CimObject - getProperties batch matches individual getProperty" {
+test "tag_index.CimObject - properties batch matches individual property" {
     const gpa = std.testing.allocator;
 
     const xml =
@@ -1219,7 +1252,7 @@ test "tag_index.CimObject - getProperties batch matches individual getProperty" 
     const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     // Batch fetch
-    const props = try obj.getProperties(.{
+    const props = try obj.properties(.{
         "IdentifiedObject.mRID",
         "IdentifiedObject.name",
         "ACLineSegment.r",
@@ -1228,7 +1261,7 @@ test "tag_index.CimObject - getProperties batch matches individual getProperty" 
         "ACLineSegment.gch",
     });
 
-    // Verify each matches individual getProperty
+    // Verify each matches individual property
     try std.testing.expectEqualStrings("line-mrid", props[0].?);
     try std.testing.expectEqualStrings("Line 1", props[1].?);
     try std.testing.expectEqualStrings("1.5", props[2].?);
@@ -1237,11 +1270,11 @@ test "tag_index.CimObject - getProperties batch matches individual getProperty" 
     try std.testing.expectEqualStrings("0.0005", props[5].?);
 
     // Cross-check with individual calls
-    try std.testing.expectEqualStrings(props[0].?, (try obj.getProperty("IdentifiedObject.mRID")).?);
-    try std.testing.expectEqualStrings(props[2].?, (try obj.getProperty("ACLineSegment.r")).?);
+    try std.testing.expectEqualStrings(props[0].?, (try obj.property("IdentifiedObject.mRID")).?);
+    try std.testing.expectEqualStrings(props[2].?, (try obj.property("ACLineSegment.r")).?);
 }
 
-test "tag_index.CimObject - getProperties returns null for missing names" {
+test "tag_index.CimObject - properties returns null for missing names" {
     const gpa = std.testing.allocator;
 
     const xml =
@@ -1256,7 +1289,7 @@ test "tag_index.CimObject - getProperties returns null for missing names" {
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
     const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
-    const props = try obj.getProperties(.{
+    const props = try obj.properties(.{
         "IdentifiedObject.name",
         "IdentifiedObject.mRID",
         "NonExistent.property",
@@ -1267,7 +1300,7 @@ test "tag_index.CimObject - getProperties returns null for missing names" {
     try std.testing.expect(props[2] == null);
 }
 
-test "tag_index.CimObject - getProperties on self-closing tag returns all null" {
+test "tag_index.CimObject - properties on self-closing tag returns all null" {
     const gpa = std.testing.allocator;
 
     const xml =
@@ -1279,7 +1312,7 @@ test "tag_index.CimObject - getProperties on self-closing tag returns all null" 
 
     const obj = try make_cim_object(xml, boundaries.items, 0, 0);
 
-    const props = try obj.getProperties(.{
+    const props = try obj.properties(.{
         "IdentifiedObject.name",
         "IdentifiedObject.mRID",
     });
@@ -1288,7 +1321,7 @@ test "tag_index.CimObject - getProperties on self-closing tag returns all null" 
     try std.testing.expect(props[1] == null);
 }
 
-test "tag_index.CimObject - getReferences batch matches individual getReference" {
+test "tag_index.CimObject - references batch matches individual reference" {
     const gpa = std.testing.allocator;
 
     const xml =
@@ -1307,7 +1340,7 @@ test "tag_index.CimObject - getReferences batch matches individual getReference"
     const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
     // Batch fetch references
-    const refs = try obj.getReferences(.{
+    const refs = try obj.references(.{
         "Terminal.ConductingEquipment",
         "Terminal.ConnectivityNode",
     });
@@ -1316,11 +1349,11 @@ test "tag_index.CimObject - getReferences batch matches individual getReference"
     try std.testing.expectEqualStrings("#_Node1", refs[1].?);
 
     // Cross-check with individual calls
-    try std.testing.expectEqualStrings(refs[0].?, (try obj.getReference("Terminal.ConductingEquipment")).?);
-    try std.testing.expectEqualStrings(refs[1].?, (try obj.getReference("Terminal.ConnectivityNode")).?);
+    try std.testing.expectEqualStrings(refs[0].?, (try obj.reference("Terminal.ConductingEquipment")).?);
+    try std.testing.expectEqualStrings(refs[1].?, (try obj.reference("Terminal.ConnectivityNode")).?);
 }
 
-test "tag_index.CimObject - getReferences returns null for missing names" {
+test "tag_index.CimObject - references returns null for missing names" {
     const gpa = std.testing.allocator;
 
     const xml =
@@ -1335,7 +1368,7 @@ test "tag_index.CimObject - getReferences returns null for missing names" {
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
     const obj = try make_cim_object(xml, boundaries.items, 0, closing);
 
-    const refs = try obj.getReferences(.{
+    const refs = try obj.references(.{
         "Terminal.ConductingEquipment",
         "Terminal.ConnectivityNode",
     });
@@ -1344,7 +1377,7 @@ test "tag_index.CimObject - getReferences returns null for missing names" {
     try std.testing.expect(refs[1] == null);
 }
 
-test "tag_index.CimObject - getReferences on self-closing tag returns all null" {
+test "tag_index.CimObject - references on self-closing tag returns all null" {
     const gpa = std.testing.allocator;
 
     const xml =
@@ -1356,7 +1389,7 @@ test "tag_index.CimObject - getReferences on self-closing tag returns all null" 
 
     const obj = try make_cim_object(xml, boundaries.items, 0, 0);
 
-    const refs = try obj.getReferences(.{
+    const refs = try obj.references(.{
         "Terminal.ConductingEquipment",
         "Terminal.ConnectivityNode",
     });
@@ -1466,7 +1499,7 @@ test "tag_index.ChildIterator - the six walks agree with it" {
 
     // Text properties: expanded literals only. A self-closing element has no
     // text content, and an rdf:resource carrier is a reference in either form.
-    var props = try obj.getAllProperties(gpa);
+    var props = try obj.all_properties(gpa);
     defer props.deinit();
     try std.testing.expectEqual(@as(u32, 2), props.count());
     try std.testing.expectEqualStrings("Feeder 1", props.get("Terminal.name").?);
@@ -1475,7 +1508,7 @@ test "tag_index.ChildIterator - the six walks agree with it" {
     try std.testing.expect(props.get("Terminal.empty") == null);
     try std.testing.expect(props.get("Terminal.Ghost") == null);
 
-    var refs = try obj.getAllReferences(gpa);
+    var refs = try obj.all_references(gpa);
     defer refs.deinit();
     try std.testing.expectEqual(@as(u32, 2), refs.count());
     try std.testing.expectEqualStrings("#_CE1", refs.get("Terminal.ConductingEquipment").?);
@@ -1483,18 +1516,18 @@ test "tag_index.ChildIterator - the six walks agree with it" {
     try std.testing.expect(refs.get("Terminal.Ghost") == null);
 
     // The single-name and batch forms resolve to the same answers.
-    try std.testing.expectEqualStrings("Feeder 1", (try obj.getProperty("Terminal.name")).?);
-    try std.testing.expect((try obj.getProperty("Terminal.expanded")) == null);
-    try std.testing.expect((try obj.getProperty("Terminal.empty")) == null);
-    try std.testing.expectEqualStrings("#_EX1", (try obj.getReference("Terminal.expanded")).?);
-    try std.testing.expect((try obj.getReference("Terminal.name")) == null);
+    try std.testing.expectEqualStrings("Feeder 1", (try obj.property("Terminal.name")).?);
+    try std.testing.expect((try obj.property("Terminal.expanded")) == null);
+    try std.testing.expect((try obj.property("Terminal.empty")) == null);
+    try std.testing.expectEqualStrings("#_EX1", (try obj.reference("Terminal.expanded")).?);
+    try std.testing.expect((try obj.reference("Terminal.name")) == null);
 
-    const batch_props = try obj.getProperties(.{ "Terminal.name", "Terminal.expanded", "Terminal.empty" });
+    const batch_props = try obj.properties(.{ "Terminal.name", "Terminal.expanded", "Terminal.empty" });
     try std.testing.expectEqualStrings("Feeder 1", batch_props[0].?);
     try std.testing.expect(batch_props[1] == null);
     try std.testing.expect(batch_props[2] == null);
 
-    const batch_refs = try obj.getReferences(.{ "Terminal.ConductingEquipment", "Terminal.expanded", "Terminal.name" });
+    const batch_refs = try obj.references(.{ "Terminal.ConductingEquipment", "Terminal.expanded", "Terminal.name" });
     try std.testing.expectEqualStrings("#_CE1", batch_refs[0].?);
     try std.testing.expectEqualStrings("#_EX1", batch_refs[1].?);
     try std.testing.expect(batch_refs[2] == null);
@@ -1526,15 +1559,15 @@ test "tag_index.ChildIterator - an unreadable rdf:resource fails the query that 
     try std.testing.expectEqual(tag_index.Child.Kind.property, bad.kind);
 
     // Asked for by name: loud.
-    try std.testing.expectError(error.MalformedTag, obj.getReference("VoltageLevel.BaseVoltage"));
-    try std.testing.expectError(error.MalformedTag, obj.getReferences(.{"VoltageLevel.BaseVoltage"}));
+    try std.testing.expectError(error.MalformedTag, obj.reference("VoltageLevel.BaseVoltage"));
+    try std.testing.expectError(error.MalformedTag, obj.references(.{"VoltageLevel.BaseVoltage"}));
 
     // Not asked for: the malformed child must not poison an unrelated query.
-    try std.testing.expectEqualStrings("VL", (try obj.getProperty("VoltageLevel.name")).?);
-    try std.testing.expect((try obj.getReference("VoltageLevel.Substation")) == null);
+    try std.testing.expectEqualStrings("VL", (try obj.property("VoltageLevel.name")).?);
+    try std.testing.expect((try obj.reference("VoltageLevel.Substation")) == null);
 
     // Tolerant walks drop it rather than failing the whole object.
-    var refs = try obj.getAllReferences(gpa);
+    var refs = try obj.all_references(gpa);
     defer refs.deinit();
     try std.testing.expectEqual(@as(u32, 0), refs.count());
 }

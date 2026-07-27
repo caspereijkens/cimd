@@ -4,7 +4,7 @@
 //! It is a separate module because it has two separate kinds of consumer, and
 //! conflating them is what kept the boundary array in the library's public
 //! contract. A CIM consumer wants objects and their children and should never
-//! import this file: `CimDocument`, `CimObjectView` and `view.children()`
+//! import this file: `CimDocument`, `CimObject` and `object.children()`
 //! answer everything it needs. What is left are the callers that genuinely
 //! scan XML this library does not model -- `gen_cim_types.zig` reads RDFS
 //! schema files, `cgmes/profile.zig` reads a FullModel header before there is a

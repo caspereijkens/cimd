@@ -154,18 +154,18 @@ const StatementEmitter = struct {
     forward: *std.Io.Writer,
     reverse: *std.Io.Writer,
 
-    pub fn added(self: *const StatementEmitter, view: tag_index.CimObjectView) !void {
+    pub fn added(self: *const StatementEmitter, view: tag_index.CimObject) !void {
         try emit_full_object(self.forward, view);
     }
 
-    pub fn removed(self: *const StatementEmitter, view: tag_index.CimObjectView) !void {
+    pub fn removed(self: *const StatementEmitter, view: tag_index.CimObject) !void {
         try emit_full_object(self.reverse, view);
     }
 
     pub fn changed(
         self: *const StatementEmitter,
-        view1: tag_index.CimObjectView,
-        view2: tag_index.CimObjectView,
+        view1: tag_index.CimObject,
+        view2: tag_index.CimObject,
         changes: *const core.ChangeSet,
     ) !void {
         try emit_description(self.forward, view2, changes.forward.items);
@@ -176,7 +176,7 @@ const StatementEmitter = struct {
 /// One rdf:Description block carrying a subset of an object's statements.
 fn emit_description(
     writer: *std.Io.Writer,
-    view: tag_index.CimObjectView,
+    view: tag_index.CimObject,
     statements: []const core.Statement,
 ) !void {
     if (statements.len == 0) return;
@@ -192,16 +192,16 @@ fn emit_description(
 /// Emit a complete object (typed element, all child statements) for objects
 /// present in only one model. Iterates children directly, preserving
 /// repeated elements.
-fn emit_full_object(writer: *std.Io.Writer, view: tag_index.CimObjectView) !void {
-    const tag = view.boundaries[view.object_tag_idx];
-    const qualified = qualified_tag_name(view.xml, tag);
+fn emit_full_object(writer: *std.Io.Writer, view: tag_index.CimObject) !void {
+    const tag = view.context.boundaries[view.object_tag_idx];
+    const qualified = qualified_tag_name(view.context.xml, tag);
     try writer.print("      <{s} rdf:about=\"", .{qualified});
     try write_about(writer, view);
     try writer.writeByte('"');
     try emit_local_xmlns(writer, view);
     try writer.writeAll(">\n");
 
-    var it = core.StatementIterator.init(view);
+    var it = view.children();
     while (it.next()) |statement| try writer.print("        {s}\n", .{statement.raw});
 
     try writer.print("      </{s}>\n", .{qualified});
@@ -210,9 +210,9 @@ fn emit_full_object(writer: *std.Io.Writer, view: tag_index.CimObjectView) !void
 /// Re-emit xmlns declarations the source made locally on the object's opening
 /// tag. The reconstructed opening tag would otherwise drop them, leaving the
 /// object's own prefix (or one used by its copied children) unbound.
-fn emit_local_xmlns(writer: *std.Io.Writer, view: tag_index.CimObjectView) !void {
-    const tag = view.boundaries[view.object_tag_idx];
-    var it = XmlnsIterator{ .slice = view.xml[tag.start..tag.end] };
+fn emit_local_xmlns(writer: *std.Io.Writer, view: tag_index.CimObject) !void {
+    const tag = view.context.boundaries[view.object_tag_idx];
+    var it = XmlnsIterator{ .slice = view.context.xml[tag.start..tag.end] };
     while (it.next()) |declaration| try writer.print(" {s}", .{declaration.raw});
 }
 
@@ -222,15 +222,15 @@ fn emit_local_xmlns(writer: *std.Io.Writer, view: tag_index.CimObjectView) !void
 /// document-relative fragment ("#_SS1") is preserved rather than being
 /// rewritten to a different relative URI ("_SS1") -- view.id has had the
 /// fragment marker stripped by the parser.
-fn write_about(writer: *std.Io.Writer, view: tag_index.CimObjectView) !void {
-    const tag = view.boundaries[view.object_tag_idx];
-    const opening = view.xml[tag.start..tag.end];
+fn write_about(writer: *std.Io.Writer, view: tag_index.CimObject) !void {
+    const tag = view.context.boundaries[view.object_tag_idx];
+    const opening = view.context.xml[tag.start..tag.end];
     if (std.mem.indexOf(u8, opening, "rdf:ID=\"") != null) {
-        try writer.print("#{s}", .{view.id});
+        try writer.print("#{s}", .{view.id()});
     } else if (attribute_value(opening, "rdf:about=\"")) |about| {
         try writer.writeAll(about);
     } else {
-        try writer.print("{s}", .{view.id});
+        try writer.print("{s}", .{view.id()});
     }
 }
 
@@ -292,11 +292,11 @@ fn write_document(
     // difference model describes its target), then record provenance by
     // superseding model1's FullModel.
     if (core.full_model(model2)) |fm| {
-        var it = core.StatementIterator.init(fm);
+        var it = fm.children();
         while (it.next()) |statement| try writer.print("    {s}\n", .{statement.raw});
     }
     if (core.full_model(model1)) |fm| {
-        try writer.print("    <{s}:Model.Supersedes rdf:resource=\"{s}\"/>\n", .{ md.name, fm.id });
+        try writer.print("    <{s}:Model.Supersedes rdf:resource=\"{s}\"/>\n", .{ md.name, fm.id() });
     }
 
     try writer.print("    <{s}:forwardDifferences rdf:parseType=\"Statements\">\n", .{dm.name});
@@ -386,8 +386,8 @@ fn merge_xmlns(gpa: std.mem.Allocator, model1: *const CimDocument, model2: *cons
         try merge_tag_xmlns(gpa, model1.xml[root.start..root.end], &declarations);
     }
     if (core.full_model(model2)) |fm| {
-        const tag = fm.boundaries[fm.object_tag_idx];
-        try merge_tag_xmlns(gpa, fm.xml[tag.start..tag.end], &declarations);
+        const tag = fm.context.boundaries[fm.object_tag_idx];
+        try merge_tag_xmlns(gpa, fm.context.xml[tag.start..tag.end], &declarations);
     }
 
     return declarations;

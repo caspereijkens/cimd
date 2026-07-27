@@ -15,7 +15,7 @@ const std = @import("std");
 const cim = @import("cim/cim.zig");
 const assert = std.debug.assert;
 const CimDocument = cim.CimDocument;
-const CimObjectView = cim.CimObjectView;
+const CimObject = cim.CimObject;
 const ChildTable = cim.ChildTable;
 const xml_scan = cim.xml_scan;
 const cim_types = cim.cim_types;
@@ -195,13 +195,13 @@ const IdIndex = struct {
         errdefer about.deinit();
         var total: u32 = 0;
         for (model.objects) |obj| {
-            if (obj.id[0] == '#') total += 1;
+            if (obj.id()[0] == '#') total += 1;
         }
         if (total > 0) {
             try about.ensureTotalCapacity(total);
             for (model.objects, 0..) |obj, index| {
                 // CimDocument.init rejects duplicate raw ids, so keys are unique.
-                if (obj.id[0] == '#') about.putAssumeCapacity(obj.id[1..], @intCast(index));
+                if (obj.id()[0] == '#') about.putAssumeCapacity(obj.id()[1..], @intCast(index));
             }
         }
         assert(about.count() == total);
@@ -220,7 +220,7 @@ const IdIndex = struct {
 
     fn type_name_of(ids: *const IdIndex, local_id: []const u8) ?[]const u8 {
         const index = ids.get(local_id) orelse return null;
-        return ids.model.objects[index].type_name;
+        return ids.model.objects[index].type_name();
     }
 };
 
@@ -338,7 +338,7 @@ const Evaluator = struct {
     ) !void {
         assert(ev.counts.items.len == constraints.len);
         assert(object_index < ev.model.objects.len);
-        const view = ev.model.view(ev.model.objects[object_index]);
+        const view = ev.model.objects[object_index];
         ev.staged.clearRetainingCapacity();
         @memset(ev.counts.items, 0);
 
@@ -356,7 +356,7 @@ const Evaluator = struct {
             // Own-type paths run once per object; the type always exists.
             if (constraint.path_kind == .own_type) {
                 ev.counts.items[i] = 1;
-                const value = Value{ .comparable = view.type_name, .kind = .reference };
+                const value = Value{ .comparable = view.type_name(), .kind = .reference };
                 try ev.stage_value_check(shape_index, constraint, global, view, value);
             }
             // Cardinality over counted occurrences. Inverse paths count
@@ -384,7 +384,7 @@ const Evaluator = struct {
         shape_index: u32,
         shape: RuleSet.Shape,
         constraints: []const RuleSet.Constraint,
-        view: CimObjectView,
+        view: CimObject,
         object_index: u32,
         matched: *bool,
     ) !void {
@@ -463,7 +463,7 @@ const Evaluator = struct {
         shape_index: u32,
         constraint: RuleSet.Constraint,
         constraint_index: u32,
-        view: CimObjectView,
+        view: CimObject,
         value: Value,
     ) !void {
         if (!value_violates(ev.rules, ev.ids, constraint, value)) return;
@@ -474,14 +474,14 @@ const Evaluator = struct {
         ev: *Evaluator,
         shape_index: u32,
         constraint_index: u32,
-        view: CimObjectView,
+        view: CimObject,
         detail: []const u8,
     ) !void {
         try ev.staged.append(ev.gpa, .{
             .shape = shape_index,
             .constraint = constraint_index,
             .offset = view.xml_offset(),
-            .object_id = view.id,
+            .object_id = view.id(),
             .detail = detail,
         });
     }
@@ -551,7 +551,7 @@ const ReferrerCounts = struct {
         assert(rc.properties.len > 0);
         assert(rc.counts.len == rc.properties.len * model.objects.len);
         for (model.objects) |obj| {
-            var it = model.view(obj).children();
+            var it = obj.children();
             while (it.next()) |child| {
                 if (child.kind != .reference) continue;
                 const property_index = index_sorted(rc.properties, child.name) orelse continue;

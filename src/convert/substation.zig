@@ -11,7 +11,6 @@ const assert = std.debug.assert;
 const Topology = resolve.Topology;
 
 const CimObject = cim.CimObject;
-const CimObjectView = cim.CimObjectView;
 const CrossRef = cross_ref.CrossRef;
 const strip_hash = utils.strip_hash;
 
@@ -22,36 +21,36 @@ pub const SubstationIndex = u32;
 
 // Resolved CGMES region ancestry for a Substation.
 const RegionChain = struct {
-    sub_region: ?CimObjectView = null,
-    region: ?CimObjectView = null,
+    sub_region: ?CimObject = null,
+    region: ?CimObject = null,
 };
 
-fn resolve_region_chain(model: *const CimDocument, substation: CimObjectView) error{MalformedTag}!RegionChain {
-    const sub_region_ref = try substation.getReference("Substation.Region") orelse return .{};
-    const sub_region = model.getObjectById(strip_hash(sub_region_ref)) orelse return .{};
+fn resolve_region_chain(model: *const CimDocument, substation: CimObject) error{MalformedTag}!RegionChain {
+    const sub_region_ref = try substation.reference("Substation.Region") orelse return .{};
+    const sub_region = model.object_by_id(strip_hash(sub_region_ref)) orelse return .{};
 
-    const region_ref = try sub_region.getReference("SubGeographicalRegion.Region") orelse
+    const region_ref = try sub_region.reference("SubGeographicalRegion.Region") orelse
         return .{ .sub_region = sub_region };
-    const region = model.getObjectById(strip_hash(region_ref));
+    const region = model.object_by_id(strip_hash(region_ref));
     return .{ .sub_region = sub_region, .region = region };
 }
 
 // Resolve the region name for a Substation.
 // Substation.Region -> SubGeographicalRegion.IdentifiedObject.name.
-fn resolve_geo_tag(sub_region: ?CimObjectView) error{MalformedTag}!?[]const u8 {
+fn resolve_geo_tag(sub_region: ?CimObject) error{MalformedTag}!?[]const u8 {
     const region = sub_region orelse return null;
-    return parse.non_blank(try region.getProperty("IdentifiedObject.name"));
+    return parse.non_blank(try region.property("IdentifiedObject.name"));
 }
 
 // Resolve the country code for a Substation.
 // Substation.Region -> SubGeographicalRegion.Region -> GeographicalRegion.IdentifiedObject.name.
-fn resolve_country(region: ?CimObjectView) error{MalformedTag}!?[]const u8 {
+fn resolve_country(region: ?CimObject) error{MalformedTag}!?[]const u8 {
     const geo_region = region orelse return null;
-    return parse.non_blank(try geo_region.getProperty("IdentifiedObject.name"));
+    return parse.non_blank(try geo_region.property("IdentifiedObject.name"));
 }
 
 // mRID (if present) or rdf:ID with leading underscore stripped.
-fn resolve_mrid(object: CimObjectView) error{MalformedTag}![]const u8 {
+fn resolve_mrid(object: CimObject) error{MalformedTag}![]const u8 {
     return object.mrid();
 }
 
@@ -61,15 +60,15 @@ fn append_substation(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
     topology: *const Topology,
-    substation: CimObjectView,
+    substation: CimObject,
     network: *iidm.Network,
     sub_id_map: *std.StringHashMapUnmanaged(SubstationIndex),
 ) !void {
-    assert(std.mem.eql(u8, substation.type_name, "Substation"));
+    assert(std.mem.eql(u8, substation.type_name(), "Substation"));
 
     const mrid = try resolve_mrid(substation);
     assert(mrid.len > 0);
-    const name = parse.non_blank(try substation.getProperty("IdentifiedObject.name"));
+    const name = parse.non_blank(try substation.property("IdentifiedObject.name"));
     const region_chain = try resolve_region_chain(model, substation);
     const country = try resolve_country(region_chain.region);
     const geo_tag = try resolve_geo_tag(region_chain.sub_region);
@@ -88,7 +87,7 @@ fn append_substation(
     defer if (!ownership_transferred) properties.deinit(gpa);
     if (region_chain.region) |region| {
         const region_mrid = try resolve_mrid(region);
-        const region_name = parse.non_blank(try region.getProperty("IdentifiedObject.name"));
+        const region_name = parse.non_blank(try region.property("IdentifiedObject.name"));
         try properties.ensureTotalCapacity(gpa, 3);
         if (region_name) |rn| {
             properties.appendAssumeCapacity(.{ .name = "CGMES.regionName", .value = rn });
@@ -103,11 +102,11 @@ fn append_substation(
     // Build MergedSubstation aliases for any stub substations merged into this one.
     var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
     defer if (!ownership_transferred) aliases.deinit(gpa);
-    if (topology.substation_merge.get(substation.id)) |stubs| {
+    if (topology.substation_merge.get(substation.id())) |stubs| {
         assert(stubs.items.len > 0);
         try aliases.ensureTotalCapacity(gpa, stubs.items.len);
         for (stubs.items, 1..) |stub_id, n| {
-            const stub = model.getObjectById(stub_id) orelse continue;
+            const stub = model.object_by_id(stub_id) orelse continue;
             const stub_mrid = try stub.mrid();
             aliases.appendAssumeCapacity(.{ .type_info = .{ .merged_substation = @intCast(n) }, .content = stub_mrid });
         }
@@ -129,8 +128,8 @@ fn append_substation(
     const raw_idx = network.substations.items.len - 1;
     if (raw_idx > std.math.maxInt(SubstationIndex)) return error.TooManySubstations;
     const idx: SubstationIndex = @intCast(raw_idx);
-    sub_id_map.putAssumeCapacity(substation.id, idx);
-    if (topology.substation_merge.get(substation.id)) |stubs| {
+    sub_id_map.putAssumeCapacity(substation.id(), idx);
+    if (topology.substation_merge.get(substation.id())) |stubs| {
         for (stubs.items) |stub_id| sub_id_map.putAssumeCapacity(stub_id, idx);
     }
 }
@@ -183,7 +182,7 @@ test "append_substation releases partial ownership on allocation failure" {
             defer substation_id_map.deinit(gpa);
             try substation_id_map.ensureTotalCapacity(gpa, 2);
 
-            const substation = model.getObjectById("_SS1") orelse return error.TestFailed;
+            const substation = model.object_by_id("_SS1") orelse return error.TestFailed;
             try append_substation(gpa, &model, &topology, substation, &network, &substation_id_map);
             try std.testing.expectEqual(@as(usize, 1), network.substations.items.len);
             try std.testing.expectEqual(@as(u32, 2), substation_id_map.count());
@@ -200,7 +199,7 @@ pub fn convert_substations(
 ) !void {
     assert(network.substations.items.len == 0);
 
-    const substations = model.get_objects_by_type("Substation");
+    const substations = model.objects_by_type("Substation");
 
     // Collect all stub IDs for O(1) skip checks.
     var stub_count: usize = 0;
@@ -225,8 +224,8 @@ pub fn convert_substations(
     try network.substations.ensureTotalCapacity(gpa, @intCast(substations.len - stub_count));
     try substation_id_map.ensureTotalCapacity(gpa, @intCast(substations.len));
     for (substations) |substation| {
-        if (stub_ids.contains(substation.id)) continue;
-        try append_substation(gpa, model, topology, model.view(substation), network, substation_id_map);
+        if (stub_ids.contains(substation.id())) continue;
+        try append_substation(gpa, model, topology, substation, network, substation_id_map);
     }
 
     assert(network.substations.items.len == substations.len - stub_count);

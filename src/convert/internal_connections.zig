@@ -36,12 +36,12 @@ pub fn populate_internal_connections(
     // not the locally declared-CN map, is therefore the safe upper bound.
     try conn_node_other_count.ensureTotalCapacity(gpa, @intCast(index.terminal_conn_node.count()));
 
-    for (model.get_objects_by_type("Terminal")) |terminal| {
-        const conn_node_id = (index.terminal_conn_node.get(terminal.id) orelse continue).conn_node_id;
-        const equipment_id = index.terminal_equipment.get(terminal.id) orelse continue;
-        const equipment = model.getObjectById(equipment_id) orelse continue;
-        if (topology.is_switch_type(equipment.type_name)) continue;
-        if (std.mem.eql(u8, equipment.type_name, "BusbarSection")) continue;
+    for (model.objects_by_type("Terminal")) |terminal| {
+        const conn_node_id = (index.terminal_conn_node.get(terminal.id()) orelse continue).conn_node_id;
+        const equipment_id = index.terminal_equipment.get(terminal.id()) orelse continue;
+        const equipment = model.object_by_id(equipment_id) orelse continue;
+        if (topology.is_switch_type(equipment.type_name())) continue;
+        if (std.mem.eql(u8, equipment.type_name(), "BusbarSection")) continue;
         const gop = conn_node_other_count.getOrPutAssumeCapacity(conn_node_id);
         if (!gop.found_existing) gop.value_ptr.* = 0;
         gop.value_ptr.* += 1;
@@ -51,13 +51,13 @@ pub fn populate_internal_connections(
     defer ic_counts.deinit(gpa);
     try ic_counts.ensureTotalCapacity(gpa, @intCast(voltage_level_map.count()));
 
-    for (model.get_objects_by_type("ConnectivityNode")) |conn_node| {
-        const container_id = index.conn_node_container.get(conn_node.id) orelse continue;
+    for (model.objects_by_type("ConnectivityNode")) |conn_node| {
+        const container_id = index.conn_node_container.get(conn_node.id()) orelse continue;
         const repr_voltage_level_id = topology.find_root(&topology_data.voltage_level_merge, container_id);
         if (voltage_level_map.get(repr_voltage_level_id) == null) continue;
 
-        const other_count = conn_node_other_count.get(conn_node.id) orelse 0;
-        const has_busbar_section = index.conn_node_to_busbar_section.contains(conn_node.id);
+        const other_count = conn_node_other_count.get(conn_node.id()) orelse 0;
+        const has_busbar_section = index.conn_node_to_busbar_section.contains(conn_node.id());
         const ic_for_cn: u32 = if (has_busbar_section or other_count >= 3) other_count else if (other_count > 0) other_count - 1 else 0;
         if (ic_for_cn > 0) {
             const gop = ic_counts.getOrPutAssumeCapacity(repr_voltage_level_id);
@@ -73,8 +73,8 @@ pub fn populate_internal_connections(
     }
 
     for (topology.phase2_equipment_types) |equipment_type| {
-        for (model.get_objects_by_type(equipment_type)) |equip| {
-            const terminals = index.equipment_terminals.get(equip.id) orelse continue;
+        for (model.objects_by_type(equipment_type)) |equip| {
+            const terminals = index.equipment_terminals.get(equip.id()) orelse continue;
             for (terminals.items) |t| {
                 const conn_node_id = t.conn_node_id orelse continue;
                 const base_node = nm_result.conn_node_base_nodes.get(conn_node_id) orelse continue;

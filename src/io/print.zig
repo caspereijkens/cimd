@@ -272,7 +272,6 @@ pub fn write_object_inventory(w: *std.Io.Writer, counts: []const CimDocument.Typ
 pub fn display_object_list_json(
     io: std.Io,
     gpa: std.mem.Allocator,
-    model: *const CimDocument,
     objects: []const cim.CimObject,
     fields: []const []const u8,
 ) !void {
@@ -281,7 +280,6 @@ pub fn display_object_list_json(
     try file_writer_result(&file_writer, write_object_list_json(
         &file_writer.interface,
         gpa,
-        model,
         objects,
         fields,
     ));
@@ -291,30 +289,28 @@ pub fn display_object_list_json(
 fn write_object_list_json(
     w: *std.Io.Writer,
     gpa: std.mem.Allocator,
-    model: *const CimDocument,
     objects: []const cim.CimObject,
     fields: []const []const u8,
 ) !void {
     try w.writeByte('[');
     for (objects, 0..) |obj, i| {
         if (i > 0) try w.writeByte(',');
-        const view = model.view(obj);
         if (fields.len == 0) {
             // Full dump: same shape as single-object JSON. Lets callers do
             // joins and reference resolution in Python without re-fetching.
-            try write_object_full_json(w, gpa, view);
+            try write_object_full_json(w, gpa, obj);
         } else {
             // Projection mode: only id, type, and the requested fields.
             try w.writeAll("{\"id\":");
-            try std.json.Stringify.value(obj.id, .{}, w);
+            try std.json.Stringify.value(obj.id(), .{}, w);
             try w.writeAll(",\"type\":");
-            try std.json.Stringify.value(obj.type_name, .{}, w);
+            try std.json.Stringify.value(obj.type_name(), .{}, w);
             for (fields) |field| {
                 // Fall back to a reference when the field isn't a text property;
                 // strip the '#' so the value matches the references map shape.
-                const val = if (try view.getProperty(field)) |p|
+                const val = if (try obj.property(field)) |p|
                     p
-                else if (try view.getReference(field)) |r|
+                else if (try obj.reference(field)) |r|
                     utils.strip_hash(r)
                 else
                     "";
@@ -332,17 +328,17 @@ fn write_object_list_json(
 fn write_object_full_json(
     w: *std.Io.Writer,
     gpa: std.mem.Allocator,
-    obj: cim.CimObjectView,
+    obj: cim.CimObject,
 ) !void {
-    var props = try obj.getAllProperties(gpa);
+    var props = try obj.all_properties(gpa);
     defer props.deinit();
-    var refs = try obj.getAllReferences(gpa);
+    var refs = try obj.all_references(gpa);
     defer refs.deinit();
 
     try w.writeAll("{\"id\":");
-    try std.json.Stringify.value(obj.id, .{}, w);
+    try std.json.Stringify.value(obj.id(), .{}, w);
     try w.writeAll(",\"type\":");
-    try std.json.Stringify.value(obj.type_name, .{}, w);
+    try std.json.Stringify.value(obj.type_name(), .{}, w);
 
     try w.writeAll(",\"properties\":{");
     var first = true;

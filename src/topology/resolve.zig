@@ -13,7 +13,6 @@ const strip_underscore = utils.strip_underscore;
 const Overlay = cim.Overlay;
 const CimMergedView = cim.CimMergedView;
 const CrossRef = cross_ref.CrossRef;
-const CimObjectView = cim.CimObjectView;
 const CimObject = cim.CimObject;
 
 const IdMap = std.StringHashMapUnmanaged([]const u8);
@@ -159,7 +158,7 @@ pub fn is_switch_type(type_name: []const u8) bool {
 
 pub fn get_switch_type_slices(model: *const CimDocument) [switch_types.len][]const CimObject {
     var switch_type_slices: [switch_types.len][]const CimObject = undefined;
-    for (switch_types, 0..) |t, i| switch_type_slices[i] = model.get_objects_by_type(t);
+    for (switch_types, 0..) |t, i| switch_type_slices[i] = model.objects_by_type(t);
     return switch_type_slices;
 }
 
@@ -191,8 +190,8 @@ pub fn union_voltage_levels(
     const root_b = find_root(parent, voltage_level_id_b);
     if (std.mem.eql(u8, root_a, root_b)) return;
 
-    const voltage_level_a = model.getObjectById(root_a) orelse return;
-    const voltage_level_b = model.getObjectById(root_b) orelse return;
+    const voltage_level_a = model.object_by_id(root_a) orelse return;
+    const voltage_level_b = model.object_by_id(root_b) orelse return;
     const mrid_a = try voltage_level_a.mrid();
     const mrid_b = try voltage_level_b.mrid();
 
@@ -222,7 +221,7 @@ pub fn union_smallest_id_wins(parent: *IdMap, id_a: []const u8, id_b: []const u8
 pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const CimDocument, index: *const CrossRef, topology: *Topology) !void {
     assert(topology.voltage_level_merge.count() == 0);
 
-    const voltage_levels = model.get_objects_by_type("VoltageLevel");
+    const voltage_levels = model.objects_by_type("VoltageLevel");
     const switch_slices = get_switch_type_slices(model);
 
     var parent: IdMap = .empty;
@@ -233,9 +232,9 @@ pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const CimDocume
 
     try topology.voltage_level_merge.ensureTotalCapacity(gpa, @intCast(voltage_levels.len));
     for (voltage_levels) |voltage_level| {
-        const root = find_root(&parent, voltage_level.id);
-        if (!std.mem.eql(u8, root, voltage_level.id)) {
-            topology.voltage_level_merge.putAssumeCapacity(voltage_level.id, root);
+        const root = find_root(&parent, voltage_level.id());
+        if (!std.mem.eql(u8, root, voltage_level.id())) {
+            topology.voltage_level_merge.putAssumeCapacity(voltage_level.id(), root);
         }
     }
 
@@ -252,20 +251,20 @@ pub fn build_voltage_level_merge(gpa: std.mem.Allocator, model: *const CimDocume
 pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const CimDocument, index: *const CrossRef, topology: *Topology) !void {
     assert(topology.substation_merge.count() == 0);
 
-    const substations = model.get_objects_by_type("Substation");
+    const substations = model.objects_by_type("Substation");
 
     var parent: IdMap = .empty;
     defer parent.deinit(gpa);
     try parent.ensureTotalCapacity(gpa, @intCast(substations.len));
-    for (substations) |substation| parent.putAssumeCapacity(substation.id, substation.id);
+    for (substations) |substation| parent.putAssumeCapacity(substation.id(), substation.id());
 
     // Pass 1: merged VLs drag their substations together.
     var voltage_level_it = topology.voltage_level_merge.iterator();
     while (voltage_level_it.next()) |entry| {
-        const stub_voltage_level = model.getObjectById(entry.key_ptr.*) orelse continue;
-        const repr_voltage_level = model.getObjectById(entry.value_ptr.*) orelse continue;
-        const stub_substation_ref = try stub_voltage_level.getReference("VoltageLevel.Substation") orelse continue;
-        const repr_substation_ref = try repr_voltage_level.getReference("VoltageLevel.Substation") orelse continue;
+        const stub_voltage_level = model.object_by_id(entry.key_ptr.*) orelse continue;
+        const repr_voltage_level = model.object_by_id(entry.value_ptr.*) orelse continue;
+        const stub_substation_ref = try stub_voltage_level.reference("VoltageLevel.Substation") orelse continue;
+        const repr_substation_ref = try repr_voltage_level.reference("VoltageLevel.Substation") orelse continue;
         const stub_substation_id = strip_hash(stub_substation_ref);
         const repr_substation_id = strip_hash(repr_substation_ref);
         if (!std.mem.eql(u8, stub_substation_id, repr_substation_id)) {
@@ -274,14 +273,14 @@ pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const CimDocument,
     }
 
     // Pass 2: PowerTransformers spanning two substations.
-    for (model.get_objects_by_type("PowerTransformer")) |transformer| {
-        const terminals = index.equipment_terminals.get(transformer.id) orelse continue;
+    for (model.objects_by_type("PowerTransformer")) |transformer| {
+        const terminals = index.equipment_terminals.get(transformer.id()) orelse continue;
         if (terminals.items.len < 2) continue;
         var first_substation_id: ?[]const u8 = null;
         for (terminals.items) |terminal| {
             const conn_node_id = terminal.conn_node_id orelse continue;
             const voltage_level_obj = conn_node_to_voltage_level(model, index, conn_node_id) orelse continue;
-            const substation_ref = try voltage_level_obj.getReference("VoltageLevel.Substation") orelse continue;
+            const substation_ref = try voltage_level_obj.reference("VoltageLevel.Substation") orelse continue;
             const substation_id = strip_hash(substation_ref);
             if (first_substation_id) |first| {
                 if (!std.mem.eql(u8, first, substation_id)) {
@@ -295,29 +294,29 @@ pub fn build_substation_merge(gpa: std.mem.Allocator, model: *const CimDocument,
 
     try topology.substation_merge.ensureTotalCapacity(gpa, @intCast(substations.len));
     for (substations) |substation| {
-        const canonical = find_root(&parent, substation.id);
-        if (std.mem.eql(u8, canonical, substation.id)) continue;
+        const canonical = find_root(&parent, substation.id());
+        if (std.mem.eql(u8, canonical, substation.id())) continue;
         const gop = topology.substation_merge.getOrPutAssumeCapacity(canonical);
         if (!gop.found_existing) gop.value_ptr.* = .empty;
         // Multiple VL-level connections between the same two subs would
         // otherwise add the same stub twice.
         var already_present = false;
         for (gop.value_ptr.items) |existing| {
-            if (std.mem.eql(u8, existing, substation.id)) {
+            if (std.mem.eql(u8, existing, substation.id())) {
                 already_present = true;
                 break;
             }
         }
-        if (!already_present) try gop.value_ptr.append(gpa, substation.id);
+        if (!already_present) try gop.value_ptr.append(gpa, substation.id());
     }
 
     assert(topology.substation_merge.count() <= substations.len);
 }
 
-fn conn_node_to_voltage_level(model: *const CimDocument, index: *const CrossRef, conn_node_id: []const u8) ?CimObjectView {
+fn conn_node_to_voltage_level(model: *const CimDocument, index: *const CrossRef, conn_node_id: []const u8) ?CimObject {
     const container_id = index.conn_node_container.get(conn_node_id) orelse return null;
-    const obj = model.getObjectById(container_id) orelse return null;
-    if (!std.mem.eql(u8, obj.type_name, "VoltageLevel")) return null;
+    const obj = model.object_by_id(container_id) orelse return null;
+    if (!std.mem.eql(u8, obj.type_name(), "VoltageLevel")) return null;
     return obj;
 }
 
@@ -326,7 +325,7 @@ fn conn_node_to_voltage_level(model: *const CimDocument, index: *const CrossRef,
 pub fn build_reachable_busbar_section_index(gpa: std.mem.Allocator, model: *const CimDocument, index: *const CrossRef, topology: *Topology) !void {
     assert(topology.conn_node_reachable_busbar_section.count() == 0);
 
-    const conn_nodes = model.get_objects_by_type("ConnectivityNode");
+    const conn_nodes = model.objects_by_type("ConnectivityNode");
     const switch_slices = get_switch_type_slices(model);
 
     var parent: IdMap = .empty;
@@ -334,12 +333,12 @@ pub fn build_reachable_busbar_section_index(gpa: std.mem.Allocator, model: *cons
     try parent.ensureTotalCapacity(gpa, @intCast(conn_nodes.len));
 
     for (conn_nodes) |conn_node| {
-        parent.putAssumeCapacity(conn_node.id, conn_node.id);
+        parent.putAssumeCapacity(conn_node.id(), conn_node.id());
     }
 
     for (switch_slices) |switches| {
         for (switches) |@"switch"| {
-            const terminals = index.equipment_terminals.get(@"switch".id) orelse continue;
+            const terminals = index.equipment_terminals.get(@"switch".id()) orelse continue;
             if (terminals.items.len != 2) continue;
             const conn_node0 = terminals.items[0].conn_node_id orelse continue;
             const conn_node1 = terminals.items[1].conn_node_id orelse continue;
@@ -363,9 +362,9 @@ pub fn build_reachable_busbar_section_index(gpa: std.mem.Allocator, model: *cons
     try topology.conn_node_reachable_busbar_section.ensureTotalCapacity(gpa, @intCast(conn_nodes.len));
 
     for (conn_nodes) |conn_node| {
-        const root = find_root(&parent, conn_node.id);
+        const root = find_root(&parent, conn_node.id());
         const busbar_section_mrid = cluster_to_busbar_section.get(root) orelse continue;
-        topology.conn_node_reachable_busbar_section.putAssumeCapacity(conn_node.id, busbar_section_mrid);
+        topology.conn_node_reachable_busbar_section.putAssumeCapacity(conn_node.id(), busbar_section_mrid);
     }
 
     assert(topology.conn_node_reachable_busbar_section.count() <= conn_nodes.len);
@@ -429,11 +428,11 @@ fn count_non_switch_non_busbar_terminals(gpa: std.mem.Allocator, model: *const C
     errdefer counts.deinit(gpa);
     try counts.ensureTotalCapacity(gpa, @intCast(index.terminal_conn_node.count()));
 
-    for (model.get_objects_by_type("Terminal")) |terminal| {
-        const conn_node_id = (index.terminal_conn_node.get(terminal.id) orelse continue).conn_node_id;
-        const equipment_id = index.terminal_equipment.get(terminal.id) orelse continue;
-        const equipment = model.getObjectById(equipment_id) orelse continue;
-        if (is_node_map_base_equipment_type(equipment.type_name)) continue;
+    for (model.objects_by_type("Terminal")) |terminal| {
+        const conn_node_id = (index.terminal_conn_node.get(terminal.id()) orelse continue).conn_node_id;
+        const equipment_id = index.terminal_equipment.get(terminal.id()) orelse continue;
+        const equipment = model.object_by_id(equipment_id) orelse continue;
+        if (is_node_map_base_equipment_type(equipment.type_name())) continue;
         increment_count(&counts, conn_node_id);
     }
 
@@ -450,18 +449,18 @@ fn assign_base_nodes(
     voltage_level_counters: *CountMap,
 ) void {
     // Base node assignment: sequential counter per representative VL, CN XML parse order.
-    for (model.get_objects_by_type("ConnectivityNode")) |conn_node| {
-        const container_id = index.conn_node_container.get(conn_node.id) orelse continue;
+    for (model.objects_by_type("ConnectivityNode")) |conn_node| {
+        const container_id = index.conn_node_container.get(conn_node.id()) orelse continue;
         const repr_voltage_level_id = find_root(&topology.voltage_level_merge, container_id);
         if (!voltage_levels.contains(repr_voltage_level_id)) continue;
 
-        conn_node_repr_voltage_level.putAssumeCapacity(conn_node.id, repr_voltage_level_id);
+        conn_node_repr_voltage_level.putAssumeCapacity(conn_node.id(), repr_voltage_level_id);
 
         const voltage_level_gop = voltage_level_counters.getOrPutAssumeCapacity(repr_voltage_level_id);
         if (!voltage_level_gop.found_existing) voltage_level_gop.value_ptr.* = 0;
         const base_node = voltage_level_gop.value_ptr.*;
         voltage_level_gop.value_ptr.* += 1;
-        conn_node_base_nodes.putAssumeCapacity(conn_node.id, base_node);
+        conn_node_base_nodes.putAssumeCapacity(conn_node.id(), base_node);
     }
 }
 
@@ -471,8 +470,8 @@ fn map_busbar_section_terminals(
     conn_node_base_nodes: *const CountMap,
     node_map: *NodeMap,
 ) void {
-    for (model.get_objects_by_type("BusbarSection")) |busbar_section| {
-        const terminals = index.equipment_terminals.get(busbar_section.id) orelse continue;
+    for (model.objects_by_type("BusbarSection")) |busbar_section| {
+        const terminals = index.equipment_terminals.get(busbar_section.id()) orelse continue;
         for (terminals.items) |terminal| {
             const base_node = conn_node_base_nodes.get(terminal.conn_node_id orelse continue) orelse continue;
             node_map.put(terminal.ordinal, base_node);
@@ -488,8 +487,8 @@ fn map_switch_terminals(
     conn_node_has_switch: *SetMap,
 ) void {
     for (switch_types) |switch_type| {
-        for (model.get_objects_by_type(switch_type)) |@"switch"| {
-            const terminals = index.equipment_terminals.get(@"switch".id) orelse continue;
+        for (model.objects_by_type(switch_type)) |@"switch"| {
+            const terminals = index.equipment_terminals.get(@"switch".id()) orelse continue;
             for (terminals.items) |terminal| {
                 const conn_node_id = terminal.conn_node_id orelse continue;
                 const base_node = conn_node_base_nodes.get(conn_node_id) orelse continue;
@@ -523,8 +522,8 @@ fn map_phase2_equipment_terminals(
     // Phase 2: per-equipment-type iteration in PyPowSyBl's order. Within each
     // equipment, terminals are already sorted by ascending sequence number.
     for (phase2_equipment_types) |equipment_type| {
-        for (model.get_objects_by_type(equipment_type)) |equip| {
-            const terminals = index.equipment_terminals.get(equip.id) orelse continue;
+        for (model.objects_by_type(equipment_type)) |equip| {
+            const terminals = index.equipment_terminals.get(equip.id()) orelse continue;
             for (terminals.items) |terminal| {
                 const conn_node_id = terminal.conn_node_id orelse continue;
                 const base_node = conn_node_base_nodes.get(conn_node_id) orelse continue;
@@ -646,7 +645,7 @@ pub fn is_ssh_terminal_disconnected(ssh_opt: ?Overlay, terminal_id: []const u8) 
     assert(terminal_id.len > 0);
     const ssh = ssh_opt orelse return false;
     const mrid = strip_underscore(terminal_id);
-    const connected = ssh.getProperty(mrid, "ACDCTerminal.connected") catch return false;
+    const connected = ssh.property(mrid, "ACDCTerminal.connected") catch return false;
     const val = connected orelse return false;
     // Trim like is_switch_closed: pretty-printed SSH wraps the value in whitespace.
     return std.mem.eql(u8, std.mem.trim(u8, val, " \t\r\n"), "false");
@@ -654,9 +653,9 @@ pub fn is_ssh_terminal_disconnected(ssh_opt: ?Overlay, terminal_id: []const u8) 
 
 pub fn is_switch_closed(model: *const CimDocument, ssh: *const Overlay, switch_id: []const u8) !bool {
     assert(switch_id.len > 0);
-    const eq_view = model.getObjectById(switch_id) orelse return true;
-    const view = CimMergedView.init(eq_view, try eq_view.mrid(), null, ssh.*);
-    const open_str = try view.getProperty("Switch.open") orelse "false";
+    const eq_object = model.object_by_id(switch_id) orelse return true;
+    const view = CimMergedView.init(eq_object, try eq_object.mrid(), null, ssh.*);
+    const open_str = try view.property("Switch.open") orelse "false";
     // Property values are returned as raw XML content between tags; pretty-printed
     // SSH files surround the boolean with whitespace and would otherwise flip
     // every closed switch to open and break topology resolution.
@@ -670,8 +669,8 @@ fn union_closed_switch_conn_nodes(
     parent: *IdMap,
 ) !void {
     for (switch_types) |switch_type| {
-        for (model.get_objects_by_type(switch_type)) |@"switch"| {
-            const terminals = index.equipment_terminals.get(@"switch".id) orelse continue;
+        for (model.objects_by_type(switch_type)) |@"switch"| {
+            const terminals = index.equipment_terminals.get(@"switch".id()) orelse continue;
             if (terminals.items.len != 2) continue;
 
             const conn_node0 = terminals.items[0].conn_node_id orelse continue;
@@ -683,10 +682,10 @@ fn union_closed_switch_conn_nodes(
 
             // Retained closed switches become SwitchBranches in the IIDM bus-branch view --
             // each end stays its own TopologicalNode, so do not union across them.
-            if (parse.flag(try model.view(@"switch").getProperty("Switch.retained"))) continue;
+            if (parse.flag(try @"switch".property("Switch.retained"))) continue;
 
             // default behavior is closed.
-            const closed = if (ssh_opt) |s| try is_switch_closed(model, s, @"switch".id) else true;
+            const closed = if (ssh_opt) |s| try is_switch_closed(model, s, @"switch".id()) else true;
             if (!closed) continue;
 
             union_smallest_id_wins(parent, conn_node0, conn_node1);
@@ -694,12 +693,12 @@ fn union_closed_switch_conn_nodes(
     }
 }
 
-fn get_base_voltage_mrid(model: *const CimDocument, voltage_level: CimObjectView) ![]const u8 {
-    const base_voltage_ref = try voltage_level.getReference("VoltageLevel.BaseVoltage") orelse "";
+fn get_base_voltage_mrid(model: *const CimDocument, voltage_level: CimObject) ![]const u8 {
+    const base_voltage_ref = try voltage_level.reference("VoltageLevel.BaseVoltage") orelse "";
     if (base_voltage_ref.len == 0) return "";
 
     const base_voltage_id = strip_hash(base_voltage_ref);
-    const base_voltage = model.getObjectById(base_voltage_id) orelse return "";
+    const base_voltage = model.object_by_id(base_voltage_id) orelse return "";
     // TODO prefix a hash.
     return try base_voltage.mrid();
 }
@@ -711,17 +710,17 @@ fn append_topological_node(
     conn_node_id: []const u8,
     nodes: *std.ArrayListUnmanaged(TopologicalNode),
 ) !void {
-    const conn_node = model.getObjectById(conn_node_id) orelse return;
+    const conn_node = model.object_by_id(conn_node_id) orelse return;
 
     // Boundary CNs (container = ACLineSegment) have no VL -- skip for now.
-    const container_id = index.conn_node_container.get(conn_node.id) orelse return;
+    const container_id = index.conn_node_container.get(conn_node.id()) orelse return;
     const repr_voltage_level_id = find_root(&topology.voltage_level_merge, container_id);
-    const voltage_level = model.getObjectById(repr_voltage_level_id) orelse return;
+    const voltage_level = model.object_by_id(repr_voltage_level_id) orelse return;
     // Check if container was indeed VoltageLevel.
-    if (!std.mem.eql(u8, voltage_level.type_name, "VoltageLevel")) return;
+    if (!std.mem.eql(u8, voltage_level.type_name(), "VoltageLevel")) return;
 
     const mrid = try conn_node.mrid();
-    const name = try conn_node.getProperty("IdentifiedObject.name") orelse "";
+    const name = try conn_node.property("IdentifiedObject.name") orelse "";
     const base_voltage_mrid = try get_base_voltage_mrid(model, voltage_level);
     const voltage_level_mrid = try voltage_level.mrid();
 
@@ -766,14 +765,14 @@ pub fn build_topological_nodes(
 }
 
 pub fn build_conn_node_root_map(gpa: std.mem.Allocator, model: *const CimDocument, index: *const CrossRef, ssh_opt: ?*const Overlay) !IdMap {
-    const conn_nodes = model.get_objects_by_type("ConnectivityNode");
+    const conn_nodes = model.objects_by_type("ConnectivityNode");
 
     // Union-find: each CN starts as its own root.
     var conn_node_to_root: IdMap = .empty;
     errdefer conn_node_to_root.deinit(gpa);
     try conn_node_to_root.ensureTotalCapacity(gpa, @intCast(conn_nodes.len));
 
-    for (conn_nodes) |conn_node| conn_node_to_root.putAssumeCapacity(conn_node.id, conn_node.id);
+    for (conn_nodes) |conn_node| conn_node_to_root.putAssumeCapacity(conn_node.id(), conn_node.id());
 
     try union_closed_switch_conn_nodes(model, index, ssh_opt, &conn_node_to_root);
 

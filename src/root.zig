@@ -17,7 +17,6 @@ pub const cim = @import("cim/cim.zig");
 // these are `cim.*`; nothing is defined here.
 pub const CimDocument = cim.CimDocument;
 pub const CimObject = cim.CimObject;
-pub const CimObjectView = cim.CimObjectView;
 pub const Overlay = cim.Overlay;
 pub const IdPolicy = cim.IdPolicy;
 pub const CimMergedView = cim.CimMergedView;

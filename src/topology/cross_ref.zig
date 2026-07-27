@@ -13,13 +13,12 @@ const strip_hash = utils.strip_hash;
 const strip_underscore = utils.strip_underscore;
 
 const CimObject = cim.CimObject;
-const CimObjectView = cim.CimObjectView;
 
 pub const TerminalInfo = struct {
     id: []const u8,
     conn_node_id: ?[]const u8, // null if terminal has no ConnectivityNode.
     sequence: u32,
-    /// Position of this Terminal in `get_objects_by_type("Terminal")`, assigned
+    /// Position of this Terminal in `objects_by_type("Terminal")`, assigned
     /// by `build_terminals`. Dense over Terminals, so it indexes `NodeMap`
     /// directly and no id has to be hashed to find a terminal's node.
     ordinal: u32,
@@ -220,13 +219,12 @@ test "cross references reject a model without terminals" {
 
 fn build_limit_types(gpa: std.mem.Allocator, model: *const CimDocument, index: *CrossRef) !void {
     assert(index.limit_types.count() == 0);
-    const objects = model.get_objects_by_type("OperationalLimitType");
+    const objects = model.objects_by_type("OperationalLimitType");
     try index.limit_types.ensureTotalCapacity(gpa, @intCast(objects.len));
     for (objects) |obj| {
-        const view = model.view(obj);
-        const is_inf = try view.getProperty("OperationalLimitType.isInfiniteDuration");
-        const duration = try view.getProperty("OperationalLimitType.acceptableDuration");
-        index.limit_types.putAssumeCapacity(obj.id, .{
+        const is_inf = try obj.property("OperationalLimitType.isInfiniteDuration");
+        const duration = try obj.property("OperationalLimitType.acceptableDuration");
+        index.limit_types.putAssumeCapacity(obj.id(), .{
             .is_infinite = parse.flag(is_inf),
             .acceptable_duration = duration,
         });
@@ -237,7 +235,7 @@ fn build_limit_types(gpa: std.mem.Allocator, model: *const CimDocument, index: *
 fn build_terminals(gpa: std.mem.Allocator, model: *const CimDocument, index: *CrossRef) !void {
     assert(index.terminal_equipment.count() == 0);
 
-    const objects = model.get_objects_by_type("Terminal");
+    const objects = model.objects_by_type("Terminal");
 
     try index.terminal_equipment.ensureTotalCapacity(gpa, @intCast(objects.len));
     try index.terminal_conn_node.ensureTotalCapacity(gpa, @intCast(objects.len));
@@ -248,26 +246,25 @@ fn build_terminals(gpa: std.mem.Allocator, model: *const CimDocument, index: *Cr
 
     for (objects, 0..) |obj, position| {
         const ordinal: u32 = @intCast(position);
-        const view = model.view(obj);
-        const conn_node_ref = try view.getReference("Terminal.ConnectivityNode");
+        const conn_node_ref = try obj.reference("Terminal.ConnectivityNode");
         const conn_node_id: ?[]const u8 = if (conn_node_ref) |ref| strip_hash(ref) else null;
         if (conn_node_id) |id| {
-            index.terminal_conn_node.putAssumeCapacity(obj.id, .{ .conn_node_id = id, .ordinal = ordinal });
+            index.terminal_conn_node.putAssumeCapacity(obj.id(), .{ .conn_node_id = id, .ordinal = ordinal });
         }
 
-        const sequence = try parse.int_strict(u32, try view.getProperty("ACDCTerminal.sequenceNumber"), 1);
-        index.terminal_sequence.putAssumeCapacity(obj.id, sequence);
+        const sequence = try parse.int_strict(u32, try obj.property("ACDCTerminal.sequenceNumber"), 1);
+        index.terminal_sequence.putAssumeCapacity(obj.id(), sequence);
 
-        const equipment_ref = try view.getReference("Terminal.ConductingEquipment") orelse return error.MalformedXML;
+        const equipment_ref = try obj.reference("Terminal.ConductingEquipment") orelse return error.MalformedXML;
         const equipment_id = strip_hash(equipment_ref);
         assert(equipment_id.len > 0);
-        index.terminal_equipment.putAssumeCapacity(obj.id, equipment_id);
+        index.terminal_equipment.putAssumeCapacity(obj.id(), equipment_id);
         const gop = index.equipment_terminals.getOrPutAssumeCapacity(equipment_id);
         if (!gop.found_existing) {
             gop.value_ptr.* = .empty;
         }
         try gop.value_ptr.append(gpa, .{
-            .id = obj.id,
+            .id = obj.id(),
             .conn_node_id = conn_node_id,
             .sequence = sequence,
             .ordinal = ordinal,
@@ -296,42 +293,42 @@ fn build_connectivity(gpa: std.mem.Allocator, model: *const CimDocument, index: 
     assert(index.conn_node_container.count() == 0);
     assert(index.busbar_section_in_parse_order.items.len == 0);
 
-    const busbar_sections = model.get_objects_by_type("BusbarSection");
+    const busbar_sections = model.objects_by_type("BusbarSection");
     try index.conn_node_to_busbar_section.ensureTotalCapacity(gpa, @intCast(busbar_sections.len));
 
     for (busbar_sections) |busbar_section| {
-        const terminals = index.equipment_terminals.get(busbar_section.id) orelse continue;
+        const terminals = index.equipment_terminals.get(busbar_section.id()) orelse continue;
         if (terminals.items.len != 1) {
             // TODO add log message
             continue;
         }
         const conn_node_id = terminals.items[0].conn_node_id orelse continue;
 
-        const busbar_section_mrid = try model.view(busbar_section).mrid();
+        const busbar_section_mrid = try busbar_section.mrid();
         index.conn_node_to_busbar_section.putAssumeCapacity(conn_node_id, busbar_section_mrid);
     }
 
-    const conn_nodes = model.get_objects_by_type("ConnectivityNode");
+    const conn_nodes = model.objects_by_type("ConnectivityNode");
 
     try index.conn_node_container.ensureTotalCapacity(gpa, @intCast(conn_nodes.len));
     try index.busbar_section_in_parse_order.ensureTotalCapacity(gpa, busbar_sections.len);
 
     for (conn_nodes) |conn_node| {
-        const container_ref = try model.view(conn_node).getReference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
+        const container_ref = try conn_node.reference("ConnectivityNode.ConnectivityNodeContainer") orelse return error.MalformedXML;
         var container_id = strip_hash(container_ref);
         // Bay is not a valid equipment-placement container -- resolve to the parent VoltageLevel.
-        if (model.getObjectById(container_id)) |container_obj| {
-            if (std.mem.eql(u8, container_obj.type_name, "Bay")) {
-                if (try container_obj.getReference("Bay.VoltageLevel")) |voltage_level_ref| {
+        if (model.object_by_id(container_id)) |container_obj| {
+            if (std.mem.eql(u8, container_obj.type_name(), "Bay")) {
+                if (try container_obj.reference("Bay.VoltageLevel")) |voltage_level_ref| {
                     container_id = strip_hash(voltage_level_ref);
                 }
             }
         }
-        index.conn_node_container.putAssumeCapacity(conn_node.id, container_id);
+        index.conn_node_container.putAssumeCapacity(conn_node.id(), container_id);
 
-        const busbar_section_id = index.conn_node_to_busbar_section.get(conn_node.id) orelse continue;
+        const busbar_section_id = index.conn_node_to_busbar_section.get(conn_node.id()) orelse continue;
         index.busbar_section_in_parse_order.appendAssumeCapacity(.{
-            .conn_node_id = conn_node.id,
+            .conn_node_id = conn_node.id(),
             .mrid = busbar_section_id,
         });
     }
@@ -344,11 +341,11 @@ fn build_operational_limits(gpa: std.mem.Allocator, model: *const CimDocument, i
     assert(index.terminal_limit_sets.count() == 0);
     assert(index.current_limits_by_set.count() == 0);
 
-    const op_lim_sets = model.get_objects_by_type("OperationalLimitSet");
+    const op_lim_sets = model.objects_by_type("OperationalLimitSet");
     try index.terminal_limit_sets.ensureTotalCapacity(gpa, @intCast(op_lim_sets.len));
 
     for (op_lim_sets) |op_lim_set| {
-        const terminal_ref = try model.view(op_lim_set).getReference("OperationalLimitSet.Terminal") orelse continue;
+        const terminal_ref = try op_lim_set.reference("OperationalLimitSet.Terminal") orelse continue;
         const terminal_id = strip_hash(terminal_ref);
         const gop = index.terminal_limit_sets.getOrPutAssumeCapacity(terminal_id);
         if (!gop.found_existing) {
@@ -357,11 +354,11 @@ fn build_operational_limits(gpa: std.mem.Allocator, model: *const CimDocument, i
         try gop.value_ptr.append(gpa, op_lim_set);
     }
 
-    const current_lims = model.get_objects_by_type("CurrentLimit");
+    const current_lims = model.objects_by_type("CurrentLimit");
     try index.current_limits_by_set.ensureTotalCapacity(gpa, @intCast(current_lims.len));
 
     for (current_lims) |current_lim| {
-        const op_lim_set_ref = try model.view(current_lim).getReference("OperationalLimit.OperationalLimitSet") orelse continue;
+        const op_lim_set_ref = try current_lim.reference("OperationalLimit.OperationalLimitSet") orelse continue;
         const op_lim_set_id = strip_hash(op_lim_set_ref);
         const gop = index.current_limits_by_set.getOrPutAssumeCapacity(op_lim_set_id);
         if (!gop.found_existing) {
@@ -376,17 +373,17 @@ fn build_operational_limits(gpa: std.mem.Allocator, model: *const CimDocument, i
 
 fn build_curve_points(gpa: std.mem.Allocator, model: *const CimDocument, index: *CrossRef) !void {
     assert(index.curve_points.count() == 0);
-    const curve_datas = model.get_objects_by_type("CurveData");
+    const curve_datas = model.objects_by_type("CurveData");
     try index.curve_points.ensureTotalCapacity(gpa, @intCast(curve_datas.len));
 
     for (curve_datas) |curve_data| {
-        const view = model.view(curve_data);
-        const curve_ref = try view.getReference("CurveData.Curve") orelse return error.MalformedXML;
+        const view = curve_data;
+        const curve_ref = try view.reference("CurveData.Curve") orelse return error.MalformedXML;
         const curve_id = strip_hash(curve_ref);
 
-        const x = try parse.float_strict(try view.getProperty("CurveData.xvalue"), 0.0);
-        const y1 = try parse.float_strict(try view.getProperty("CurveData.y1value"), 0.0);
-        const y2 = try parse.float_strict(try view.getProperty("CurveData.y2value"), 0.0);
+        const x = try parse.float_strict(try view.property("CurveData.xvalue"), 0.0);
+        const y1 = try parse.float_strict(try view.property("CurveData.y1value"), 0.0);
+        const y2 = try parse.float_strict(try view.property("CurveData.y2value"), 0.0);
 
         const gop = index.curve_points.getOrPutAssumeCapacity(curve_id);
         if (!gop.found_existing) {
@@ -413,7 +410,7 @@ pub fn process_switch_type(
     parent: *std.StringHashMapUnmanaged([]const u8),
 ) !void {
     for (switches) |@"switch"| {
-        const terminals = index.equipment_terminals.get(@"switch".id) orelse continue;
+        const terminals = index.equipment_terminals.get(@"switch".id()) orelse continue;
         if (terminals.items.len != 2) continue; // TODO log a warning?
 
         const conn_node0 = terminals.items[0].conn_node_id orelse continue;
@@ -423,10 +420,10 @@ pub fn process_switch_type(
         const container1 = index.conn_node_container.get(conn_node1) orelse continue;
         if (std.mem.eql(u8, container0, container1)) continue;
 
-        const obj0 = model.getObjectById(container0) orelse continue;
-        const obj1 = model.getObjectById(container1) orelse continue;
-        if (!std.mem.eql(u8, obj0.type_name, "VoltageLevel")) continue;
-        if (!std.mem.eql(u8, obj1.type_name, "VoltageLevel")) continue;
+        const obj0 = model.object_by_id(container0) orelse continue;
+        const obj1 = model.object_by_id(container1) orelse continue;
+        if (!std.mem.eql(u8, obj0.type_name(), "VoltageLevel")) continue;
+        if (!std.mem.eql(u8, obj1.type_name(), "VoltageLevel")) continue;
 
         try resolve.union_voltage_levels(model, parent, container0, container1);
     }
@@ -435,35 +432,34 @@ pub fn process_switch_type(
 pub fn build_voltage_limits(gpa: std.mem.Allocator, model: *const CimDocument, index: *CrossRef, topology: *const Topology) !void {
     assert(index.voltage_level_limits.count() == 0);
 
-    const voltage_limits = model.get_objects_by_type("VoltageLimit");
+    const voltage_limits = model.objects_by_type("VoltageLimit");
     try index.voltage_level_limits.ensureTotalCapacity(gpa, @intCast(voltage_limits.len));
 
     for (voltage_limits) |voltage_limit| {
-        const voltage_limit_view = model.view(voltage_limit);
-        const limit_set_ref = try voltage_limit_view.getReference("OperationalLimit.OperationalLimitSet") orelse continue;
-        const limit_set = model.getObjectById(strip_hash(limit_set_ref)) orelse continue;
-        const terminal_ref = try limit_set.getReference("OperationalLimitSet.Terminal") orelse continue;
+        const limit_set_ref = try voltage_limit.reference("OperationalLimit.OperationalLimitSet") orelse continue;
+        const limit_set = model.object_by_id(strip_hash(limit_set_ref)) orelse continue;
+        const terminal_ref = try limit_set.reference("OperationalLimitSet.Terminal") orelse continue;
 
         const terminal_id = strip_hash(terminal_ref);
         const conn_node_id = (index.terminal_conn_node.get(terminal_id) orelse continue).conn_node_id;
         // Resolve container via CN, falling back to terminal equipment's EquipmentContainer
         // when the CN has no ConnectivityNode element (only referenced in Terminal elements).
         const raw_container_id: []const u8 = if (index.conn_node_container.get(conn_node_id)) |id| id else blk: {
-            const terminal = model.getObjectById(terminal_id) orelse continue;
-            const eq_ref = try terminal.getReference("Terminal.ConductingEquipment") orelse continue;
-            const equipment = model.getObjectById(strip_hash(eq_ref)) orelse continue;
-            const ec_ref = try equipment.getReference("Equipment.EquipmentContainer") orelse continue;
+            const terminal = model.object_by_id(terminal_id) orelse continue;
+            const eq_ref = try terminal.reference("Terminal.ConductingEquipment") orelse continue;
+            const equipment = model.object_by_id(strip_hash(eq_ref)) orelse continue;
+            const ec_ref = try equipment.reference("Equipment.EquipmentContainer") orelse continue;
             break :blk strip_hash(ec_ref);
         };
         // Apply VL merge so limits are keyed by the representative VL.
         const container_id = resolve.find_root(&topology.voltage_level_merge, raw_container_id);
-        const container = model.getObjectById(container_id) orelse continue;
+        const container = model.object_by_id(container_id) orelse continue;
 
-        if (!std.mem.eql(u8, container.type_name, "VoltageLevel")) continue;
+        if (!std.mem.eql(u8, container.type_name(), "VoltageLevel")) continue;
 
-        const limit_type_ref = try voltage_limit_view.getReference("OperationalLimit.OperationalLimitType") orelse continue;
-        const limit_type = model.getObjectById(strip_hash(limit_type_ref)) orelse continue;
-        const direction = try limit_type.getReference("OperationalLimitType.direction") orelse continue;
+        const limit_type_ref = try voltage_limit.reference("OperationalLimit.OperationalLimitType") orelse continue;
+        const limit_type = model.object_by_id(strip_hash(limit_type_ref)) orelse continue;
+        const direction = try limit_type.reference("OperationalLimitType.direction") orelse continue;
 
         const direction_kind: enum { high, low } = if (std.mem.endsWith(u8, direction, "high"))
             .high
@@ -472,7 +468,7 @@ pub fn build_voltage_limits(gpa: std.mem.Allocator, model: *const CimDocument, i
         else
             continue;
 
-        const value_text = parse.non_blank(try voltage_limit_view.getProperty("VoltageLimit.normalValue")) orelse continue;
+        const value_text = parse.non_blank(try voltage_limit.property("VoltageLimit.normalValue")) orelse continue;
         const value = try parse.float_req(value_text);
 
         const gop = index.voltage_level_limits.getOrPutAssumeCapacity(container_id);
@@ -483,7 +479,7 @@ pub fn build_voltage_limits(gpa: std.mem.Allocator, model: *const CimDocument, i
             .low_mrids = .empty,
         };
 
-        const voltage_limit_mrid = try voltage_limit_view.mrid();
+        const voltage_limit_mrid = try voltage_limit.mrid();
 
         switch (direction_kind) {
             .high => {

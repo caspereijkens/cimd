@@ -176,7 +176,7 @@ pub fn browse(
         };
 
         const has_back = trace.items.len > 0 or mode != .regular;
-        try print.allocating_writer_result(&screen, render_footer(writer, trace.items, object.type_name, counter, has_back, mode, referrers.len));
+        try print.allocating_writer_result(&screen, render_footer(writer, trace.items, object.type_name(), counter, has_back, mode, referrers.len));
         try interactive.output.writeAll(screen.written());
         try interactive.output.flush();
 
@@ -205,7 +205,7 @@ pub fn browse(
                 },
             },
             .follow => |new_id| {
-                try trace.append(gpa, .{ .id = id, .type_name = object.type_name });
+                try trace.append(gpa, .{ .id = id, .type_name = object.type_name() });
                 id = new_id;
                 mode = .regular;
             },
@@ -242,11 +242,11 @@ fn render_regular(
     gpa: std.mem.Allocator,
     tp_opt: ?Overlay,
     ssh_opt: ?Overlay,
-    object: cim.CimObjectView,
+    object: cim.CimObject,
     selections: *std.ArrayList(Selection),
 ) !u32 {
     var counter: u32 = 1;
-    counter = try render_fragment(writer, gpa, tag_slice(object.xml, object.boundaries, object.object_tag_idx, object.closing_tag_idx), counter, selections);
+    counter = try render_fragment(writer, gpa, object.raw_xml(), counter, selections);
 
     const overlay_key = try object.mrid();
     if (tp_opt) |tp| {
@@ -347,15 +347,15 @@ fn render_back_refs(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
     tp_opt: ?Overlay,
-    target: cim.CimObjectView,
+    target: cim.CimObject,
     referrers: []const refs.ReverseRef,
     view: ListView,
     selections: *std.ArrayList(Selection),
 ) !u32 {
-    assert(target.type_name.len > 0);
-    try writer.print("\nReferences to {s} ", .{target.type_name});
+    assert(target.type_name().len > 0);
+    try writer.print("\nReferences to {s} ", .{target.type_name()});
     try writer.writeAll(cli.ansi_yellow);
-    try writer.writeAll(strip_underscore(target.id));
+    try writer.writeAll(strip_underscore(target.id()));
     try writer.writeAll(cli.ansi_default);
 
     if (referrers.len == 0) {
@@ -394,7 +394,7 @@ fn render_back_refs_flat(
             .e = std.math.log10_int(referrers.len) + 1,
             .type = ref.referrer_type,
             .w = max_type_len,
-            .c = strip_underscore(v.id),
+            .c = strip_underscore(v.id()),
         });
         try selections.append(gpa, .{ .follow = ref.referrer_id });
         counter += 1;
@@ -661,10 +661,10 @@ fn render_prefix_grouped(
 
     var max_type_len: usize = 0;
     for (matches) |m| {
-        const gop = try counts.getOrPut(gpa, m.type_name);
+        const gop = try counts.getOrPut(gpa, m.type_name());
         if (!gop.found_existing) gop.value_ptr.* = 0;
         gop.value_ptr.* += 1;
-        if (max_type_len < m.type_name.len) max_type_len = m.type_name.len;
+        if (max_type_len < m.type_name().len) max_type_len = m.type_name().len;
     }
 
     try writer.print("\n  '{s}' matched {d} objects -- pick a type to drill in:\n", .{ prefix, matches.len });
@@ -708,8 +708,8 @@ fn render_prefix_flat(
     var shown: usize = 0;
     var max_type_len: usize = 0;
     for (matches) |m| {
-        if (filter_type) |t| if (!std.mem.eql(u8, t, m.type_name)) continue;
-        if (m.type_name.len > max_type_len) max_type_len = m.type_name.len;
+        if (filter_type) |t| if (!std.mem.eql(u8, t, m.type_name())) continue;
+        if (m.type_name().len > max_type_len) max_type_len = m.type_name().len;
         shown += 1;
     }
 
@@ -722,15 +722,15 @@ fn render_prefix_flat(
     var counter: u32 = 1;
     const n_width = std.math.log10_int(shown + 1) + 1;
     for (matches) |m| {
-        if (filter_type) |t| if (!std.mem.eql(u8, t, m.type_name)) continue;
+        if (filter_type) |t| if (!std.mem.eql(u8, t, m.type_name())) continue;
         try writer.print("\n| {[n]d: >[e]} |  {[type]s: <[w]}  |  {[id]s}", .{
             .n = counter,
             .e = n_width,
-            .type = m.type_name,
+            .type = m.type_name(),
             .w = max_type_len,
-            .id = m.id,
+            .id = m.id(),
         });
-        try selections.append(gpa, .{ .pick = m.id });
+        try selections.append(gpa, .{ .pick = m.id() });
         counter += 1;
     }
     return counter;

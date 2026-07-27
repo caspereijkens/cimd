@@ -118,7 +118,7 @@ pub const RuleSet = struct {
         /// targets are flattened before this point. A class absent
         /// from the model matches zero objects; valid, not an error.
         class: []const u8,
-        /// A single node id, resolved via CimDocument.getObjectById. In the corpus
+        /// A single node id, resolved via CimDocument.object_by_id. In the corpus
         /// these are synthetic hooks for dataset-level SPARQL, so they
         /// typically resolve to nothing; valid, not an error.
         node: []const u8,

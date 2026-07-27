@@ -52,7 +52,7 @@ test "ChildTable - agrees with ChildIterator on every child of every object" {
     var total: u32 = 0;
     for (model.objects, 0..) |obj, i| {
         const children = table.children_of(@intCast(i));
-        var it = model.view(obj).children();
+        var it = obj.children();
         var n: u32 = 0;
         while (it.next()) |child| : (n += 1) {
             try expect(n < children.tags.len);
@@ -210,7 +210,7 @@ test "ChildTable - a malformed rdf:resource is a property, matching the iterator
     defer table.deinit(gpa);
 
     const children = table.children_of(model.id_to_index.get("_T1").?);
-    var it = model.view(model.objects[model.id_to_index.get("_T1").?]).children();
+    var it = model.objects[model.id_to_index.get("_T1").?].children();
     var n: u32 = 0;
     while (it.next()) |child| : (n += 1) {
         try expectEqual(child.kind == .reference, ChildTable.is_reference(children.tags[n]));

@@ -25,15 +25,19 @@ test "CimDocument.init - parses all top-level CIM objects" {
     try std.testing.expectEqual(3, model.objects.len);
 
     // After type-grouping, objects are ordered by type, not parse order
-    const substations = model.get_objects_by_type("Substation");
+    const substations = model.objects_by_type("Substation");
     try std.testing.expectEqual(2, substations.len);
-    try std.testing.expectEqualStrings("_SS1", substations[0].id);
-    try std.testing.expectEqualStrings("_SS2", substations[1].id);
-    const voltage_levels = model.get_objects_by_type("VoltageLevel");
+    try std.testing.expectEqualStrings("_SS1", substations[0].id());
+    try std.testing.expectEqualStrings("_SS2", substations[1].id());
+    try std.testing.expectEqualStrings(
+        "North Station",
+        (try substations[0].property("IdentifiedObject.name")).?,
+    );
+    const voltage_levels = model.objects_by_type("VoltageLevel");
     try std.testing.expectEqual(1, voltage_levels.len);
 }
 
-test "CimDocument.getObjectById - finds object by ID" {
+test "CimDocument.object_by_id - finds object by ID" {
     const xml =
         \\<rdf:RDF>
         \\  <cim:Substation rdf:ID="_SS1">
@@ -51,16 +55,20 @@ test "CimDocument.getObjectById - finds object by ID" {
     defer model.deinit(gpa);
 
     // Should find VL1
-    const voltage_level = model.getObjectById("_VL1") orelse return error.TestFailed;
-    try std.testing.expectEqualStrings("_VL1", voltage_level.id);
-    try std.testing.expectEqualStrings("VoltageLevel", voltage_level.type_name);
+    const voltage_level = model.object_by_id("_VL1") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("_VL1", voltage_level.id());
+    try std.testing.expectEqualStrings("VoltageLevel", voltage_level.type_name());
+    try std.testing.expectEqualStrings(
+        "380kV",
+        (try voltage_level.property("IdentifiedObject.name")).?,
+    );
 
     // Should return null for non-existent ID
-    const missing = model.getObjectById("_NOTFOUND");
+    const missing = model.object_by_id("_NOTFOUND");
     try std.testing.expect(missing == null);
 }
 
-test "CimDocument.get_objects_by_type - returns all objects of given type" {
+test "CimDocument.objects_by_type - returns all objects of given type" {
     const xml =
         \\<rdf:RDF>
         \\  <cim:Substation rdf:ID="_SS1">
@@ -84,19 +92,19 @@ test "CimDocument.get_objects_by_type - returns all objects of given type" {
     defer model.deinit(gpa);
 
     // Get all Substations (should be 3)
-    const substations = model.get_objects_by_type("Substation");
+    const substations = model.objects_by_type("Substation");
     try std.testing.expectEqual(3, substations.len);
-    try std.testing.expectEqualStrings("_SS1", substations[0].id);
-    try std.testing.expectEqualStrings("_SS2", substations[1].id);
-    try std.testing.expectEqualStrings("_SS3", substations[2].id);
+    try std.testing.expectEqualStrings("_SS1", substations[0].id());
+    try std.testing.expectEqualStrings("_SS2", substations[1].id());
+    try std.testing.expectEqualStrings("_SS3", substations[2].id());
 
     // Get all VoltageLevels (should be 1)
-    const voltage_levels = model.get_objects_by_type("VoltageLevel");
+    const voltage_levels = model.objects_by_type("VoltageLevel");
     try std.testing.expectEqual(1, voltage_levels.len);
-    try std.testing.expectEqualStrings("_VL1", voltage_levels[0].id);
+    try std.testing.expectEqualStrings("_VL1", voltage_levels[0].id());
 
     // Get non-existent type (should be empty)
-    const missing = model.get_objects_by_type("DoesNotExist");
+    const missing = model.objects_by_type("DoesNotExist");
     try std.testing.expectEqual(0, missing.len);
 }
 
@@ -122,7 +130,7 @@ test "CimDocument.type_groups - visits each exact type once without allocation" 
         groups_count += 1;
         objects_count += @intCast(group.objects.len);
         for (group.objects) |object| {
-            try std.testing.expectEqualStrings(group.type_name, object.type_name);
+            try std.testing.expectEqualStrings(group.type_name, object.type_name());
         }
 
         if (std.mem.eql(u8, group.type_name, "Substation")) {
@@ -208,8 +216,8 @@ test "CimDocument.init - falls back to rdf:about when rdf:ID is unusable" {
     defer model.deinit(gpa);
 
     try std.testing.expectEqual(2, model.objects.len);
-    _ = model.getObjectById("urn:uuid:empty-id") orelse return error.TestFailed;
-    _ = model.getObjectById("urn:uuid:malformed-id") orelse return error.TestFailed;
+    _ = model.object_by_id("urn:uuid:empty-id") orelse return error.TestFailed;
+    _ = model.object_by_id("urn:uuid:malformed-id") orelse return error.TestFailed;
 }
 
 test "EQ objects maintain CimObject functionality" {
@@ -227,13 +235,13 @@ test "EQ objects maintain CimObject functionality" {
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
-    const obj = model.getObjectById("_SS1") orelse return error.TestFailed;
+    const obj = model.object_by_id("_SS1") orelse return error.TestFailed;
 
     // Should still be able to get properties
-    const name = try obj.getProperty("IdentifiedObject.name");
+    const name = try obj.property("IdentifiedObject.name");
     try std.testing.expectEqualStrings("North Station", name.?);
 
     // Should still be able to get references
-    const region = try obj.getReference("Substation.Region");
+    const region = try obj.reference("Substation.Region");
     try std.testing.expectEqualStrings("#_Region1", region.?);
 }

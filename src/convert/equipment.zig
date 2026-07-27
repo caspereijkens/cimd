@@ -46,9 +46,9 @@ fn count_equipment_for_type(
     equipment_counts: *std.StringHashMapUnmanaged(VoltageLevelEquipmentCounts),
     cache: ?*PlacementCache,
 ) !void {
-    for (model.get_objects_by_type(cim_type)) |obj| {
-        const placement = try placer.resolve_equipment(obj.id) orelse continue;
-        if (cache) |c| c.putAssumeCapacityNoClobber(obj.id, placement);
+    for (model.objects_by_type(cim_type)) |obj| {
+        const placement = try placer.resolve_equipment(obj.id()) orelse continue;
+        if (cache) |c| c.putAssumeCapacityNoClobber(obj.id(), placement);
         const gop = equipment_counts.getOrPutAssumeCapacity(placement.repr_voltage_level_id);
         if (!gop.found_existing) gop.value_ptr.* = .{};
         const field = &@field(gop.value_ptr.*, field_name);
@@ -92,8 +92,8 @@ pub fn pre_allocate_equipment(
     // Size the cache to the number of cached-type objects (busbar + injections).
     // Switches are not cached, so they are excluded from this bound.
     var cache_capacity: usize = 0;
-    if (placer.mode == .node_breaker) cache_capacity += model.get_objects_by_type("BusbarSection").len;
-    inline for (injection_types) |t| cache_capacity += model.get_objects_by_type(t).len;
+    if (placer.mode == .node_breaker) cache_capacity += model.objects_by_type("BusbarSection").len;
+    inline for (injection_types) |t| cache_capacity += model.objects_by_type(t).len;
 
     var cache: PlacementCache = .empty;
     errdefer cache.deinit(gpa);
@@ -138,24 +138,23 @@ pub fn convert_busbar_sections(
     placer: TerminalPlacer,
 ) !void {
     const index = placer.index;
-    const busbar_sections = model.get_objects_by_type("BusbarSection");
+    const busbar_sections = model.objects_by_type("BusbarSection");
 
     for (busbar_sections) |busbar_section| {
-        const placement = try placer.resolve_equipment(busbar_section.id) orelse continue;
+        const placement = try placer.resolve_equipment(busbar_section.id()) orelse continue;
         const voltage_level = placement.voltage_level;
         const node = placement.node;
 
-        const busbar_section_view = model.view(busbar_section);
-        const mrid = try busbar_section_view.mrid();
-        const name = parse.non_blank(try busbar_section_view.getProperty("IdentifiedObject.name"));
+        const mrid = try busbar_section.mrid();
+        const name = parse.non_blank(try busbar_section.property("IdentifiedObject.name"));
 
         // alias: CGMES.Terminal1 = terminal mRID
         var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
         errdefer aliases.deinit(gpa);
-        if (index.equipment_terminals.get(busbar_section.id)) |terminals| {
+        if (index.equipment_terminals.get(busbar_section.id())) |terminals| {
             if (terminals.items.len > 0) {
-                const t_view = model.getObjectById(terminals.items[0].id) orelse continue;
-                const t_mrid = try t_view.mrid();
+                const terminal = model.object_by_id(terminals.items[0].id) orelse continue;
+                const t_mrid = try terminal.mrid();
                 try aliases.ensureTotalCapacity(gpa, 1);
                 aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal1" }, .content = t_mrid });
             }
@@ -187,7 +186,7 @@ pub fn convert_switches(
 
     for (switch_slices) |switch_slice| {
         for (switch_slice) |sw| {
-            const terminals = index.equipment_terminals.get(sw.id) orelse continue;
+            const terminals = index.equipment_terminals.get(sw.id()) orelse continue;
 
             if (terminals.items.len < 2) continue;
 
@@ -200,17 +199,17 @@ pub fn convert_switches(
             const repr_voltage_level_id = resolve.find_root(&placer.topology.voltage_level_merge, container0_id);
             const voltage_level = voltage_level_map.get(repr_voltage_level_id) orelse continue;
 
-            const eq_view = model.view(sw);
-            const mrid_raw = try eq_view.mrid();
+            const eq_object = sw;
+            const mrid_raw = try eq_object.mrid();
             const mrid = try gpa.dupe(u8, mrid_raw);
             errdefer gpa.free(mrid);
-            const view = CimMergedView.init(eq_view, mrid, null, ssh_opt);
-            const props = try view.getProperties(.{
+            const view = CimMergedView.init(eq_object, mrid, null, ssh_opt);
+            const props = try view.properties(.{
                 "IdentifiedObject.name",
                 "Switch.open",
                 "Switch.retained",
             });
-            const eq_props = try eq_view.getProperties(.{
+            const eq_props = try eq_object.properties(.{
                 "Switch.normalOpen",
             });
             const name = parse.non_blank(props[0]);
@@ -219,16 +218,16 @@ pub fn convert_switches(
             const open = parse.flag(props[1]);
             const retained = parse.flag(props[2]);
 
-            const kind = iidm.SwitchKind.from_cim_type(sw.type_name);
+            const kind = iidm.SwitchKind.from_cim_type(sw.type_name());
 
             // aliases: CGMES.Terminal1 and CGMES.Terminal2 (terminals are in sequence order)
             var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
             errdefer aliases.deinit(gpa);
             {
-                const t1_view = model.getObjectById(terminals.items[0].id) orelse continue;
-                const t1_mrid = try t1_view.mrid();
-                const t2_view = model.getObjectById(terminals.items[1].id) orelse continue;
-                const t2_mrid = try t2_view.mrid();
+                const terminal_1 = model.object_by_id(terminals.items[0].id) orelse continue;
+                const t1_mrid = try terminal_1.mrid();
+                const terminal_2 = model.object_by_id(terminals.items[1].id) orelse continue;
+                const t2_mrid = try terminal_2.mrid();
                 try aliases.ensureTotalCapacity(gpa, 2);
                 aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal1" }, .content = t1_mrid });
                 aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal2" }, .content = t2_mrid });
@@ -240,7 +239,7 @@ pub fn convert_switches(
             {
                 const normal_open_str = eq_props[0] orelse "false";
                 try properties.ensureTotalCapacity(gpa, 2);
-                properties.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = sw.type_name });
+                properties.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = sw.type_name() });
                 properties.appendAssumeCapacity(.{ .name = "CGMES.normalOpen", .value = normal_open_str });
             }
 
@@ -294,8 +293,8 @@ pub fn convert_fictitious_switches(
             std.mem.eql(u8, eq_type, "LinearShuntCompensator") or
             std.mem.eql(u8, eq_type, "StaticVarCompensator");
 
-        for (model.get_objects_by_type(eq_type)) |equip| {
-            const terminals = index.equipment_terminals.get(equip.id) orelse continue;
+        for (model.objects_by_type(eq_type)) |equip| {
+            const terminals = index.equipment_terminals.get(equip.id()) orelse continue;
             for (terminals.items) |t| {
                 const cn_id = t.conn_node_id orelse continue;
 
@@ -322,8 +321,8 @@ pub fn convert_fictitious_switches(
                 const voltage_level = voltage_level_map.get(repr_id) orelse continue;
 
                 // Get terminal mRID for the switch id/name.
-                const t_view = model.getObjectById(t.id) orelse continue;
-                const t_mrid = try t_view.mrid();
+                const terminal = model.object_by_id(t.id) orelse continue;
+                const t_mrid = try terminal.mrid();
 
                 const terminal_node = node_map.get(t.ordinal) orelse 0;
                 if (terminal_node == std.math.maxInt(u32)) return error.NodeIdOverflow;
@@ -380,9 +379,9 @@ pub fn convert_loads(
     placer: TerminalPlacer,
     ssh_opt: ?Overlay,
 ) !void {
-    const energy_consumers = model.get_objects_by_type("EnergyConsumer");
-    const conform_loads = model.get_objects_by_type("ConformLoad");
-    const non_conform_loads = model.get_objects_by_type("NonConformLoad");
+    const energy_consumers = model.objects_by_type("EnergyConsumer");
+    const conform_loads = model.objects_by_type("ConformLoad");
+    const non_conform_loads = model.objects_by_type("NonConformLoad");
 
     try convert_load_type(gpa, model, placer, ssh_opt, energy_consumers, false);
     try convert_load_type(gpa, model, placer, ssh_opt, conform_loads, false);
@@ -400,43 +399,43 @@ fn convert_load_type(
 ) !void {
     const index = placer.index;
     for (loads) |load| {
-        const eq_view = model.view(load);
-        const placement = try placer.resolve_equipment(load.id) orelse continue;
+        const eq_object = load;
+        const placement = try placer.resolve_equipment(load.id()) orelse continue;
         const voltage_level = placement.voltage_level;
         const node = placement.node;
 
-        const mrid = try eq_view.mrid();
-        const view = CimMergedView.init(eq_view, mrid, null, ssh_opt);
-        const load_values = try view.getProperties(.{
+        const mrid = try eq_object.mrid();
+        const view = CimMergedView.init(eq_object, mrid, null, ssh_opt);
+        const load_values = try view.properties(.{
             "IdentifiedObject.name",
             "EnergyConsumer.p",
             "EnergyConsumer.q",
             "EnergyConsumer.pfixed",
             "EnergyConsumer.qfixed",
         });
-        const load_refs = try view.getReferences(.{
+        const load_refs = try view.references(.{
             "EnergyConsumer.LoadResponse",
         });
         const name = parse.non_blank(load_values[0]);
 
         var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
         errdefer aliases.deinit(gpa);
-        try append_injection_terminal_alias(gpa, index, load.id, &aliases);
+        try append_injection_terminal_alias(gpa, index, load.id(), &aliases);
 
         // properties: CGMES.pFixed, CGMES.originalClass, CGMES.qFixed
         var props: std.ArrayListUnmanaged(iidm.Property) = .empty;
         errdefer props.deinit(gpa);
         try props.ensureTotalCapacity(gpa, 3);
         props.appendAssumeCapacity(.{ .name = "CGMES.pFixed", .value = "0.0" });
-        props.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = load.type_name });
+        props.appendAssumeCapacity(.{ .name = "CGMES.originalClass", .value = load.type_name() });
         props.appendAssumeCapacity(.{ .name = "CGMES.qFixed", .value = "0.0" });
 
         // Load response characteristic → exponentialModel or zipModel.
         var exp_model: ?iidm.ExponentialModel = null;
         var zip_model: ?iidm.ZipModel = null;
         if (load_refs[0]) |lr_ref| {
-            if (model.getObjectById(strip_hash(lr_ref))) |lrc| {
-                const lrc_props = try lrc.getProperties(.{
+            if (model.object_by_id(strip_hash(lr_ref))) |lrc| {
+                const lrc_props = try lrc.properties(.{
                     "LoadResponseCharacteristic.exponentModel",
                     "LoadResponseCharacteristic.pVoltageExponent",
                     "LoadResponseCharacteristic.qVoltageExponent",
@@ -518,17 +517,17 @@ pub fn convert_shunts(
     ssh_opt: ?Overlay,
 ) !void {
     const index = placer.index;
-    const shunts = model.get_objects_by_type("LinearShuntCompensator");
+    const shunts = model.objects_by_type("LinearShuntCompensator");
 
     for (shunts) |shunt| {
-        const eq_view = model.view(shunt);
-        const placement = try placer.resolve_equipment(shunt.id) orelse continue;
+        const eq_object = shunt;
+        const placement = try placer.resolve_equipment(shunt.id()) orelse continue;
         const voltage_level = placement.voltage_level;
         const node = placement.node;
 
-        const mrid = try eq_view.mrid();
-        const view = CimMergedView.init(eq_view, mrid, null, ssh_opt);
-        const shunt_values = try view.getProperties(.{
+        const mrid = try eq_object.mrid();
+        const view = CimMergedView.init(eq_object, mrid, null, ssh_opt);
+        const shunt_values = try view.properties(.{
             "IdentifiedObject.name",
             "ShuntCompensator.sections",
             "ShuntCompensator.maximumSections",
@@ -536,10 +535,10 @@ pub fn convert_shunts(
             "LinearShuntCompensator.gPerSection",
             "RegulatingCondEq.controlEnabled",
         });
-        const shunt_refs = try eq_view.getReferences(.{
+        const shunt_refs = try eq_object.references(.{
             "RegulatingCondEq.RegulatingControl",
         });
-        const eq_props = try eq_view.getProperties(.{
+        const eq_props = try eq_object.properties(.{
             "ShuntCompensator.normalSections",
         });
         const name = parse.non_blank(shunt_values[0]);
@@ -559,16 +558,16 @@ pub fn convert_shunts(
         var regulating_terminal: ?[]const u8 = null;
         if (shunt_refs[0]) |rc_ref| {
             const rc_id = strip_hash(rc_ref);
-            if (model.getObjectById(rc_id)) |rc_view| {
-                rc_mrid = try rc_view.mrid();
+            if (model.object_by_id(rc_id)) |control| {
+                rc_mrid = try control.mrid();
                 // Resolve regulatingTerminal: RC.Terminal → CN → reachable BBS mRID.
                 // Skip if RC terminal is on the shunt itself (local regulation → null).
                 // Bus-branch mode has no busbarSections, so the BBS ref would dangle.
                 if (placer.mode == .node_breaker) {
-                    if (try rc_view.getReference("RegulatingControl.Terminal")) |rt_ref| {
+                    if (try control.reference("RegulatingControl.Terminal")) |rt_ref| {
                         const rt_id = strip_hash(rt_ref);
                         const rt_equipment = index.terminal_equipment.get(rt_id) orelse "";
-                        const is_local = std.mem.eql(u8, rt_equipment, shunt.id);
+                        const is_local = std.mem.eql(u8, rt_equipment, shunt.id());
                         if (!is_local) {
                             if (index.terminal_conn_node.get(rt_id)) |rt_info| {
                                 regulating_terminal = placer.topology.conn_node_reachable_busbar_section.get(rt_info.conn_node_id);
@@ -579,9 +578,9 @@ pub fn convert_shunts(
             }
             if (rc_mrid) |rm| {
                 if (ssh_opt) |ssh| {
-                    if (try ssh.getProperty(rm, "RegulatingControl.targetValue")) |v|
+                    if (try ssh.property(rm, "RegulatingControl.targetValue")) |v|
                         target_v = parse.float_opt(v);
-                    if (try ssh.getProperty(rm, "RegulatingControl.targetDeadband")) |v|
+                    if (try ssh.property(rm, "RegulatingControl.targetDeadband")) |v|
                         target_deadband = parse.float_opt(v);
                 }
             }
@@ -602,7 +601,7 @@ pub fn convert_shunts(
 
         var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
         errdefer aliases.deinit(gpa);
-        try append_injection_terminal_alias(gpa, index, shunt.id, &aliases);
+        try append_injection_terminal_alias(gpa, index, shunt.id(), &aliases);
 
         assert(mrid.len > 0);
         voltage_level.shunts.appendAssumeCapacity(.{
@@ -632,23 +631,23 @@ pub fn convert_static_var_compensators(
     placer: TerminalPlacer,
     ssh_opt: ?Overlay,
 ) !void {
-    const static_var_compensators = model.get_objects_by_type("StaticVarCompensator");
+    const static_var_compensators = model.objects_by_type("StaticVarCompensator");
 
     for (static_var_compensators) |static_var_compensator| {
-        const eq_view = model.view(static_var_compensator);
-        const placement = try placer.resolve_equipment(static_var_compensator.id) orelse continue;
+        const eq_object = static_var_compensator;
+        const placement = try placer.resolve_equipment(static_var_compensator.id()) orelse continue;
         const voltage_level = placement.voltage_level;
         const node = placement.node;
 
-        const mrid = try eq_view.mrid();
-        const view = CimMergedView.init(eq_view, mrid, null, ssh_opt);
-        const svc_values = try view.getProperties(.{
+        const mrid = try eq_object.mrid();
+        const view = CimMergedView.init(eq_object, mrid, null, ssh_opt);
+        const svc_values = try view.properties(.{
             "IdentifiedObject.name",
             "StaticVarCompensator.bMin",
             "StaticVarCompensator.bMax",
             "RegulatingCondEq.controlEnabled",
         });
-        const svc_refs = try view.getReferences(.{
+        const svc_refs = try view.references(.{
             "StaticVarCompensator.regulationMode",
         });
         const name = parse.non_blank(svc_values[0]);
@@ -698,20 +697,19 @@ pub fn convert_generators(
     ssh_opt: ?Overlay,
 ) !void {
     const index = placer.index;
-    const machines = model.get_objects_by_type("SynchronousMachine");
+    const machines = model.objects_by_type("SynchronousMachine");
 
     // Build ThermalGeneratingUnit ID → fuel type fragment map from FossilFuel objects.
     // FossilFuel.ThermalGeneratingUnit → unit raw ID; FossilFuel.fossilFuelType → enum URL.
     var fuel_type_map: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer fuel_type_map.deinit(gpa);
     {
-        const fossil_fuels = model.get_objects_by_type("FossilFuel");
+        const fossil_fuels = model.objects_by_type("FossilFuel");
         try fuel_type_map.ensureTotalCapacity(gpa, @intCast(fossil_fuels.len));
         for (fossil_fuels) |fossil_fuel| {
-            const fossil_fuel_view = model.view(fossil_fuel);
-            const unit_ref = try fossil_fuel_view.getReference("FossilFuel.ThermalGeneratingUnit") orelse continue;
+            const unit_ref = try fossil_fuel.reference("FossilFuel.ThermalGeneratingUnit") orelse continue;
             const unit_id = strip_hash(unit_ref);
-            const ft_ref = try fossil_fuel_view.getReference("FossilFuel.fossilFuelType") orelse continue;
+            const ft_ref = try fossil_fuel.reference("FossilFuel.fossilFuelType") orelse continue;
             // Extract enum fragment part after last '#', then after last '.'.
             const h = std.mem.lastIndexOfScalar(u8, ft_ref, '#') orelse continue;
             const frag = ft_ref[h + 1 ..];
@@ -722,16 +720,16 @@ pub fn convert_generators(
     }
 
     for (machines) |machine| {
-        const placement = try placer.resolve_equipment(machine.id) orelse continue;
+        const placement = try placer.resolve_equipment(machine.id()) orelse continue;
         const voltage_level = placement.voltage_level;
         const node = placement.node;
 
         // Resolve mRID first (needed for merged view lookup), then build merged view.
         // All subsequent attribute reads go through view -- SSH values shadow EQ values.
-        const eq_view = model.view(machine);
-        const mrid = try eq_view.mrid();
-        const view = CimMergedView.init(eq_view, mrid, null, ssh_opt);
-        const machine_values = try view.getProperties(.{
+        const eq_object = machine;
+        const mrid = try eq_object.mrid();
+        const view = CimMergedView.init(eq_object, mrid, null, ssh_opt);
+        const machine_values = try view.properties(.{
             "IdentifiedObject.name",
             "RotatingMachine.ratedS",
             "RegulatingCondEq.controlEnabled",
@@ -741,12 +739,12 @@ pub fn convert_generators(
             "RotatingMachine.q",
             "SynchronousMachine.qPercent",
         });
-        const machine_refs = try view.getReferences(.{
+        const machine_refs = try view.references(.{
             "RotatingMachine.GeneratingUnit",
             "SynchronousMachine.InitialReactiveCapabilityCurve",
             "RegulatingCondEq.RegulatingControl",
         });
-        const eq_refs = try eq_view.getReferences(.{
+        const eq_refs = try eq_object.references(.{
             "SynchronousMachine.type",
         });
 
@@ -781,21 +779,21 @@ pub fn convert_generators(
         var participation_factor: ?f64 = null;
         if (machine_refs[0]) |unit_ref| {
             const unit_id = strip_hash(unit_ref);
-            if (model.getObjectById(unit_id)) |unit| {
-                const unit_props = try unit.getProperties(.{
+            if (model.object_by_id(unit_id)) |unit| {
+                const unit_props = try unit.properties(.{
                     "GeneratingUnit.minOperatingP",
                     "GeneratingUnit.maxOperatingP",
                     "IdentifiedObject.mRID",
                 });
-                const unit_refs = try unit.getReferences(.{
+                const unit_refs = try unit.references(.{
                     "WindGeneratingUnit.windGenUnitType",
                 });
-                energy_source = energy_source_from_cim_type(unit.type_name);
+                energy_source = energy_source_from_cim_type(unit.type_name());
                 if (unit_props[0]) |v| min_p = try parse.float_req(v);
                 if (unit_props[1]) |v| max_p = try parse.float_req(v);
                 unit_mrid = unit_props[2] orelse strip_underscore(unit_id);
                 // WindGeneratingUnit: extract windGenUnitType kind value.
-                if (std.mem.eql(u8, unit.type_name, "WindGeneratingUnit")) {
+                if (std.mem.eql(u8, unit.type_name(), "WindGeneratingUnit")) {
                     if (unit_refs[0]) |wt_ref| {
                         const wt_frag = blk: {
                             const h = std.mem.lastIndexOfScalar(u8, wt_ref, '#') orelse break :blk wt_ref;
@@ -811,7 +809,7 @@ pub fn convert_generators(
                 // SSH GeneratingUnit.normalPF → activePowerControl participationFactor.
                 if (ssh_opt) |ssh| {
                     const gu_mrid = unit_mrid orelse strip_underscore(unit_id);
-                    if (try ssh.getProperty(gu_mrid, "GeneratingUnit.normalPF")) |v|
+                    if (try ssh.property(gu_mrid, "GeneratingUnit.normalPF")) |v|
                         participation_factor = parse.float_opt(v);
                 }
             }
@@ -842,11 +840,11 @@ pub fn convert_generators(
         var target_v: ?f64 = null;
         if (machine_refs[2]) |rc_ref| {
             const rc_id = strip_hash(rc_ref);
-            if (model.getObjectById(rc_id)) |rc| {
-                const rc_props = try rc.getProperties(.{
+            if (model.object_by_id(rc_id)) |rc| {
+                const rc_props = try rc.properties(.{
                     "IdentifiedObject.mRID",
                 });
-                const rc_refs = try rc.getReferences(.{
+                const rc_refs = try rc.references(.{
                     "RegulatingControl.mode",
                     "RegulatingControl.Terminal",
                 });
@@ -854,7 +852,7 @@ pub fn convert_generators(
                 // SSH RegulatingControl.targetValue → IIDM targetV.
                 if (rc_mrid) |rm| {
                     if (ssh_opt) |ssh| {
-                        if (try ssh.getProperty(rm, "RegulatingControl.targetValue")) |v|
+                        if (try ssh.property(rm, "RegulatingControl.targetValue")) |v|
                             target_v = parse.float_opt(v);
                     }
                 }
@@ -869,7 +867,7 @@ pub fn convert_generators(
                         const rt_id = strip_hash(rt_ref);
                         const rt_eq = index.terminal_equipment.get(rt_id) orelse "";
                         // If RC terminal is on this machine → local regulation (null).
-                        if (!std.mem.eql(u8, rt_eq, machine.id)) {
+                        if (!std.mem.eql(u8, rt_eq, machine.id())) {
                             const rt_conn_node = index.terminal_conn_node.get(rt_id);
                             if (rt_conn_node) |rt_info| {
                                 regulating_terminal = placer.topology.conn_node_reachable_busbar_section.get(rt_info.conn_node_id);
@@ -881,7 +879,7 @@ pub fn convert_generators(
         }
         var gen_aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
         errdefer gen_aliases.deinit(gpa);
-        try append_injection_terminal_alias(gpa, index, machine.id, &gen_aliases);
+        try append_injection_terminal_alias(gpa, index, machine.id(), &gen_aliases);
 
         // properties in pypow order:
         //   fuelType, synchronousMachineType, mode, originalClass, GeneratingUnit,
