@@ -510,6 +510,70 @@ fn run_load_response_characteristic_exponent_values(
     return run_load_response_characteristic_exponent_model(xml);
 }
 
+fn run_load_response_characteristic_coefficient_model(xml: []const u8) !void {
+    const gpa = std.testing.allocator;
+    var model = try Model.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    return qocdc.validate_load_response_characteristic_coefficient_model(model);
+}
+
+fn load_response_characteristic_coefficients_xml(
+    gpa: std.mem.Allocator,
+    coefficients: [6]?[]const u8,
+) ![]u8 {
+    const coefficient_names = [_][]const u8{
+        "LoadResponseCharacteristic.pConstantImpedance",
+        "LoadResponseCharacteristic.pConstantCurrent",
+        "LoadResponseCharacteristic.pConstantPower",
+        "LoadResponseCharacteristic.qConstantImpedance",
+        "LoadResponseCharacteristic.qConstantCurrent",
+        "LoadResponseCharacteristic.qConstantPower",
+    };
+    var xml: std.ArrayList(u8) = .empty;
+    errdefer xml.deinit(gpa);
+
+    try xml.appendSlice(
+        gpa,
+        "<rdf:RDF><cim:LoadResponseCharacteristic rdf:ID=\"_LRC1\">" ++
+            "<cim:LoadResponseCharacteristic.exponentModel>false</cim:LoadResponseCharacteristic.exponentModel>",
+    );
+    for (coefficient_names, coefficients) |name, coefficient| {
+        const value = coefficient orelse continue;
+        const property = try std.fmt.allocPrint(gpa, "<cim:{s}>{s}</cim:{s}>", .{ name, value, name });
+        defer gpa.free(property);
+        try xml.appendSlice(gpa, property);
+    }
+    try xml.appendSlice(gpa, "</cim:LoadResponseCharacteristic></rdf:RDF>");
+    return xml.toOwnedSlice(gpa);
+}
+
+fn run_load_response_characteristic_coefficients(coefficients: [6]?[]const u8) !void {
+    const gpa = std.testing.allocator;
+    const xml = try load_response_characteristic_coefficients_xml(gpa, coefficients);
+    defer gpa.free(xml);
+
+    return run_load_response_characteristic_coefficient_model(xml);
+}
+
+fn run_load_response_characteristic_coefficient_parameters(xml: []const u8) !void {
+    const gpa = std.testing.allocator;
+    var model = try Model.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    return qocdc.validate_load_response_characteristic_coefficient_parameters(model);
+}
+
+fn run_load_response_characteristic_coefficient_parameter_values(
+    coefficients: [6]?[]const u8,
+) !void {
+    const gpa = std.testing.allocator;
+    const xml = try load_response_characteristic_coefficients_xml(gpa, coefficients);
+    defer gpa.free(xml);
+
+    return run_load_response_characteristic_coefficient_parameters(xml);
+}
+
 test "CEBaseVoltage accepts a direct BaseVoltage association" {
     try run_ce_base_voltage(
         \\<rdf:RDF>
@@ -1689,4 +1753,200 @@ test "LRCExponentModel validates every load response characteristic" {
         \\  </cim:LoadResponseCharacteristic>
         \\</rdf:RDF>
     ));
+}
+
+test "LCRCoefficientModel accepts all six ZIP coefficients" {
+    try run_load_response_characteristic_coefficients(.{
+        "0.1",
+        "0.2",
+        "0.7",
+        "0.3",
+        "0.2",
+        "0.5",
+    });
+}
+
+test "LCRCoefficientModel accepts surrounding whitespace" {
+    try run_load_response_characteristic_coefficient_model(
+        \\<rdf:RDF>
+        \\  <cim:LoadResponseCharacteristic rdf:ID="_LRC1">
+        \\    <cim:LoadResponseCharacteristic.exponentModel> false </cim:LoadResponseCharacteristic.exponentModel>
+        \\    <cim:LoadResponseCharacteristic.pConstantImpedance> 0.1 </cim:LoadResponseCharacteristic.pConstantImpedance>
+        \\    <cim:LoadResponseCharacteristic.pConstantCurrent> 0.2 </cim:LoadResponseCharacteristic.pConstantCurrent>
+        \\    <cim:LoadResponseCharacteristic.pConstantPower> 0.7 </cim:LoadResponseCharacteristic.pConstantPower>
+        \\    <cim:LoadResponseCharacteristic.qConstantImpedance> 0.3 </cim:LoadResponseCharacteristic.qConstantImpedance>
+        \\    <cim:LoadResponseCharacteristic.qConstantCurrent> 0.2 </cim:LoadResponseCharacteristic.qConstantCurrent>
+        \\    <cim:LoadResponseCharacteristic.qConstantPower> 0.5 </cim:LoadResponseCharacteristic.qConstantPower>
+        \\  </cim:LoadResponseCharacteristic>
+        \\</rdf:RDF>
+    );
+}
+
+test "LCRCoefficientModel ignores objects whose exponent model is not false" {
+    try run_load_response_characteristic_coefficient_model(
+        \\<rdf:RDF>
+        \\  <cim:LoadResponseCharacteristic rdf:ID="_TRUE">
+        \\    <cim:LoadResponseCharacteristic.exponentModel>true</cim:LoadResponseCharacteristic.exponentModel>
+        \\  </cim:LoadResponseCharacteristic>
+        \\  <cim:LoadResponseCharacteristic rdf:ID="_ABSENT"/>
+        \\</rdf:RDF>
+    );
+}
+
+test "LCRCoefficientModel ignores exponential-model attributes" {
+    try run_load_response_characteristic_coefficient_model(
+        \\<rdf:RDF>
+        \\  <cim:LoadResponseCharacteristic rdf:ID="_LRC1">
+        \\    <cim:LoadResponseCharacteristic.exponentModel>false</cim:LoadResponseCharacteristic.exponentModel>
+        \\    <cim:LoadResponseCharacteristic.pVoltageExponent>invalid</cim:LoadResponseCharacteristic.pVoltageExponent>
+        \\    <cim:LoadResponseCharacteristic.qVoltageExponent>-100</cim:LoadResponseCharacteristic.qVoltageExponent>
+        \\    <cim:LoadResponseCharacteristic.pConstantImpedance>0.1</cim:LoadResponseCharacteristic.pConstantImpedance>
+        \\    <cim:LoadResponseCharacteristic.pConstantCurrent>0.2</cim:LoadResponseCharacteristic.pConstantCurrent>
+        \\    <cim:LoadResponseCharacteristic.pConstantPower>0.7</cim:LoadResponseCharacteristic.pConstantPower>
+        \\    <cim:LoadResponseCharacteristic.qConstantImpedance>0.3</cim:LoadResponseCharacteristic.qConstantImpedance>
+        \\    <cim:LoadResponseCharacteristic.qConstantCurrent>0.2</cim:LoadResponseCharacteristic.qConstantCurrent>
+        \\    <cim:LoadResponseCharacteristic.qConstantPower>0.5</cim:LoadResponseCharacteristic.qConstantPower>
+        \\  </cim:LoadResponseCharacteristic>
+        \\</rdf:RDF>
+    );
+}
+
+test "LCRCoefficientModel rejects each missing ZIP coefficient" {
+    for (0..6) |missing_index| {
+        var coefficients: [6]?[]const u8 = .{
+            "0.1",
+            "0.2",
+            "0.7",
+            "0.3",
+            "0.2",
+            "0.5",
+        };
+        coefficients[missing_index] = null;
+        try std.testing.expectError(
+            error.LCRCoefficientModel,
+            run_load_response_characteristic_coefficients(coefficients),
+        );
+    }
+}
+
+test "LCRCoefficientModel rejects a blank ZIP coefficient" {
+    try std.testing.expectError(
+        error.LCRCoefficientModel,
+        run_load_response_characteristic_coefficients(.{
+            "0.1",
+            "0.2",
+            " ",
+            "0.3",
+            "0.2",
+            "0.5",
+        }),
+    );
+}
+
+test "LCRCoefficientParameters accepts active and reactive sums of one" {
+    try run_load_response_characteristic_coefficient_parameter_values(.{
+        "0.1",
+        "0.2",
+        "0.7",
+        "0.3",
+        "0.2",
+        "0.5",
+    });
+}
+
+test "LCRCoefficientParameters applies NUMERIC_TOLERANCE" {
+    try run_load_response_characteristic_coefficient_parameter_values(.{
+        "0.1",
+        "0.2",
+        "0.7004",
+        "0.3",
+        "0.2",
+        "0.4996",
+    });
+}
+
+test "LCRCoefficientParameters rejects an invalid active-power sum" {
+    try std.testing.expectError(
+        error.LCRCoefficientParameters,
+        run_load_response_characteristic_coefficient_parameter_values(.{
+            "0.1",
+            "0.2",
+            "0.7006",
+            "0.3",
+            "0.2",
+            "0.5",
+        }),
+    );
+}
+
+test "LCRCoefficientParameters rejects an invalid reactive-power sum" {
+    try std.testing.expectError(
+        error.LCRCoefficientParameters,
+        run_load_response_characteristic_coefficient_parameter_values(.{
+            "0.1",
+            "0.2",
+            "0.7",
+            "0.3",
+            "0.2",
+            "0.4994",
+        }),
+    );
+}
+
+test "LCRCoefficientParameters rejects missing and invalid coefficients" {
+    try std.testing.expectError(
+        error.LCRCoefficientParameters,
+        run_load_response_characteristic_coefficient_parameter_values(.{
+            null,
+            "0.2",
+            "0.8",
+            "0.3",
+            "0.2",
+            "0.5",
+        }),
+    );
+    try std.testing.expectError(
+        error.LCRCoefficientParameters,
+        run_load_response_characteristic_coefficient_parameter_values(.{
+            "0.1",
+            " ",
+            "0.9",
+            "0.3",
+            "0.2",
+            "0.5",
+        }),
+    );
+    try std.testing.expectError(
+        error.LCRCoefficientParameters,
+        run_load_response_characteristic_coefficient_parameter_values(.{
+            "invalid",
+            "0.2",
+            "0.8",
+            "0.3",
+            "0.2",
+            "0.5",
+        }),
+    );
+    try std.testing.expectError(
+        error.LCRCoefficientParameters,
+        run_load_response_characteristic_coefficient_parameter_values(.{
+            "0.1",
+            "0.2",
+            "0.7",
+            "0.3",
+            "inf",
+            "0.7",
+        }),
+    );
+}
+
+test "LCRCoefficientParameters ignores objects whose exponent model is not false" {
+    try run_load_response_characteristic_coefficient_parameters(
+        \\<rdf:RDF>
+        \\  <cim:LoadResponseCharacteristic rdf:ID="_TRUE">
+        \\    <cim:LoadResponseCharacteristic.exponentModel>true</cim:LoadResponseCharacteristic.exponentModel>
+        \\  </cim:LoadResponseCharacteristic>
+        \\  <cim:LoadResponseCharacteristic rdf:ID="_ABSENT"/>
+        \\</rdf:RDF>
+    );
 }

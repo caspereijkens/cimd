@@ -29,7 +29,7 @@ const ReferenceStringSet = std.StaticStringMapWithEql(void, eql_ascii_ignore_cas
 
 // QoCDC §5.3 Rules' Constants.
 //
-// const numeric_tolerance_factor: f64 = 0.0005; // NUMERIC_TOLERANCE
+const numeric_tolerance_factor: f64 = 0.0005; // NUMERIC_TOLERANCE
 // const ssh_sv_active_power_diff_mw_max: f64 = 10; // SSH_SV_MAX_P_DIFF
 // const ssh_sv_reactive_power_diff_mvar_max: f64 = 50; // SSH_SV_MAX_Q_DIFF
 // const ssh_sv_active_power_diff_mw_total: f64 = 200; // SSH_SV_TOT_P_DIFF
@@ -1257,6 +1257,90 @@ pub fn validate_load_response_characteristic_exponent_model(
     }
 }
 
+/// LCRCoefficientModel
+///
+/// For every instance of cim:LoadResponseCharacteristic where
+/// cim:LoadResponseCharacteristic.exponentModel is false, the following
+/// attributes must be provided:
+/// - cim:LoadResponseCharacteristic.pConstantImpedance
+/// - cim:LoadResponseCharacteristic.pConstantCurrent
+/// - cim:LoadResponseCharacteristic.pConstantPower
+/// - cim:LoadResponseCharacteristic.qConstantImpedance
+/// - cim:LoadResponseCharacteristic.qConstantCurrent
+/// - cim:LoadResponseCharacteristic.qConstantPower
+///
+/// The attributes required for the exponential load model covered by rule
+/// LRCExponentModel are ignored and not validated when
+/// cim:LoadResponseCharacteristic.exponentModel is false.
+pub fn validate_load_response_characteristic_coefficient_model(
+    model: Model,
+) error{LCRCoefficientModel}!void {
+    const load_response_characteristics = model.objects_by_type("LoadResponseCharacteristic");
+    for (load_response_characteristics) |load_response_characteristic| {
+        const properties = load_response_characteristic.properties(.{
+            "LoadResponseCharacteristic.exponentModel",
+            "LoadResponseCharacteristic.pConstantImpedance",
+            "LoadResponseCharacteristic.pConstantCurrent",
+            "LoadResponseCharacteristic.pConstantPower",
+            "LoadResponseCharacteristic.qConstantImpedance",
+            "LoadResponseCharacteristic.qConstantCurrent",
+            "LoadResponseCharacteristic.qConstantPower",
+        }) catch return error.LCRCoefficientModel;
+
+        const exponent_model = parse.non_blank(properties[0]) orelse continue;
+        if (!std.mem.eql(u8, exponent_model, "false")) continue;
+
+        for (properties[1..]) |coefficient| {
+            if (parse.non_blank(coefficient) == null) return error.LCRCoefficientModel;
+        }
+    }
+}
+
+/// LCRCoefficientParameters
+///
+/// For every instance of cim:LoadResponseCharacteristic where
+/// cim:LoadResponseCharacteristic.exponentModel is false, both the sum of the
+/// active-power coefficients and the sum of the reactive-power coefficients
+/// must equal one within NUMERIC_TOLERANCE. Each sum consists of its constant
+/// impedance, constant current, and constant power values.
+pub fn validate_load_response_characteristic_coefficient_parameters(
+    model: Model,
+) error{LCRCoefficientParameters}!void {
+    const load_response_characteristics = model.objects_by_type("LoadResponseCharacteristic");
+    for (load_response_characteristics) |load_response_characteristic| {
+        const properties = load_response_characteristic.properties(.{
+            "LoadResponseCharacteristic.exponentModel",
+            "LoadResponseCharacteristic.pConstantImpedance",
+            "LoadResponseCharacteristic.pConstantCurrent",
+            "LoadResponseCharacteristic.pConstantPower",
+            "LoadResponseCharacteristic.qConstantImpedance",
+            "LoadResponseCharacteristic.qConstantCurrent",
+            "LoadResponseCharacteristic.qConstantPower",
+        }) catch return error.LCRCoefficientParameters;
+
+        const exponent_model = parse.non_blank(properties[0]) orelse continue;
+        if (!std.mem.eql(u8, exponent_model, "false")) continue;
+
+        var coefficients: [6]f64 = undefined;
+        for (properties[1..], &coefficients) |coefficient_text, *coefficient| {
+            coefficient.* = parse.float_req(coefficient_text orelse
+                return error.LCRCoefficientParameters) catch
+                return error.LCRCoefficientParameters;
+        }
+
+        const p_sum = coefficients[0] + coefficients[1] + coefficients[2];
+        const q_sum = coefficients[3] + coefficients[4] + coefficients[5];
+        if (!coefficient_sum_equals_one(p_sum)) return error.LCRCoefficientParameters;
+        if (!coefficient_sum_equals_one(q_sum)) return error.LCRCoefficientParameters;
+    }
+}
+
+fn coefficient_sum_equals_one(sum: f64) bool {
+    const difference = @abs(sum - 1.0);
+    return difference < @abs(sum) * numeric_tolerance_factor or
+        difference < numeric_tolerance_factor;
+}
+
 const ContainerBaseVoltage = struct {
     /// True when the equipment is contained in a cim:VoltageLevel or cim:Bay
     /// (the containment that satisfies CEBaseVoltage's existence clause).
@@ -1418,6 +1502,8 @@ fn validate_grid_model_constraints(
     try validate_power_transformer_terminal_consistency(model);
     try validate_mutual_coupling_order(model);
     try validate_load_response_characteristic_exponent_model(model);
+    try validate_load_response_characteristic_coefficient_model(model);
+    try validate_load_response_characteristic_coefficient_parameters(model);
 }
 
 fn filename_stem_from_path(file_path: []const u8) []const u8 {
@@ -1568,6 +1654,10 @@ fn grid_model_error_message(err: anyerror) []const u8 {
         ,
         error.LRCExponentModel => "Exponent of per unit voltage effecting real and reactive power is not specified but " ++
             "cim:LoadResponseCharacteristic.exponentModel is true.",
+        error.LCRCoefficientModel => "Coefficients for ZIP load model is not specified but " ++
+            "cim:LoadResponseCharacteristic.exponentModel is false.",
+        error.LCRCoefficientParameters => "The sum of coefficient parameters for a " ++
+            "cim:LoadResponseCharacteristic does not equal 1.",
         else => @errorName(err),
     };
 }
