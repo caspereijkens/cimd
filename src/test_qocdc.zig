@@ -3,14 +3,7 @@ const cim = @import("cim/cim.zig");
 const Model = cim.CimDocument;
 const ReverseRefIndex = cim.ReverseRefIndex;
 const parse_filename = @import("qocdc.zig").parse_filename;
-const validate = @import("qocdc.zig");
-const validate_filename_consistency = validate.validate_filename_consistency;
-const check_effective_datetime = validate.check_effective_datetime;
-const validate_sourcing_actor = validate.validate_sourcing_actor;
-const validate_cgm_region = validate.validate_cgm_region;
-const validate_business_process = validate.validate_business_process;
-const validate_model_part = validate.validate_model_part;
-const validate_file_version = validate.validate_file_version;
+const qocdc = @import("qocdc.zig");
 
 fn append_u16_le(out: *std.ArrayList(u8), gpa: std.mem.Allocator, value: u16) !void {
     var bytes: [2]u8 = undefined;
@@ -215,7 +208,7 @@ test "FileNameConsistency" {
     var out_buffer: [1024]u8 = undefined;
     const file_path = try create_test_zip(io, tmpdir.dir, filename, &.{"my_filename.xml"}, &out_buffer);
 
-    try validate_filename_consistency(io, file_path);
+    try qocdc.validate_filename_consistency(io, file_path);
 }
 
 test "FileNameConsistency rejects zip containers with multiple files" {
@@ -233,7 +226,7 @@ test "FileNameConsistency rejects zip containers with multiple files" {
         &out_buffer,
     );
 
-    try std.testing.expectError(error.FileNameConsistency, validate_filename_consistency(io, file_path));
+    try std.testing.expectError(error.FileNameConsistency, qocdc.validate_filename_consistency(io, file_path));
 }
 
 test "FileNameConsistency rejects a plain file as not a ZIP archive" {
@@ -249,140 +242,140 @@ test "FileNameConsistency rejects a plain file as not a ZIP archive" {
     const path_len = try file.realPath(io, &path_buffer);
     try std.testing.expectError(
         error.NotZipArchive,
-        validate_filename_consistency(io, path_buffer[0..path_len]),
+        qocdc.validate_filename_consistency(io, path_buffer[0..path_len]),
     );
 }
 
 test "EffectiveDateTime" {
     const correct_filename_template1: []const u8 = "20260603T1325Z_businessProcess_sourcingTSO_modelPart_fileVersion";
     const filename1 = try parse_filename(correct_filename_template1);
-    try check_effective_datetime(filename1);
+    try qocdc.check_effective_datetime(filename1);
 
     const leap_day: []const u8 = "20240229T1325Z_businessProcess_sourcingTSO_modelPart_fileVersion";
     const filename_leap_day = try parse_filename(leap_day);
-    try check_effective_datetime(filename_leap_day);
+    try qocdc.check_effective_datetime(filename_leap_day);
 
     const filename_template_incorrect1: []const u8 = "2026060ET1325Z_businessProcess_sourcingTSO_modelPart_fileVersion";
     const filename2 = try parse_filename(filename_template_incorrect1);
-    try std.testing.expectError(error.EffectiveDateTime, check_effective_datetime(filename2));
+    try std.testing.expectError(error.EffectiveDateTime, qocdc.check_effective_datetime(filename2));
 
     const filename_template_incorrect2: []const u8 = "20260603T132540Z_businessProcess_sourcingTSO_modelPart_fileVersion";
     const filename3 = try parse_filename(filename_template_incorrect2);
-    try std.testing.expectError(error.EffectiveDateTime, check_effective_datetime(filename3));
+    try std.testing.expectError(error.EffectiveDateTime, qocdc.check_effective_datetime(filename3));
 
     const filename_template_incorrect3: []const u8 = "20260603Z1325T_businessProcess_sourcingTSO_modelPart_fileVersion";
     const filename4 = try parse_filename(filename_template_incorrect3);
-    try std.testing.expectError(error.EffectiveDateTime, check_effective_datetime(filename4));
+    try std.testing.expectError(error.EffectiveDateTime, qocdc.check_effective_datetime(filename4));
 
     const filename_template_incorrect4: []const u8 = "20261303T1325Z_businessProcess_sourcingTSO_modelPart_fileVersion";
     const filename5 = try parse_filename(filename_template_incorrect4);
-    try std.testing.expectError(error.EffectiveDateTime, check_effective_datetime(filename5));
+    try std.testing.expectError(error.EffectiveDateTime, qocdc.check_effective_datetime(filename5));
 
     const filename_template_incorrect5: []const u8 = "20230229T1325Z_businessProcess_sourcingTSO_modelPart_fileVersion";
     const filename6 = try parse_filename(filename_template_incorrect5);
-    try std.testing.expectError(error.EffectiveDateTime, check_effective_datetime(filename6));
+    try std.testing.expectError(error.EffectiveDateTime, qocdc.check_effective_datetime(filename6));
 
     const filename_template_incorrect6: []const u8 = "20260603T2460Z_businessProcess_sourcingTSO_modelPart_fileVersion";
     const filename7 = try parse_filename(filename_template_incorrect6);
-    try std.testing.expectError(error.EffectiveDateTime, check_effective_datetime(filename7));
+    try std.testing.expectError(error.EffectiveDateTime, qocdc.check_effective_datetime(filename7));
 }
 
 test "SourcingActor" {
     const correct_filename_template1: []const u8 = "effectiveDateTime_businessProcess_TTN_modelPart_fileVersion";
     const filename1 = try parse_filename(correct_filename_template1);
-    try validate_sourcing_actor(filename1);
+    try qocdc.validate_sourcing_actor(filename1);
 
     const correct_filename_template2: []const u8 = "effectiveDateTime_businessProcess_BALTIC-EU_modelPart_fileVersion";
     const filename2 = try parse_filename(correct_filename_template2);
-    try validate_sourcing_actor(filename2);
+    try qocdc.validate_sourcing_actor(filename2);
 
     const correct_filename_template_case: []const u8 = "effectiveDateTime_businessProcess_baltic-eu-ttn_modelPart_fileVersion";
     const filename_case = try parse_filename(correct_filename_template_case);
-    try validate_sourcing_actor(filename_case);
+    try qocdc.validate_sourcing_actor(filename_case);
 
     const incorrect_filename_template: []const u8 = "effectiveDateTime_businessProcess_doesnotexist_modelPart_fileVersion";
     const filename3 = try parse_filename(incorrect_filename_template);
-    try std.testing.expectError(error.SourcingActor, validate_sourcing_actor(filename3));
+    try std.testing.expectError(error.SourcingActor, qocdc.validate_sourcing_actor(filename3));
 
     const incorrect_filename_template1: []const u8 = "effectiveDateTime_businessProcess_TTN2electricboogaloo_modelPart_fileVersion";
     const filename4 = try parse_filename(incorrect_filename_template1);
-    try std.testing.expectError(error.SourcingActor, validate_sourcing_actor(filename4));
+    try std.testing.expectError(error.SourcingActor, qocdc.validate_sourcing_actor(filename4));
 
     const correct_filename_template3: []const u8 = "effectiveDateTime_businessProcess_BALTIC-cgmRegion-TTN_modelPart_fileVersion";
     const filename5 = try parse_filename(correct_filename_template3);
-    try validate_sourcing_actor(filename5);
+    try qocdc.validate_sourcing_actor(filename5);
 
     const incorrect_filename_template2: []const u8 = "effectiveDateTime_businessProcess_BALTIC-cgmRegion-doesnotexist_modelPart_fileVersion";
     const filename6 = try parse_filename(incorrect_filename_template2);
-    try std.testing.expectError(error.SourcingActor, validate_sourcing_actor(filename6));
+    try std.testing.expectError(error.SourcingActor, qocdc.validate_sourcing_actor(filename6));
 
     const incorrect_filename_template4: []const u8 = "effectiveDateTime_businessProcess_doesnotexit-cgmRegion-TTN_modelPart_fileVersion";
     const filename7 = try parse_filename(incorrect_filename_template4);
-    try std.testing.expectError(error.SourcingActor, validate_sourcing_actor(filename7));
+    try std.testing.expectError(error.SourcingActor, qocdc.validate_sourcing_actor(filename7));
 
     const incorrect_filename_template5: []const u8 = "effectiveDateTime_businessProcess_doesnotexist-EU_modelPart_fileVersion";
     const filename8 = try parse_filename(incorrect_filename_template5);
-    try std.testing.expectError(error.SourcingActor, validate_sourcing_actor(filename8));
+    try std.testing.expectError(error.SourcingActor, qocdc.validate_sourcing_actor(filename8));
 }
 
 test "CGMRegion" {
     const correct_filename_template1: []const u8 = "effectiveDateTime_businessProcess_sourcingRSC-EU_modelPart_fileVersion";
     const filename1 = try parse_filename(correct_filename_template1);
-    try validate_cgm_region(filename1);
+    try qocdc.validate_cgm_region(filename1);
 
     const correct_filename_template2: []const u8 = "effectiveDateTime_businessProcess_baltic-eu-ttn_modelPart_fileVersion";
     const filename_case = try parse_filename(correct_filename_template2);
-    try validate_cgm_region(filename_case);
+    try qocdc.validate_cgm_region(filename_case);
 
     const incorrect_filename_template1: []const u8 = "effectiveDateTime_businessProcess_EU-sourcingRSC_modelPart_fileVersion";
     const filename2 = try parse_filename(incorrect_filename_template1);
-    try std.testing.expectError(error.CGMRegion, validate_cgm_region(filename2));
+    try std.testing.expectError(error.CGMRegion, qocdc.validate_cgm_region(filename2));
 }
 
 test "BusinessProcess" {
     const correct_filename_template1: []const u8 = "effectiveDateTime_1D_TTN_modelPart_fileVersion";
     const filename1 = try parse_filename(correct_filename_template1);
-    try validate_business_process(filename1);
+    try qocdc.validate_business_process(filename1);
 
     const correct_filename_template2: []const u8 = "effectiveDateTime_1d_TTN_modelPart_fileVersion";
     const filename_case = try parse_filename(correct_filename_template2);
-    try validate_business_process(filename_case);
+    try qocdc.validate_business_process(filename_case);
 
     const incorrect_filename_template1: []const u8 = "effectiveDateTime_8D_TTN_modelPart_fileVersion";
     const filename2 = try parse_filename(incorrect_filename_template1);
-    try std.testing.expectError(error.BusinessProcess, validate_business_process(filename2));
+    try std.testing.expectError(error.BusinessProcess, qocdc.validate_business_process(filename2));
 }
 
 test "ModelPartType" {
     const correct_filename_template1: []const u8 = "effectiveDateTime_businessProcess_sourcingProcess_EQ_fileVersion";
     const filename1 = try parse_filename(correct_filename_template1);
-    try validate_model_part(filename1);
+    try qocdc.validate_model_part(filename1);
 
     const correct_filename_template2: []const u8 = "effectiveDateTime_businessProcess_sourcingProcess_eq_fileVersion";
     const filename_case = try parse_filename(correct_filename_template2);
-    try validate_model_part(filename_case);
+    try qocdc.validate_model_part(filename_case);
 
     const incorrect_filename_template1: []const u8 = "effectiveDateTime_businessProcess_sourcingProcess_CO_fileVersion";
     const filename2 = try parse_filename(incorrect_filename_template1);
-    try std.testing.expectError(error.ModelPartType, validate_model_part(filename2));
+    try std.testing.expectError(error.ModelPartType, qocdc.validate_model_part(filename2));
 }
 
 test "FileVersionType" {
     const correct_filename_template1: []const u8 = "effectiveDateTime_businessProcess_sourcingProcess_modelPart_003";
     const filename1 = try parse_filename(correct_filename_template1);
-    try validate_file_version(filename1);
+    try qocdc.validate_file_version(filename1);
 
     const incorrect_filename_template1: []const u8 = "effectiveDateTime_businessProcess_sourcingProcess_modelPart_1000";
     const filename2 = try parse_filename(incorrect_filename_template1);
-    try std.testing.expectError(error.FileVersion, validate_file_version(filename2));
+    try std.testing.expectError(error.FileVersion, qocdc.validate_file_version(filename2));
 
     const incorrect_filename_template2: []const u8 = "effectiveDateTime_businessProcess_sourcingProcess_modelPart_abc";
     const filename3 = try parse_filename(incorrect_filename_template2);
-    try std.testing.expectError(error.FileVersion, validate_file_version(filename3));
+    try std.testing.expectError(error.FileVersion, qocdc.validate_file_version(filename3));
 
     const incorrect_filename_template3: []const u8 = "effectiveDateTime_businessProcess_sourcingProcess_modelPart_000";
     const filename4 = try parse_filename(incorrect_filename_template3);
-    try std.testing.expectError(error.FileVersion, validate_file_version(filename4));
+    try std.testing.expectError(error.FileVersion, qocdc.validate_file_version(filename4));
 }
 
 test "validate accepts zip paths with valid fileVersion" {
@@ -408,7 +401,7 @@ test "validate accepts zip paths with valid fileVersion" {
         &out_buffer,
     );
 
-    try validate.validate(io, std.testing.allocator, file_path);
+    try qocdc.validate(io, std.testing.allocator, file_path);
 }
 
 test "validate_filename rejects invalid fileVersion from zip path" {
@@ -420,14 +413,14 @@ test "validate_filename rejects invalid fileVersion from zip path" {
     var out_buffer: [1024]u8 = undefined;
     const file_path = try create_test_zip(io, tmpdir.dir, stem ++ ".zip", &.{stem ++ ".xml"}, &out_buffer);
 
-    try std.testing.expectError(error.FileVersion, validate.validate_filename(file_path));
+    try std.testing.expectError(error.FileVersion, qocdc.validate_filename(file_path));
 }
 
 fn run_ce_base_voltage(xml: []const u8) !void {
     const gpa = std.testing.allocator;
     var model = try Model.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
-    return validate.validate_conducting_equipment_base_voltage(model);
+    return qocdc.validate_conducting_equipment_base_voltage(model);
 }
 
 fn run_terminal_count1(xml: []const u8) !void {
@@ -438,7 +431,7 @@ fn run_terminal_count1(xml: []const u8) !void {
     var reverse_ref_index = try ReverseRefIndex.build(gpa, &model);
     defer reverse_ref_index.deinit(gpa);
 
-    return validate.validate_terminal_count1(model, &reverse_ref_index);
+    return qocdc.validate_terminal_count1(model, &reverse_ref_index);
 }
 
 fn run_terminal_count2(xml: []const u8) !void {
@@ -449,7 +442,7 @@ fn run_terminal_count2(xml: []const u8) !void {
     var reverse_ref_index = try ReverseRefIndex.build(gpa, &model);
     defer reverse_ref_index.deinit(gpa);
 
-    return validate.validate_terminal_count2(model, &reverse_ref_index);
+    return qocdc.validate_terminal_count2(model, &reverse_ref_index);
 }
 
 fn run_terminal_seq_num(xml: []const u8) !void {
@@ -460,7 +453,34 @@ fn run_terminal_seq_num(xml: []const u8) !void {
     var reverse_ref_index = try ReverseRefIndex.build(gpa, &model);
     defer reverse_ref_index.deinit(gpa);
 
-    return validate.validate_terminal_seq_num(model, &reverse_ref_index);
+    return qocdc.validate_terminal_seq_num(model, &reverse_ref_index);
+}
+
+fn run_terminal_seq_num_order(xml: []const u8) !void {
+    const gpa = std.testing.allocator;
+    var model = try Model.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    var reverse_ref_index = try ReverseRefIndex.build(gpa, &model);
+    defer reverse_ref_index.deinit(gpa);
+
+    return qocdc.validate_terminal_seq_num_order(gpa, model, &reverse_ref_index);
+}
+
+fn run_power_transformer_terminal_consistency(xml: []const u8) !void {
+    const gpa = std.testing.allocator;
+    var model = try Model.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    return qocdc.validate_power_transformer_terminal_consistency(model);
+}
+
+fn run_mutual_coupling_order(xml: []const u8) !void {
+    const gpa = std.testing.allocator;
+    var model = try Model.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    return qocdc.validate_mutual_coupling_order(model);
 }
 
 test "CEBaseVoltage accepts a direct BaseVoltage association" {
@@ -913,4 +933,611 @@ test "TerminalSeqNum accepts mutually coupled AC lines with sequence numbers" {
         \\  </cim:MutualCoupling>
         \\</rdf:RDF>
     );
+}
+
+test "TerminalSeqNumOrder accepts equipment without sequence numbers" {
+    try run_terminal_seq_num_order(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    );
+}
+
+test "TerminalSeqNumOrder accepts a single sequence number one" {
+    try run_terminal_seq_num_order(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    );
+}
+
+test "TerminalSeqNumOrder accepts contiguous numbers independent of document order" {
+    try run_terminal_seq_num_order(
+        \\<rdf:RDF>
+        \\  <cim:PowerTransformer rdf:ID="_PT1"/>
+        \\  <cim:Terminal rdf:ID="_T3">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_PT1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>3</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_PT1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_PT1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    );
+}
+
+test "TerminalSeqNumOrder accepts whitespace around numbers" {
+    try run_terminal_seq_num_order(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>
+        \\      1
+        \\    </cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber> 2 </cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    );
+}
+
+test "TerminalSeqNumOrder allows unnumbered siblings" {
+    try run_terminal_seq_num_order(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    );
+}
+
+test "TerminalSeqNumOrder rejects numbering that does not start at one" {
+    try std.testing.expectError(error.TerminalSeqNumOrder, run_terminal_seq_num_order(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ));
+}
+
+test "TerminalSeqNumOrder rejects zero" {
+    try std.testing.expectError(error.TerminalSeqNumOrder, run_terminal_seq_num_order(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>0</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ));
+}
+
+test "TerminalSeqNumOrder rejects a gap" {
+    try std.testing.expectError(error.TerminalSeqNumOrder, run_terminal_seq_num_order(
+        \\<rdf:RDF>
+        \\  <cim:PowerTransformer rdf:ID="_PT1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_PT1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T3">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_PT1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>3</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ));
+}
+
+test "TerminalSeqNumOrder rejects duplicate sequence numbers" {
+    try std.testing.expectError(error.TerminalSeqNumOrder, run_terminal_seq_num_order(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ));
+}
+
+test "TerminalSeqNumOrder rejects an invalid integer" {
+    try std.testing.expectError(error.TerminalSeqNumOrder, run_terminal_seq_num_order(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>first</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ));
+}
+
+test "TerminalSeqNumOrder rejects a blank sequence number" {
+    try std.testing.expectError(error.TerminalSeqNumOrder, run_terminal_seq_num_order(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber> </cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    ));
+}
+
+test "TerminalSeqNumOrder ignores unrelated Terminal references" {
+    try run_terminal_seq_num_order(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Terminal rdf:ID="_REAL">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_UNRELATED">
+        \\    <cim:Terminal.ConnectivityNode rdf:resource="#_BR1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>9</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    );
+}
+
+test "TerminalSeqNumOrder counts a repeated equipment association once" {
+    try run_terminal_seq_num_order(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    );
+}
+
+test "TerminalSeqNumOrder validates each equipment independently" {
+    try run_terminal_seq_num_order(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Breaker rdf:ID="_BR2"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR2"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    );
+}
+
+test "TerminalSeqNumOrder validates DCTerminal associations" {
+    try run_terminal_seq_num_order(
+        \\<rdf:RDF>
+        \\  <cim:DCLineSegment rdf:ID="_DC1"/>
+        \\  <cim:DCTerminal rdf:ID="_DT2">
+        \\    <cim:DCTerminal.DCConductingEquipment rdf:resource="#_DC1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:DCTerminal>
+        \\  <cim:DCTerminal rdf:ID="_DT1">
+        \\    <cim:DCTerminal.DCConductingEquipment rdf:resource="#_DC1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:DCTerminal>
+        \\</rdf:RDF>
+    );
+}
+
+test "TerminalSeqNumOrder rejects invalid DCTerminal ordering" {
+    try std.testing.expectError(error.TerminalSeqNumOrder, run_terminal_seq_num_order(
+        \\<rdf:RDF>
+        \\  <cim:DCLineSegment rdf:ID="_DC1"/>
+        \\  <cim:DCTerminal rdf:ID="_DT1">
+        \\    <cim:DCTerminal.DCConductingEquipment rdf:resource="#_DC1"/>
+        \\    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+        \\  </cim:DCTerminal>
+        \\</rdf:RDF>
+    ));
+}
+
+test "TerminalSeqNumOrder has no arbitrary terminal-count limit" {
+    const gpa = std.testing.allocator;
+    var xml: std.ArrayList(u8) = .empty;
+    defer xml.deinit(gpa);
+
+    try xml.appendSlice(gpa, "<rdf:RDF><cim:PowerTransformer rdf:ID=\"_PT1\"/>");
+    for (1..102) |sequence_number| {
+        const terminal = try std.fmt.allocPrint(
+            gpa,
+            "<cim:Terminal rdf:ID=\"_T{d}\">" ++
+                "<cim:Terminal.ConductingEquipment rdf:resource=\"#_PT1\"/>" ++
+                "<cim:ACDCTerminal.sequenceNumber>{d}</cim:ACDCTerminal.sequenceNumber>" ++
+                "</cim:Terminal>",
+            .{ sequence_number, sequence_number },
+        );
+        defer gpa.free(terminal);
+        try xml.appendSlice(gpa, terminal);
+    }
+    try xml.appendSlice(gpa, "</rdf:RDF>");
+
+    try run_terminal_seq_num_order(xml.items);
+}
+
+test "PTTerminalConsistency accepts a terminal assigned to its power transformer" {
+    try run_power_transformer_terminal_consistency(
+        \\<rdf:RDF>
+        \\  <cim:PowerTransformer rdf:ID="_PT1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_PT1"/>
+        \\  </cim:Terminal>
+        \\  <cim:PowerTransformerEnd rdf:ID="_E1">
+        \\    <cim:TransformerEnd.Terminal rdf:resource="#_T1"/>
+        \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_PT1"/>
+        \\  </cim:PowerTransformerEnd>
+        \\</rdf:RDF>
+    );
+}
+
+test "PTTerminalConsistency ignores documents without power transformer ends" {
+    try run_power_transformer_terminal_consistency(
+        \\<rdf:RDF>
+        \\  <cim:PowerTransformer rdf:ID="_PT1"/>
+        \\  <cim:TransformerEnd rdf:ID="_E1"/>
+        \\</rdf:RDF>
+    );
+}
+
+test "PTTerminalConsistency rejects a terminal assigned to another transformer" {
+    try std.testing.expectError(
+        error.PTTerminalConsistency,
+        run_power_transformer_terminal_consistency(
+            \\<rdf:RDF>
+            \\  <cim:PowerTransformer rdf:ID="_PT1"/>
+            \\  <cim:PowerTransformer rdf:ID="_PT2"/>
+            \\  <cim:Terminal rdf:ID="_T0">
+            \\    <cim:Terminal.ConductingEquipment rdf:resource="#_PT1"/>
+            \\  </cim:Terminal>
+            \\  <cim:Terminal rdf:ID="_T1">
+            \\    <cim:Terminal.ConductingEquipment rdf:resource="#_PT2"/>
+            \\  </cim:Terminal>
+            \\  <cim:PowerTransformerEnd rdf:ID="_E0">
+            \\    <cim:TransformerEnd.Terminal rdf:resource="#_T0"/>
+            \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_PT1"/>
+            \\  </cim:PowerTransformerEnd>
+            \\  <cim:PowerTransformerEnd rdf:ID="_E1">
+            \\    <cim:TransformerEnd.Terminal rdf:resource="#_T1"/>
+            \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_PT1"/>
+            \\  </cim:PowerTransformerEnd>
+            \\</rdf:RDF>
+        ),
+    );
+}
+
+test "PTTerminalConsistency rejects matching references to non-transformer equipment" {
+    try std.testing.expectError(
+        error.PTTerminalConsistency,
+        run_power_transformer_terminal_consistency(
+            \\<rdf:RDF>
+            \\  <cim:Breaker rdf:ID="_BR1"/>
+            \\  <cim:Terminal rdf:ID="_T1">
+            \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+            \\  </cim:Terminal>
+            \\  <cim:PowerTransformerEnd rdf:ID="_E1">
+            \\    <cim:TransformerEnd.Terminal rdf:resource="#_T1"/>
+            \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_BR1"/>
+            \\  </cim:PowerTransformerEnd>
+            \\</rdf:RDF>
+        ),
+    );
+}
+
+test "PTTerminalConsistency rejects missing required associations" {
+    try std.testing.expectError(
+        error.PTTerminalConsistency,
+        run_power_transformer_terminal_consistency(
+            \\<rdf:RDF>
+            \\  <cim:PowerTransformer rdf:ID="_PT1"/>
+            \\  <cim:PowerTransformerEnd rdf:ID="_E1">
+            \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_PT1"/>
+            \\  </cim:PowerTransformerEnd>
+            \\</rdf:RDF>
+        ),
+    );
+    try std.testing.expectError(
+        error.PTTerminalConsistency,
+        run_power_transformer_terminal_consistency(
+            \\<rdf:RDF>
+            \\  <cim:PowerTransformer rdf:ID="_PT1"/>
+            \\  <cim:Terminal rdf:ID="_T1"/>
+            \\  <cim:PowerTransformerEnd rdf:ID="_E1">
+            \\    <cim:TransformerEnd.Terminal rdf:resource="#_T1"/>
+            \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_PT1"/>
+            \\  </cim:PowerTransformerEnd>
+            \\</rdf:RDF>
+        ),
+    );
+    try std.testing.expectError(
+        error.PTTerminalConsistency,
+        run_power_transformer_terminal_consistency(
+            \\<rdf:RDF>
+            \\  <cim:PowerTransformer rdf:ID="_PT1"/>
+            \\  <cim:Terminal rdf:ID="_T1">
+            \\    <cim:Terminal.ConductingEquipment rdf:resource="#_PT1"/>
+            \\  </cim:Terminal>
+            \\  <cim:PowerTransformerEnd rdf:ID="_E1">
+            \\    <cim:TransformerEnd.Terminal rdf:resource="#_T1"/>
+            \\  </cim:PowerTransformerEnd>
+            \\</rdf:RDF>
+        ),
+    );
+}
+
+test "PTTerminalConsistency rejects dangling terminal and equipment references" {
+    try std.testing.expectError(
+        error.PTTerminalConsistency,
+        run_power_transformer_terminal_consistency(
+            \\<rdf:RDF>
+            \\  <cim:PowerTransformer rdf:ID="_PT1"/>
+            \\  <cim:PowerTransformerEnd rdf:ID="_E1">
+            \\    <cim:TransformerEnd.Terminal rdf:resource="#_MISSING"/>
+            \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_PT1"/>
+            \\  </cim:PowerTransformerEnd>
+            \\</rdf:RDF>
+        ),
+    );
+    try std.testing.expectError(
+        error.PTTerminalConsistency,
+        run_power_transformer_terminal_consistency(
+            \\<rdf:RDF>
+            \\  <cim:Terminal rdf:ID="_T1">
+            \\    <cim:Terminal.ConductingEquipment rdf:resource="#_MISSING"/>
+            \\  </cim:Terminal>
+            \\  <cim:PowerTransformerEnd rdf:ID="_E1">
+            \\    <cim:TransformerEnd.Terminal rdf:resource="#_T1"/>
+            \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_MISSING"/>
+            \\  </cim:PowerTransformerEnd>
+            \\</rdf:RDF>
+        ),
+    );
+}
+
+test "PTTerminalConsistency rejects malformed reference attributes" {
+    try std.testing.expectError(
+        error.PTTerminalConsistency,
+        run_power_transformer_terminal_consistency(
+            \\<rdf:RDF>
+            \\  <cim:PowerTransformerEnd rdf:ID="_E1">
+            \\    <cim:TransformerEnd.Terminal rdf:resource="#_T1/>
+            \\  </cim:PowerTransformerEnd>
+            \\</rdf:RDF>
+        ),
+    );
+    try std.testing.expectError(
+        error.PTTerminalConsistency,
+        run_power_transformer_terminal_consistency(
+            \\<rdf:RDF>
+            \\  <cim:Terminal rdf:ID="_T1">
+            \\    <cim:Terminal.ConductingEquipment rdf:resource="#_PT1/>
+            \\  </cim:Terminal>
+            \\  <cim:PowerTransformerEnd rdf:ID="_E1">
+            \\    <cim:TransformerEnd.Terminal rdf:resource="#_T1"/>
+            \\  </cim:PowerTransformerEnd>
+            \\</rdf:RDF>
+        ),
+    );
+    try std.testing.expectError(
+        error.PTTerminalConsistency,
+        run_power_transformer_terminal_consistency(
+            \\<rdf:RDF>
+            \\  <cim:PowerTransformer rdf:ID="_PT1"/>
+            \\  <cim:Terminal rdf:ID="_T1">
+            \\    <cim:Terminal.ConductingEquipment rdf:resource="#_PT1"/>
+            \\  </cim:Terminal>
+            \\  <cim:PowerTransformerEnd rdf:ID="_E1">
+            \\    <cim:TransformerEnd.Terminal rdf:resource="#_T1"/>
+            \\    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_PT1/>
+            \\  </cim:PowerTransformerEnd>
+            \\</rdf:RDF>
+        ),
+    );
+}
+
+test "MCFirstSecond accepts terminals on different AC line segments" {
+    try run_mutual_coupling_order(
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_LINE1"/>
+        \\  <cim:ACLineSegment rdf:ID="_LINE2"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE2"/>
+        \\  </cim:Terminal>
+        \\  <cim:MutualCoupling rdf:ID="_MC1">
+        \\    <cim:MutualCoupling.First_Terminal rdf:resource="#_T1"/>
+        \\    <cim:MutualCoupling.Second_Terminal rdf:resource="#_T2"/>
+        \\  </cim:MutualCoupling>
+        \\</rdf:RDF>
+    );
+}
+
+test "MCFirstSecond ignores documents without mutual couplings" {
+    try run_mutual_coupling_order(
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_LINE1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    );
+}
+
+test "MCFirstSecond rejects a first terminal on non-line equipment" {
+    try std.testing.expectError(error.MCFirstSecond, run_mutual_coupling_order(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BREAKER"/>
+        \\  <cim:ACLineSegment rdf:ID="_LINE"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BREAKER"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE"/>
+        \\  </cim:Terminal>
+        \\  <cim:MutualCoupling rdf:ID="_MC1">
+        \\    <cim:MutualCoupling.First_Terminal rdf:resource="#_T1"/>
+        \\    <cim:MutualCoupling.Second_Terminal rdf:resource="#_T2"/>
+        \\  </cim:MutualCoupling>
+        \\</rdf:RDF>
+    ));
+}
+
+test "MCFirstSecond rejects a second terminal on non-line equipment" {
+    try std.testing.expectError(error.MCFirstSecond, run_mutual_coupling_order(
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_LINE"/>
+        \\  <cim:Breaker rdf:ID="_BREAKER"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BREAKER"/>
+        \\  </cim:Terminal>
+        \\  <cim:MutualCoupling rdf:ID="_MC1">
+        \\    <cim:MutualCoupling.First_Terminal rdf:resource="#_T1"/>
+        \\    <cim:MutualCoupling.Second_Terminal rdf:resource="#_T2"/>
+        \\  </cim:MutualCoupling>
+        \\</rdf:RDF>
+    ));
+}
+
+test "MCFirstSecond rejects different terminals on the same AC line segment" {
+    try std.testing.expectError(error.MCFirstSecond, run_mutual_coupling_order(
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_LINE"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE"/>
+        \\  </cim:Terminal>
+        \\  <cim:MutualCoupling rdf:ID="_MC1">
+        \\    <cim:MutualCoupling.First_Terminal rdf:resource="#_T1"/>
+        \\    <cim:MutualCoupling.Second_Terminal rdf:resource="#_T2"/>
+        \\  </cim:MutualCoupling>
+        \\</rdf:RDF>
+    ));
+}
+
+test "MCFirstSecond rejects endpoints that are not terminals" {
+    try std.testing.expectError(error.MCFirstSecond, run_mutual_coupling_order(
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_LINE1"/>
+        \\  <cim:ACLineSegment rdf:ID="_LINE2"/>
+        \\  <cim:Breaker rdf:ID="_NOT_TERMINAL1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\  </cim:Breaker>
+        \\  <cim:Breaker rdf:ID="_NOT_TERMINAL2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE2"/>
+        \\  </cim:Breaker>
+        \\  <cim:MutualCoupling rdf:ID="_MC1">
+        \\    <cim:MutualCoupling.First_Terminal rdf:resource="#_NOT_TERMINAL1"/>
+        \\    <cim:MutualCoupling.Second_Terminal rdf:resource="#_NOT_TERMINAL2"/>
+        \\  </cim:MutualCoupling>
+        \\</rdf:RDF>
+    ));
+}
+
+test "MCFirstSecond rejects missing endpoint associations" {
+    try std.testing.expectError(error.MCFirstSecond, run_mutual_coupling_order(
+        \\<rdf:RDF>
+        \\  <cim:MutualCoupling rdf:ID="_MC1">
+        \\    <cim:MutualCoupling.Second_Terminal rdf:resource="#_T2"/>
+        \\  </cim:MutualCoupling>
+        \\</rdf:RDF>
+    ));
+    try std.testing.expectError(error.MCFirstSecond, run_mutual_coupling_order(
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_LINE1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1"/>
+        \\  </cim:Terminal>
+        \\  <cim:MutualCoupling rdf:ID="_MC1">
+        \\    <cim:MutualCoupling.First_Terminal rdf:resource="#_T1"/>
+        \\  </cim:MutualCoupling>
+        \\</rdf:RDF>
+    ));
+}
+
+test "MCFirstSecond rejects dangling endpoint and equipment references" {
+    try std.testing.expectError(error.MCFirstSecond, run_mutual_coupling_order(
+        \\<rdf:RDF>
+        \\  <cim:MutualCoupling rdf:ID="_MC1">
+        \\    <cim:MutualCoupling.First_Terminal rdf:resource="#_MISSING"/>
+        \\    <cim:MutualCoupling.Second_Terminal rdf:resource="#_MISSING_TOO"/>
+        \\  </cim:MutualCoupling>
+        \\</rdf:RDF>
+    ));
+    try std.testing.expectError(error.MCFirstSecond, run_mutual_coupling_order(
+        \\<rdf:RDF>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_MISSING1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_T2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_MISSING2"/>
+        \\  </cim:Terminal>
+        \\  <cim:MutualCoupling rdf:ID="_MC1">
+        \\    <cim:MutualCoupling.First_Terminal rdf:resource="#_T1"/>
+        \\    <cim:MutualCoupling.Second_Terminal rdf:resource="#_T2"/>
+        \\  </cim:MutualCoupling>
+        \\</rdf:RDF>
+    ));
+}
+
+test "MCFirstSecond rejects malformed reference attributes" {
+    try std.testing.expectError(error.MCFirstSecond, run_mutual_coupling_order(
+        \\<rdf:RDF>
+        \\  <cim:MutualCoupling rdf:ID="_MC1">
+        \\    <cim:MutualCoupling.First_Terminal rdf:resource="#_T1/>
+        \\  </cim:MutualCoupling>
+        \\</rdf:RDF>
+    ));
+    try std.testing.expectError(error.MCFirstSecond, run_mutual_coupling_order(
+        \\<rdf:RDF>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_LINE1/>
+        \\  </cim:Terminal>
+        \\  <cim:MutualCoupling rdf:ID="_MC1">
+        \\    <cim:MutualCoupling.First_Terminal rdf:resource="#_T1"/>
+        \\    <cim:MutualCoupling.Second_Terminal rdf:resource="#_T2"/>
+        \\  </cim:MutualCoupling>
+        \\</rdf:RDF>
+    ));
 }

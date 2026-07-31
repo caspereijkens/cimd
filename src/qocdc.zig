@@ -2,6 +2,7 @@
 // TODO now CGMES 2.4.15 is skipped but probably nice to include this as it is small effort.
 // TODO: make clearer which rule failed in logging.
 // TODO: check this comment: CGMES v3.0 allows Line for Cut, Jumper, Fuse, GroundDisconnector and Disconnector.
+// TODO: the official Error names are terrible, so probably I should not use them here.
 // TODO probably add to the EQ model an Enum of all possible models. This can then be switched on here for instance.
 
 const std = @import("std");
@@ -15,6 +16,7 @@ const CimObject = cim.CimObject;
 const cim_types = cim.cim_types;
 const ids = cim.ids;
 const parse = cim.parse;
+const ReverseRef = cim.refs.ReverseRef;
 const ReverseRefIndex = cim.refs.ReverseRefIndex;
 
 const assert = std.debug.assert;
@@ -1035,7 +1037,7 @@ pub fn validate_terminal_seq_num(model: Model, reverse_ref_index: *const Reverse
         if (!equivalent_branch and !ac_line_segment) continue;
 
         for (group.objects) |object_data| {
-            if (!equivalent_branch and !has_mutual_coupling(object_data, reverse_ref_index)) continue;
+            if (ac_line_segment and !has_mutual_coupling(object_data, reverse_ref_index)) continue;
 
             for (reverse_ref_index.lookup(object_data.id())) |reverse_ref| {
                 if (!std.mem.eql(u8, reverse_ref.referrer_type, "Terminal")) continue;
@@ -1065,6 +1067,157 @@ fn has_mutual_coupling(line: CimObject, reverse_ref_index: *const ReverseRefInde
         }
     }
     return false;
+}
+
+/// TerminalSeqNumOrder
+///
+/// In cases where cim:Terminal.sequenceNumber is provided for an instance of
+/// cim:ConductingEquipment or cim:DCConductingEquipment, at least one
+/// sequenceNumber shall equal to 1. The cim:Terminal.sequenceNumber of other
+/// terminals of same cim:ConductingEquipment or cim:DCConductingEquipment
+/// shall follow increasing order.
+pub fn validate_terminal_seq_num_order(
+    gpa: std.mem.Allocator,
+    model: Model,
+    reverse_ref_index: *const ReverseRefIndex,
+) !void {
+    var numbered_terminals: std.ArrayList(NumberedTerminal) = .empty;
+    defer numbered_terminals.deinit(gpa);
+
+    var groups = model.type_groups();
+    while (groups.next()) |group| {
+        const conducting_equipment = cim_types.is_a(group.type_name, "ConductingEquipment");
+        const dc_conducting_equipment = cim_types.is_a(group.type_name, "DCConductingEquipment");
+        if (!conducting_equipment and !dc_conducting_equipment) continue;
+
+        for (group.objects) |object| {
+            numbered_terminals.clearRetainingCapacity();
+
+            for (reverse_ref_index.lookup(object.id())) |reverse_ref| {
+                if (!terminal_equipment_reference(reverse_ref)) continue;
+
+                const terminal_id = reverse_ref.referrer_id;
+                if (terminal_numbered(numbered_terminals.items, terminal_id)) continue;
+
+                const terminal = model.object_by_id(terminal_id) orelse continue;
+                const sequence_number_text = terminal.property("ACDCTerminal.sequenceNumber") catch {
+                    return error.TerminalSeqNumOrder;
+                };
+                const sequence_number = parse.int_req(u32, sequence_number_text orelse continue) catch
+                    return error.TerminalSeqNumOrder;
+
+                try numbered_terminals.append(gpa, .{
+                    .id = terminal_id,
+                    .sequence_number = sequence_number,
+                });
+            }
+
+            std.mem.sort(NumberedTerminal, numbered_terminals.items, {}, NumberedTerminal.less_than);
+            for (numbered_terminals.items, 1..) |numbered_terminal, expected| {
+                if (numbered_terminal.sequence_number != expected)
+                    return error.TerminalSeqNumOrder;
+            }
+        }
+    }
+}
+
+const NumberedTerminal = struct {
+    id: []const u8,
+    sequence_number: u32,
+
+    fn less_than(_: void, a: NumberedTerminal, b: NumberedTerminal) bool {
+        return a.sequence_number < b.sequence_number;
+    }
+};
+
+fn terminal_equipment_reference(reference: ReverseRef) bool {
+    if (!cim_types.is_a(reference.referrer_type, "ACDCTerminal")) return false;
+    return std.mem.eql(u8, reference.reference_name, "Terminal.ConductingEquipment") or
+        std.mem.eql(u8, reference.reference_name, "DCTerminal.DCConductingEquipment");
+}
+
+fn terminal_numbered(numbered_terminals: []const NumberedTerminal, terminal_id: []const u8) bool {
+    for (numbered_terminals) |numbered_terminal| {
+        if (std.mem.eql(u8, numbered_terminal.id, terminal_id)) return true;
+    }
+    return false;
+}
+
+/// PTTerminalConsistency
+///
+/// For every instance of cim:PowerTransformerEnd, the cim:Terminal referenced
+/// by the cim:TransformerEnd.Terminal association must be associated with the
+/// cim:PowerTransformer instance, referenced via the
+/// cim:PowerTransformerEnd.PowerTransformer association.
+pub fn validate_power_transformer_terminal_consistency(
+    model: Model,
+) error{PTTerminalConsistency}!void {
+    const power_transformer_ends = model.objects_by_type("PowerTransformerEnd");
+
+    for (power_transformer_ends) |power_transformer_end| {
+        const terminal_ref = (power_transformer_end.reference("TransformerEnd.Terminal") catch return error.PTTerminalConsistency) orelse return error.PTTerminalConsistency;
+
+        const terminal = model.object_by_id(ids.strip_hash(terminal_ref)) orelse return error.PTTerminalConsistency;
+        const conducting_equipment_ref = (terminal.reference("Terminal.ConductingEquipment") catch return error.PTTerminalConsistency) orelse return error.PTTerminalConsistency;
+
+        const conducting_equipment = model.object_by_id(ids.strip_hash(conducting_equipment_ref)) orelse return error.PTTerminalConsistency;
+
+        const power_transformer_ref = (power_transformer_end.reference("PowerTransformerEnd.PowerTransformer") catch return error.PTTerminalConsistency) orelse return error.PTTerminalConsistency;
+        const power_transformer_id = ids.strip_hash(power_transformer_ref);
+
+        if (!std.mem.eql(u8, conducting_equipment.id(), power_transformer_id)) {
+            return error.PTTerminalConsistency;
+        }
+
+        if (!cim_types.is_a(conducting_equipment.type_name(), "PowerTransformer")) {
+            return error.PTTerminalConsistency;
+        }
+    }
+}
+
+/// MCFirstSecond
+///
+/// The following shall conform for every instance of cim:MutualCoupling:
+/// 1) Association end cim:MutualCoupling.First_Terminal shall refer to a
+///    cim:Terminal of an cim:ACLineSegment.
+/// 2) Association end cim:MutualCoupling.Second_Terminal shall refer to a
+///    cim:Terminal of an cim:ACLineSegment.
+/// 3) Association ends cim:MutualCoupling.First_Terminal and
+///    cim:MutualCoupling.Second_Terminal shall refer to cim:Terminals of
+///    different cim:ACLineSegments.
+pub fn validate_mutual_coupling_order(
+    model: Model,
+) error{MCFirstSecond}!void {
+    const mutual_couplings = model.objects_by_type("MutualCoupling");
+
+    for (mutual_couplings) |mutual_coupling| {
+        const terminal_refs = mutual_coupling.references(.{
+            "MutualCoupling.First_Terminal",
+            "MutualCoupling.Second_Terminal",
+        }) catch return error.MCFirstSecond;
+        const first_terminal_ref = terminal_refs[0] orelse return error.MCFirstSecond;
+        const second_terminal_ref = terminal_refs[1] orelse return error.MCFirstSecond;
+
+        const first_line_id = try mutual_coupling_line_id(model, first_terminal_ref);
+        const second_line_id = try mutual_coupling_line_id(model, second_terminal_ref);
+        if (std.mem.eql(u8, first_line_id, second_line_id)) return error.MCFirstSecond;
+    }
+}
+
+fn mutual_coupling_line_id(
+    model: Model,
+    terminal_ref: []const u8,
+) error{MCFirstSecond}![]const u8 {
+    const terminal = model.object_by_id(ids.strip_hash(terminal_ref)) orelse
+        return error.MCFirstSecond;
+    if (!cim_types.is_a(terminal.type_name(), "Terminal")) return error.MCFirstSecond;
+
+    const equipment_ref = (terminal.reference("Terminal.ConductingEquipment") catch
+        return error.MCFirstSecond) orelse return error.MCFirstSecond;
+    const equipment = model.object_by_id(ids.strip_hash(equipment_ref)) orelse
+        return error.MCFirstSecond;
+    if (!cim_types.is_a(equipment.type_name(), "ACLineSegment")) return error.MCFirstSecond;
+    return equipment.id();
 }
 
 const ContainerBaseVoltage = struct {
@@ -1186,7 +1339,12 @@ fn matches_any_type(actual_type: []const u8, requested_types: []const []const u8
 // lever is a single fused pass that dispatches all applicable rules per type group,
 // trading the per-validator cache sweeps for one. Measure on real NC grids before
 // taking it on -- it couples otherwise-independent rules and is a real refactor.
-fn validate_grid_model_constraints(model: Model, profile_part: ?cim.profile.Kind, reverse_ref_index: *const ReverseRefIndex) !void {
+fn validate_grid_model_constraints(
+    gpa: std.mem.Allocator,
+    model: Model,
+    profile_part: ?cim.profile.Kind,
+    reverse_ref_index: *const ReverseRefIndex,
+) !void {
     try validate_name_length(model);
     try validate_description_length(model);
     try validate_energy_ident_coding_length(model);
@@ -1219,6 +1377,9 @@ fn validate_grid_model_constraints(model: Model, profile_part: ?cim.profile.Kind
     try validate_terminal_count1(model, reverse_ref_index);
     try validate_terminal_count2(model, reverse_ref_index);
     try validate_terminal_seq_num(model, reverse_ref_index);
+    try validate_terminal_seq_num_order(gpa, model, reverse_ref_index);
+    try validate_power_transformer_terminal_consistency(model);
+    try validate_mutual_coupling_order(model);
 }
 
 fn filename_stem_from_path(file_path: []const u8) []const u8 {
@@ -1323,8 +1484,10 @@ pub fn validate(io: std.Io, gpa: std.mem.Allocator, file_path: []const u8) !void
         else => null,
     };
 
-    validate_grid_model_constraints(model, profile_part, &reverse_ref_index) catch |err|
+    validate_grid_model_constraints(gpa, model, profile_part, &reverse_ref_index) catch |err| {
+        if (err == error.OutOfMemory) return err;
         print.data_error(io, "qocdc: {s}", .{grid_model_error_message(err)});
+    };
 }
 
 fn grid_model_error_message(err: anyerror) []const u8 {
@@ -1357,6 +1520,14 @@ fn grid_model_error_message(err: anyerror) []const u8 {
         error.TerminalCount1 => "a single terminal equipment that is referenced by multiple terminals",
         error.TerminalCount2 => "a two terminal equipment that is not referenced by exactly two terminals.",
         error.TerminalSeqNum => "a cim:Terminal of either an cim:EquivalentBranch or a cim:ACLineSegment with cim:MutualCoupling that does not have a sequence number declared.",
+        error.TerminalSeqNumOrder => "invalid sequenceNumber for a cim:Terminal.",
+        error.PTTerminalConsistency => "assignment of PowerTransformer's terminals is not consistent.",
+        error.MCFirstSecond =>
+        \\one of the following occurs:
+        \\1) cim:MutualCoupling.First_Terminal does not refer to a cim:Terminal of a cim:ACLineSegment,
+        \\2) cim:MutualCoupling.Second_Terminal does not refer to a cim:Terminal of a cim:ACLineSegment,
+        \\3) cim:MutualCoupling.First_Terminal and cim:MutualCoupling.Second_Terminal do not refer to cim:Terminals of different cim:ACLineSegments.
+        ,
         else => @errorName(err),
     };
 }
