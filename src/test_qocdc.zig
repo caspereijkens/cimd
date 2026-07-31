@@ -483,6 +483,33 @@ fn run_mutual_coupling_order(xml: []const u8) !void {
     return qocdc.validate_mutual_coupling_order(model);
 }
 
+fn run_load_response_characteristic_exponent_model(xml: []const u8) !void {
+    const gpa = std.testing.allocator;
+    var model = try Model.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    return qocdc.validate_load_response_characteristic_exponent_model(model);
+}
+
+fn run_load_response_characteristic_exponent_values(
+    p_voltage_exponent: []const u8,
+    q_voltage_exponent: []const u8,
+) !void {
+    const gpa = std.testing.allocator;
+    const xml = try std.fmt.allocPrint(
+        gpa,
+        "<rdf:RDF><cim:LoadResponseCharacteristic rdf:ID=\"_LRC1\">" ++
+            "<cim:LoadResponseCharacteristic.exponentModel>true</cim:LoadResponseCharacteristic.exponentModel>" ++
+            "<cim:LoadResponseCharacteristic.pVoltageExponent>{s}</cim:LoadResponseCharacteristic.pVoltageExponent>" ++
+            "<cim:LoadResponseCharacteristic.qVoltageExponent>{s}</cim:LoadResponseCharacteristic.qVoltageExponent>" ++
+            "</cim:LoadResponseCharacteristic></rdf:RDF>",
+        .{ p_voltage_exponent, q_voltage_exponent },
+    );
+    defer gpa.free(xml);
+
+    return run_load_response_characteristic_exponent_model(xml);
+}
+
 test "CEBaseVoltage accepts a direct BaseVoltage association" {
     try run_ce_base_voltage(
         \\<rdf:RDF>
@@ -1538,6 +1565,128 @@ test "MCFirstSecond rejects malformed reference attributes" {
         \\    <cim:MutualCoupling.First_Terminal rdf:resource="#_T1"/>
         \\    <cim:MutualCoupling.Second_Terminal rdf:resource="#_T2"/>
         \\  </cim:MutualCoupling>
+        \\</rdf:RDF>
+    ));
+}
+
+test "LRCExponentModel accepts inclusive exponent bounds" {
+    try run_load_response_characteristic_exponent_values("0", "2");
+}
+
+test "LRCExponentModel accepts finite values with surrounding whitespace" {
+    try run_load_response_characteristic_exponent_model(
+        \\<rdf:RDF>
+        \\  <cim:LoadResponseCharacteristic rdf:ID="_LRC1">
+        \\    <cim:LoadResponseCharacteristic.exponentModel>
+        \\      true
+        \\    </cim:LoadResponseCharacteristic.exponentModel>
+        \\    <cim:LoadResponseCharacteristic.pVoltageExponent> 0.5 </cim:LoadResponseCharacteristic.pVoltageExponent>
+        \\    <cim:LoadResponseCharacteristic.qVoltageExponent> 1e0 </cim:LoadResponseCharacteristic.qVoltageExponent>
+        \\  </cim:LoadResponseCharacteristic>
+        \\</rdf:RDF>
+    );
+}
+
+test "LRCExponentModel ignores objects whose exponent model is not true" {
+    try run_load_response_characteristic_exponent_model(
+        \\<rdf:RDF>
+        \\  <cim:LoadResponseCharacteristic rdf:ID="_FALSE">
+        \\    <cim:LoadResponseCharacteristic.exponentModel>false</cim:LoadResponseCharacteristic.exponentModel>
+        \\    <cim:LoadResponseCharacteristic.pVoltageExponent>invalid</cim:LoadResponseCharacteristic.pVoltageExponent>
+        \\  </cim:LoadResponseCharacteristic>
+        \\  <cim:LoadResponseCharacteristic rdf:ID="_ABSENT">
+        \\    <cim:LoadResponseCharacteristic.pVoltageExponent>-1</cim:LoadResponseCharacteristic.pVoltageExponent>
+        \\    <cim:LoadResponseCharacteristic.qVoltageExponent>3</cim:LoadResponseCharacteristic.qVoltageExponent>
+        \\  </cim:LoadResponseCharacteristic>
+        \\</rdf:RDF>
+    );
+}
+
+test "LRCExponentModel ignores frequency exponents and coefficient properties" {
+    try run_load_response_characteristic_exponent_model(
+        \\<rdf:RDF>
+        \\  <cim:LoadResponseCharacteristic rdf:ID="_LRC1">
+        \\    <cim:LoadResponseCharacteristic.exponentModel>true</cim:LoadResponseCharacteristic.exponentModel>
+        \\    <cim:LoadResponseCharacteristic.pVoltageExponent>1</cim:LoadResponseCharacteristic.pVoltageExponent>
+        \\    <cim:LoadResponseCharacteristic.qVoltageExponent>1</cim:LoadResponseCharacteristic.qVoltageExponent>
+        \\    <cim:LoadResponseCharacteristic.pFrequencyExponent>invalid</cim:LoadResponseCharacteristic.pFrequencyExponent>
+        \\    <cim:LoadResponseCharacteristic.qFrequencyExponent>-100</cim:LoadResponseCharacteristic.qFrequencyExponent>
+        \\    <cim:LoadResponseCharacteristic.pConstantPower>invalid</cim:LoadResponseCharacteristic.pConstantPower>
+        \\  </cim:LoadResponseCharacteristic>
+        \\</rdf:RDF>
+    );
+}
+
+test "LRCExponentModel rejects missing voltage exponents" {
+    try std.testing.expectError(error.LRCExponentModel, run_load_response_characteristic_exponent_model(
+        \\<rdf:RDF>
+        \\  <cim:LoadResponseCharacteristic rdf:ID="_LRC1">
+        \\    <cim:LoadResponseCharacteristic.exponentModel>true</cim:LoadResponseCharacteristic.exponentModel>
+        \\    <cim:LoadResponseCharacteristic.qVoltageExponent>1</cim:LoadResponseCharacteristic.qVoltageExponent>
+        \\  </cim:LoadResponseCharacteristic>
+        \\</rdf:RDF>
+    ));
+    try std.testing.expectError(error.LRCExponentModel, run_load_response_characteristic_exponent_model(
+        \\<rdf:RDF>
+        \\  <cim:LoadResponseCharacteristic rdf:ID="_LRC1">
+        \\    <cim:LoadResponseCharacteristic.exponentModel>true</cim:LoadResponseCharacteristic.exponentModel>
+        \\    <cim:LoadResponseCharacteristic.pVoltageExponent>1</cim:LoadResponseCharacteristic.pVoltageExponent>
+        \\  </cim:LoadResponseCharacteristic>
+        \\</rdf:RDF>
+    ));
+}
+
+test "LRCExponentModel rejects exponents outside the inclusive range" {
+    try std.testing.expectError(
+        error.LRCExponentModel,
+        run_load_response_characteristic_exponent_values("-0.01", "1"),
+    );
+    try std.testing.expectError(
+        error.LRCExponentModel,
+        run_load_response_characteristic_exponent_values("1", "-0.01"),
+    );
+    try std.testing.expectError(
+        error.LRCExponentModel,
+        run_load_response_characteristic_exponent_values("2.01", "1"),
+    );
+    try std.testing.expectError(
+        error.LRCExponentModel,
+        run_load_response_characteristic_exponent_values("1", "2.01"),
+    );
+}
+
+test "LRCExponentModel rejects invalid and non-finite exponents" {
+    try std.testing.expectError(
+        error.LRCExponentModel,
+        run_load_response_characteristic_exponent_values("invalid", "1"),
+    );
+    try std.testing.expectError(
+        error.LRCExponentModel,
+        run_load_response_characteristic_exponent_values("1", " "),
+    );
+    try std.testing.expectError(
+        error.LRCExponentModel,
+        run_load_response_characteristic_exponent_values("nan", "1"),
+    );
+    try std.testing.expectError(
+        error.LRCExponentModel,
+        run_load_response_characteristic_exponent_values("1", "inf"),
+    );
+}
+
+test "LRCExponentModel validates every load response characteristic" {
+    try std.testing.expectError(error.LRCExponentModel, run_load_response_characteristic_exponent_model(
+        \\<rdf:RDF>
+        \\  <cim:LoadResponseCharacteristic rdf:ID="_VALID">
+        \\    <cim:LoadResponseCharacteristic.exponentModel>true</cim:LoadResponseCharacteristic.exponentModel>
+        \\    <cim:LoadResponseCharacteristic.pVoltageExponent>1</cim:LoadResponseCharacteristic.pVoltageExponent>
+        \\    <cim:LoadResponseCharacteristic.qVoltageExponent>1</cim:LoadResponseCharacteristic.qVoltageExponent>
+        \\  </cim:LoadResponseCharacteristic>
+        \\  <cim:LoadResponseCharacteristic rdf:ID="_INVALID">
+        \\    <cim:LoadResponseCharacteristic.exponentModel>true</cim:LoadResponseCharacteristic.exponentModel>
+        \\    <cim:LoadResponseCharacteristic.pVoltageExponent>1</cim:LoadResponseCharacteristic.pVoltageExponent>
+        \\    <cim:LoadResponseCharacteristic.qVoltageExponent>3</cim:LoadResponseCharacteristic.qVoltageExponent>
+        \\  </cim:LoadResponseCharacteristic>
         \\</rdf:RDF>
     ));
 }

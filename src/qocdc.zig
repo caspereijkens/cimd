@@ -1220,6 +1220,43 @@ fn mutual_coupling_line_id(
     return equipment.id();
 }
 
+/// LRCExponentModel
+///
+/// For every instance of cim:LoadResponseCharacteristic where
+/// cim:LoadResponseCharacteristic.exponentModel is true,
+/// cim:LoadResponseCharacteristic.pVoltageExponent and
+/// cim:LoadResponseCharacteristic.qVoltageExponent must be provided and be
+/// greater than or equal to zero and less than or equal to two.
+///
+/// The attributes pFrequencyExponent and qFrequencyExponent are not used. The
+/// attributes required for the coefficient load model covered by rule
+/// LCRCoefficientModel are ignored and not validated when
+/// cim:LoadResponseCharacteristic.exponentModel is true.
+///
+/// CGMES v3.0 does not include the limitations on the exponent values.
+pub fn validate_load_response_characteristic_exponent_model(
+    model: Model,
+) error{LRCExponentModel}!void {
+    const load_response_characteristics = model.objects_by_type("LoadResponseCharacteristic");
+    for (load_response_characteristics) |load_response_characteristic| {
+        const properties = load_response_characteristic.properties(.{
+            "LoadResponseCharacteristic.exponentModel",
+            "LoadResponseCharacteristic.pVoltageExponent",
+            "LoadResponseCharacteristic.qVoltageExponent",
+        }) catch return error.LRCExponentModel;
+
+        if (!parse.flag(properties[0])) continue;
+
+        const p_voltage_exponent = parse.float_req(properties[1] orelse
+            return error.LRCExponentModel) catch return error.LRCExponentModel;
+        if (p_voltage_exponent < 0 or p_voltage_exponent > 2) return error.LRCExponentModel;
+
+        const q_voltage_exponent = parse.float_req(properties[2] orelse
+            return error.LRCExponentModel) catch return error.LRCExponentModel;
+        if (q_voltage_exponent < 0 or q_voltage_exponent > 2) return error.LRCExponentModel;
+    }
+}
+
 const ContainerBaseVoltage = struct {
     /// True when the equipment is contained in a cim:VoltageLevel or cim:Bay
     /// (the containment that satisfies CEBaseVoltage's existence clause).
@@ -1380,6 +1417,7 @@ fn validate_grid_model_constraints(
     try validate_terminal_seq_num_order(gpa, model, reverse_ref_index);
     try validate_power_transformer_terminal_consistency(model);
     try validate_mutual_coupling_order(model);
+    try validate_load_response_characteristic_exponent_model(model);
 }
 
 fn filename_stem_from_path(file_path: []const u8) []const u8 {
@@ -1528,6 +1566,8 @@ fn grid_model_error_message(err: anyerror) []const u8 {
         \\2) cim:MutualCoupling.Second_Terminal does not refer to a cim:Terminal of a cim:ACLineSegment,
         \\3) cim:MutualCoupling.First_Terminal and cim:MutualCoupling.Second_Terminal do not refer to cim:Terminals of different cim:ACLineSegments.
         ,
+        error.LRCExponentModel => "Exponent of per unit voltage effecting real and reactive power is not specified but " ++
+            "cim:LoadResponseCharacteristic.exponentModel is true.",
         else => @errorName(err),
     };
 }
