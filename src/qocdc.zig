@@ -1335,6 +1335,56 @@ pub fn validate_load_response_characteristic_coefficient_parameters(
     }
 }
 
+/// MeasTerminal
+///
+/// The association end cim:Measurement.Terminal shall reference a cim:Terminal
+/// of the cim:Equipment referenced by cim:Measurement.PowerSystemResource
+/// except in cases where cim:Measurement.measurementType is either
+/// cim:TapPosition or cim:SwitchPosition, in which case the association is not
+/// exchanged.
+pub fn validate_measurement_terminal(
+    model: Model,
+) error{MeasTerminal}!void {
+    var groups = model.type_groups();
+    while (groups.next()) |group| {
+        const is_measurement = cim_types.is_a(group.type_name, "Measurement");
+        if (!is_measurement) continue;
+
+        for (group.objects) |measurement| {
+            const measurement_type = parse.non_blank(
+                measurement.property("Measurement.measurementType") catch
+                    return error.MeasTerminal,
+            );
+            if (measurement_type) |value| {
+                const is_tap_position = std.mem.eql(u8, value, "TapPosition");
+                const is_switch_position = std.mem.eql(u8, value, "SwitchPosition");
+                if (is_tap_position or is_switch_position) continue;
+            }
+
+            const references = measurement.references(.{
+                "Measurement.Terminal",
+                "Measurement.PowerSystemResource",
+            }) catch return error.MeasTerminal;
+            const terminal_ref = references[0] orelse return error.MeasTerminal;
+            const power_system_resource_ref = references[1] orelse return error.MeasTerminal;
+
+            const terminal = model.object_by_id(ids.strip_hash(terminal_ref)) orelse return error.MeasTerminal;
+            if (!cim_types.is_a(terminal.type_name(), "Terminal")) return error.MeasTerminal;
+
+            const equipment_ref = (terminal.reference("Terminal.ConductingEquipment") catch
+                return error.MeasTerminal) orelse return error.MeasTerminal;
+            const equipment = model.object_by_id(ids.strip_hash(equipment_ref)) orelse
+                return error.MeasTerminal;
+            if (!cim_types.is_a(equipment.type_name(), "Equipment")) return error.MeasTerminal;
+
+            const power_system_resource_id = ids.strip_hash(power_system_resource_ref);
+            if (!std.mem.eql(u8, equipment.id(), power_system_resource_id)) {
+                return error.MeasTerminal;
+            }
+        }
+    }
+}
+
 fn coefficient_sum_equals_one(sum: f64) bool {
     const difference = @abs(sum - 1.0);
     return difference < @abs(sum) * numeric_tolerance_factor or
@@ -1504,6 +1554,7 @@ fn validate_grid_model_constraints(
     try validate_load_response_characteristic_exponent_model(model);
     try validate_load_response_characteristic_coefficient_model(model);
     try validate_load_response_characteristic_coefficient_parameters(model);
+    try validate_measurement_terminal(model);
 }
 
 fn filename_stem_from_path(file_path: []const u8) []const u8 {
@@ -1658,6 +1709,9 @@ fn grid_model_error_message(err: anyerror) []const u8 {
             "cim:LoadResponseCharacteristic.exponentModel is false.",
         error.LCRCoefficientParameters => "The sum of coefficient parameters for a " ++
             "cim:LoadResponseCharacteristic does not equal 1.",
+        error.MeasTerminal => "cim:Measurement.Terminal does not refer to a " ++
+            "cim:Terminal of a cim:Equipment referenced by " ++
+            "cim:Measurement.PowerSystemResource.",
         else => @errorName(err),
     };
 }

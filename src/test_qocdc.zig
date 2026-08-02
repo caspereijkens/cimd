@@ -574,6 +574,14 @@ fn run_load_response_characteristic_coefficient_parameter_values(
     return run_load_response_characteristic_coefficient_parameters(xml);
 }
 
+fn run_measurement_terminal(xml: []const u8) !void {
+    const gpa = std.testing.allocator;
+    var model = try Model.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    return qocdc.validate_measurement_terminal(model);
+}
+
 test "CEBaseVoltage accepts a direct BaseVoltage association" {
     try run_ce_base_voltage(
         \\<rdf:RDF>
@@ -1949,4 +1957,220 @@ test "LCRCoefficientParameters ignores objects whose exponent model is not false
         \\  <cim:LoadResponseCharacteristic rdf:ID="_ABSENT"/>
         \\</rdf:RDF>
     );
+}
+
+test "MeasTerminal accepts a measurement terminal on the referenced equipment" {
+    try run_measurement_terminal(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Analog rdf:ID="_M1">
+        \\    <cim:Measurement.measurementType>ThreePhasePower</cim:Measurement.measurementType>
+        \\    <cim:Measurement.Terminal rdf:resource="#_T1"/>
+        \\    <cim:Measurement.PowerSystemResource rdf:resource="#_BR1"/>
+        \\  </cim:Analog>
+        \\</rdf:RDF>
+    );
+}
+
+test "MeasTerminal compares resolved equipment identifiers" {
+    try run_measurement_terminal(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Measurement rdf:ID="_M1">
+        \\    <cim:Measurement.measurementType>LineCurrent</cim:Measurement.measurementType>
+        \\    <cim:Measurement.Terminal rdf:resource="#_T1"/>
+        \\    <cim:Measurement.PowerSystemResource rdf:resource="_BR1"/>
+        \\  </cim:Measurement>
+        \\</rdf:RDF>
+    );
+}
+
+test "MeasTerminal validates a measurement whose type is absent" {
+    try run_measurement_terminal(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Measurement rdf:ID="_M1">
+        \\    <cim:Measurement.Terminal rdf:resource="#_T1"/>
+        \\    <cim:Measurement.PowerSystemResource rdf:resource="#_BR1"/>
+        \\  </cim:Measurement>
+        \\</rdf:RDF>
+    );
+}
+
+test "MeasTerminal exempts tap and switch position measurements" {
+    try run_measurement_terminal(
+        \\<rdf:RDF>
+        \\  <cim:Discrete rdf:ID="_TAP">
+        \\    <cim:Measurement.measurementType>
+        \\      TapPosition
+        \\    </cim:Measurement.measurementType>
+        \\  </cim:Discrete>
+        \\  <cim:Discrete rdf:ID="_SWITCH">
+        \\    <cim:Measurement.measurementType>SwitchPosition</cim:Measurement.measurementType>
+        \\  </cim:Discrete>
+        \\</rdf:RDF>
+    );
+}
+
+test "MeasTerminal rejects a terminal on different equipment" {
+    try std.testing.expectError(error.MeasTerminal, run_measurement_terminal(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Breaker rdf:ID="_BR2"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Analog rdf:ID="_M1">
+        \\    <cim:Measurement.measurementType>ThreePhasePower</cim:Measurement.measurementType>
+        \\    <cim:Measurement.Terminal rdf:resource="#_T1"/>
+        \\    <cim:Measurement.PowerSystemResource rdf:resource="#_BR2"/>
+        \\  </cim:Analog>
+        \\</rdf:RDF>
+    ));
+}
+
+test "MeasTerminal rejects targets that are not equipment terminals" {
+    try std.testing.expectError(error.MeasTerminal, run_measurement_terminal(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Breaker rdf:ID="_NOT_TERMINAL">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\  </cim:Breaker>
+        \\  <cim:Measurement rdf:ID="_M1">
+        \\    <cim:Measurement.measurementType>LineCurrent</cim:Measurement.measurementType>
+        \\    <cim:Measurement.Terminal rdf:resource="#_NOT_TERMINAL"/>
+        \\    <cim:Measurement.PowerSystemResource rdf:resource="#_BR1"/>
+        \\  </cim:Measurement>
+        \\</rdf:RDF>
+    ));
+    try std.testing.expectError(error.MeasTerminal, run_measurement_terminal(
+        \\<rdf:RDF>
+        \\  <cim:ConnectivityNode rdf:ID="_CN1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_CN1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Measurement rdf:ID="_M1">
+        \\    <cim:Measurement.measurementType>LineCurrent</cim:Measurement.measurementType>
+        \\    <cim:Measurement.Terminal rdf:resource="#_T1"/>
+        \\    <cim:Measurement.PowerSystemResource rdf:resource="#_CN1"/>
+        \\  </cim:Measurement>
+        \\</rdf:RDF>
+    ));
+}
+
+test "MeasTerminal rejects missing required associations" {
+    try std.testing.expectError(error.MeasTerminal, run_measurement_terminal(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Measurement rdf:ID="_M1">
+        \\    <cim:Measurement.measurementType>LineCurrent</cim:Measurement.measurementType>
+        \\    <cim:Measurement.PowerSystemResource rdf:resource="#_BR1"/>
+        \\  </cim:Measurement>
+        \\</rdf:RDF>
+    ));
+    try std.testing.expectError(error.MeasTerminal, run_measurement_terminal(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Terminal rdf:ID="_T1"/>
+        \\  <cim:Measurement rdf:ID="_M1">
+        \\    <cim:Measurement.measurementType>LineCurrent</cim:Measurement.measurementType>
+        \\    <cim:Measurement.Terminal rdf:resource="#_T1"/>
+        \\    <cim:Measurement.PowerSystemResource rdf:resource="#_BR1"/>
+        \\  </cim:Measurement>
+        \\</rdf:RDF>
+    ));
+    try std.testing.expectError(error.MeasTerminal, run_measurement_terminal(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Measurement rdf:ID="_M1">
+        \\    <cim:Measurement.measurementType>LineCurrent</cim:Measurement.measurementType>
+        \\    <cim:Measurement.Terminal rdf:resource="#_T1"/>
+        \\  </cim:Measurement>
+        \\</rdf:RDF>
+    ));
+}
+
+test "MeasTerminal rejects dangling references" {
+    try std.testing.expectError(error.MeasTerminal, run_measurement_terminal(
+        \\<rdf:RDF>
+        \\  <cim:Measurement rdf:ID="_M1">
+        \\    <cim:Measurement.measurementType>LineCurrent</cim:Measurement.measurementType>
+        \\    <cim:Measurement.Terminal rdf:resource="#_MISSING"/>
+        \\    <cim:Measurement.PowerSystemResource rdf:resource="#_MISSING_TOO"/>
+        \\  </cim:Measurement>
+        \\</rdf:RDF>
+    ));
+    try std.testing.expectError(error.MeasTerminal, run_measurement_terminal(
+        \\<rdf:RDF>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_MISSING"/>
+        \\  </cim:Terminal>
+        \\  <cim:Measurement rdf:ID="_M1">
+        \\    <cim:Measurement.measurementType>LineCurrent</cim:Measurement.measurementType>
+        \\    <cim:Measurement.Terminal rdf:resource="#_T1"/>
+        \\    <cim:Measurement.PowerSystemResource rdf:resource="#_MISSING"/>
+        \\  </cim:Measurement>
+        \\</rdf:RDF>
+    ));
+    try std.testing.expectError(error.MeasTerminal, run_measurement_terminal(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Measurement rdf:ID="_M1">
+        \\    <cim:Measurement.measurementType>LineCurrent</cim:Measurement.measurementType>
+        \\    <cim:Measurement.Terminal rdf:resource="#_T1"/>
+        \\    <cim:Measurement.PowerSystemResource rdf:resource="#_MISSING"/>
+        \\  </cim:Measurement>
+        \\</rdf:RDF>
+    ));
+}
+
+test "MeasTerminal rejects malformed reference attributes" {
+    try std.testing.expectError(error.MeasTerminal, run_measurement_terminal(
+        \\<rdf:RDF>
+        \\  <cim:Measurement rdf:ID="_M1">
+        \\    <cim:Measurement.measurementType>LineCurrent</cim:Measurement.measurementType>
+        \\    <cim:Measurement.Terminal rdf:resource="#_T1/>
+        \\  </cim:Measurement>
+        \\</rdf:RDF>
+    ));
+    try std.testing.expectError(error.MeasTerminal, run_measurement_terminal(
+        \\<rdf:RDF>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1/>
+        \\  </cim:Terminal>
+        \\  <cim:Measurement rdf:ID="_M1">
+        \\    <cim:Measurement.measurementType>LineCurrent</cim:Measurement.measurementType>
+        \\    <cim:Measurement.Terminal rdf:resource="#_T1"/>
+        \\    <cim:Measurement.PowerSystemResource rdf:resource="#_BR1"/>
+        \\  </cim:Measurement>
+        \\</rdf:RDF>
+    ));
+    try std.testing.expectError(error.MeasTerminal, run_measurement_terminal(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_BR1"/>
+        \\  <cim:Terminal rdf:ID="_T1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BR1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Measurement rdf:ID="_M1">
+        \\    <cim:Measurement.measurementType>LineCurrent</cim:Measurement.measurementType>
+        \\    <cim:Measurement.Terminal rdf:resource="#_T1"/>
+        \\    <cim:Measurement.PowerSystemResource rdf:resource="#_BR1/>
+        \\  </cim:Measurement>
+        \\</rdf:RDF>
+    ));
 }
