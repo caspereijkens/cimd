@@ -37,8 +37,7 @@ const Edge = struct {
 /// including the last '#' or '/', then if a '.' remains keep the trailing
 /// segment (so "ACLineSegment.r" → "r", which `is_class_name` then rejects).
 fn local_name(value: []const u8) []const u8 {
-    var v = value;
-    if (std.mem.lastIndexOfScalar(u8, v, '#')) |i| v = v[i + 1 ..];
+    var v = cim.uri.fragment_or_self(value);
     if (std.mem.lastIndexOfScalar(u8, v, '/')) |i| v = v[i + 1 ..];
     if (std.mem.lastIndexOfScalar(u8, v, '.')) |i| v = v[i + 1 ..];
     return v;

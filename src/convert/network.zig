@@ -567,11 +567,10 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimDocument, ssh_opt: ?Ov
         const control_area_name = parse.non_blank(try control_area.property("IdentifiedObject.name")) orelse control_area_mrid;
 
         // ControlArea.type is a rdf:resource; extract the fragment after '#'.
-        const area_type: []const u8 = blk: {
-            const raw = try control_area.reference("ControlArea.type") orelse break :blk "ControlAreaTypeKind.Interchange";
-            const hash = std.mem.lastIndexOfScalar(u8, raw, '#') orelse break :blk raw;
-            break :blk raw[hash + 1 ..];
-        };
+        const area_type = if (try control_area.reference("ControlArea.type")) |raw|
+            cim.uri.fragment_or_self(raw)
+        else
+            "ControlAreaTypeKind.Interchange";
 
         // Collect all TieFlow objects that reference this ControlArea.
         var boundaries: std.ArrayListUnmanaged(iidm.AreaBoundary) = .empty;

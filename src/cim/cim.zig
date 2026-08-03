@@ -73,6 +73,8 @@ pub const diagnostics = @import("diagnostics.zig");
 pub const cim_types = @import("cim_types.zig");
 /// mRID normalization: fragment markers, leading underscores, prefix matching.
 pub const ids = @import("ids.zig");
+/// URI fragment extraction for CIM and RDF references.
+pub const uri = @import("uri.zig");
 /// Trim-tolerant parsing of CIM property values.
 pub const parse = @import("parse.zig");
 
@@ -81,7 +83,8 @@ pub const parse = @import("parse.zig");
 // The profile-specific layer: header classification, and the two overlays that
 // patch a primary document.
 
-/// Classify a part from its FullModel header (profile URIs to a Kind).
+/// Classify a part from its FullModel header and inspect its exact profile
+/// declarations.
 pub const profile = @import("cgmes/profile.zig");
 /// A supplementary part (TP, SSH) read as patches on a primary document: a
 /// `CimDocument` plus an index on the normalized mRID. One type for both

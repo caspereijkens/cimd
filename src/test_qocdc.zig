@@ -582,6 +582,85 @@ fn run_measurement_terminal(xml: []const u8) !void {
     return qocdc.validate_measurement_terminal(model);
 }
 
+fn run_measurement_type(xml: []const u8, version: ?cim.profile.Version) !void {
+    const gpa = std.testing.allocator;
+    var model = try Model.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    return qocdc.validate_measurement_type(model, version);
+}
+
+fn run_measurement_type_value(measurement_type: []const u8, version: ?cim.profile.Version) !void {
+    const gpa = std.testing.allocator;
+    const xml = try std.fmt.allocPrint(
+        gpa,
+        "<rdf:RDF><cim:Measurement rdf:ID=\"_M1\">" ++
+            "<cim:Measurement.measurementType>{s}</cim:Measurement.measurementType>" ++
+            "</cim:Measurement></rdf:RDF>",
+        .{measurement_type},
+    );
+    defer gpa.free(xml);
+
+    return run_measurement_type(xml, version);
+}
+
+fn run_measurement_unit(xml: []const u8, version: ?cim.profile.Version) !void {
+    const gpa = std.testing.allocator;
+    var model = try Model.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    return qocdc.validate_measurement_unit(model, version);
+}
+
+fn run_measurement_unit_reference(unit_reference: []const u8) !void {
+    return run_measurement_unit_type_reference(
+        "Measurement",
+        unit_reference,
+        .v2_4_15,
+    );
+}
+
+fn run_measurement_unit_type_reference(
+    type_name: []const u8,
+    unit_reference: []const u8,
+    version: ?cim.profile.Version,
+) !void {
+    const gpa = std.testing.allocator;
+    const xml = try std.fmt.allocPrint(
+        gpa,
+        "<rdf:RDF><cim:{s} rdf:ID=\"_M1\">" ++
+            "<cim:Measurement.unitSymbol rdf:resource=\"{s}\"/>" ++
+            "</cim:{s}></rdf:RDF>",
+        .{ type_name, unit_reference, type_name },
+    );
+    defer gpa.free(xml);
+
+    return run_measurement_unit(xml, version);
+}
+
+fn run_conn_node_in_eq_operations(xml: []const u8) !void {
+    const gpa = std.testing.allocator;
+    var model = try Model.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    const header = try cim.profile.classify(gpa, model.xml);
+    return qocdc.validate_conn_node_in_eq_operations(model, header);
+}
+
+fn run_conn_node_in_profile(profile_uri: []const u8, body: []const u8) !void {
+    const gpa = std.testing.allocator;
+    const xml = try std.fmt.allocPrint(
+        gpa,
+        "<rdf:RDF><md:FullModel rdf:about=\"urn:uuid:test\">" ++
+            "<md:Model.profile>{s}</md:Model.profile>" ++
+            "</md:FullModel>{s}</rdf:RDF>",
+        .{ profile_uri, body },
+    );
+    defer gpa.free(xml);
+
+    return run_conn_node_in_eq_operations(xml);
+}
+
 test "CEBaseVoltage accepts a direct BaseVoltage association" {
     try run_ce_base_voltage(
         \\<rdf:RDF>
@@ -2173,4 +2252,348 @@ test "MeasTerminal rejects malformed reference attributes" {
         \\  </cim:Measurement>
         \\</rdf:RDF>
     ));
+}
+
+test "MeasType accepts every measurement type allowed in both versions" {
+    const allowed_types = [_][]const u8{
+        "ThreePhasePower",
+        "ThreePhaseActivePower",
+        "ThreePhaseReactivePower",
+        "LineCurrent",
+        "PhaseVoltage",
+        "Angle",
+        "TapPosition",
+        "SwitchPosition",
+    };
+    for (allowed_types) |measurement_type| {
+        try run_measurement_type_value(measurement_type, .v2_4_15);
+        try run_measurement_type_value(measurement_type, .v3_0);
+        try run_measurement_type_value(measurement_type, null);
+    }
+}
+
+test "MeasType applies the voltage type of the declared version" {
+    try run_measurement_type_value("LineToLineVoltage", .v2_4_15);
+    try run_measurement_type_value("Voltage", .v3_0);
+    try std.testing.expectError(
+        error.MeasType,
+        run_measurement_type_value("Voltage", .v2_4_15),
+    );
+    try std.testing.expectError(
+        error.MeasType,
+        run_measurement_type_value("LineToLineVoltage", .v3_0),
+    );
+}
+
+test "MeasType accepts either voltage type when the header declares no version" {
+    try run_measurement_type_value("LineToLineVoltage", null);
+    try run_measurement_type_value("Voltage", null);
+    try std.testing.expectError(error.MeasType, run_measurement_type_value("Power", null));
+}
+
+test "MeasType accepts subclasses and surrounding whitespace" {
+    try run_measurement_type(
+        \\<rdf:RDF>
+        \\  <cim:Analog rdf:ID="_ANALOG">
+        \\    <cim:Measurement.measurementType>
+        \\      ThreePhasePower
+        \\    </cim:Measurement.measurementType>
+        \\  </cim:Analog>
+        \\  <cim:Accumulator rdf:ID="_ACCUMULATOR">
+        \\    <cim:Measurement.measurementType>Angle</cim:Measurement.measurementType>
+        \\  </cim:Accumulator>
+        \\  <cim:Discrete rdf:ID="_DISCRETE">
+        \\    <cim:Measurement.measurementType>SwitchPosition</cim:Measurement.measurementType>
+        \\  </cim:Discrete>
+        \\</rdf:RDF>
+    , .v2_4_15);
+}
+
+test "MeasType rejects unknown, incorrectly cased, and blank values" {
+    try std.testing.expectError(error.MeasType, run_measurement_type_value("Power", .v2_4_15));
+    try std.testing.expectError(error.MeasType, run_measurement_type_value("threephasepower", .v2_4_15));
+    try std.testing.expectError(error.MeasType, run_measurement_type_value("   ", .v2_4_15));
+}
+
+test "MeasType rejects an empty value in either serialization" {
+    try std.testing.expectError(error.MeasType, run_measurement_type(
+        \\<rdf:RDF>
+        \\  <cim:Measurement rdf:ID="_M1">
+        \\    <cim:Measurement.measurementType/>
+        \\  </cim:Measurement>
+        \\</rdf:RDF>
+    , .v2_4_15));
+    try std.testing.expectError(error.MeasType, run_measurement_type(
+        \\<rdf:RDF>
+        \\  <cim:Measurement rdf:ID="_M1">
+        \\    <cim:Measurement.measurementType></cim:Measurement.measurementType>
+        \\  </cim:Measurement>
+        \\</rdf:RDF>
+    , .v2_4_15));
+}
+
+test "MeasType ignores absent values and non-measurement objects" {
+    try run_measurement_type(
+        \\<rdf:RDF>
+        \\  <cim:Measurement rdf:ID="_MISSING"/>
+        \\  <cim:Breaker rdf:ID="_UNRELATED">
+        \\    <cim:Measurement.measurementType>invalid</cim:Measurement.measurementType>
+        \\  </cim:Breaker>
+        \\</rdf:RDF>
+    , .v2_4_15);
+}
+
+test "MeasUnit accepts every CGMES 2.4.15 unit-symbol reference" {
+    const allowed_units = [_][]const u8{
+        "http://iec.ch/TC57/CIM100#UnitSymbol.V",
+        "http://iec.ch/TC57/CIM100#UnitSymbol.A",
+        "http://iec.ch/TC57/CIM100#UnitSymbol.W",
+        "http://iec.ch/TC57/CIM100#UnitSymbol.VA",
+        "http://iec.ch/TC57/CIM100#UnitSymbol.VAr",
+        "http://iec.ch/TC57/CIM100#UnitSymbol.deg",
+        "http://iec.ch/TC57/CIM100#UnitSymbol.Hz",
+        "http://iec.ch/TC57/CIM100#UnitSymbol.none",
+    };
+    for (allowed_units) |unit_reference| try run_measurement_unit_reference(unit_reference);
+}
+
+test "MeasUnit accepts local and legacy-namespace references" {
+    try run_measurement_unit_reference("#UnitSymbol.V");
+    try run_measurement_unit_reference("http://iec.ch/TC57/2013/CIM-schema-cim16#UnitSymbol.VAr");
+}
+
+test "MeasUnit rejects unknown, incorrectly cased, and blank references" {
+    try std.testing.expectError(
+        error.MeasUnit,
+        run_measurement_unit_reference("http://iec.ch/TC57/CIM100#UnitSymbol.ohm"),
+    );
+    try std.testing.expectError(
+        error.MeasUnit,
+        run_measurement_unit_reference("http://iec.ch/TC57/CIM100#UnitSymbol.var"),
+    );
+    try std.testing.expectError(error.MeasUnit, run_measurement_unit_reference(""));
+}
+
+test "MeasUnit accepts measurement subclasses and ignores absent values" {
+    try run_measurement_unit(
+        \\<rdf:RDF>
+        \\  <cim:Analog rdf:ID="_ANALOG">
+        \\    <cim:Measurement.unitSymbol rdf:resource="#UnitSymbol.V"/>
+        \\  </cim:Analog>
+        \\  <cim:Accumulator rdf:ID="_ACCUMULATOR">
+        \\    <cim:Measurement.unitSymbol rdf:resource="#UnitSymbol.none"/>
+        \\  </cim:Accumulator>
+        \\  <cim:Discrete rdf:ID="_MISSING"/>
+        \\  <cim:Breaker rdf:ID="_UNRELATED">
+        \\    <cim:Measurement.unitSymbol rdf:resource="#UnitSymbol.invalid"/>
+        \\  </cim:Breaker>
+        \\</rdf:RDF>
+    , .v2_4_15);
+}
+
+test "MeasUnit rejects malformed reference attributes" {
+    try std.testing.expectError(error.MeasUnit, run_measurement_unit(
+        \\<rdf:RDF>
+        \\  <cim:Measurement rdf:ID="_M1">
+        \\    <cim:Measurement.unitSymbol rdf:resource="#UnitSymbol.V/>
+        \\  </cim:Measurement>
+        \\</rdf:RDF>
+    , .v2_4_15));
+    try std.testing.expectError(error.MeasUnit, run_measurement_unit(
+        \\<rdf:RDF>
+        \\  <cim:Analog rdf:ID="_M1">
+        \\    <cim:Measurement.unitSymbol rdf:resource="#UnitSymbol.V/>
+        \\  </cim:Analog>
+        \\</rdf:RDF>
+    , .v3_0));
+}
+
+test "MeasUnit rejects a unitSymbol declared without a readable reference" {
+    try std.testing.expectError(error.MeasUnit, run_measurement_unit(
+        \\<rdf:RDF>
+        \\  <cim:Measurement rdf:ID="_M1">
+        \\    <cim:Measurement.unitSymbol>UnitSymbol.V</cim:Measurement.unitSymbol>
+        \\  </cim:Measurement>
+        \\</rdf:RDF>
+    , .v2_4_15));
+    try std.testing.expectError(error.MeasUnit, run_measurement_unit(
+        \\<rdf:RDF>
+        \\  <cim:Measurement rdf:ID="_M1">
+        \\    <cim:Measurement.unitSymbol/>
+        \\  </cim:Measurement>
+        \\</rdf:RDF>
+    , .v2_4_15));
+    try std.testing.expectError(error.MeasUnit, run_measurement_unit(
+        \\<rdf:RDF>
+        \\  <cim:Accumulator rdf:ID="_M1">
+        \\    <cim:Measurement.unitSymbol>UnitSymbol.Wh</cim:Measurement.unitSymbol>
+        \\  </cim:Accumulator>
+        \\</rdf:RDF>
+    , .v3_0));
+}
+
+test "MeasUnit accepts every class-specific CGMES 3.0 unit" {
+    const cases = [_]struct {
+        type_name: []const u8,
+        units: []const []const u8,
+    }{
+        .{ .type_name = "Analog", .units = &.{
+            "UnitSymbol.W",
+            "UnitSymbol.deg",
+            "UnitSymbol.VA",
+            "UnitSymbol.A",
+            "UnitSymbol.VAr",
+            "UnitSymbol.V",
+            "UnitSymbol.Hz",
+        } },
+        .{ .type_name = "Accumulator", .units = &.{
+            "UnitSymbol.VAh",
+            "UnitSymbol.VArh",
+            "UnitSymbol.Wh",
+        } },
+        .{ .type_name = "Discrete", .units = &.{"UnitSymbol.none"} },
+    };
+
+    for (cases) |case| {
+        for (case.units) |unit| {
+            try run_measurement_unit_type_reference(case.type_name, unit, .v3_0);
+        }
+    }
+}
+
+test "MeasUnit rejects CGMES 3.0 units belonging to another measurement class" {
+    const cases = [_]struct {
+        type_name: []const u8,
+        unit: []const u8,
+    }{
+        .{ .type_name = "Analog", .unit = "UnitSymbol.Wh" },
+        .{ .type_name = "Analog", .unit = "UnitSymbol.none" },
+        .{ .type_name = "Accumulator", .unit = "UnitSymbol.V" },
+        .{ .type_name = "Discrete", .unit = "UnitSymbol.W" },
+    };
+
+    for (cases) |case| {
+        try std.testing.expectError(
+            error.MeasUnit,
+            run_measurement_unit_type_reference(case.type_name, case.unit, .v3_0),
+        );
+    }
+}
+
+test "MeasUnit leaves unconstrained CGMES 3.0 measurement classes alone" {
+    try run_measurement_unit_type_reference("Measurement", "UnitSymbol.ohm", .v3_0);
+    try run_measurement_unit_type_reference("StringMeasurement", "UnitSymbol.ohm", .v3_0);
+}
+
+test "MeasUnit accepts either applicable list when the version is unresolved" {
+    try run_measurement_unit_type_reference("Accumulator", "UnitSymbol.V", null);
+    try run_measurement_unit_type_reference("Accumulator", "UnitSymbol.Wh", null);
+    try std.testing.expectError(
+        error.MeasUnit,
+        run_measurement_unit_type_reference("Accumulator", "UnitSymbol.ohm", null),
+    );
+
+    // A direct Measurement may belong to v3.0, whose 452 constraint does not
+    // supply a class-specific unit list for it.
+    try run_measurement_unit_type_reference("Measurement", "UnitSymbol.ohm", null);
+}
+
+test "CNRequiredInEQOperations accepts valid references in applicable profiles" {
+    const applicable_profiles = [_][]const u8{
+        "http://entsoe.eu/CIM/EquipmentOperation/3/1",
+        "http://iec.ch/TC57/ns/CIM/CoreEquipment-EU/3.0",
+        "http://iec.ch/TC57/ns/CIM/Operation-EU/3.0",
+        "http://iec.ch/TC57/ns/CIM/ShortCircuit-EU/3.0",
+    };
+    for (applicable_profiles) |profile_uri| {
+        try run_conn_node_in_profile(
+            profile_uri,
+            "<cim:Terminal rdf:ID=\"_T1\">" ++
+                "<cim:Terminal.ConnectivityNode rdf:resource=\"#_CN1\"/>" ++
+                "</cim:Terminal>" ++
+                "<cim:Terminal rdf:ID=\"_T2\">" ++
+                "<cim:Terminal.ConnectivityNode rdf:resource=\"urn:uuid:cn2\"/>" ++
+                "</cim:Terminal>",
+        );
+    }
+}
+
+test "CNRequiredInEQOperations rejects a missing reference in every applicable profile" {
+    const applicable_profiles = [_][]const u8{
+        "http://entsoe.eu/CIM/EquipmentOperation/3/1",
+        "http://iec.ch/TC57/ns/CIM/CoreEquipment-EU/3.0",
+        "http://iec.ch/TC57/ns/CIM/Operation-EU/3.0",
+        "http://iec.ch/TC57/ns/CIM/ShortCircuit-EU/3.0",
+    };
+    for (applicable_profiles) |profile_uri| {
+        try std.testing.expectError(
+            error.CNRequiredInEQOperations,
+            run_conn_node_in_profile(profile_uri, "<cim:Terminal rdf:ID=\"_T1\"/>"),
+        );
+    }
+}
+
+test "CNRequiredInEQOperations skips non-operation v2 and non-equipment v3 profiles" {
+    const skipped_profiles = [_][]const u8{
+        "http://entsoe.eu/CIM/EquipmentCore/3/1",
+        "http://entsoe.eu/CIM/EquipmentShortCircuit/3/1",
+        "http://iec.ch/TC57/ns/CIM/Topology-EU/3.0",
+    };
+    for (skipped_profiles) |profile_uri| {
+        try run_conn_node_in_profile(profile_uri, "<cim:Terminal rdf:ID=\"_T1\"/>");
+    }
+}
+
+test "CNRequiredInEQOperations rejects empty and malformed references" {
+    const operation_profile = "http://entsoe.eu/CIM/EquipmentOperation/3/1";
+    try std.testing.expectError(
+        error.CNRequiredInEQOperations,
+        run_conn_node_in_profile(
+            operation_profile,
+            "<cim:Terminal rdf:ID=\"_T1\">" ++
+                "<cim:Terminal.ConnectivityNode rdf:resource=\"\"/>" ++
+                "</cim:Terminal>",
+        ),
+    );
+    try std.testing.expectError(
+        error.CNRequiredInEQOperations,
+        run_conn_node_in_profile(
+            operation_profile,
+            "<cim:Terminal rdf:ID=\"_T1\">" ++
+                "<cim:Terminal.ConnectivityNode rdf:resource=\"   \"/>" ++
+                "</cim:Terminal>",
+        ),
+    );
+    try std.testing.expectError(
+        error.CNRequiredInEQOperations,
+        run_conn_node_in_profile(
+            operation_profile,
+            "<cim:Terminal rdf:ID=\"_T1\">" ++
+                "<cim:Terminal.ConnectivityNode rdf:resource=\"#_CN1/>" ++
+                "</cim:Terminal>",
+        ),
+    );
+}
+
+test "CNRequiredInEQOperations checks every Terminal and ignores other types" {
+    const operation_profile = "http://entsoe.eu/CIM/EquipmentOperation/3/1";
+    try std.testing.expectError(
+        error.CNRequiredInEQOperations,
+        run_conn_node_in_profile(
+            operation_profile,
+            "<cim:Terminal rdf:ID=\"_VALID\">" ++
+                "<cim:Terminal.ConnectivityNode rdf:resource=\"#_CN1\"/>" ++
+                "</cim:Terminal>" ++
+                "<cim:Terminal rdf:ID=\"_MISSING\"/>",
+        ),
+    );
+
+    try run_conn_node_in_profile(
+        operation_profile,
+        "<cim:ACDCTerminal rdf:ID=\"_ACDC\"/>" ++
+            "<cim:DCTerminal rdf:ID=\"_DC\"/>" ++
+            "<cim:Breaker rdf:ID=\"_BREAKER\">" ++
+            "<cim:Terminal.ConnectivityNode rdf:resource=\"\"/>" ++
+            "</cim:Breaker>",
+    );
 }

@@ -711,8 +711,7 @@ pub fn convert_generators(
             const unit_id = strip_hash(unit_ref);
             const ft_ref = try fossil_fuel.reference("FossilFuel.fossilFuelType") orelse continue;
             // Extract enum fragment part after last '#', then after last '.'.
-            const h = std.mem.lastIndexOfScalar(u8, ft_ref, '#') orelse continue;
-            const frag = ft_ref[h + 1 ..];
+            const frag = cim.uri.fragment(ft_ref) orelse continue;
             const dot = std.mem.lastIndexOfScalar(u8, frag, '.') orelse continue;
             const ft_frag = frag[dot + 1 ..];
             fuel_type_map.putAssumeCapacity(unit_id, ft_frag);
@@ -762,8 +761,7 @@ pub fn convert_generators(
         // Extract "kind value" from a CIM enum URL: part after the last '.' in the fragment.
         // e.g. "http://...#SynchronousMachineKind.generatorOrCondenser" → "generatorOrCondenser"
         const type_fragment: ?[]const u8 = blk: {
-            const h = std.mem.lastIndexOfScalar(u8, type_ref, '#') orelse break :blk null;
-            const frag = type_ref[h + 1 ..];
+            const frag = cim.uri.fragment(type_ref) orelse break :blk null;
             const dot = std.mem.lastIndexOfScalar(u8, frag, '.') orelse break :blk frag;
             break :blk frag[dot + 1 ..];
         };
@@ -796,8 +794,7 @@ pub fn convert_generators(
                 if (std.mem.eql(u8, unit.type_name(), "WindGeneratingUnit")) {
                     if (unit_refs[0]) |wt_ref| {
                         const wt_frag = blk: {
-                            const h = std.mem.lastIndexOfScalar(u8, wt_ref, '#') orelse break :blk wt_ref;
-                            const frag = wt_ref[h + 1 ..];
+                            const frag = cim.uri.fragment_or_self(wt_ref);
                             const dot = std.mem.lastIndexOfScalar(u8, frag, '.') orelse break :blk frag;
                             break :blk frag[dot + 1 ..];
                         };

@@ -26,6 +26,7 @@ fn eql_ascii_ignore_case(a: []const u8, b: []const u8) bool {
 }
 
 const ReferenceStringSet = std.StaticStringMapWithEql(void, eql_ascii_ignore_case);
+const ExactStringSet = std.StaticStringMap(void);
 
 // QoCDC §5.3 Rules' Constants.
 //
@@ -255,6 +256,111 @@ const iso_country_codes = ReferenceStringSet.initComptime(.{
     .{ "LY", {} }, // Libya
     .{ "MA", {} }, // Morocco
 });
+
+/// Measurement types, CGMES 2.4.15.
+const allowed_measurement_types_v2_4_15 = ExactStringSet.initComptime(.{
+    .{ "ThreePhasePower", {} },
+    .{ "ThreePhaseActivePower", {} },
+    .{ "ThreePhaseReactivePower", {} },
+    .{ "LineCurrent", {} },
+    .{ "PhaseVoltage", {} },
+    .{ "LineToLineVoltage", {} },
+    .{ "Angle", {} },
+    .{ "TapPosition", {} },
+    .{ "SwitchPosition", {} },
+});
+
+/// Measurement types, CGMES v3.0: LineToLineVoltage is changed to Voltage.
+const allowed_measurement_types_v3_0 = ExactStringSet.initComptime(.{
+    .{ "ThreePhasePower", {} },
+    .{ "ThreePhaseActivePower", {} },
+    .{ "ThreePhaseReactivePower", {} },
+    .{ "LineCurrent", {} },
+    .{ "PhaseVoltage", {} },
+    .{ "Voltage", {} },
+    .{ "Angle", {} },
+    .{ "TapPosition", {} },
+    .{ "SwitchPosition", {} },
+});
+
+/// Whether a measurement type is allowed under the version the header declared.
+/// A null version means the header's profile URIs disagreed about it, so neither
+/// list can be the authority and a value valid under either one is accepted.
+fn measurement_type_allowed(measurement_type: []const u8, version: ?cim.profile.Version) bool {
+    const version_known = version orelse
+        return allowed_measurement_types_v2_4_15.get(measurement_type) != null or
+            allowed_measurement_types_v3_0.get(measurement_type) != null;
+    return switch (version_known) {
+        .v2_4_15 => allowed_measurement_types_v2_4_15.get(measurement_type) != null,
+        .v3_0 => allowed_measurement_types_v3_0.get(measurement_type) != null,
+    };
+}
+
+/// Measurement units, CGMES 2.4.15.
+const allowed_measurement_units_v2_4_15 = ExactStringSet.initComptime(.{
+    .{ "UnitSymbol.V", {} },
+    .{ "UnitSymbol.A", {} },
+    .{ "UnitSymbol.W", {} },
+    .{ "UnitSymbol.VA", {} },
+    .{ "UnitSymbol.VAr", {} },
+    .{ "UnitSymbol.deg", {} },
+    .{ "UnitSymbol.Hz", {} },
+    .{ "UnitSymbol.none", {} },
+});
+
+/// Measurement units for Analog, CGMES v3.0
+/// (C:452:OP:Measurement.unitSymbol:analogValues).
+const allowed_analog_measurement_units_v3_0 = ExactStringSet.initComptime(.{
+    .{ "UnitSymbol.W", {} },
+    .{ "UnitSymbol.deg", {} },
+    .{ "UnitSymbol.VA", {} },
+    .{ "UnitSymbol.A", {} },
+    .{ "UnitSymbol.VAr", {} },
+    .{ "UnitSymbol.V", {} },
+    .{ "UnitSymbol.Hz", {} },
+});
+
+/// Measurement units for Accumulator, CGMES v3.0
+/// (C:452:OP:Measurement.unitSymbol:accumulatorValues).
+const allowed_accumulator_measurement_units_v3_0 = ExactStringSet.initComptime(.{
+    .{ "UnitSymbol.VAh", {} },
+    .{ "UnitSymbol.VArh", {} },
+    .{ "UnitSymbol.Wh", {} },
+});
+
+/// Measurement units for Discrete, CGMES v3.0
+/// (C:452:OP:Measurement.unitSymbol:discreteValues).
+const allowed_discrete_measurement_units_v3_0 = ExactStringSet.initComptime(.{
+    .{ "UnitSymbol.none", {} },
+});
+
+/// The class-specific IEC 61970-452 unit set for a CGMES v3.0 measurement.
+/// The referenced constraints do not define a unit list for Measurement or
+/// StringMeasurement themselves.
+fn measurement_unit_set_v3_0(type_name: []const u8) ?*const ExactStringSet {
+    if (cim_types.is_a(type_name, "Analog")) return &allowed_analog_measurement_units_v3_0;
+    if (cim_types.is_a(type_name, "Accumulator")) return &allowed_accumulator_measurement_units_v3_0;
+    if (cim_types.is_a(type_name, "Discrete")) return &allowed_discrete_measurement_units_v3_0;
+    return null;
+}
+
+/// Whether a unit is allowed under the version the header declared. A null
+/// version accepts a unit allowed by either applicable version, matching the
+/// treatment of version-specific measurement types above.
+fn measurement_unit_allowed(
+    unit: []const u8,
+    version: ?cim.profile.Version,
+    v3_units: ?*const ExactStringSet,
+) bool {
+    const allowed_in_v2_4_15 = allowed_measurement_units_v2_4_15.get(unit) != null;
+    const allowed_in_v3_0 = if (v3_units) |units| units.get(unit) != null else false;
+    if (version) |known| return switch (known) {
+        .v2_4_15 => allowed_in_v2_4_15,
+        .v3_0 => allowed_in_v3_0,
+    };
+
+    return allowed_in_v2_4_15 or allowed_in_v3_0;
+}
 
 const Filename = struct {
     effective_date_time: []const u8,
@@ -1385,6 +1491,141 @@ pub fn validate_measurement_terminal(
     }
 }
 
+/// MeasType
+///
+/// For every instance of cim:Measurement, the value of
+/// cim:Measurement.measurementType is limited to 'ThreePhasePower',
+/// 'ThreePhaseActivePower', 'ThreePhaseReactivePower', 'LineCurrent',
+/// 'PhaseVoltage', 'LineToLineVoltage', 'Angle', 'TapPosition',
+/// 'SwitchPosition'.
+///
+/// In CGMES v3.0 LineToLineVoltage is changed to Voltage, so which values are
+/// allowed depends on the version the header declared.
+pub fn validate_measurement_type(
+    model: Model,
+    version: ?cim.profile.Version,
+) error{MeasType}!void {
+    var groups = model.type_groups();
+    while (groups.next()) |group| {
+        const is_measurement = cim_types.is_a(group.type_name, "Measurement");
+        if (!is_measurement) continue;
+
+        for (group.objects) |measurement| {
+            const measurement_type_raw = (measurement.property("Measurement.measurementType") catch
+                return error.MeasType) orelse {
+                // `property()` cannot answer for `<...measurementType/>`, which
+                // is an empty literal rather than an absent property. Reading it
+                // as absent would accept in one serialization what the paired
+                // form fails on.
+                if (declares_child(measurement, "Measurement.measurementType")) return error.MeasType;
+                continue;
+            };
+            const measurement_type = parse.non_blank(measurement_type_raw) orelse
+                return error.MeasType;
+            if (!measurement_type_allowed(measurement_type, version)) return error.MeasType;
+        }
+    }
+}
+
+/// MeasUnit
+///
+/// For every instance of cim:Measurement, the value of
+/// cim:Measurement.unitSymbol is restricted to 'cim:UnitSymbol.V',
+/// 'cim:UnitSymbol.A', 'cim:UnitSymbol.W', 'cim:UnitSymbol.VA',
+/// 'cim:UnitSymbol.VAr', 'cim:UnitSymbol.deg', 'cim:UnitSymbol.Hz',
+/// 'cim:UnitSymbol.none'.
+///
+/// IEC 61970-452 defines additional possible values so CGMES v3.0 is using
+/// these. The constraint does not differentiate between allowed values for
+/// Analog, Accumulator and Discrete measurements, while 61970-452 and CGMES v3
+/// do.
+///
+/// For CGMES v3.0, IEC 61970-452 defines separate lists for Analog,
+/// Accumulator and Discrete. Direct Measurement and StringMeasurement
+/// instances are not covered by those class-specific constraints.
+pub fn validate_measurement_unit(
+    model: Model,
+    version: ?cim.profile.Version,
+) error{MeasUnit}!void {
+    var groups = model.type_groups();
+    while (groups.next()) |group| {
+        const is_measurement = cim_types.is_a(group.type_name, "Measurement");
+        if (!is_measurement) continue;
+
+        const v3_units = measurement_unit_set_v3_0(group.type_name);
+        // A v3.0 (or possibly-v3.0) model is constrained here only for the
+        // concrete classes to which IEC 61970-452 attaches a unit list.
+        if (version != .v2_4_15 and v3_units == null) continue;
+
+        for (group.objects) |measurement| {
+            const measurement_unit_ref = (measurement.reference("Measurement.unitSymbol") catch
+                return error.MeasUnit) orelse {
+                // `reference()` also answers null for a unitSymbol serialized as
+                // element text, which is a declared association this rule cannot
+                // read -- the same reading validate_conn_node_in_eq_operations
+                // gives Terminal.ConnectivityNode.
+                if (declares_child(measurement, "Measurement.unitSymbol")) return error.MeasUnit;
+                continue;
+            };
+            const measurement_unit = cim.uri.fragment_or_self(measurement_unit_ref);
+            if (measurement_unit.len == 0) return error.MeasUnit;
+            if (!measurement_unit_allowed(measurement_unit, version, v3_units)) {
+                return error.MeasUnit;
+            }
+        }
+    }
+}
+
+/// CNRequiredInEQOperations
+///
+/// The association end cim:Terminal.ConnectivityNode is required in cases
+/// where EQ Operation profile is specified in the header. The different kinds
+/// of models are described in IEC TS 61970-600-1:2017 PROF4.
+///
+/// In CGMES v3.0 ConnectivityNode objects are in Core Equipment profile. In
+/// addition, the associations were clarified. Also ConnectivityNode objects
+/// are required in CGMES v3.0 for all types of models.
+pub fn validate_conn_node_in_eq_operations(
+    model: Model,
+    header: cim.profile.Header,
+) error{CNRequiredInEQOperations}!void {
+    const is_equipment_part = switch (header.profile) {
+        .known => |kind| kind == .eq,
+        .unknown, .absent => false,
+    };
+    const applies_to_v2_operation = header.has_profile(.equipment_operation);
+    const applies_to_v3_equipment = header.version == .v3_0 and is_equipment_part;
+    if (!applies_to_v2_operation and !applies_to_v3_equipment) return;
+
+    var groups = model.type_groups();
+    while (groups.next()) |group| {
+        const is_terminal = cim_types.is_a(group.type_name, "Terminal");
+        if (!is_terminal) continue;
+
+        for (group.objects) |terminal| {
+            // A ConnectivityNode serialized as element text reads as null here,
+            // and is a violation: the association is required to be readable,
+            // not merely to be mentioned. validate_measurement_unit treats a
+            // misserialized unitSymbol the same way.
+            const conn_node_ref = terminal.reference("Terminal.ConnectivityNode") catch return error.CNRequiredInEQOperations;
+            _ = parse.non_blank(conn_node_ref) orelse return error.CNRequiredInEQOperations;
+        }
+    }
+}
+
+/// True when the object declares a child element with this name, whatever its
+/// syntax. Both `property()` and `reference()` answer null for a child that
+/// exists but is written the other way -- a self-closing literal, an association
+/// serialized as element text -- and a rule about a required value must not read
+/// that as "never declared".
+fn declares_child(object: CimObject, name: []const u8) bool {
+    var it = object.children();
+    while (it.next()) |child| {
+        if (std.mem.eql(u8, child.name, name)) return true;
+    }
+    return false;
+}
+
 fn coefficient_sum_equals_one(sum: f64) bool {
     const difference = @abs(sum - 1.0);
     return difference < @abs(sum) * numeric_tolerance_factor or
@@ -1513,7 +1754,7 @@ fn matches_any_type(actual_type: []const u8, requested_types: []const []const u8
 fn validate_grid_model_constraints(
     gpa: std.mem.Allocator,
     model: Model,
-    profile_part: ?cim.profile.Kind,
+    profile_header: ?ResolvedHeader,
     reverse_ref_index: *const ReverseRefIndex,
 ) !void {
     try validate_name_length(model);
@@ -1521,7 +1762,9 @@ fn validate_grid_model_constraints(
     try validate_energy_ident_coding_length(model);
     try validate_short_name_length(model);
 
-    const resolved_profile = profile_part orelse return error.TooManyProfileParts;
+    const resolved = profile_header orelse return error.TooManyProfileParts;
+    const resolved_header = resolved.header;
+    const resolved_profile = resolved.kind;
     if (resolved_profile == .eqbd) {
         try validate_boundary_node_country_code_from(model);
         try validate_boundary_node_country_code_to(model);
@@ -1555,7 +1798,27 @@ fn validate_grid_model_constraints(
     try validate_load_response_characteristic_coefficient_model(model);
     try validate_load_response_characteristic_coefficient_parameters(model);
     try validate_measurement_terminal(model);
+    try validate_measurement_type(model, resolved_header.version);
+    try validate_measurement_unit(model, resolved_header.version);
+    try validate_conn_node_in_eq_operations(model, resolved_header);
 }
+
+/// A header whose profile URIs resolved to exactly one known Kind, which is the
+/// only state the grid-model rules run in. Carrying the Kind alongside the
+/// header keeps that a fact of the type: the rules never re-inspect
+/// `header.profile`, so there is no `.unknown`/`.absent` case for them to
+/// mishandle. `resolve` is the only way to build one.
+const ResolvedHeader = struct {
+    kind: cim.profile.Kind,
+    header: cim.profile.Header,
+
+    fn resolve(header: cim.profile.Header) ?ResolvedHeader {
+        return switch (header.profile) {
+            .known => |kind| .{ .kind = kind, .header = header },
+            .unknown, .absent => null,
+        };
+    }
+};
 
 fn filename_stem_from_path(file_path: []const u8) []const u8 {
     const filename_with_extension = std.fs.path.basename(file_path);
@@ -1645,21 +1908,18 @@ pub fn validate(io: std.Io, gpa: std.mem.Allocator, file_path: []const u8) !void
     var reverse_ref_index = try ReverseRefIndex.build(gpa, &model);
     defer reverse_ref_index.deinit(gpa);
 
-    // Reuse the router's header classifier rather than re-deriving the kind by
-    // walking parsed FullModel objects. An unresolved profile (unknown URI,
+    // Reuse the router's header classifier rather than re-deriving header data
+    // by walking parsed FullModel objects. An unresolved profile (unknown URI,
     // absent, or a malformed/ambiguous header) becomes null, which
     // validate_grid_model_constraints reports as TooManyProfileParts.
-    const profile_part: ?cim.profile.Kind = if (cim.profile.classify(gpa, model.xml)) |header|
-        switch (header.profile) {
-            .known => |kind| kind,
-            .unknown, .absent => null,
-        }
+    const profile_header: ?ResolvedHeader = if (cim.profile.classify(gpa, model.xml)) |header|
+        ResolvedHeader.resolve(header)
     else |err| switch (err) {
         error.OutOfMemory => return err,
         else => null,
     };
 
-    validate_grid_model_constraints(gpa, model, profile_part, &reverse_ref_index) catch |err| {
+    validate_grid_model_constraints(gpa, model, profile_header, &reverse_ref_index) catch |err| {
         if (err == error.OutOfMemory) return err;
         print.data_error(io, "qocdc: {s}", .{grid_model_error_message(err)});
     };
@@ -1712,6 +1972,10 @@ fn grid_model_error_message(err: anyerror) []const u8 {
         error.MeasTerminal => "cim:Measurement.Terminal does not refer to a " ++
             "cim:Terminal of a cim:Equipment referenced by " ++
             "cim:Measurement.PowerSystemResource.",
+        error.MeasType => "Invalid measurement type.",
+        error.MeasUnit => "Invalid measurement unit symbol.",
+        error.CNRequiredInEQOperations => "The association end cim:Terminal.ConnectivityNode " ++
+            "is not provided for a model that contains EQ Operation profile.",
         else => @errorName(err),
     };
 }
@@ -1720,5 +1984,21 @@ test "TerminalCount2 diagnostic describes the exact count requirement" {
     try std.testing.expectEqualStrings(
         "a two terminal equipment that is not referenced by exactly two terminals.",
         grid_model_error_message(error.TerminalCount2),
+    );
+}
+
+test "recent QoCDC diagnostics match the specified messages" {
+    try std.testing.expectEqualStrings(
+        "Invalid measurement type.",
+        grid_model_error_message(error.MeasType),
+    );
+    try std.testing.expectEqualStrings(
+        "Invalid measurement unit symbol.",
+        grid_model_error_message(error.MeasUnit),
+    );
+    try std.testing.expectEqualStrings(
+        "The association end cim:Terminal.ConnectivityNode is not provided " ++
+            "for a model that contains EQ Operation profile.",
+        grid_model_error_message(error.CNRequiredInEQOperations),
     );
 }

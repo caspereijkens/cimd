@@ -10,6 +10,7 @@ comptime {
     _ = @import("test_boundary.zig");
     _ = @import("test_document.zig");
     _ = @import("test_ids.zig");
+    _ = @import("test_uri.zig");
     _ = @import("test_tag_index.zig");
     _ = @import("test_xml_scan.zig");
     _ = @import("test_child_table.zig");

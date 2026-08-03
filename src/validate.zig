@@ -658,7 +658,7 @@ fn value_violates(
 /// document, full IRIs (enum values, cross-document references) by their
 /// fragment or last path segment.
 fn reference_local(reference: []const u8) []const u8 {
-    if (std.mem.lastIndexOfScalar(u8, reference, '#')) |index| return reference[index + 1 ..];
+    if (cim.uri.fragment(reference)) |fragment| return fragment;
     if (std.mem.lastIndexOfScalar(u8, reference, '/')) |index| return reference[index + 1 ..];
     return reference;
 }
