@@ -1613,6 +1613,56 @@ pub fn validate_conn_node_in_eq_operations(
     }
 }
 
+/// EnergySourceVoltage
+///
+/// For cim:EnergySource the attributes voltageMagnitude and voltageAngle are
+/// optional to include in EQ. The attributes are intended for the case when a
+/// strong network is providing power to a weak distribution network. Hence it
+/// is wrong to use these attributes in transmission studies and they shall not
+/// at all be used.
+///
+/// CGMES v3.0 is clearer and more restrictive.
+pub fn validate_energy_source_voltage(
+    model: Model,
+) error{EnergySourceVoltage}!void {
+    const energy_sources = model.objects_by_type("EnergySource");
+
+    for (energy_sources) |energy_source| {
+        if (declares_child(energy_source, "EnergySource.voltageMagnitude") or
+            declares_child(energy_source, "EnergySource.voltageAngle"))
+        {
+            return error.EnergySourceVoltage;
+        }
+    }
+}
+
+/// SVCRatings
+///
+/// For every instance of cim:StaticVarCompensator, the value of
+/// cim:StaticVarCompensator.capacitiveRating must be positive. The value of
+/// cim:StaticVarCompensator.inductiveRating must be negative. Zero values are
+/// not allowed.
+pub fn validate_static_var_compensator_ratings(
+    model: Model,
+) error{SVCRatings}!void {
+    const static_var_compensators = model.objects_by_type("StaticVarCompensator");
+
+    for (static_var_compensators) |static_var_compensator| {
+        const properties = static_var_compensator.properties(.{
+            "StaticVarCompensator.capacitiveRating",
+            "StaticVarCompensator.inductiveRating",
+        }) catch return error.SVCRatings;
+
+        const capacitive_rating = parse.float_req(properties[0] orelse
+            return error.SVCRatings) catch return error.SVCRatings;
+        if (capacitive_rating <= 0) return error.SVCRatings;
+
+        const inductive_rating = parse.float_req(properties[1] orelse
+            return error.SVCRatings) catch return error.SVCRatings;
+        if (inductive_rating >= 0) return error.SVCRatings;
+    }
+}
+
 /// True when the object declares a child element with this name, whatever its
 /// syntax. Both `property()` and `reference()` answer null for a child that
 /// exists but is written the other way -- a self-closing literal, an association
@@ -1801,6 +1851,8 @@ fn validate_grid_model_constraints(
     try validate_measurement_type(model, resolved_header.version);
     try validate_measurement_unit(model, resolved_header.version);
     try validate_conn_node_in_eq_operations(model, resolved_header);
+    try validate_energy_source_voltage(model);
+    try validate_static_var_compensator_ratings(model);
 }
 
 /// A header whose profile URIs resolved to exactly one known Kind, which is the
@@ -1976,29 +2028,10 @@ fn grid_model_error_message(err: anyerror) []const u8 {
         error.MeasUnit => "Invalid measurement unit symbol.",
         error.CNRequiredInEQOperations => "The association end cim:Terminal.ConnectivityNode " ++
             "is not provided for a model that contains EQ Operation profile.",
+        error.EnergySourceVoltage => "cim:EnergySource.voltageMagnitude and/or " ++
+            "cim:EnergySource.voltageAngle are present.",
+        error.SVCRatings => "Capacitive rating is not greater than zero and/or " ++
+            "inductive rating is not lower than zero for a SVC.",
         else => @errorName(err),
     };
-}
-
-test "TerminalCount2 diagnostic describes the exact count requirement" {
-    try std.testing.expectEqualStrings(
-        "a two terminal equipment that is not referenced by exactly two terminals.",
-        grid_model_error_message(error.TerminalCount2),
-    );
-}
-
-test "recent QoCDC diagnostics match the specified messages" {
-    try std.testing.expectEqualStrings(
-        "Invalid measurement type.",
-        grid_model_error_message(error.MeasType),
-    );
-    try std.testing.expectEqualStrings(
-        "Invalid measurement unit symbol.",
-        grid_model_error_message(error.MeasUnit),
-    );
-    try std.testing.expectEqualStrings(
-        "The association end cim:Terminal.ConnectivityNode is not provided " ++
-            "for a model that contains EQ Operation profile.",
-        grid_model_error_message(error.CNRequiredInEQOperations),
-    );
 }

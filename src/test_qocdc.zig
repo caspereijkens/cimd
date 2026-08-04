@@ -661,6 +661,52 @@ fn run_conn_node_in_profile(profile_uri: []const u8, body: []const u8) !void {
     return run_conn_node_in_eq_operations(xml);
 }
 
+fn run_energy_source_voltage(xml: []const u8) !void {
+    const gpa = std.testing.allocator;
+    var model = try Model.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    return qocdc.validate_energy_source_voltage(model);
+}
+
+fn run_energy_source_voltage_child(child: []const u8) !void {
+    const gpa = std.testing.allocator;
+    const xml = try std.fmt.allocPrint(
+        gpa,
+        "<rdf:RDF><cim:EnergySource rdf:ID=\"_ES1\">{s}</cim:EnergySource></rdf:RDF>",
+        .{child},
+    );
+    defer gpa.free(xml);
+
+    return run_energy_source_voltage(xml);
+}
+
+fn run_static_var_compensator_ratings(xml: []const u8) !void {
+    const gpa = std.testing.allocator;
+    var model = try Model.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    return qocdc.validate_static_var_compensator_ratings(model);
+}
+
+fn run_static_var_compensator_rating_values(
+    capacitive_rating: []const u8,
+    inductive_rating: []const u8,
+) !void {
+    const gpa = std.testing.allocator;
+    const xml = try std.fmt.allocPrint(
+        gpa,
+        "<rdf:RDF><cim:StaticVarCompensator rdf:ID=\"_SVC1\">" ++
+            "<cim:StaticVarCompensator.capacitiveRating>{s}</cim:StaticVarCompensator.capacitiveRating>" ++
+            "<cim:StaticVarCompensator.inductiveRating>{s}</cim:StaticVarCompensator.inductiveRating>" ++
+            "</cim:StaticVarCompensator></rdf:RDF>",
+        .{ capacitive_rating, inductive_rating },
+    );
+    defer gpa.free(xml);
+
+    return run_static_var_compensator_ratings(xml);
+}
+
 test "CEBaseVoltage accepts a direct BaseVoltage association" {
     try run_ce_base_voltage(
         \\<rdf:RDF>
@@ -2596,4 +2642,144 @@ test "CNRequiredInEQOperations checks every Terminal and ignores other types" {
             "<cim:Terminal.ConnectivityNode rdf:resource=\"\"/>" ++
             "</cim:Breaker>",
     );
+}
+
+test "EnergySourceVoltage accepts absent attributes and ignores other objects" {
+    try run_energy_source_voltage(
+        \\<rdf:RDF>
+        \\  <cim:EnergySource rdf:ID="_ES1">
+        \\    <cim:EnergySource.activePower>10</cim:EnergySource.activePower>
+        \\    <cim:EnergySource.voltageMagnitudeExtra>400</cim:EnergySource.voltageMagnitudeExtra>
+        \\  </cim:EnergySource>
+        \\  <cim:Breaker rdf:ID="_B1">
+        \\    <cim:EnergySource.voltageMagnitude>400</cim:EnergySource.voltageMagnitude>
+        \\    <cim:EnergySource.voltageAngle>0</cim:EnergySource.voltageAngle>
+        \\  </cim:Breaker>
+        \\</rdf:RDF>
+    );
+}
+
+test "EnergySourceVoltage rejects either forbidden attribute" {
+    const forbidden_children = [_][]const u8{
+        "<cim:EnergySource.voltageMagnitude>400</cim:EnergySource.voltageMagnitude>",
+        "<cim:EnergySource.voltageAngle>-12.5</cim:EnergySource.voltageAngle>",
+    };
+    for (forbidden_children) |child| {
+        try std.testing.expectError(
+            error.EnergySourceVoltage,
+            run_energy_source_voltage_child(child),
+        );
+    }
+}
+
+test "EnergySourceVoltage rejects forbidden attributes regardless of serialization" {
+    const forbidden_children = [_][]const u8{
+        "<cim:EnergySource.voltageMagnitude></cim:EnergySource.voltageMagnitude>",
+        "<cim:EnergySource.voltageAngle/>",
+        "<cim:EnergySource.voltageMagnitude rdf:resource=\"#_INVALID\"/>",
+    };
+    for (forbidden_children) |child| {
+        try std.testing.expectError(
+            error.EnergySourceVoltage,
+            run_energy_source_voltage_child(child),
+        );
+    }
+}
+
+test "EnergySourceVoltage checks every EnergySource" {
+    try std.testing.expectError(error.EnergySourceVoltage, run_energy_source_voltage(
+        \\<rdf:RDF>
+        \\  <cim:EnergySource rdf:ID="_VALID"/>
+        \\  <cim:EnergySource rdf:ID="_INVALID">
+        \\    <cim:EnergySource.voltageAngle>0</cim:EnergySource.voltageAngle>
+        \\  </cim:EnergySource>
+        \\</rdf:RDF>
+    ));
+}
+
+test "SVCRatings accepts positive capacitive and negative inductive ratings" {
+    const valid_ratings = [_][2][]const u8{
+        .{ "100", "-100" },
+        .{ "0.25", "-0.25" },
+        .{ "  1.5e2\n", "\n -2.5e-1  " },
+    };
+    for (valid_ratings) |ratings| {
+        try run_static_var_compensator_rating_values(ratings[0], ratings[1]);
+    }
+}
+
+test "SVCRatings rejects zero and ratings with the wrong sign" {
+    const invalid_ratings = [_][2][]const u8{
+        .{ "0", "-1" },
+        .{ "-0", "-1" },
+        .{ "-1", "-1" },
+        .{ "1", "0" },
+        .{ "1", "-0" },
+        .{ "1", "1" },
+    };
+    for (invalid_ratings) |ratings| {
+        try std.testing.expectError(
+            error.SVCRatings,
+            run_static_var_compensator_rating_values(ratings[0], ratings[1]),
+        );
+    }
+}
+
+test "SVCRatings rejects missing ratings" {
+    const invalid_svcs = [_][]const u8{
+        "<cim:StaticVarCompensator rdf:ID=\"_SVC1\">" ++
+            "<cim:StaticVarCompensator.inductiveRating>-1</cim:StaticVarCompensator.inductiveRating>" ++
+            "</cim:StaticVarCompensator>",
+        "<cim:StaticVarCompensator rdf:ID=\"_SVC1\">" ++
+            "<cim:StaticVarCompensator.capacitiveRating>1</cim:StaticVarCompensator.capacitiveRating>" ++
+            "</cim:StaticVarCompensator>",
+    };
+    for (invalid_svcs) |svc| {
+        const gpa = std.testing.allocator;
+        const xml = try std.fmt.allocPrint(gpa, "<rdf:RDF>{s}</rdf:RDF>", .{svc});
+        defer gpa.free(xml);
+
+        try std.testing.expectError(error.SVCRatings, run_static_var_compensator_ratings(xml));
+    }
+}
+
+test "SVCRatings rejects blank, malformed, and non-finite ratings" {
+    const invalid_ratings = [_][2][]const u8{
+        .{ " ", "-1" },
+        .{ "rating", "-1" },
+        .{ "nan", "-1" },
+        .{ "1", " " },
+        .{ "1", "rating" },
+        .{ "1", "-inf" },
+    };
+    for (invalid_ratings) |ratings| {
+        try std.testing.expectError(
+            error.SVCRatings,
+            run_static_var_compensator_rating_values(ratings[0], ratings[1]),
+        );
+    }
+}
+
+test "SVCRatings checks every SVC and ignores unrelated objects" {
+    try run_static_var_compensator_ratings(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_B1">
+        \\    <cim:StaticVarCompensator.capacitiveRating>-1</cim:StaticVarCompensator.capacitiveRating>
+        \\    <cim:StaticVarCompensator.inductiveRating>1</cim:StaticVarCompensator.inductiveRating>
+        \\  </cim:Breaker>
+        \\</rdf:RDF>
+    );
+
+    try std.testing.expectError(error.SVCRatings, run_static_var_compensator_ratings(
+        \\<rdf:RDF>
+        \\  <cim:StaticVarCompensator rdf:ID="_VALID">
+        \\    <cim:StaticVarCompensator.capacitiveRating>1</cim:StaticVarCompensator.capacitiveRating>
+        \\    <cim:StaticVarCompensator.inductiveRating>-1</cim:StaticVarCompensator.inductiveRating>
+        \\  </cim:StaticVarCompensator>
+        \\  <cim:StaticVarCompensator rdf:ID="_INVALID">
+        \\    <cim:StaticVarCompensator.capacitiveRating>-1</cim:StaticVarCompensator.capacitiveRating>
+        \\    <cim:StaticVarCompensator.inductiveRating>-1</cim:StaticVarCompensator.inductiveRating>
+        \\  </cim:StaticVarCompensator>
+        \\</rdf:RDF>
+    ));
 }
