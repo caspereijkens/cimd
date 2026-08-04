@@ -47,6 +47,11 @@ pub const CimDocument = struct {
     pub const TypeGroup = struct {
         type_name: []const u8,
         objects: []const CimObject,
+        /// Index of `objects[0]` in the document's object array; the counting
+        /// sort guarantees the group occupies `start..start + objects.len`.
+        /// Lets consumers key side tables by object index without touching
+        /// the storage layout.
+        start: u32,
     };
     pub const TypeGroupIterator = struct {
         model: *const CimDocument,
@@ -69,7 +74,7 @@ pub const CimDocument = struct {
             const objects = self.model.objects[start..end];
             assert(std.mem.eql(u8, objects[0].type_name(), type_name));
             assert(std.mem.eql(u8, objects[objects.len - 1].type_name(), type_name));
-            return .{ .type_name = type_name, .objects = objects };
+            return .{ .type_name = type_name, .objects = objects, .start = start };
         }
     };
     pub const TypeCount = struct {
@@ -214,6 +219,23 @@ pub const CimDocument = struct {
         gpa.destroy(self.context);
         gpa.free(self.boundaries);
         gpa.free(self.xml);
+    }
+
+    /// The document's XML bytes. The stable accessor for consumers that need
+    /// the source text (header classification, offset-to-line mapping)
+    /// without coupling to the storage field.
+    pub fn source(self: *const CimDocument) []const u8 {
+        return self.xml;
+    }
+
+    pub fn object_count(self: *const CimDocument) u32 {
+        assert(self.objects.len <= std.math.maxInt(u32));
+        return @intCast(self.objects.len);
+    }
+
+    pub fn object_at(self: *const CimDocument, index: u32) CimObject {
+        assert(index < self.objects.len);
+        return self.objects[index];
     }
 
     pub fn object_by_id(self: CimDocument, id: []const u8) ?CimObject {

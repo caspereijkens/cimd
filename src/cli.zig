@@ -40,8 +40,8 @@ const help_main = std.fmt.comptimePrint(
     \\A high-performance CGMES file parser and analysis tool.
     \\
     \\Input limits:
-    \\  XML data: {[xml_limit]s} total after unzip (up to 8 inputs,
-    \\    16 XML parts per ZIP).
+    \\  XML data: {[xml_limit]s} total after unzip 
+    \\  (up to 8 inputs, 16 XML parts per ZIP).
     \\  SHACL rule files: {[rules_limit]s} after unzip.
     \\  Non-interactive commands accept '-' as the primary data path to read
     \\  uncompressed XML from stdin.

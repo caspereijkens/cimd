@@ -5,6 +5,8 @@ const print = @import("io/print.zig");
 const builtin = @import("builtin");
 const Overlay = cim.Overlay;
 const io_read = @import("io/read.zig");
+const read_path = io_read.read_path;
+const zip = @import("io/zip.zig");
 // `_mod` suffix: local `diagnostics` variables would shadow it.
 const diagnostics_mod = cim.diagnostics;
 const CimDocument = cim.CimDocument;
@@ -20,7 +22,7 @@ const refs = cim.refs;
 const ids = cim.ids;
 const cim_types = cim.cim_types;
 const CimMergedView = cim.CimMergedView;
-const qocdc = @import("qocdc.zig");
+const qocdc = @import("qocdc/qocdc.zig");
 const validate = @import("validate.zig");
 const model_set = @import("model_set.zig");
 const rule_set = @import("shacl/rule_set.zig");
@@ -1450,13 +1452,68 @@ fn write_validation_heading(file_writer: *std.Io.File.Writer, document: model_se
 }
 
 fn command_qocdc(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Qocdc) !void {
-    qocdc.validate(io, gpa, c.eq_path) catch |err| input_read_error(io, .{
+    const read_options: InputSpec = .{
         .command_name = "qocdc",
         .role = "input file",
         .path = c.eq_path,
         .extension = ".xml",
         .max_bytes = max_in_memory_input_bytes,
-    }, err, null);
+    };
+
+    // QoCDC input is a ZIP container holding exactly one XML entry; the
+    // container shape is an input error (immediate exit), while the entry
+    // name's *content* feeds the FileNameConsistency rule below.
+    var entry_name_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const entry_name = qocdc_zip_entry_name(io, c.eq_path, &entry_name_buffer) catch |err| switch (err) {
+        error.NotZipArchive => print.data_error(io, "qocdc: input '{s}' is not a ZIP archive", .{c.eq_path}),
+        error.ZipInsufficientBuffer => print.data_error(io, "qocdc: ZIP entry name exceeds the supported path length", .{}),
+        error.WrongZipEntryCount => print.data_error(io, "qocdc: ZIP container '{s}' must hold exactly one file", .{c.eq_path}),
+        else => input_read_error(io, read_options, err, null),
+    };
+
+    const xml = read_path(io, gpa, c.eq_path) catch |err| input_read_error(io, read_options, err, null);
+    var model = CimDocument.init(gpa, xml) catch |err| input_read_error(io, read_options, err, null);
+    defer model.deinit(gpa);
+
+    var report: qocdc.Report = .empty;
+    defer report.deinit(gpa);
+    const stem = std.fs.path.stem(std.fs.path.basename(c.eq_path));
+    try qocdc.validate_filename(&report, gpa, stem, std.fs.path.stem(entry_name));
+    try qocdc.validate_model(&report, gpa, &model);
+
+    var write_buffer: [16 * 1024]u8 = undefined;
+    var file_writer = std.Io.File.Writer.init(std.Io.File.stderr(), io, &write_buffer);
+    const total = qocdc.write_report(gpa, &file_writer.interface, &model, &report) catch |err|
+        switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => print.system_error(io, "qocdc: failed to write the report: {t}", .{err}),
+        };
+    print.flush_file_writer(&file_writer) catch |err|
+        print.system_error(io, "qocdc: failed to write the report: {t}", .{err});
+    if (total > 0) std.process.exit(print.exit_data_error);
+}
+
+/// The single entry name of the QoCDC ZIP container. Moved out of the qocdc
+/// library: opening files is the application's job.
+fn qocdc_zip_entry_name(io: std.Io, file_path: []const u8, buffer: *[std.fs.max_path_bytes]u8) ![]const u8 {
+    const cwd = std.Io.Dir.cwd();
+    const file = try cwd.openFile(io, file_path, .{});
+    defer file.close(io);
+
+    if (!try zip.is_zip_file(io, file)) return error.NotZipArchive;
+
+    var zip_buffer: [512]u8 = undefined;
+    var file_reader = file.reader(io, &zip_buffer);
+    var iter = try std.zip.Iterator.init(&file_reader);
+
+    const entry = try iter.next() orelse return error.WrongZipEntryCount;
+    if (buffer.len < entry.filename_len) return error.ZipInsufficientBuffer;
+    const entry_name = buffer[0..entry.filename_len];
+    try file_reader.seekTo(entry.header_zip_offset + @sizeOf(std.zip.CentralDirectoryFileHeader));
+    try file_reader.interface.readSliceAll(entry_name);
+
+    if (try iter.next() != null) return error.WrongZipEntryCount;
+    return entry_name;
 }
 
 fn invalid_model_structure(io: std.Io, command_name: []const u8, required_type: []const u8) noreturn {

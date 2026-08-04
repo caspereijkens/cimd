@@ -42,9 +42,9 @@ pub const model_set = @import("model_set.zig");
 
 comptime {
     _ = @import("cim/test_all.zig");
+    _ = @import("qocdc/test_all.zig");
     _ = @import("model_set.zig");
     _ = @import("test_browse.zig");
-    _ = @import("test_qocdc.zig");
     _ = @import("topology/test_resolve.zig");
     _ = @import("convert/test_conversion.zig");
     _ = @import("topology/cross_ref.zig");
@@ -55,7 +55,6 @@ comptime {
     _ = @import("convert/placement.zig");
     _ = @import("convert/equipment.zig");
     _ = @import("convert/line.zig");
-    _ = @import("qocdc.zig");
     _ = @import("shacl/test_turtle.zig");
     _ = @import("shacl/test_rule_set.zig");
     _ = @import("test_validate.zig");

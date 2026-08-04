@@ -19,6 +19,7 @@ comptime {
     _ = @import("cim_types.zig");
     _ = @import("parse.zig");
     _ = @import("refs.zig");
+    _ = @import("reference_index.zig");
     _ = @import("writer.zig");
     _ = @import("cgmes/profile.zig");
     _ = @import("cgmes/overlay.zig");

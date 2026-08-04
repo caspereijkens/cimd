@@ -43,6 +43,12 @@ pub const CimDocument = @import("document.zig").CimDocument;
 pub const CimObject = @import("tag_index.zig").CimObject;
 pub const Diagnostics = @import("diagnostics.zig").Diagnostics;
 
+/// Object lookup by raw reference value ("_x", "#_x", fragment IRI, path IRI,
+/// URN). Owns id normalization and its collision rules -- exact raw match
+/// wins, a unique local alias resolves, an ambiguous alias resolves to null.
+/// Built by the run that needs it. See reference_index.zig.
+pub const ReferenceIndex = @import("reference_index.zig").ReferenceIndex;
+
 /// One child element of an object, and the walk that yields them. This is the
 /// level a CIM consumer works at; nothing here needs a tag boundary.
 pub const Child = @import("tag_index.zig").Child;

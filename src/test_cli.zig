@@ -556,3 +556,91 @@ test "--stats rejects a mode it does not define" {
     try std.testing.expectEqual(@as(u8, exit_usage), result.code);
     try std.testing.expect(result.stderr_contains("expected auto, always or never"));
 }
+
+// ── qocdc ─────────────────────────────────────────────────────────────────────
+
+const qocdc_stem = "20260603T1325Z_1D_TTN_EQ_001";
+
+const qocdc_clean_xml = header(eq_uri) ++
+    \\  <cim:Substation rdf:ID="_sub1">
+    \\    <cim:IdentifiedObject.name>Sub One</cim:IdentifiedObject.name>
+    \\  </cim:Substation>
+    \\</rdf:RDF>
+;
+
+test "qocdc reports every violation with rule, id, and line, and exits 65" {
+    const gpa = std.testing.allocator;
+    var fixtures = Fixtures.init();
+    defer fixtures.deinit();
+
+    // Two seeded violations: a nameless Substation and a non-positive
+    // nominalVoltage (whose BaseVoltage is properly named).
+    const xml = header(eq_uri) ++
+        \\  <cim:Substation rdf:ID="_nameless">
+        \\  </cim:Substation>
+        \\  <cim:BaseVoltage rdf:ID="_bv1">
+        \\    <cim:IdentifiedObject.name>BV</cim:IdentifiedObject.name>
+        \\    <cim:BaseVoltage.nominalVoltage>-110</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\</rdf:RDF>
+    ;
+    var buf: [256]u8 = undefined;
+    const path = try fixtures.write_bundle(gpa, &buf, qocdc_stem ++ ".zip", &.{
+        .{ .name = qocdc_stem ++ ".xml", .data = xml },
+    });
+
+    var result = try run(gpa, &.{ "qocdc", path });
+    defer result.deinit(gpa);
+    try std.testing.expectEqual(@as(u8, exit_data_error), result.code);
+    try std.testing.expect(result.stderr_contains("qocdc: NameLength: _nameless line "));
+    try std.testing.expect(result.stderr_contains("qocdc: NominalVoltage: _bv1 line "));
+    try std.testing.expect(result.stderr_contains("['-110']"));
+    try std.testing.expect(result.stderr_contains("2 violations across 2 rules"));
+}
+
+test "qocdc exits 0 with empty stderr for a clean model" {
+    const gpa = std.testing.allocator;
+    var fixtures = Fixtures.init();
+    defer fixtures.deinit();
+
+    var buf: [256]u8 = undefined;
+    const path = try fixtures.write_bundle(gpa, &buf, qocdc_stem ++ ".zip", &.{
+        .{ .name = qocdc_stem ++ ".xml", .data = qocdc_clean_xml },
+    });
+
+    var result = try run(gpa, &.{ "qocdc", path });
+    defer result.deinit(gpa);
+    try std.testing.expectEqual(@as(u8, 0), result.code);
+    try std.testing.expectEqualStrings("", result.stderr);
+}
+
+test "qocdc reports FileNameConsistency for a mismatched entry stem" {
+    const gpa = std.testing.allocator;
+    var fixtures = Fixtures.init();
+    defer fixtures.deinit();
+
+    var buf: [256]u8 = undefined;
+    const path = try fixtures.write_bundle(gpa, &buf, qocdc_stem ++ ".zip", &.{
+        .{ .name = "other_name.xml", .data = qocdc_clean_xml },
+    });
+
+    var result = try run(gpa, &.{ "qocdc", path });
+    defer result.deinit(gpa);
+    try std.testing.expectEqual(@as(u8, exit_data_error), result.code);
+    try std.testing.expect(result.stderr_contains("qocdc: FileNameConsistency:"));
+    try std.testing.expect(result.stderr_contains("['other_name']"));
+}
+
+test "qocdc rejects a container that is not a ZIP archive" {
+    const gpa = std.testing.allocator;
+    var fixtures = Fixtures.init();
+    defer fixtures.deinit();
+
+    var buf: [256]u8 = undefined;
+    const path = try fixtures.write(&buf, "model.xml", qocdc_clean_xml);
+
+    var result = try run(gpa, &.{ "qocdc", path });
+    defer result.deinit(gpa);
+    try std.testing.expectEqual(@as(u8, exit_data_error), result.code);
+    try std.testing.expect(result.stderr_contains("is not a ZIP archive"));
+}

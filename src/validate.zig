@@ -179,50 +179,17 @@ fn contains_sorted_u32(haystack: []const u32, needle: u32) bool {
     return low < haystack.len and haystack[low] == needle;
 }
 
-/// Object lookup by the local (hash-stripped) form of an id. EQ stores ids
-/// raw: the rdf:ID form ("_x") already equals the local form of a reference,
-/// but flat rdf:about instance files (SSH, TP, SV) carry "#_x", which a
-/// reference's local form would miss. The extra map is built only for ids
-/// that need stripping; empty for rdf:ID documents.
-const IdIndex = struct {
-    model: *const CimDocument,
-    /// strip_hash(id) → object index, only for '#'-prefixed ids.
-    about: std.StringHashMap(u32),
+/// Object lookup by reference, including the local (hash-stripped) form of
+/// full-IRI ids. The normalization and its collision rules live in the
+/// library; this file only asks for object indexes.
+const IdIndex = cim.ReferenceIndex;
 
-    fn init(gpa: std.mem.Allocator, model: *const CimDocument) !IdIndex {
-        assert(model.objects.len <= std.math.maxInt(u32));
-        var about = std.StringHashMap(u32).init(gpa);
-        errdefer about.deinit();
-        var total: u32 = 0;
-        for (model.objects) |obj| {
-            if (obj.id()[0] == '#') total += 1;
-        }
-        if (total > 0) {
-            try about.ensureTotalCapacity(total);
-            for (model.objects, 0..) |obj, index| {
-                // CimDocument.init rejects duplicate raw ids, so keys are unique.
-                if (obj.id()[0] == '#') about.putAssumeCapacity(obj.id()[1..], @intCast(index));
-            }
-        }
-        assert(about.count() == total);
-        return .{ .model = model, .about = about };
-    }
-
-    fn deinit(ids: *IdIndex) void {
-        ids.about.deinit();
-    }
-
-    /// Object index for a reference's local form, or null when dangling.
-    fn get(ids: *const IdIndex, local_id: []const u8) ?u32 {
-        if (ids.model.id_to_index.get(local_id)) |index| return index;
-        return ids.about.get(local_id);
-    }
-
-    fn type_name_of(ids: *const IdIndex, local_id: []const u8) ?[]const u8 {
-        const index = ids.get(local_id) orelse return null;
-        return ids.model.objects[index].type_name();
-    }
-};
+/// Type name of the object a reference resolves to, or null when dangling
+/// or ambiguous.
+fn type_name_of(ids: *const IdIndex, reference: []const u8) ?[]const u8 {
+    const index = ids.object_index_by_reference(reference) orelse return null;
+    return ids.model.objects[index].type_name();
+}
 
 /// A property occurrence, normalized for comparison: references compare by
 /// the local name of their target IRI so namespace variants collapse, text
@@ -318,7 +285,7 @@ const Evaluator = struct {
             .node => |id| {
                 // A node target that resolves to nothing is valid; corpus
                 // node targets are synthetic SPARQL hooks.
-                const index = ev.ids.get(id) orelse return;
+                const index = ev.ids.object_index_by_reference(id) orelse return;
                 try ev.evaluate_object(shape_index, shape, constraints, index);
             },
             .subjects_of => {
@@ -455,7 +422,7 @@ const Evaluator = struct {
 
     fn resolve_reference_type(ev: *const Evaluator, value: Value) ?[]const u8 {
         if (value.kind != .reference) return null;
-        return ev.ids.type_name_of(value.comparable);
+        return type_name_of(ev.ids, value.comparable);
     }
 
     fn stage_value_check(
@@ -555,7 +522,7 @@ const ReferrerCounts = struct {
             while (it.next()) |child| {
                 if (child.kind != .reference) continue;
                 const property_index = index_sorted(rc.properties, child.name) orelse continue;
-                const target = ids.get(reference_local(child.value)) orelse continue;
+                const target = ids.object_index_by_reference(child.value) orelse continue;
                 rc.counts[property_index * rc.object_count + target] += 1;
             }
         }
@@ -628,7 +595,7 @@ fn value_violates(
             // The reference must resolve to an instance of the class
             // (subtypes ok). A dangling reference has no type: violation.
             if (value.kind != .reference) return true;
-            const type_name = ids.type_name_of(value.comparable) orelse return true;
+            const type_name = type_name_of(ids, value.comparable) orelse return true;
             return !cim_types.is_a(type_name, class_name);
         },
         .in => return !contains_sorted(rules.in_values_of(constraint), value.comparable),
