@@ -595,6 +595,73 @@ test "SynchronousCondenser accepts an unassociated condenser and associated gene
     try expect_clean(&run);
 }
 
+// ── SMQLimits2 ───────────────────────────────────────────────────────────
+
+test "SMQLimits2 accepts a complete minQ and maxQ pair" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:SynchronousMachine rdf:ID="_sm1">
+        \\    <cim:SynchronousMachine.minQ>-50</cim:SynchronousMachine.minQ>
+        \\    <cim:SynchronousMachine.maxQ>60</cim:SynchronousMachine.maxQ>
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_missing"/>
+        \\  </cim:SynchronousMachine>
+        \\</rdf:RDF>
+    , .SMQLimits2);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "SMQLimits2 accepts the machine's forward capability-curve association" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:SynchronousMachine rdf:ID="_sm1">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_curve1"/>
+        \\    <cim:SynchronousMachine.minQ>-50</cim:SynchronousMachine.minQ>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_curve1"/>
+        \\</rdf:RDF>
+    , .SMQLimits2);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "SMQLimits2 rejects incomplete limits and unusable curve references" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:SynchronousMachine rdf:ID="_neither"/>
+        \\  <cim:SynchronousMachine rdf:ID="_min_only">
+        \\    <cim:SynchronousMachine.minQ>-50</cim:SynchronousMachine.minQ>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_max_only">
+        \\    <cim:SynchronousMachine.maxQ>60</cim:SynchronousMachine.maxQ>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_blank_min">
+        \\    <cim:SynchronousMachine.minQ> </cim:SynchronousMachine.minQ>
+        \\    <cim:SynchronousMachine.maxQ>60</cim:SynchronousMachine.maxQ>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_empty_curve">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource=""/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_dangling_curve">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_missing"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_wrong_curve_type">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_not_a_curve"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:BaseVoltage rdf:ID="_not_a_curve"/>
+        \\</rdf:RDF>
+    , .SMQLimits2);
+    defer run.deinit();
+    try expect_rule(&run, .SMQLimits2, 7);
+    try expect_violation(&run, .SMQLimits2, "_neither");
+    try expect_violation(&run, .SMQLimits2, "_min_only");
+    try expect_violation(&run, .SMQLimits2, "_max_only");
+    try expect_violation(&run, .SMQLimits2, "_blank_min");
+    try expect_violation(&run, .SMQLimits2, "_empty_curve");
+    try expect_violation(&run, .SMQLimits2, "_dangling_curve");
+    try expect_violation(&run, .SMQLimits2, "_wrong_curve_type");
+}
+
 // ── MeasType ──────────────────────────────────────────────────────────────
 
 fn measurement_type_xml(buffer: []u8, comptime header: []const u8, value: []const u8) ![]const u8 {

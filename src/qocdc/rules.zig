@@ -1,10 +1,8 @@
-//! Optimized and relational QoCDC grid-model rules.
+//! QoCDC grid-model rules and their shared execution data.
 //!
-//! This is the performance path: applicable entries share one child walk per
-//! object through `Slots`, while relational rules harvest compact columns for
-//! a later array-only pass. New same-object rules should start in
-//! `simple_rules.zig`; move one here only when a benchmark justifies the extra
-//! slot plumbing.
+//! Applicable object rules share one child walk per object through `Slots`.
+//! Rules that need other objects opt into reference resolution; relational
+//! rules harvest compact columns for a later array-only pass.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -54,6 +52,11 @@ pub const Prop = enum(u8) {
     svc_inductive,
     gu_nominal_p,
     gu_rated_s,
+    sm_type,
+    rm_generating_unit,
+    sm_min_q,
+    sm_max_q,
+    sm_initial_reactive_capability_curve,
     meas_type,
     meas_unit,
     eq_container,
@@ -103,6 +106,11 @@ pub fn prop_name(prop: Prop) []const u8 {
         .svc_inductive => "StaticVarCompensator.inductiveRating",
         .gu_nominal_p => "GeneratingUnit.nominalP",
         .gu_rated_s => "GeneratingUnit.ratedS",
+        .sm_type => "SynchronousMachine.type",
+        .rm_generating_unit => "RotatingMachine.GeneratingUnit",
+        .sm_min_q => "SynchronousMachine.minQ",
+        .sm_max_q => "SynchronousMachine.maxQ",
+        .sm_initial_reactive_capability_curve => "SynchronousMachine.InitialReactiveCapabilityCurve",
         .meas_type => "Measurement.measurementType",
         .meas_unit => "Measurement.unitSymbol",
         .eq_container => "Equipment.EquipmentContainer",
@@ -150,7 +158,8 @@ pub const TargetTraits = packed struct(u16) {
     equivalent_branch: bool = false,
     /// is_a ConductingEquipment or DCConductingEquipment (TerminalSeqNumOrder).
     ce_or_dcce: bool = false,
-    _pad: u3 = 0,
+    reactive_capability_curve: bool = false,
+    _pad: u2 = 0,
 
     pub fn intersects(self: TargetTraits, allowed: TargetTraits) bool {
         return @as(u16, @bitCast(self)) & @as(u16, @bitCast(allowed)) != 0;
@@ -200,6 +209,7 @@ pub fn compute_traits(type_name: []const u8) TargetTraits {
         .equivalent_branch = is_a(tid, type_name, "EquivalentBranch"),
         .ce_or_dcce = is_a(tid, type_name, "ConductingEquipment") or
             is_a(tid, type_name, "DCConductingEquipment"),
+        .reactive_capability_curve = is_a(tid, type_name, "ReactiveCapabilityCurve"),
     };
 }
 
@@ -619,6 +629,26 @@ pub const object_rules = [_]ObjectRule{
             .{ .prop = .gu_rated_s, .channels = text_only },
         },
         .check = &check_generating_unit_nominal_p,
+    },
+    .{
+        .rule = .SMQLimits2,
+        .filter = .{ .is_a_any = &.{"SynchronousMachine"} },
+        .needs_resolution = true,
+        .needs = &.{
+            .{ .prop = .sm_min_q, .channels = text_only },
+            .{ .prop = .sm_max_q, .channels = text_only },
+            .{ .prop = .sm_initial_reactive_capability_curve, .channels = .{ .ref = true } },
+        },
+        .check = &check_synchronous_machine_limits,
+    },
+    .{
+        .rule = .SynchronousCondenser,
+        .filter = .{ .is_a_any = &.{"SynchronousMachine"} },
+        .needs = &.{
+            .{ .prop = .sm_type, .channels = .{ .ref = true } },
+            .{ .prop = .rm_generating_unit, .channels = declared_only },
+        },
+        .check = &check_synchronous_condenser,
     },
     .{
         .rule = .MeasType,
@@ -1156,6 +1186,36 @@ fn check_generating_unit_nominal_p(ctx: *Ctx, obj: cim.CimObject) error{OutOfMem
         return ctx.emit(.GeneratingUnitNominalP, obj, rated_text);
     if (!std.math.isFinite(rated_power) or nominal_power > rated_power) {
         return ctx.emit(.GeneratingUnitNominalP, obj, nominal_text);
+    }
+}
+
+/// SMQLimits2: a SynchronousMachine needs both scalar reactive-power limits,
+/// or a forward association that resolves to a ReactiveCapabilityCurve.
+fn check_synchronous_machine_limits(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    const has_limits = parse.non_blank(prop_text(ctx.slots, .sm_min_q)) != null and
+        parse.non_blank(prop_text(ctx.slots, .sm_max_q)) != null;
+    if (has_limits) return;
+
+    const reference = switch (prop_ref(ctx.slots, .sm_initial_reactive_capability_curve)) {
+        .value => |value| value,
+        .absent, .malformed => return ctx.emit(.SMQLimits2, obj, ""),
+    };
+    const curve = ctx.ref_index.?.object_index_by_reference(reference) orelse
+        return ctx.emit(.SMQLimits2, obj, reference);
+    if (!ctx.traits.?[curve].reactive_capability_curve) {
+        try ctx.emit(.SMQLimits2, obj, reference);
+    }
+}
+
+fn check_synchronous_condenser(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    const type_reference = switch (prop_ref(ctx.slots, .sm_type)) {
+        .value => |value| value,
+        .absent, .malformed => return,
+    };
+    const machine_type = cim.uri.fragment_or_self(type_reference);
+    if (!std.mem.eql(u8, machine_type, "SynchronousMachineKind.condenser")) return;
+    if (prop_declared(ctx.slots, .rm_generating_unit)) {
+        try ctx.emit(.SynchronousCondenser, obj, "");
     }
 }
 

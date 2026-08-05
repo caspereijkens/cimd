@@ -1,9 +1,8 @@
 //! The fused grid-model validation pass.
 //!
-//! One outer sweep visits every applicable object. Optimized rules share one
-//! child walk through value slots; simple rules query their object directly.
-//! Type filters cost one `type_id` lookup plus bit tests per group (not per
-//! object), and no rule makes its own sweep over the model.
+//! One outer sweep visits every applicable object. Rules share one child walk
+//! through value slots. Type filters cost one `type_id` lookup plus bit tests
+//! per group (not per object), and no rule makes its own sweep over the model.
 //!
 //! Phase H resolves the header once. Later phases (traits, harvested
 //! columns, relational passes) extend this file.
@@ -14,7 +13,6 @@ const assert = std.debug.assert;
 const cim = @import("../cim/cim.zig");
 const rules = @import("rules.zig");
 const report_mod = @import("report.zig");
-const simple_rules = @import("simple_rules.zig");
 
 const Report = report_mod.Report;
 const Rule = rules.Rule;
@@ -70,13 +68,6 @@ pub fn validate_model_rules(
             enabled |= 1 << i;
         }
     }
-    var simple_enabled: u64 = 0;
-    inline for (simple_rules.entries, 0..) |entry, i| {
-        if (requested.contains(entry.rule) and gate_active(entry.gate, resolved)) {
-            simple_enabled |= 1 << i;
-        }
-    }
-
     // Harvesters active this run: the dependency closure of the request. A
     // rule verdict may live entirely in Phase B (the count rules), so an
     // empty `enabled` alone does not end the run.
@@ -86,7 +77,7 @@ pub fn validate_model_rules(
             if (requested.contains(rule)) harvest_enabled |= 1 << i;
         }
     }
-    if (enabled == 0 and simple_enabled == 0 and harvest_enabled == 0) return;
+    if (enabled == 0 and harvest_enabled == 0) return;
 
     // Phase 0: traits column and reference resolution, only when an enabled
     // entry resolves references. One trait computation per type name,
@@ -139,14 +130,6 @@ pub fn validate_model_rules(
                 }
             }
         }
-        var active_simple: u64 = 0;
-        inline for (simple_rules.entries, 0..) |entry, i| {
-            if (simple_enabled & (1 << i) != 0 and
-                rules.filter_matches(entry.filter, ctx.group_tid, group.type_name))
-            {
-                active_simple |= 1 << i;
-            }
-        }
         var active_harvest: u8 = 0;
         inline for (rules.harvesters, 0..) |harvester, i| {
             if (harvest_enabled & (1 << i) != 0 and
@@ -156,20 +139,13 @@ pub fn validate_model_rules(
                 for (harvester.needs) |need| add_need(&needed, &needed_len, need);
             }
         }
-        if (active == 0 and active_simple == 0 and active_harvest == 0) continue;
+        if (active == 0 and active_harvest == 0) continue;
 
         for (group.objects, 0..) |obj, offset_in_group| {
             ctx.object_index = group.start + @as(u32, @intCast(offset_in_group));
             fill_slots(&slots, needed[0..needed_len], obj);
             inline for (rules.object_rules, 0..) |entry, i| {
                 if (active & (@as(u64, 1) << i) != 0) try entry.check(&ctx, obj);
-            }
-            inline for (simple_rules.entries, 0..) |entry, i| {
-                if (active_simple & (@as(u64, 1) << i) != 0) {
-                    if (entry.check(.{ .version = ctx.version }, obj)) |detail| {
-                        try ctx.emit(entry.rule, obj, detail);
-                    }
-                }
             }
             inline for (rules.harvesters, 0..) |harvester, i| {
                 if (active_harvest & (@as(u8, 1) << i) != 0) try harvester.harvest(&ctx, obj);
@@ -464,11 +440,6 @@ fn gate_active(comptime gate: rules.Gate, resolved: ?Resolved) bool {
 fn header_needed(requested: RuleMask) bool {
     if (requested.contains(.TooManyProfileParts)) return true;
     inline for (rules.object_rules) |entry| {
-        if ((entry.gate != .always or entry.uses_version) and requested.contains(entry.rule)) {
-            return true;
-        }
-    }
-    inline for (simple_rules.entries) |entry| {
         if ((entry.gate != .always or entry.uses_version) and requested.contains(entry.rule)) {
             return true;
         }

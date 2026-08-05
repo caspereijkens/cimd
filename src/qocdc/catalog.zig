@@ -2,8 +2,7 @@
 //!
 //! Adding a rule starts here: add its stable report tag to `Rule`, then add
 //! its single-line diagnostic to `message`. Grid-model execution lives in
-//! `simple_rules.zig` for ordinary same-object checks and in `rules.zig` for
-//! optimized or relational checks.
+//! `rules.zig`.
 
 const std = @import("std");
 
@@ -62,7 +61,8 @@ pub const Rule = enum(u8) {
     PTTerminalConsistency,
     MCFirstSecond,
     MeasTerminal,
-    // Grid model: direct same-object checks (`simple_rules.zig`).
+    // Grid model: additional per-object checks.
+    SMQLimits2,
     SynchronousCondenser,
 };
 
@@ -138,6 +138,7 @@ pub fn message(rule: Rule) []const u8 {
         .MeasTerminal => "cim:Measurement.Terminal does not refer to a cim:Terminal of a " ++
             "cim:Equipment referenced by cim:Measurement.PowerSystemResource",
         .SynchronousCondenser => "a synchronous condenser is associated with cim:GeneratingUnit.",
+        .SMQLimits2 => "missing operating limits for a Synchronous Machine.",
     };
 }
 
