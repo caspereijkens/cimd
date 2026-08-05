@@ -558,6 +558,43 @@ test "GeneratingUnitNominalP rejects non-positive, malformed, and exceeding valu
     }
 }
 
+// ── SynchronousCondenser ─────────────────────────────────────────────────
+
+test "SynchronousCondenser rejects a condenser associated with a GeneratingUnit" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:SynchronousMachine rdf:ID="_sm1">
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.condenser"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_gu1"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:GeneratingUnit rdf:ID="_gu1"/>
+        \\</rdf:RDF>
+    , .SynchronousCondenser);
+    defer run.deinit();
+    try expect_rule(&run, .SynchronousCondenser, 1);
+    try expect_violation(&run, .SynchronousCondenser, "_sm1");
+}
+
+test "SynchronousCondenser accepts an unassociated condenser and associated generators" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:SynchronousMachine rdf:ID="_condenser">
+        \\    <cim:SynchronousMachine.type rdf:resource="http://iec.ch/TC57/CIM100#SynchronousMachineKind.condenser"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_generator">
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.generator"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_gu1"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_dual">
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.generatorOrCondenser"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_gu2"/>
+        \\  </cim:SynchronousMachine>
+        \\</rdf:RDF>
+    , .SynchronousCondenser);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
 // ── MeasType ──────────────────────────────────────────────────────────────
 
 fn measurement_type_xml(buffer: []u8, comptime header: []const u8, value: []const u8) ![]const u8 {

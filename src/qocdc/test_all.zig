@@ -5,6 +5,8 @@
 //! file instead.
 
 comptime {
+    _ = @import("catalog.zig");
+    _ = @import("simple_rules.zig");
     _ = @import("test_boundary.zig");
     _ = @import("test_filename.zig");
     _ = @import("test_qocdc.zig");

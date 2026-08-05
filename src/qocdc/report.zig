@@ -10,10 +10,10 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const cim = @import("../cim/cim.zig");
-const rules = @import("rules.zig");
+const catalog = @import("catalog.zig");
 
-pub const Rule = rules.Rule;
-pub const rule_count = rules.rule_count;
+pub const Rule = catalog.Rule;
+pub const rule_count = catalog.rule_count;
 
 /// Offset value of a finding with no document location (filename and header
 /// rules).
@@ -143,7 +143,7 @@ pub fn write_report(
             try write_escaped(w, violation.object_id);
             try w.print(" line {d}: ", .{line_of(newlines.?.items, violation.offset)});
         }
-        try w.print("{s}", .{rules.message(violation.rule)});
+        try w.print("{s}", .{catalog.message(violation.rule)});
         if (violation.detail.len > 0) {
             try w.writeAll(" ['");
             try write_escaped(w, violation.detail);

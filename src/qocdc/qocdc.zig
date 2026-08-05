@@ -18,14 +18,14 @@
 const std = @import("std");
 const cim = @import("../cim/cim.zig");
 
-const rules_mod = @import("rules.zig");
+const catalog = @import("catalog.zig");
 const report_mod = @import("report.zig");
 const filename_mod = @import("filename.zig");
 
-pub const Rule = rules_mod.Rule;
-pub const rule_count = rules_mod.rule_count;
-pub const RuleMask = rules_mod.RuleMask;
-pub const message = rules_mod.message;
+pub const Rule = catalog.Rule;
+pub const rule_count = catalog.rule_count;
+pub const RuleMask = catalog.RuleMask;
+pub const message = catalog.message;
 
 pub const Report = report_mod.Report;
 pub const Violation = report_mod.Violation;
