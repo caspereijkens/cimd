@@ -64,6 +64,9 @@ pub const Rule = enum(u8) {
     // Grid model: additional per-object checks.
     SMQLimits2,
     SynchronousCondenser,
+    RatedS,
+    ShuntCompensatorSensitivity,
+    CATieFlow,
 };
 
 pub const rule_count = @typeInfo(Rule).@"enum".fields.len;
@@ -139,6 +142,11 @@ pub fn message(rule: Rule) []const u8 {
             "cim:Equipment referenced by cim:Measurement.PowerSystemResource",
         .SynchronousCondenser => "a synchronous condenser is associated with cim:GeneratingUnit.",
         .SMQLimits2 => "missing operating limits for a Synchronous Machine.",
+        .RatedS => "cim:RotatingMachine.ratedS or cim:PowerTransformerEnd.ratedS " ++
+            "is missing or is not a positive finite number.",
+        .ShuntCompensatorSensitivity => "cim:ShuntCompensator.voltageSensitivity is provided " ++
+            "but is not a positive finite number.",
+        .CATieFlow => "an interchange cim:ControlArea has no referring cim:TieFlow instance",
     };
 }
 

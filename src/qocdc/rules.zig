@@ -54,6 +54,8 @@ pub const Prop = enum(u8) {
     gu_rated_s,
     sm_type,
     rm_generating_unit,
+    rotating_machine_rated_s,
+    power_transformer_end_rated_s,
     sm_min_q,
     sm_max_q,
     sm_initial_reactive_capability_curve,
@@ -74,6 +76,9 @@ pub const Prop = enum(u8) {
     meas_psr,
     vl_base_voltage,
     bay_voltage_level,
+    shunt_compensator_voltage_sensitivity,
+    control_area_type,
+    tie_flow_control_area,
 };
 
 pub const prop_count = @typeInfo(Prop).@"enum".fields.len;
@@ -108,6 +113,7 @@ pub fn prop_name(prop: Prop) []const u8 {
         .gu_rated_s => "GeneratingUnit.ratedS",
         .sm_type => "SynchronousMachine.type",
         .rm_generating_unit => "RotatingMachine.GeneratingUnit",
+        .rotating_machine_rated_s => "RotatingMachine.ratedS",
         .sm_min_q => "SynchronousMachine.minQ",
         .sm_max_q => "SynchronousMachine.maxQ",
         .sm_initial_reactive_capability_curve => "SynchronousMachine.InitialReactiveCapabilityCurve",
@@ -121,6 +127,7 @@ pub fn prop_name(prop: Prop) []const u8 {
         .dcterm_dc_conducting_equipment => "DCTerminal.DCConductingEquipment",
         .te_terminal => "TransformerEnd.Terminal",
         .pte_power_transformer => "PowerTransformerEnd.PowerTransformer",
+        .power_transformer_end_rated_s => "PowerTransformerEnd.ratedS",
         .mc_first => "MutualCoupling.First_Terminal",
         .mc_second => "MutualCoupling.Second_Terminal",
         .ce_base_voltage => "ConductingEquipment.BaseVoltage",
@@ -128,6 +135,9 @@ pub fn prop_name(prop: Prop) []const u8 {
         .meas_psr => "Measurement.PowerSystemResource",
         .vl_base_voltage => "VoltageLevel.BaseVoltage",
         .bay_voltage_level => "Bay.VoltageLevel",
+        .shunt_compensator_voltage_sensitivity => "ShuntCompensator.voltageSensitivity",
+        .control_area_type => "ControlArea.type",
+        .tie_flow_control_area => "TieFlow.ControlArea",
     };
 }
 
@@ -177,7 +187,7 @@ pub fn compute_traits(type_name: []const u8) TargetTraits {
     }.of;
     const count1_targets = [_][]const u8{
         "RegulatingCondEq", "EnergyConsumer", "EquivalentInjection", "EquivalentShunt",
-        "EnergySource",     "Ground",         "DCBusbar",           "DCShunt",
+        "EnergySource",     "Ground",         "DCBusbar",            "DCShunt",
         "DCGround",
     };
     const count2_targets = [_][]const u8{
@@ -366,6 +376,8 @@ pub const Columns = struct {
     ce_bv: std.ArrayList(CeBvRow),
     vl_rows: std.ArrayList(VlRow),
     bay_rows: std.ArrayList(BayRow),
+    interchange_control_areas: std.ArrayList(u32),
+    tie_flow_control_areas: std.DynamicBitSetUnmanaged,
 
     pub fn init(gpa: std.mem.Allocator, object_count: u32) error{OutOfMemory}!Columns {
         const terminal_equipment = try gpa.alloc(u32, object_count);
@@ -378,6 +390,8 @@ pub const Columns = struct {
         errdefer terminal_exact_ce.deinit(gpa);
         var coupled = try std.DynamicBitSetUnmanaged.initEmpty(gpa, object_count);
         errdefer coupled.deinit(gpa);
+        var tie_flow_control_areas = try std.DynamicBitSetUnmanaged.initEmpty(gpa, object_count);
+        errdefer tie_flow_control_areas.deinit(gpa);
         return .{
             .terminal_equipment = terminal_equipment,
             .terminal_count = terminal_count,
@@ -390,6 +404,8 @@ pub const Columns = struct {
             .ce_bv = .empty,
             .vl_rows = .empty,
             .bay_rows = .empty,
+            .interchange_control_areas = .empty,
+            .tie_flow_control_areas = tie_flow_control_areas,
         };
     }
 
@@ -405,14 +421,17 @@ pub const Columns = struct {
         self.ce_bv.deinit(gpa);
         self.vl_rows.deinit(gpa);
         self.bay_rows.deinit(gpa);
+        self.interchange_control_areas.deinit(gpa);
+        self.tie_flow_control_areas.deinit(gpa);
     }
 };
 
 /// The rules whose verdicts need harvested columns (and so the traits column
 /// and reference resolution too).
 pub const relational_rules = [_]Rule{
-    .TerminalCount1,       .TerminalCount2, .TerminalSeqNum, .TerminalSeqNumOrder,
+    .TerminalCount1,        .TerminalCount2, .TerminalSeqNum, .TerminalSeqNumOrder,
     .PTTerminalConsistency, .MCFirstSecond,  .MeasTerminal,   .CEBaseVoltage,
+    .CATieFlow,
 };
 
 // ── the object-rule table ─────────────────────────────────────────────────
@@ -650,6 +669,8 @@ pub const object_rules = [_]ObjectRule{
         },
         .check = &check_synchronous_condenser,
     },
+    rated_apparent_power_rule(.{ .is_a_any = &.{"RotatingMachine"} }, .rotating_machine_rated_s),
+    rated_apparent_power_rule(.{ .is_a_any = &.{"PowerTransformerEnd"} }, .power_transformer_end_rated_s),
     .{
         .rule = .MeasType,
         .filter = .{ .is_a_any = &.{"Measurement"} },
@@ -664,6 +685,21 @@ pub const object_rules = [_]ObjectRule{
         .group_gate = &meas_unit_group_gate,
         .needs = &.{.{ .prop = .meas_unit, .channels = .{ .ref = true, .declared = true } }},
         .check = &check_measurement_unit,
+    },
+    .{
+        .rule = .ShuntCompensatorSensitivity,
+        .filter = .{ .is_a_any = &.{"ShuntCompensator"} },
+        .needs = &.{.{
+            .prop = .shunt_compensator_voltage_sensitivity,
+            .channels = .{ .text = true, .declared = true },
+        }},
+        .check = &check_shunt_compensator_sensitivity,
+    },
+    .{
+        .rule = .CATieFlow,
+        .filter = .{ .is_a_any = &.{"ControlArea"} },
+        .needs = &.{.{ .prop = .control_area_type, .channels = .{ .ref = true } }},
+        .check = &harvest_interchange_control_area,
     },
     // Containment: the referenced container must exist and carry one of the
     // allowed traits. `required = false` tolerates an absent reference only;
@@ -680,8 +716,8 @@ pub const object_rules = [_]ObjectRule{
     containment_rule(.EFCContainment, .{ .is_a_any = &.{ "EarthFaultCompensator", "Ground" } }, .always, .eq_container, .{ .voltage_level = true, .bay = true }, true),
     containment_rule(.ACDCConvContainment, .{ .is_a_any = &.{ "CsConverter", "VsConverter" } }, .always, .eq_container, .{ .dc_converter_unit = true }, true),
     containment_rule(.DCEQContainment, .{ .is_a_any = &.{
-        "DCSeriesDevice", "DCShunt",   "DCBusbar",       "DCGround",
-        "DCChopper",      "DCSwitch",  "DCBreaker",      "DCDisconnector",
+        "DCSeriesDevice", "DCShunt",  "DCBusbar",  "DCGround",
+        "DCChopper",      "DCSwitch", "DCBreaker", "DCDisconnector",
     } }, .always, .eq_container, .{ .dc_converter_unit = true }, true),
     // ConnectivityNode containment is profile-dependent: EQ allows
     // VoltageLevel/Bay/Line, EQBD only Line. SSH/SV/TP carry no rule.
@@ -779,6 +815,12 @@ pub const harvesters = [_]Harvester{
         .needs = &.{.{ .prop = .bay_voltage_level, .channels = .{ .ref = true } }},
         .harvest = &harvest_bay,
     },
+    .{
+        .rules = &.{.CATieFlow},
+        .filter = .{ .is_a_any = &.{"TieFlow"} },
+        .needs = &.{.{ .prop = .tie_flow_control_area, .channels = .{ .ref = true } }},
+        .harvest = &harvest_tie_flow_control_area,
+    },
 };
 
 /// Resolve a slot's reference channel to an object index; `none_index` for
@@ -856,6 +898,12 @@ fn harvest_bay(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
         .object_index = ctx.object_index,
         .voltage_level_index = resolve_ref(ctx, .bay_voltage_level),
     });
+}
+
+fn harvest_tie_flow_control_area(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    _ = obj;
+    const control_area = resolve_ref(ctx, .tie_flow_control_area);
+    if (control_area != none_index) ctx.columns.?.tie_flow_control_areas.set(control_area);
 }
 
 fn harvest_ce_base_voltage(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
@@ -1217,6 +1265,43 @@ fn check_synchronous_condenser(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}
     if (prop_declared(ctx.slots, .rm_generating_unit)) {
         try ctx.emit(.SynchronousCondenser, obj, "");
     }
+}
+
+fn rated_apparent_power_rule(comptime filter: TypeFilter, comptime prop: Prop) ObjectRule {
+    return .{
+        .rule = .RatedS,
+        .filter = filter,
+        .needs = &.{.{ .prop = prop, .channels = text_only }},
+        .check = &struct {
+            fn check(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+                const text = prop_text(ctx.slots, prop) orelse
+                    return ctx.emit(.RatedS, obj, "");
+                const apparent_power_rating = parse.float_req(text) catch
+                    return ctx.emit(.RatedS, obj, text);
+                if (apparent_power_rating <= 0) try ctx.emit(.RatedS, obj, text);
+            }
+        }.check,
+    };
+}
+
+fn check_shunt_compensator_sensitivity(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    if (!prop_declared(ctx.slots, .shunt_compensator_voltage_sensitivity)) return;
+    const text = prop_text(ctx.slots, .shunt_compensator_voltage_sensitivity) orelse
+        return ctx.emit(.ShuntCompensatorSensitivity, obj, "");
+    const voltage_sensitivity = parse.float_req(text) catch
+        return ctx.emit(.ShuntCompensatorSensitivity, obj, text);
+    if (voltage_sensitivity <= 0) try ctx.emit(.ShuntCompensatorSensitivity, obj, text);
+}
+
+fn harvest_interchange_control_area(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    _ = obj;
+    const reference = switch (prop_ref(ctx.slots, .control_area_type)) {
+        .value => |value| value,
+        .absent, .malformed => return,
+    };
+    const control_area_type = cim.uri.fragment_or_self(reference);
+    if (!std.mem.eql(u8, control_area_type, "ControlAreaTypeKind.Interchange")) return;
+    try ctx.columns.?.interchange_control_areas.append(ctx.gpa, ctx.object_index);
 }
 
 /// Whether a measurement type is allowed under the version the header

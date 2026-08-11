@@ -354,6 +354,16 @@ fn run_phase_b(
             }
         }
     }
+
+    // B7: every interchange ControlArea needs at least one TieFlow whose
+    // ControlArea association resolves back to it.
+    if (requested.contains(.CATieFlow)) {
+        for (columns.interchange_control_areas.items) |object_index| {
+            if (!columns.tie_flow_control_areas.isSet(object_index)) {
+                try emit(report, gpa, model, .CATieFlow, object_index);
+            }
+        }
+    }
 }
 
 /// The containing VoltageLevel's declared BaseVoltage id, following a Bay to

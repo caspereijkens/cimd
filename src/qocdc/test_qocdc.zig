@@ -662,6 +662,285 @@ test "SMQLimits2 rejects incomplete limits and unusable curve references" {
     try expect_violation(&run, .SMQLimits2, "_wrong_curve_type");
 }
 
+// ── RatedS ────────────────────────────────────────────────────────────────
+
+test "RatedS accepts positive finite ratings for target classes and subclasses" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:RotatingMachine rdf:ID="_rotating">
+        \\    <cim:RotatingMachine.ratedS>100</cim:RotatingMachine.ratedS>
+        \\  </cim:RotatingMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_synchronous">
+        \\    <cim:RotatingMachine.ratedS>
+        \\      200
+        \\    </cim:RotatingMachine.ratedS>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:AsynchronousMachine rdf:ID="_asynchronous">
+        \\    <cim:RotatingMachine.ratedS>300</cim:RotatingMachine.ratedS>
+        \\  </cim:AsynchronousMachine>
+        \\  <cim:PowerTransformerEnd rdf:ID="_transformer_end">
+        \\    <cim:PowerTransformerEnd.ratedS>400</cim:PowerTransformerEnd.ratedS>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:TransformerEnd rdf:ID="_generic_transformer_end"/>
+        \\  <cim:BaseVoltage rdf:ID="_unrelated"/>
+        \\</rdf:RDF>
+    , .RatedS);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "RatedS rejects missing, blank, malformed, non-finite, and non-positive values" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:RotatingMachine rdf:ID="_rm_missing"/>
+        \\  <cim:RotatingMachine rdf:ID="_rm_self_closing">
+        \\    <cim:RotatingMachine.ratedS/>
+        \\  </cim:RotatingMachine>
+        \\  <cim:RotatingMachine rdf:ID="_rm_zero">
+        \\    <cim:RotatingMachine.ratedS>0</cim:RotatingMachine.ratedS>
+        \\  </cim:RotatingMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_rm_negative">
+        \\    <cim:RotatingMachine.ratedS>-1</cim:RotatingMachine.ratedS>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:AsynchronousMachine rdf:ID="_rm_malformed">
+        \\    <cim:RotatingMachine.ratedS>unknown</cim:RotatingMachine.ratedS>
+        \\  </cim:AsynchronousMachine>
+        \\  <cim:RotatingMachine rdf:ID="_rm_nan">
+        \\    <cim:RotatingMachine.ratedS>nan</cim:RotatingMachine.ratedS>
+        \\  </cim:RotatingMachine>
+        \\  <cim:RotatingMachine rdf:ID="_rm_inf">
+        \\    <cim:RotatingMachine.ratedS>inf</cim:RotatingMachine.ratedS>
+        \\  </cim:RotatingMachine>
+        \\  <cim:PowerTransformerEnd rdf:ID="_pte_missing"/>
+        \\  <cim:PowerTransformerEnd rdf:ID="_pte_blank">
+        \\    <cim:PowerTransformerEnd.ratedS> </cim:PowerTransformerEnd.ratedS>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PowerTransformerEnd rdf:ID="_pte_zero">
+        \\    <cim:PowerTransformerEnd.ratedS>-0</cim:PowerTransformerEnd.ratedS>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PowerTransformerEnd rdf:ID="_pte_negative">
+        \\    <cim:PowerTransformerEnd.ratedS>-2</cim:PowerTransformerEnd.ratedS>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PowerTransformerEnd rdf:ID="_pte_malformed">
+        \\    <cim:PowerTransformerEnd.ratedS>unknown</cim:PowerTransformerEnd.ratedS>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PowerTransformerEnd rdf:ID="_pte_nan">
+        \\    <cim:PowerTransformerEnd.ratedS>nan</cim:PowerTransformerEnd.ratedS>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PowerTransformerEnd rdf:ID="_pte_inf">
+        \\    <cim:PowerTransformerEnd.ratedS>inf</cim:PowerTransformerEnd.ratedS>
+        \\  </cim:PowerTransformerEnd>
+        \\</rdf:RDF>
+    , .RatedS);
+    defer run.deinit();
+    try expect_rule(&run, .RatedS, 14);
+    try expect_violation(&run, .RatedS, "_rm_missing");
+    try expect_violation(&run, .RatedS, "_rm_self_closing");
+    try expect_violation(&run, .RatedS, "_rm_zero");
+    try expect_violation(&run, .RatedS, "_rm_negative");
+    try expect_violation(&run, .RatedS, "_rm_malformed");
+    try expect_violation(&run, .RatedS, "_rm_nan");
+    try expect_violation(&run, .RatedS, "_rm_inf");
+    try expect_violation(&run, .RatedS, "_pte_missing");
+    try expect_violation(&run, .RatedS, "_pte_blank");
+    try expect_violation(&run, .RatedS, "_pte_zero");
+    try expect_violation(&run, .RatedS, "_pte_negative");
+    try expect_violation(&run, .RatedS, "_pte_malformed");
+    try expect_violation(&run, .RatedS, "_pte_nan");
+    try expect_violation(&run, .RatedS, "_pte_inf");
+}
+
+test "RatedS requires the property belonging to each target class" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:RotatingMachine rdf:ID="_rotating_wrong_property">
+        \\    <cim:PowerTransformerEnd.ratedS>100</cim:PowerTransformerEnd.ratedS>
+        \\  </cim:RotatingMachine>
+        \\  <cim:PowerTransformerEnd rdf:ID="_transformer_wrong_property">
+        \\    <cim:RotatingMachine.ratedS>100</cim:RotatingMachine.ratedS>
+        \\  </cim:PowerTransformerEnd>
+        \\</rdf:RDF>
+    , .RatedS);
+    defer run.deinit();
+    try expect_rule(&run, .RatedS, 2);
+    try expect_violation(&run, .RatedS, "_rotating_wrong_property");
+    try expect_violation(&run, .RatedS, "_transformer_wrong_property");
+}
+
+// ── ShuntCompensatorSensitivity ───────────────────────────────────────────
+
+test "ShuntCompensatorSensitivity accepts absence and positive finite values" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ShuntCompensator rdf:ID="_base_absent"/>
+        \\  <cim:LinearShuntCompensator rdf:ID="_linear_absent"/>
+        \\  <cim:NonlinearShuntCompensator rdf:ID="_nonlinear_absent"/>
+        \\  <cim:ShuntCompensator rdf:ID="_base_positive">
+        \\    <cim:ShuntCompensator.voltageSensitivity>1</cim:ShuntCompensator.voltageSensitivity>
+        \\  </cim:ShuntCompensator>
+        \\  <cim:LinearShuntCompensator rdf:ID="_linear_whitespace">
+        \\    <cim:ShuntCompensator.voltageSensitivity>
+        \\      2.5
+        \\    </cim:ShuntCompensator.voltageSensitivity>
+        \\  </cim:LinearShuntCompensator>
+        \\  <cim:NonlinearShuntCompensator rdf:ID="_nonlinear_scientific">
+        \\    <cim:ShuntCompensator.voltageSensitivity>1e-6</cim:ShuntCompensator.voltageSensitivity>
+        \\  </cim:NonlinearShuntCompensator>
+        \\  <cim:BaseVoltage rdf:ID="_unrelated">
+        \\    <cim:ShuntCompensator.voltageSensitivity>-1</cim:ShuntCompensator.voltageSensitivity>
+        \\  </cim:BaseVoltage>
+        \\</rdf:RDF>
+    , .ShuntCompensatorSensitivity);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "ShuntCompensatorSensitivity rejects every provided non-positive or invalid value" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ShuntCompensator rdf:ID="_self_closing">
+        \\    <cim:ShuntCompensator.voltageSensitivity/>
+        \\  </cim:ShuntCompensator>
+        \\  <cim:LinearShuntCompensator rdf:ID="_empty">
+        \\    <cim:ShuntCompensator.voltageSensitivity></cim:ShuntCompensator.voltageSensitivity>
+        \\  </cim:LinearShuntCompensator>
+        \\  <cim:NonlinearShuntCompensator rdf:ID="_blank">
+        \\    <cim:ShuntCompensator.voltageSensitivity> </cim:ShuntCompensator.voltageSensitivity>
+        \\  </cim:NonlinearShuntCompensator>
+        \\  <cim:ShuntCompensator rdf:ID="_zero">
+        \\    <cim:ShuntCompensator.voltageSensitivity>0</cim:ShuntCompensator.voltageSensitivity>
+        \\  </cim:ShuntCompensator>
+        \\  <cim:LinearShuntCompensator rdf:ID="_negative_zero">
+        \\    <cim:ShuntCompensator.voltageSensitivity>-0</cim:ShuntCompensator.voltageSensitivity>
+        \\  </cim:LinearShuntCompensator>
+        \\  <cim:NonlinearShuntCompensator rdf:ID="_negative">
+        \\    <cim:ShuntCompensator.voltageSensitivity>-1</cim:ShuntCompensator.voltageSensitivity>
+        \\  </cim:NonlinearShuntCompensator>
+        \\  <cim:ShuntCompensator rdf:ID="_malformed">
+        \\    <cim:ShuntCompensator.voltageSensitivity>unknown</cim:ShuntCompensator.voltageSensitivity>
+        \\  </cim:ShuntCompensator>
+        \\  <cim:LinearShuntCompensator rdf:ID="_nan">
+        \\    <cim:ShuntCompensator.voltageSensitivity>nan</cim:ShuntCompensator.voltageSensitivity>
+        \\  </cim:LinearShuntCompensator>
+        \\  <cim:NonlinearShuntCompensator rdf:ID="_positive_inf">
+        \\    <cim:ShuntCompensator.voltageSensitivity>inf</cim:ShuntCompensator.voltageSensitivity>
+        \\  </cim:NonlinearShuntCompensator>
+        \\  <cim:ShuntCompensator rdf:ID="_negative_inf">
+        \\    <cim:ShuntCompensator.voltageSensitivity>-inf</cim:ShuntCompensator.voltageSensitivity>
+        \\  </cim:ShuntCompensator>
+        \\</rdf:RDF>
+    , .ShuntCompensatorSensitivity);
+    defer run.deinit();
+    try expect_rule(&run, .ShuntCompensatorSensitivity, 10);
+    try expect_violation(&run, .ShuntCompensatorSensitivity, "_self_closing");
+    try expect_violation(&run, .ShuntCompensatorSensitivity, "_empty");
+    try expect_violation(&run, .ShuntCompensatorSensitivity, "_blank");
+    try expect_violation(&run, .ShuntCompensatorSensitivity, "_zero");
+    try expect_violation(&run, .ShuntCompensatorSensitivity, "_negative_zero");
+    try expect_violation(&run, .ShuntCompensatorSensitivity, "_negative");
+    try expect_violation(&run, .ShuntCompensatorSensitivity, "_malformed");
+    try expect_violation(&run, .ShuntCompensatorSensitivity, "_nan");
+    try expect_violation(&run, .ShuntCompensatorSensitivity, "_positive_inf");
+    try expect_violation(&run, .ShuntCompensatorSensitivity, "_negative_inf");
+}
+
+// ── CATieFlow ─────────────────────────────────────────────────────────────
+
+test "CATieFlow accepts interchange control areas with resolved TieFlow references" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:TieFlow rdf:ID="_tf1">
+        \\    <cim:TieFlow.ControlArea rdf:resource="#_ca1"/>
+        \\  </cim:TieFlow>
+        \\  <cim:ControlArea rdf:ID="_ca1">
+        \\    <cim:ControlArea.type rdf:resource="#ControlAreaTypeKind.Interchange"/>
+        \\  </cim:ControlArea>
+        \\  <cim:ControlArea rdf:about="http://example.com/grid#_ca2">
+        \\    <cim:ControlArea.type rdf:resource="http://iec.ch/TC57/CIM100#ControlAreaTypeKind.Interchange"/>
+        \\  </cim:ControlArea>
+        \\  <cim:TieFlow rdf:ID="_tf2">
+        \\    <cim:TieFlow.ControlArea rdf:resource="#_ca2"/>
+        \\  </cim:TieFlow>
+        \\</rdf:RDF>
+    , .CATieFlow);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "CATieFlow ignores control areas whose type is not interchange" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ControlArea rdf:ID="_absent_type"/>
+        \\  <cim:ControlArea rdf:ID="_literal_type">
+        \\    <cim:ControlArea.type>ControlAreaTypeKind.Interchange</cim:ControlArea.type>
+        \\  </cim:ControlArea>
+        \\  <cim:ControlArea rdf:ID="_empty_reference">
+        \\    <cim:ControlArea.type rdf:resource=""/>
+        \\  </cim:ControlArea>
+        \\  <cim:ControlArea rdf:ID="_actual">
+        \\    <cim:ControlArea.type rdf:resource="#ControlAreaTypeKind.Actual"/>
+        \\  </cim:ControlArea>
+        \\  <cim:BaseVoltage rdf:ID="_unrelated">
+        \\    <cim:ControlArea.type rdf:resource="#ControlAreaTypeKind.Interchange"/>
+        \\  </cim:BaseVoltage>
+        \\</rdf:RDF>
+    , .CATieFlow);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "CATieFlow checks each interchange control area independently" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ControlArea rdf:ID="_with_flow">
+        \\    <cim:ControlArea.type rdf:resource="#ControlAreaTypeKind.Interchange"/>
+        \\  </cim:ControlArea>
+        \\  <cim:ControlArea rdf:ID="_without_flow">
+        \\    <cim:ControlArea.type rdf:resource="#ControlAreaTypeKind.Interchange"/>
+        \\  </cim:ControlArea>
+        \\  <cim:ControlArea rdf:ID="_missing_association">
+        \\    <cim:ControlArea.type rdf:resource="#ControlAreaTypeKind.Interchange"/>
+        \\  </cim:ControlArea>
+        \\  <cim:ControlArea rdf:ID="_dangling_association">
+        \\    <cim:ControlArea.type rdf:resource="#ControlAreaTypeKind.Interchange"/>
+        \\  </cim:ControlArea>
+        \\  <cim:ControlArea rdf:ID="_wrong_target">
+        \\    <cim:ControlArea.type rdf:resource="#ControlAreaTypeKind.Interchange"/>
+        \\  </cim:ControlArea>
+        \\  <cim:ControlArea rdf:ID="_empty_association">
+        \\    <cim:ControlArea.type rdf:resource="#ControlAreaTypeKind.Interchange"/>
+        \\  </cim:ControlArea>
+        \\  <cim:ControlArea rdf:ID="_non_interchange">
+        \\    <cim:ControlArea.type rdf:resource="#ControlAreaTypeKind.Actual"/>
+        \\  </cim:ControlArea>
+        \\  <cim:BaseVoltage rdf:ID="_not_a_control_area"/>
+        \\  <cim:TieFlow rdf:ID="_valid_tf">
+        \\    <cim:TieFlow.ControlArea rdf:resource="#_with_flow"/>
+        \\  </cim:TieFlow>
+        \\  <cim:TieFlow rdf:ID="_missing_tf"/>
+        \\  <cim:TieFlow rdf:ID="_dangling_tf">
+        \\    <cim:TieFlow.ControlArea rdf:resource="#_missing"/>
+        \\  </cim:TieFlow>
+        \\  <cim:TieFlow rdf:ID="_wrong_target_tf">
+        \\    <cim:TieFlow.ControlArea rdf:resource="#_not_a_control_area"/>
+        \\  </cim:TieFlow>
+        \\  <cim:TieFlow rdf:ID="_empty_tf">
+        \\    <cim:TieFlow.ControlArea rdf:resource=""/>
+        \\  </cim:TieFlow>
+        \\  <cim:TieFlow rdf:ID="_non_interchange_tf">
+        \\    <cim:TieFlow.ControlArea rdf:resource="#_non_interchange"/>
+        \\  </cim:TieFlow>
+        \\</rdf:RDF>
+    , .CATieFlow);
+    defer run.deinit();
+    try expect_rule(&run, .CATieFlow, 5);
+    try expect_violation(&run, .CATieFlow, "_without_flow");
+    try expect_violation(&run, .CATieFlow, "_missing_association");
+    try expect_violation(&run, .CATieFlow, "_dangling_association");
+    try expect_violation(&run, .CATieFlow, "_wrong_target");
+    try expect_violation(&run, .CATieFlow, "_empty_association");
+}
+
 // ── MeasType ──────────────────────────────────────────────────────────────
 
 fn measurement_type_xml(buffer: []u8, comptime header: []const u8, value: []const u8) ![]const u8 {
@@ -1100,25 +1379,19 @@ fn numbered_terminal(comptime id: []const u8, comptime equipment: []const u8, co
 }
 
 test "TerminalCount1 requires exactly one terminal" {
-    var ok = try run_rule(rdf(
-        "  <cim:EnergyConsumer rdf:ID=\"_ec1\"></cim:EnergyConsumer>\n" ++
-        terminal("_t1", "_ec1")
-        ), .TerminalCount1);
+    var ok = try run_rule(rdf("  <cim:EnergyConsumer rdf:ID=\"_ec1\"></cim:EnergyConsumer>\n" ++
+        terminal("_t1", "_ec1")), .TerminalCount1);
     defer ok.deinit();
     try expect_clean(&ok);
 
-    var zero = try run_rule(rdf(
-        "  <cim:EnergyConsumer rdf:ID=\"_ec1\"></cim:EnergyConsumer>\n"
-        ), .TerminalCount1);
+    var zero = try run_rule(rdf("  <cim:EnergyConsumer rdf:ID=\"_ec1\"></cim:EnergyConsumer>\n"), .TerminalCount1);
     defer zero.deinit();
     try expect_rule(&zero, .TerminalCount1, 1);
     try expect_violation(&zero, .TerminalCount1, "_ec1");
 
-    var two = try run_rule(rdf(
-        "  <cim:EnergySource rdf:ID=\"_es1\"></cim:EnergySource>\n" ++
+    var two = try run_rule(rdf("  <cim:EnergySource rdf:ID=\"_es1\"></cim:EnergySource>\n" ++
         terminal("_t1", "_es1") ++
-        terminal("_t2", "_es1")
-        ), .TerminalCount1);
+        terminal("_t2", "_es1")), .TerminalCount1);
     defer two.deinit();
     try expect_rule(&two, .TerminalCount1, 1);
 }
@@ -1126,37 +1399,29 @@ test "TerminalCount1 requires exactly one terminal" {
 test "TerminalCount1 covers subclasses and the strict-subclass Connector case" {
     // SynchronousMachine is_a RegulatingCondEq; BusbarSection is a strict
     // subclass of Connector.
-    var run = try run_rule(rdf(
-        "  <cim:SynchronousMachine rdf:ID=\"_sm1\"></cim:SynchronousMachine>\n" ++
-        "  <cim:BusbarSection rdf:ID=\"_bb1\"></cim:BusbarSection>\n"
-        ), .TerminalCount1);
+    var run = try run_rule(rdf("  <cim:SynchronousMachine rdf:ID=\"_sm1\"></cim:SynchronousMachine>\n" ++
+        "  <cim:BusbarSection rdf:ID=\"_bb1\"></cim:BusbarSection>\n"), .TerminalCount1);
     defer run.deinit();
     try expect_rule(&run, .TerminalCount1, 2);
 }
 
 test "TerminalCount2 requires exactly two terminals" {
-    var ok = try run_rule(rdf(
-        "  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
+    var ok = try run_rule(rdf("  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
         terminal("_t1", "_line1") ++
-        terminal("_t2", "_line1")
-        ), .TerminalCount2);
+        terminal("_t2", "_line1")), .TerminalCount2);
     defer ok.deinit();
     try expect_clean(&ok);
 
-    var one = try run_rule(rdf(
-        "  <cim:Breaker rdf:ID=\"_sw1\"></cim:Breaker>\n" ++
-        terminal("_t1", "_sw1")
-        ), .TerminalCount2);
+    var one = try run_rule(rdf("  <cim:Breaker rdf:ID=\"_sw1\"></cim:Breaker>\n" ++
+        terminal("_t1", "_sw1")), .TerminalCount2);
     defer one.deinit();
     try expect_rule(&one, .TerminalCount2, 1);
     try expect_violation(&one, .TerminalCount2, "_sw1");
 
-    var three = try run_rule(rdf(
-        "  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
+    var three = try run_rule(rdf("  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
         terminal("_t1", "_line1") ++
         terminal("_t2", "_line1") ++
-        terminal("_t3", "_line1")
-        ), .TerminalCount2);
+        terminal("_t3", "_line1")), .TerminalCount2);
     defer three.deinit();
     try expect_rule(&three, .TerminalCount2, 1);
 }
@@ -1164,13 +1429,11 @@ test "TerminalCount2 requires exactly two terminals" {
 test "terminal counting ignores non-Terminal referrers and DC associations" {
     // A DCTerminal via the DC association does not count toward the
     // exact-Terminal cardinality rules.
-    var run = try run_rule(rdf(
-        "  <cim:EnergyConsumer rdf:ID=\"_ec1\"></cim:EnergyConsumer>\n" ++
+    var run = try run_rule(rdf("  <cim:EnergyConsumer rdf:ID=\"_ec1\"></cim:EnergyConsumer>\n" ++
         terminal("_t1", "_ec1") ++
         "  <cim:DCTerminal rdf:ID=\"_dct1\">\n" ++
         "    <cim:DCTerminal.DCConductingEquipment rdf:resource=\"#_ec1\"/>\n" ++
-        "  </cim:DCTerminal>\n"
-        ), .TerminalCount1);
+        "  </cim:DCTerminal>\n"), .TerminalCount1);
     defer run.deinit();
     try expect_clean(&run);
 }
@@ -1178,19 +1441,15 @@ test "terminal counting ignores non-Terminal referrers and DC associations" {
 // ── TerminalSeqNum / TerminalSeqNumOrder ──────────────────────────────────
 
 test "TerminalSeqNum requires sequence numbers on EquivalentBranch terminals" {
-    var ok = try run_rule(rdf(
-        "  <cim:EquivalentBranch rdf:ID=\"_eb1\"></cim:EquivalentBranch>\n" ++
+    var ok = try run_rule(rdf("  <cim:EquivalentBranch rdf:ID=\"_eb1\"></cim:EquivalentBranch>\n" ++
         numbered_terminal("_t1", "_eb1", "1") ++
-        numbered_terminal("_t2", "_eb1", "2")
-        ), .TerminalSeqNum);
+        numbered_terminal("_t2", "_eb1", "2")), .TerminalSeqNum);
     defer ok.deinit();
     try expect_clean(&ok);
 
-    var missing = try run_rule(rdf(
-        "  <cim:EquivalentBranch rdf:ID=\"_eb1\"></cim:EquivalentBranch>\n" ++
+    var missing = try run_rule(rdf("  <cim:EquivalentBranch rdf:ID=\"_eb1\"></cim:EquivalentBranch>\n" ++
         numbered_terminal("_t1", "_eb1", "1") ++
-        terminal("_t2", "_eb1")
-        ), .TerminalSeqNum);
+        terminal("_t2", "_eb1")), .TerminalSeqNum);
     defer missing.deinit();
     try expect_rule(&missing, .TerminalSeqNum, 1);
     try expect_violation(&missing, .TerminalSeqNum, "_t2");
@@ -1209,12 +1468,10 @@ const mutual_coupling_fixture =
 test "TerminalSeqNum requires sequence numbers only on coupled ACLineSegments" {
     // _line3 is uncoupled: its unnumbered terminal is fine. _line1 is
     // coupled: its unnumbered second terminal violates.
-    var run = try run_rule(rdf(
-        mutual_coupling_fixture ++
+    var run = try run_rule(rdf(mutual_coupling_fixture ++
         terminal("_t1b", "_line1") ++
         "  <cim:ACLineSegment rdf:ID=\"_line3\"></cim:ACLineSegment>\n" ++
-        terminal("_t3a", "_line3")
-        ), .TerminalSeqNum);
+        terminal("_t3a", "_line3")), .TerminalSeqNum);
     defer run.deinit();
     try expect_rule(&run, .TerminalSeqNum, 1);
     try expect_violation(&run, .TerminalSeqNum, "_t1b");
@@ -1225,68 +1482,54 @@ test "a MutualCoupling with one bad end still couples the resolvable end's line"
     // _line1 is still coupled through the resolvable First_Terminal, and its
     // unnumbered terminal still violates TerminalSeqNum. MCFirstSecond is
     // NOT requested: its violation must not leak into this run.
-    var run = try run_rule(rdf(
-        "  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
+    var run = try run_rule(rdf("  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
         numbered_terminal("_t1a", "_line1", "1") ++
         terminal("_t1b", "_line1") ++
         "  <cim:MutualCoupling rdf:ID=\"_mc1\">\n" ++
         "    <cim:MutualCoupling.First_Terminal rdf:resource=\"#_t1a\"/>\n" ++
         "    <cim:MutualCoupling.Second_Terminal rdf:resource=\"#_nowhere\"/>\n" ++
-        "  </cim:MutualCoupling>\n"
-        ), .TerminalSeqNum);
+        "  </cim:MutualCoupling>\n"), .TerminalSeqNum);
     defer run.deinit();
     try expect_rule(&run, .TerminalSeqNum, 1);
     try expect_violation(&run, .TerminalSeqNum, "_t1b");
 }
 
 test "TerminalSeqNumOrder accepts contiguous 1..k and tolerates absence" {
-    var ok = try run_rule(rdf(
-        "  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
+    var ok = try run_rule(rdf("  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
         numbered_terminal("_t1", "_line1", "2") ++
-        numbered_terminal("_t2", "_line1", "1")
-        ), .TerminalSeqNumOrder);
+        numbered_terminal("_t2", "_line1", "1")), .TerminalSeqNumOrder);
     defer ok.deinit();
     try expect_clean(&ok);
 
     // Unnumbered terminals are skipped, not violations.
-    var unnumbered = try run_rule(rdf(
-        "  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
+    var unnumbered = try run_rule(rdf("  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
         terminal("_t1", "_line1") ++
-        terminal("_t2", "_line1")
-        ), .TerminalSeqNumOrder);
+        terminal("_t2", "_line1")), .TerminalSeqNumOrder);
     defer unnumbered.deinit();
     try expect_clean(&unnumbered);
 }
 
 test "TerminalSeqNumOrder rejects gaps, missing 1, duplicates, and unparseable numbers" {
-    var gap = try run_rule(rdf(
-        "  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
+    var gap = try run_rule(rdf("  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
         numbered_terminal("_t1", "_line1", "1") ++
-        numbered_terminal("_t2", "_line1", "3")
-        ), .TerminalSeqNumOrder);
+        numbered_terminal("_t2", "_line1", "3")), .TerminalSeqNumOrder);
     defer gap.deinit();
     try expect_rule(&gap, .TerminalSeqNumOrder, 1);
     try expect_violation(&gap, .TerminalSeqNumOrder, "_line1");
 
-    var no_one = try run_rule(rdf(
-        "  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
-        numbered_terminal("_t1", "_line1", "2")
-        ), .TerminalSeqNumOrder);
+    var no_one = try run_rule(rdf("  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
+        numbered_terminal("_t1", "_line1", "2")), .TerminalSeqNumOrder);
     defer no_one.deinit();
     try expect_rule(&no_one, .TerminalSeqNumOrder, 1);
 
-    var duplicate = try run_rule(rdf(
-        "  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
+    var duplicate = try run_rule(rdf("  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
         numbered_terminal("_t1", "_line1", "1") ++
-        numbered_terminal("_t2", "_line1", "1")
-        ), .TerminalSeqNumOrder);
+        numbered_terminal("_t2", "_line1", "1")), .TerminalSeqNumOrder);
     defer duplicate.deinit();
     try expect_rule(&duplicate, .TerminalSeqNumOrder, 1);
 
-    var unparseable = try run_rule(rdf(
-        "  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
-        numbered_terminal("_t1", "_line1", "abc")
-        ), .TerminalSeqNumOrder);
+    var unparseable = try run_rule(rdf("  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
+        numbered_terminal("_t1", "_line1", "abc")), .TerminalSeqNumOrder);
     defer unparseable.deinit();
     try expect_rule(&unparseable, .TerminalSeqNumOrder, 1);
     try expect_violation(&unparseable, .TerminalSeqNumOrder, "_t1");
@@ -1317,27 +1560,23 @@ test "TerminalSeqNumOrder has no arbitrary terminal-count limit" {
 // ── PTTerminalConsistency ─────────────────────────────────────────────────
 
 test "PTTerminalConsistency accepts a consistent end and rejects mismatches" {
-    var ok = try run_rule(rdf(
-        "  <cim:PowerTransformer rdf:ID=\"_pt1\"></cim:PowerTransformer>\n" ++
+    var ok = try run_rule(rdf("  <cim:PowerTransformer rdf:ID=\"_pt1\"></cim:PowerTransformer>\n" ++
         terminal("_t1", "_pt1") ++
         "  <cim:PowerTransformerEnd rdf:ID=\"_end1\">\n" ++
         "    <cim:TransformerEnd.Terminal rdf:resource=\"#_t1\"/>\n" ++
         "    <cim:PowerTransformerEnd.PowerTransformer rdf:resource=\"#_pt1\"/>\n" ++
-        "  </cim:PowerTransformerEnd>\n"
-        ), .PTTerminalConsistency);
+        "  </cim:PowerTransformerEnd>\n"), .PTTerminalConsistency);
     defer ok.deinit();
     try expect_clean(&ok);
 
     // The terminal belongs to a different transformer.
-    var mismatch = try run_rule(rdf(
-        "  <cim:PowerTransformer rdf:ID=\"_pt1\"></cim:PowerTransformer>\n" ++
+    var mismatch = try run_rule(rdf("  <cim:PowerTransformer rdf:ID=\"_pt1\"></cim:PowerTransformer>\n" ++
         "  <cim:PowerTransformer rdf:ID=\"_pt2\"></cim:PowerTransformer>\n" ++
         terminal("_t1", "_pt2") ++
         "  <cim:PowerTransformerEnd rdf:ID=\"_end1\">\n" ++
         "    <cim:TransformerEnd.Terminal rdf:resource=\"#_t1\"/>\n" ++
         "    <cim:PowerTransformerEnd.PowerTransformer rdf:resource=\"#_pt1\"/>\n" ++
-        "  </cim:PowerTransformerEnd>\n"
-        ), .PTTerminalConsistency);
+        "  </cim:PowerTransformerEnd>\n"), .PTTerminalConsistency);
     defer mismatch.deinit();
     try expect_rule(&mismatch, .PTTerminalConsistency, 1);
     try expect_violation(&mismatch, .PTTerminalConsistency, "_end1");
@@ -1353,26 +1592,22 @@ test "PTTerminalConsistency rejects missing and dangling references" {
     defer missing.deinit();
     try expect_rule(&missing, .PTTerminalConsistency, 1);
 
-    var dangling = try run_rule(rdf(
-        "  <cim:PowerTransformer rdf:ID=\"_pt1\"></cim:PowerTransformer>\n" ++
+    var dangling = try run_rule(rdf("  <cim:PowerTransformer rdf:ID=\"_pt1\"></cim:PowerTransformer>\n" ++
         "  <cim:PowerTransformerEnd rdf:ID=\"_end1\">\n" ++
         "    <cim:TransformerEnd.Terminal rdf:resource=\"#_nowhere\"/>\n" ++
         "    <cim:PowerTransformerEnd.PowerTransformer rdf:resource=\"#_pt1\"/>\n" ++
-        "  </cim:PowerTransformerEnd>\n"
-        ), .PTTerminalConsistency);
+        "  </cim:PowerTransformerEnd>\n"), .PTTerminalConsistency);
     defer dangling.deinit();
     try expect_rule(&dangling, .PTTerminalConsistency, 1);
 }
 
 test "PTTerminalConsistency rejects an equipment that is not a PowerTransformer" {
-    var run = try run_rule(rdf(
-        "  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
+    var run = try run_rule(rdf("  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
         terminal("_t1", "_line1") ++
         "  <cim:PowerTransformerEnd rdf:ID=\"_end1\">\n" ++
         "    <cim:TransformerEnd.Terminal rdf:resource=\"#_t1\"/>\n" ++
         "    <cim:PowerTransformerEnd.PowerTransformer rdf:resource=\"#_line1\"/>\n" ++
-        "  </cim:PowerTransformerEnd>\n"
-        ), .PTTerminalConsistency);
+        "  </cim:PowerTransformerEnd>\n"), .PTTerminalConsistency);
     defer run.deinit();
     try expect_rule(&run, .PTTerminalConsistency, 1);
 }
@@ -1386,40 +1621,34 @@ test "MCFirstSecond accepts terminals of two different ACLineSegments" {
 }
 
 test "MCFirstSecond rejects same-line ends, non-line equipment, and bad references" {
-    var same_line = try run_rule(rdf(
-        "  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
+    var same_line = try run_rule(rdf("  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
         terminal("_t1", "_line1") ++
         terminal("_t2", "_line1") ++
         "  <cim:MutualCoupling rdf:ID=\"_mc1\">\n" ++
         "    <cim:MutualCoupling.First_Terminal rdf:resource=\"#_t1\"/>\n" ++
         "    <cim:MutualCoupling.Second_Terminal rdf:resource=\"#_t2\"/>\n" ++
-        "  </cim:MutualCoupling>\n"
-        ), .MCFirstSecond);
+        "  </cim:MutualCoupling>\n"), .MCFirstSecond);
     defer same_line.deinit();
     try expect_rule(&same_line, .MCFirstSecond, 1);
     try expect_violation(&same_line, .MCFirstSecond, "_mc1");
 
     // The second terminal's equipment is a Breaker, not an ACLineSegment.
-    var not_line = try run_rule(rdf(
-        "  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
+    var not_line = try run_rule(rdf("  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
         "  <cim:Breaker rdf:ID=\"_sw1\"></cim:Breaker>\n" ++
         terminal("_t1", "_line1") ++
         terminal("_t2", "_sw1") ++
         "  <cim:MutualCoupling rdf:ID=\"_mc1\">\n" ++
         "    <cim:MutualCoupling.First_Terminal rdf:resource=\"#_t1\"/>\n" ++
         "    <cim:MutualCoupling.Second_Terminal rdf:resource=\"#_t2\"/>\n" ++
-        "  </cim:MutualCoupling>\n"
-        ), .MCFirstSecond);
+        "  </cim:MutualCoupling>\n"), .MCFirstSecond);
     defer not_line.deinit();
     try expect_rule(&not_line, .MCFirstSecond, 1);
 
-    var missing_ref = try run_rule(rdf(
-        "  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
+    var missing_ref = try run_rule(rdf("  <cim:ACLineSegment rdf:ID=\"_line1\"></cim:ACLineSegment>\n" ++
         terminal("_t1", "_line1") ++
         "  <cim:MutualCoupling rdf:ID=\"_mc1\">\n" ++
         "    <cim:MutualCoupling.First_Terminal rdf:resource=\"#_t1\"/>\n" ++
-        "  </cim:MutualCoupling>\n"
-        ), .MCFirstSecond);
+        "  </cim:MutualCoupling>\n"), .MCFirstSecond);
     defer missing_ref.deinit();
     try expect_rule(&missing_ref, .MCFirstSecond, 1);
 }
@@ -1427,52 +1656,44 @@ test "MCFirstSecond rejects same-line ends, non-line equipment, and bad referenc
 // ── MeasTerminal ──────────────────────────────────────────────────────────
 
 test "MeasTerminal accepts a terminal of the referenced equipment" {
-    var run = try run_rule(rdf(
-        "  <cim:Breaker rdf:ID=\"_sw1\"></cim:Breaker>\n" ++
+    var run = try run_rule(rdf("  <cim:Breaker rdf:ID=\"_sw1\"></cim:Breaker>\n" ++
         terminal("_t1", "_sw1") ++
         "  <cim:Analog rdf:ID=\"_m1\">\n" ++
         "    <cim:Measurement.Terminal rdf:resource=\"#_t1\"/>\n" ++
         "    <cim:Measurement.PowerSystemResource rdf:resource=\"#_sw1\"/>\n" ++
-        "  </cim:Analog>\n"
-        ), .MeasTerminal);
+        "  </cim:Analog>\n"), .MeasTerminal);
     defer run.deinit();
     try expect_clean(&run);
 }
 
 test "MeasTerminal rejects a terminal of a different equipment" {
-    var run = try run_rule(rdf(
-        "  <cim:Breaker rdf:ID=\"_sw1\"></cim:Breaker>\n" ++
+    var run = try run_rule(rdf("  <cim:Breaker rdf:ID=\"_sw1\"></cim:Breaker>\n" ++
         "  <cim:Breaker rdf:ID=\"_sw2\"></cim:Breaker>\n" ++
         terminal("_t1", "_sw2") ++
         "  <cim:Analog rdf:ID=\"_m1\">\n" ++
         "    <cim:Measurement.Terminal rdf:resource=\"#_t1\"/>\n" ++
         "    <cim:Measurement.PowerSystemResource rdf:resource=\"#_sw1\"/>\n" ++
-        "  </cim:Analog>\n"
-        ), .MeasTerminal);
+        "  </cim:Analog>\n"), .MeasTerminal);
     defer run.deinit();
     try expect_rule(&run, .MeasTerminal, 1);
     try expect_violation(&run, .MeasTerminal, "_m1");
 }
 
 test "MeasTerminal skips TapPosition and SwitchPosition measurements" {
-    var run = try run_rule(rdf(
-        "  <cim:Discrete rdf:ID=\"_m1\">\n" ++
+    var run = try run_rule(rdf("  <cim:Discrete rdf:ID=\"_m1\">\n" ++
         "    <cim:Measurement.measurementType>TapPosition</cim:Measurement.measurementType>\n" ++
         "  </cim:Discrete>\n" ++
         "  <cim:Discrete rdf:ID=\"_m2\">\n" ++
         "    <cim:Measurement.measurementType>SwitchPosition</cim:Measurement.measurementType>\n" ++
-        "  </cim:Discrete>\n"
-        ), .MeasTerminal);
+        "  </cim:Discrete>\n"), .MeasTerminal);
     defer run.deinit();
     try expect_clean(&run);
 }
 
 test "MeasTerminal rejects missing references on an ordinary measurement" {
-    var run = try run_rule(rdf(
-        "  <cim:Analog rdf:ID=\"_m1\">\n" ++
+    var run = try run_rule(rdf("  <cim:Analog rdf:ID=\"_m1\">\n" ++
         "    <cim:Measurement.measurementType>Angle</cim:Measurement.measurementType>\n" ++
-        "  </cim:Analog>\n"
-        ), .MeasTerminal);
+        "  </cim:Analog>\n"), .MeasTerminal);
     defer run.deinit();
     try expect_rule(&run, .MeasTerminal, 1);
 }
