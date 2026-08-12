@@ -512,8 +512,8 @@ test "diff compares unrecognized profiles routed under one agreed kind" {
     try std.testing.expect(result.stdout_contains("+ IdentifiedObject.name: \"South\""));
 }
 
-/// Every subcommand `cimd --help` lists. `--stats` is documented there as a
-/// global option, so a wrapper may append it to any of these.
+/// Every subcommand `cimd --help` lists. Global options must work on all of
+/// these so wrappers can append them without knowing the selected command.
 const advertised_commands = [_][]const u8{
     "convert", "browse",   "get",      "refs",  "types",
     "diff",    "topology", "validate", "qocdc", "version",
@@ -557,6 +557,38 @@ test "--stats rejects a mode it does not define" {
     try std.testing.expect(result.stderr_contains("expected auto, always or never"));
 }
 
+test "every advertised subcommand accepts the global --color flag" {
+    const gpa = std.testing.allocator;
+
+    for (advertised_commands) |command| {
+        for ([_][]const u8{ "--color=never", "--color" }) |spelling| {
+            var args: std.ArrayList([]const u8) = .empty;
+            defer args.deinit(gpa);
+            try args.append(gpa, command);
+            try args.append(gpa, spelling);
+            if (spelling.len == "--color".len) try args.append(gpa, "never");
+
+            var result = try run(gpa, args.items);
+            defer result.deinit(gpa);
+            if (result.stderr_contains("unknown option '--color")) {
+                std.debug.print(
+                    "'{s} {s}' rejected --color: {s}\n",
+                    .{ command, spelling, result.stderr },
+                );
+                return error.ColorFlagRejected;
+            }
+        }
+    }
+}
+
+test "--color rejects a mode it does not define" {
+    const gpa = std.testing.allocator;
+    var result = try run(gpa, &.{ "types", "--color=loud" });
+    defer result.deinit(gpa);
+    try std.testing.expectEqual(@as(u8, exit_usage), result.code);
+    try std.testing.expect(result.stderr_contains("expected auto, always or never"));
+}
+
 // ── qocdc ─────────────────────────────────────────────────────────────────────
 
 const qocdc_stem = "20260603T1325Z_1D_TTN_EQ_001";
@@ -592,10 +624,36 @@ test "qocdc reports every violation with rule, id, and line, and exits 65" {
     var result = try run(gpa, &.{ "qocdc", path });
     defer result.deinit(gpa);
     try std.testing.expectEqual(@as(u8, exit_data_error), result.code);
-    try std.testing.expect(result.stderr_contains("qocdc: NameLength: _nameless line "));
-    try std.testing.expect(result.stderr_contains("qocdc: NominalVoltage: _bv1 line "));
+    try std.testing.expect(result.stderr_contains("qocdc: error: NameLength: _nameless line "));
+    try std.testing.expect(result.stderr_contains("qocdc: error: NominalVoltage: _bv1 line "));
     try std.testing.expect(result.stderr_contains("['-110']"));
-    try std.testing.expect(result.stderr_contains("2 violations across 2 rules"));
+    try std.testing.expect(result.stderr_contains(
+        "2 violations across 2 rules (2 errors, 0 warnings, 0 info)",
+    ));
+}
+
+test "qocdc --color=always colors severity labels but not the summary" {
+    const gpa = std.testing.allocator;
+    var fixtures = Fixtures.init();
+    defer fixtures.deinit();
+
+    const xml = header(eq_uri) ++
+        \\  <cim:Substation rdf:ID="_nameless">
+        \\  </cim:Substation>
+        \\</rdf:RDF>
+    ;
+    var buf: [256]u8 = undefined;
+    const path = try fixtures.write_bundle(gpa, &buf, qocdc_stem ++ ".zip", &.{
+        .{ .name = qocdc_stem ++ ".xml", .data = xml },
+    });
+
+    var result = try run(gpa, &.{ "qocdc", "--color=always", path });
+    defer result.deinit(gpa);
+    try std.testing.expectEqual(@as(u8, exit_data_error), result.code);
+    try std.testing.expect(result.stderr_contains("qocdc: \x1b[91merror\x1b[0m: NameLength:"));
+    try std.testing.expect(result.stderr_contains(
+        "1 violations across 1 rules (1 errors, 0 warnings, 0 info)",
+    ));
 }
 
 test "qocdc exits 0 with empty stderr for a clean model" {
@@ -627,7 +685,7 @@ test "qocdc reports FileNameConsistency for a mismatched entry stem" {
     var result = try run(gpa, &.{ "qocdc", path });
     defer result.deinit(gpa);
     try std.testing.expectEqual(@as(u8, exit_data_error), result.code);
-    try std.testing.expect(result.stderr_contains("qocdc: FileNameConsistency:"));
+    try std.testing.expect(result.stderr_contains("qocdc: error: FileNameConsistency:"));
     try std.testing.expect(result.stderr_contains("['other_name']"));
 }
 

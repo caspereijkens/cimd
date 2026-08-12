@@ -354,9 +354,9 @@ fn render_back_refs(
 ) !u32 {
     assert(target.type_name().len > 0);
     try writer.print("\nReferences to {s} ", .{target.type_name()});
-    try writer.writeAll(cli.ansi_yellow);
+    try writer.writeAll(print.color_code(.stdout, cli.ansi_yellow));
     try writer.writeAll(strip_underscore(target.id()));
-    try writer.writeAll(cli.ansi_default);
+    try writer.writeAll(print.color_code(.stdout, cli.ansi_default));
 
     if (referrers.len == 0) {
         try writer.writeAll("\n\n  (no referrers)");
@@ -527,9 +527,9 @@ fn append_colored_id_line(writer: *std.Io.Writer, line: []const u8) !void {
         return;
     };
     try writer.writeAll(line[0 .. colon + 1]);
-    try writer.writeAll(cli.ansi_yellow);
+    try writer.writeAll(print.color_code(.stdout, cli.ansi_yellow));
     try writer.writeAll(line[colon + 1 .. rdf_marker]);
-    try writer.writeAll(cli.ansi_default);
+    try writer.writeAll(print.color_code(.stdout, cli.ansi_default));
     try writer.writeAll(line[rdf_marker..]);
 }
 
@@ -547,9 +547,9 @@ fn append_colored_ref_line(writer: *std.Io.Writer, line: []const u8) !void {
         return;
     };
     try writer.writeAll(line[0 .. dot + 1]);
-    try writer.writeAll(cli.ansi_green);
+    try writer.writeAll(print.color_code(.stdout, cli.ansi_green));
     try writer.writeAll(line[dot + 1 .. rdf_marker]);
-    try writer.writeAll(cli.ansi_default);
+    try writer.writeAll(print.color_code(.stdout, cli.ansi_default));
     try writer.writeAll(line[rdf_marker..]);
 }
 

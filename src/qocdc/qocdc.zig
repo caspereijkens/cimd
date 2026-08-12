@@ -27,8 +27,19 @@ pub const rule_count = catalog.rule_count;
 pub const RuleMask = catalog.RuleMask;
 pub const message = catalog.message;
 
+/// Report severity, fixed per rule rather than per finding.
+pub const Severity = catalog.Severity;
+pub const severity = catalog.severity;
+
+/// The rules reporting at `floor` or above, as a request for
+/// `validate_model_rules` -- a severity threshold that skips the excluded
+/// rules' work, not just their output.
+pub const mask_at_least = catalog.mask_at_least;
+
 pub const Report = report_mod.Report;
 pub const Violation = report_mod.Violation;
+pub const Totals = report_mod.Totals;
+pub const SeverityColors = report_mod.SeverityColors;
 pub const no_offset = report_mod.no_offset;
 pub const rendered_per_rule_max = report_mod.rendered_per_rule_max;
 pub const stored_total_max = report_mod.stored_total_max;
@@ -54,7 +65,9 @@ pub const validate_model_rules = @import("engine.zig").validate_model_rules;
 /// FileNameConsistency alone, for callers that already parsed the stems.
 pub const check_filename_consistency = filename_mod.check_consistency;
 
-/// Render the collected report; returns the exact violation total for the
-/// caller's exit-code decision. `model` may be null only when every stored
-/// violation is offsetless (filename-only validation).
+/// Render the collected report; returns the exact per-severity totals for the
+/// caller's exit-code decision. `colors` controls severity-label styling;
+/// pass `SeverityColors.plain` for stable uncolored output. `model` may be
+/// null only when every stored violation is offsetless (filename-only
+/// validation).
 pub const write_report = report_mod.write_report;

@@ -1,8 +1,14 @@
-//! The closed QoCDC v4.1.4 rule inventory and report messages.
+//! The closed QoCDC v4.1.4 rule inventory, report messages, and severities.
 //!
 //! Adding a rule starts here: add its stable report tag to `Rule`, then add
-//! its single-line diagnostic to `message`. Grid-model execution lives in
-//! `rules.zig`.
+//! its single-line diagnostic to `message` and its report severity to
+//! `severity`. Grid-model execution lives in `rules.zig`.
+//!
+//! This is the only file where every rule appears exactly once. Filename
+//! rules emit from `filename.zig`, `TooManyProfileParts` from the engine's
+//! header phase, and the relational rules from phase B -- none of them have
+//! an `object_rules` entry -- so a per-rule attribute belongs here and
+//! nowhere else.
 
 const std = @import("std");
 
@@ -67,6 +73,8 @@ pub const Rule = enum(u8) {
     RatedS,
     ShuntCompensatorSensitivity,
     CATieFlow,
+    OperationalLimitSetAtTerminal,
+    ControlModeCompatibility,
 };
 
 pub const rule_count = @typeInfo(Rule).@"enum".fields.len;
@@ -75,6 +83,112 @@ pub const rule_count = @typeInfo(Rule).@"enum".fields.len;
 /// the harvest/pass dependency closure from this set; harvest work for a
 /// dependency never emits diagnostics for rules outside the request.
 pub const RuleMask = std.EnumSet(Rule);
+
+/// How seriously a rule's findings report, declared most serious first:
+/// `@intFromEnum` is the severity rank, so a threshold is one integer
+/// comparison. `@tagName` is the word the report prints.
+pub const Severity = enum(u8) {
+    @"error",
+    warning,
+    info,
+
+    /// Whether `self` is at least as serious as `floor`.
+    pub fn at_least(self: Severity, floor: Severity) bool {
+        return @intFromEnum(self) <= @intFromEnum(floor);
+    }
+};
+
+/// The report severity of a rule. QoCDC assigns severity to the rule, not to
+/// the individual finding, so a severity is never stored per violation and no
+/// predicate decides one: the report derives it here at render time.
+///
+/// Every rule currently reports as an error -- the all-or-nothing verdict
+/// this validator had before severities existed, so classifying the inventory
+/// against the v4.1.4 severity column changes behaviour rather than
+/// introducing it. Reclassifying a rule is moving its tag to the `.warning`
+/// or `.info` arm. The switch is exhaustive on purpose: a new rule without a
+/// severity is a compile error, which is what makes "every rule has a
+/// severity" a property of the build rather than of review.
+pub fn severity(rule: Rule) Severity {
+    return switch (rule) {
+        // Filename (level 1).
+        .FileNameMD,
+        .FileNameConsistency,
+        .EffectiveDateTime,
+        .SourcingActor,
+        .CGMRegion,
+        .BusinessProcess,
+        .ModelPartType,
+        .FileVersion,
+        // Header.
+        .TooManyProfileParts,
+        // Grid model: flat per-object checks.
+        .NameLength,
+        .ShortNameLength,
+        .EICLength,
+        .DescriptionLength,
+        // Grid model: boundary-point checks.
+        .CNFromEndIsoCode,
+        .CNToEndIsoCode,
+        .CNFromEndNameLength,
+        .CNToEndNameLength,
+        .CNFromEndNameTsoLength,
+        .CNToEndNameTsoLength,
+        // Grid model: per-object value checks.
+        .NominalVoltage,
+        .LRCExponentModel,
+        .LCRCoefficientModel,
+        .LCRCoefficientParameters,
+        .EnergySourceVoltage,
+        .SVCRatings,
+        .GeneratingUnitNominalP,
+        .MeasType,
+        .MeasUnit,
+        .CNRequiredInEQOperations,
+        // Grid model: containment.
+        .GenerationContainment,
+        .PTContainment,
+        .SwitchContainment,
+        .SCContainment,
+        .InjectionContainment,
+        .BusbarSectionContainment,
+        .EFCContainment,
+        .ACDCConvContainment,
+        .DCEQContainment,
+        .CNContainment,
+        // Grid model: relational.
+        .CEBaseVoltage,
+        .TerminalCount1,
+        .TerminalCount2,
+        .TerminalSeqNum,
+        .TerminalSeqNumOrder,
+        .PTTerminalConsistency,
+        .MCFirstSecond,
+        .MeasTerminal,
+        // Grid model: additional per-object checks.
+        .SMQLimits2,
+        .SynchronousCondenser,
+        .RatedS,
+        .ShuntCompensatorSensitivity,
+        .CATieFlow,
+        .OperationalLimitSetAtTerminal,
+        .ControlModeCompatibility,
+        => .@"error",
+    };
+}
+
+/// The rules that report at `floor` or more seriously. The engine selects
+/// work from a `RuleMask`, so a severity threshold drops a rule's slot fills
+/// and child walks along with its output -- it is not a render-time filter.
+pub fn mask_at_least(floor: Severity) RuleMask {
+    var mask: RuleMask = .initEmpty();
+    var index: u32 = 0;
+    while (index < rule_count) : (index += 1) {
+        const rule: Rule = @enumFromInt(index);
+        if (severity(rule).at_least(floor)) mask.insert(rule);
+    }
+    return mask;
+}
 
 /// The single-line report text of a rule. One line per violation is part of
 /// the output contract, so no message may contain a newline.
@@ -147,6 +261,10 @@ pub fn message(rule: Rule) []const u8 {
         .ShuntCompensatorSensitivity => "cim:ShuntCompensator.voltageSensitivity is provided " ++
             "but is not a positive finite number.",
         .CATieFlow => "an interchange cim:ControlArea has no referring cim:TieFlow instance",
+        .OperationalLimitSetAtTerminal => "cim:OperationalLimitSet.Terminal is missing, " ++
+            "unreadable, dangling, or does not refer to a cim:Terminal",
+        .ControlModeCompatibility => "cim:TapChangerControl or cim:RegulatingControl with " ++
+            "invalid cim:RegulatingControl.mode.",
     };
 }
 
@@ -156,4 +274,36 @@ test "every rule message is a single line" {
         try std.testing.expect(text.len > 0);
         try std.testing.expect(std.mem.indexOfScalar(u8, text, '\n') == null);
     }
+}
+
+test "every severity renders as one bare lowercase word" {
+    // The report prints `@tagName(severity)` as a field of a single-line,
+    // colon-separated record; a space or a capital would break both the
+    // format and the grep key.
+    for ([_]Severity{ .@"error", .warning, .info }) |level| {
+        const word = @tagName(level);
+        try std.testing.expect(word.len > 0);
+        for (word) |byte| try std.testing.expect(std.ascii.isLower(byte));
+    }
+    try std.testing.expectEqualStrings("error", @tagName(Severity.@"error"));
+}
+
+test "severity rank orders most serious first" {
+    try std.testing.expect(Severity.@"error".at_least(.@"error"));
+    try std.testing.expect(Severity.@"error".at_least(.info));
+    try std.testing.expect(!Severity.info.at_least(.warning));
+    try std.testing.expect(Severity.warning.at_least(.warning));
+}
+
+test "mask_at_least selects exactly the rules at or above the floor" {
+    for ([_]Severity{ .@"error", .warning, .info }) |floor| {
+        const mask = mask_at_least(floor);
+        var index: u32 = 0;
+        while (index < rule_count) : (index += 1) {
+            const rule: Rule = @enumFromInt(index);
+            try std.testing.expectEqual(severity(rule).at_least(floor), mask.contains(rule));
+        }
+    }
+    // The lowest floor admits the whole inventory, whatever the assignment is.
+    try std.testing.expectEqual(rule_count, mask_at_least(.info).count());
 }

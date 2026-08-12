@@ -60,9 +60,10 @@ fn main_impl(init: std.process.Init) !void {
     var args = try init.minimal.args.iterateAllocator(gpa);
     defer args.deinit();
     const command = try cli.parse_args(io, &args);
-    // After parsing, so --stats is known; before the command, so no diagnostic
-    // is written against an unsettled policy.
+    // After parsing, so the global output policies are known; before the
+    // command, so no output is written against an unsettled policy.
     print.resolve_stats(io);
+    print.resolve_color(io, init.environ_map);
     const name = @tagName(command);
 
     run_command(io, gpa, command) catch |err| {
@@ -1483,14 +1484,25 @@ fn command_qocdc(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Qocdc) !void
 
     var write_buffer: [16 * 1024]u8 = undefined;
     var file_writer = std.Io.File.Writer.init(std.Io.File.stderr(), io, &write_buffer);
-    const total = qocdc.write_report(gpa, &file_writer.interface, &model, &report) catch |err|
+    const colors: qocdc.SeverityColors = if (print.colors_enabled(.stderr))
+        .{
+            .@"error" = cli.ansi_bright_red,
+            .warning = cli.ansi_bright_yellow,
+            .info = cli.ansi_bright_cyan,
+            .reset = cli.ansi_default,
+        }
+    else
+        .plain;
+    const totals = qocdc.write_report(gpa, &file_writer.interface, &model, &report, colors) catch |err|
         switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => print.system_error(io, "qocdc: failed to write the report: {t}", .{err}),
         };
     print.flush_file_writer(&file_writer) catch |err|
         print.system_error(io, "qocdc: failed to write the report: {t}", .{err});
-    if (total > 0) std.process.exit(print.exit_data_error);
+    // Only error-severity findings fail the run; warnings and info are
+    // reported and ignored, matching `command_validate`'s contract.
+    if (totals.errors > 0) std.process.exit(print.exit_data_error);
 }
 
 /// The single entry name of the QoCDC ZIP container. Moved out of the qocdc

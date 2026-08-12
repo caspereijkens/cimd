@@ -79,6 +79,11 @@ pub const Prop = enum(u8) {
     shunt_compensator_voltage_sensitivity,
     control_area_type,
     tie_flow_control_area,
+    operational_limit_set_terminal,
+    regulating_control_mode,
+    regulating_control_terminal,
+    regulating_cond_eq_control,
+    tap_changer_control,
 };
 
 pub const prop_count = @typeInfo(Prop).@"enum".fields.len;
@@ -138,6 +143,11 @@ pub fn prop_name(prop: Prop) []const u8 {
         .shunt_compensator_voltage_sensitivity => "ShuntCompensator.voltageSensitivity",
         .control_area_type => "ControlArea.type",
         .tie_flow_control_area => "TieFlow.ControlArea",
+        .operational_limit_set_terminal => "OperationalLimitSet.Terminal",
+        .regulating_control_mode => "RegulatingControl.mode",
+        .regulating_control_terminal => "RegulatingControl.Terminal",
+        .regulating_cond_eq_control => "RegulatingCondEq.RegulatingControl",
+        .tap_changer_control => "TapChanger.TapChangerControl",
     };
 }
 
@@ -169,7 +179,8 @@ pub const TargetTraits = packed struct(u16) {
     /// is_a ConductingEquipment or DCConductingEquipment (TerminalSeqNumOrder).
     ce_or_dcce: bool = false,
     reactive_capability_curve: bool = false,
-    _pad: u2 = 0,
+    conducting_equipment: bool = false,
+    busbar_section: bool = false,
 
     pub fn intersects(self: TargetTraits, allowed: TargetTraits) bool {
         return @as(u16, @bitCast(self)) & @as(u16, @bitCast(allowed)) != 0;
@@ -220,6 +231,8 @@ pub fn compute_traits(type_name: []const u8) TargetTraits {
         .ce_or_dcce = is_a(tid, type_name, "ConductingEquipment") or
             is_a(tid, type_name, "DCConductingEquipment"),
         .reactive_capability_curve = is_a(tid, type_name, "ReactiveCapabilityCurve"),
+        .conducting_equipment = is_a(tid, type_name, "ConductingEquipment"),
+        .busbar_section = is_a(tid, type_name, "BusbarSection"),
     };
 }
 
@@ -329,6 +342,69 @@ pub const MeasurementRow = struct {
     psr_index: u32,
 };
 
+/// The four RegulatingControl modes admitted by this QoCDC rule. `invalid`
+/// covers both the four explicitly prohibited enumeration members and an
+/// unknown or unreadable provided value; an absent optional association is
+/// represented by `null` in `ControlRow`.
+pub const ControlMode = enum(u8) {
+    invalid,
+    active_power,
+    voltage,
+    reactive_power,
+    power_factor,
+};
+
+/// Kinds of equipment whose forward control association resolves to a given
+/// RegulatingControl. Multiple objects may share a control, so Phase A ORs
+/// these flags and Phase B requires the mode to satisfy every represented
+/// kind.
+pub const ControlEquipmentKinds = packed struct(u8) {
+    phase_tap_changer: bool = false,
+    ratio_tap_changer: bool = false,
+    synchronous_machine: bool = false,
+    shunt_compensator: bool = false,
+    static_var_compensator: bool = false,
+    _pad: u3 = 0,
+};
+
+pub const ControlRow = struct {
+    object_index: u32,
+    terminal_index: u32,
+    mode: ?ControlMode,
+    /// False means the optional association is absent. True with
+    /// `terminal_index == none_index` means it was provided but unusable.
+    terminal_declared: bool,
+};
+
+/// Whether one provided mode is compatible with every controlling-equipment
+/// kind sharing the control and with a BusbarSection control point.
+pub fn control_mode_compatible(
+    mode_optional: ?ControlMode,
+    kinds: ControlEquipmentKinds,
+    controls_busbar: bool,
+) bool {
+    const mode = mode_optional orelse return true;
+    if (mode == .invalid) return false;
+    if (controls_busbar and mode != .voltage) return false;
+    if (kinds.phase_tap_changer and mode != .active_power) return false;
+    if (kinds.ratio_tap_changer and
+        mode != .voltage and mode != .reactive_power and mode != .power_factor)
+    {
+        return false;
+    }
+    if ((kinds.synchronous_machine or kinds.shunt_compensator) and
+        mode != .voltage and mode != .reactive_power and mode != .power_factor)
+    {
+        return false;
+    }
+    if (kinds.static_var_compensator and
+        mode != .voltage and mode != .reactive_power)
+    {
+        return false;
+    }
+    return true;
+}
+
 pub const CeBvRow = struct {
     object_index: u32,
     /// The equipment's declared BaseVoltage id, hash-stripped. Kept as a
@@ -378,6 +454,10 @@ pub const Columns = struct {
     bay_rows: std.ArrayList(BayRow),
     interchange_control_areas: std.ArrayList(u32),
     tie_flow_control_areas: std.DynamicBitSetUnmanaged,
+    controls: std.ArrayList(ControlRow),
+    /// Dense: control object index -> kinds of referring controlling
+    /// equipment, populated from the associations on that equipment.
+    control_equipment_kinds: []ControlEquipmentKinds,
 
     pub fn init(gpa: std.mem.Allocator, object_count: u32) error{OutOfMemory}!Columns {
         const terminal_equipment = try gpa.alloc(u32, object_count);
@@ -392,6 +472,9 @@ pub const Columns = struct {
         errdefer coupled.deinit(gpa);
         var tie_flow_control_areas = try std.DynamicBitSetUnmanaged.initEmpty(gpa, object_count);
         errdefer tie_flow_control_areas.deinit(gpa);
+        const control_equipment_kinds = try gpa.alloc(ControlEquipmentKinds, object_count);
+        errdefer gpa.free(control_equipment_kinds);
+        @memset(control_equipment_kinds, .{});
         return .{
             .terminal_equipment = terminal_equipment,
             .terminal_count = terminal_count,
@@ -406,6 +489,8 @@ pub const Columns = struct {
             .bay_rows = .empty,
             .interchange_control_areas = .empty,
             .tie_flow_control_areas = tie_flow_control_areas,
+            .controls = .empty,
+            .control_equipment_kinds = control_equipment_kinds,
         };
     }
 
@@ -423,15 +508,17 @@ pub const Columns = struct {
         self.bay_rows.deinit(gpa);
         self.interchange_control_areas.deinit(gpa);
         self.tie_flow_control_areas.deinit(gpa);
+        self.controls.deinit(gpa);
+        gpa.free(self.control_equipment_kinds);
     }
 };
 
 /// The rules whose verdicts need harvested columns (and so the traits column
 /// and reference resolution too).
 pub const relational_rules = [_]Rule{
-    .TerminalCount1,        .TerminalCount2, .TerminalSeqNum, .TerminalSeqNumOrder,
-    .PTTerminalConsistency, .MCFirstSecond,  .MeasTerminal,   .CEBaseVoltage,
-    .CATieFlow,
+    .TerminalCount1,        .TerminalCount2,           .TerminalSeqNum, .TerminalSeqNumOrder,
+    .PTTerminalConsistency, .MCFirstSecond,            .MeasTerminal,   .CEBaseVoltage,
+    .CATieFlow,             .ControlModeCompatibility,
 };
 
 // ── the object-rule table ─────────────────────────────────────────────────
@@ -701,6 +788,23 @@ pub const object_rules = [_]ObjectRule{
         .needs = &.{.{ .prop = .control_area_type, .channels = .{ .ref = true } }},
         .check = &harvest_interchange_control_area,
     },
+    .{
+        .rule = .OperationalLimitSetAtTerminal,
+        .filter = .{ .is_a_any = &.{"OperationalLimitSet"} },
+        .needs_resolution = true,
+        .needs = &.{.{ .prop = .operational_limit_set_terminal, .channels = .{ .ref = true } }},
+        .check = &check_operational_limit_set_terminal,
+    },
+    .{
+        .rule = .ControlModeCompatibility,
+        .filter = .{ .is_a_any = &.{"RegulatingControl"} },
+        .needs_resolution = true,
+        .needs = &.{
+            .{ .prop = .regulating_control_mode, .channels = .{ .ref = true, .declared = true } },
+            .{ .prop = .regulating_control_terminal, .channels = .{ .ref = true, .declared = true } },
+        },
+        .check = &harvest_regulating_control,
+    },
     // Containment: the referenced container must exist and carry one of the
     // allowed traits. `required = false` tolerates an absent reference only;
     // a dangling or wrong-typed one always violates.
@@ -784,7 +888,7 @@ pub const harvesters = [_]Harvester{
     .{
         .rules = &.{
             .TerminalCount1,        .TerminalCount2, .TerminalSeqNum, .TerminalSeqNumOrder,
-            .PTTerminalConsistency, .MCFirstSecond,  .MeasTerminal,
+            .PTTerminalConsistency, .MCFirstSecond,  .MeasTerminal,   .ControlModeCompatibility,
         },
         .filter = .{ .is_a_any = &.{"ACDCTerminal"} },
         .needs = &.{
@@ -820,6 +924,20 @@ pub const harvesters = [_]Harvester{
         .filter = .{ .is_a_any = &.{"TieFlow"} },
         .needs = &.{.{ .prop = .tie_flow_control_area, .channels = .{ .ref = true } }},
         .harvest = &harvest_tie_flow_control_area,
+    },
+    .{
+        .rules = &.{.ControlModeCompatibility},
+        .filter = .{ .is_a_any = &.{ "PhaseTapChanger", "RatioTapChanger" } },
+        .needs = &.{.{ .prop = .tap_changer_control, .channels = .{ .ref = true } }},
+        .harvest = &harvest_tap_changer_control_source,
+    },
+    .{
+        .rules = &.{.ControlModeCompatibility},
+        .filter = .{ .is_a_any = &.{
+            "SynchronousMachine", "ShuntCompensator", "StaticVarCompensator",
+        } },
+        .needs = &.{.{ .prop = .regulating_cond_eq_control, .channels = .{ .ref = true } }},
+        .harvest = &harvest_regulating_equipment_control_source,
     },
 };
 
@@ -906,6 +1024,40 @@ fn harvest_tie_flow_control_area(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemor
     if (control_area != none_index) ctx.columns.?.tie_flow_control_areas.set(control_area);
 }
 
+fn harvest_tap_changer_control_source(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    _ = obj;
+    const control = resolve_ref(ctx, .tap_changer_control);
+    if (control == none_index) return;
+
+    const kinds = &ctx.columns.?.control_equipment_kinds[control];
+    if (matches_is_a(ctx.group_tid, ctx.group_type_name, "PhaseTapChanger")) {
+        kinds.phase_tap_changer = true;
+    }
+    if (matches_is_a(ctx.group_tid, ctx.group_type_name, "RatioTapChanger")) {
+        kinds.ratio_tap_changer = true;
+    }
+}
+
+fn harvest_regulating_equipment_control_source(
+    ctx: *Ctx,
+    obj: cim.CimObject,
+) error{OutOfMemory}!void {
+    _ = obj;
+    const control = resolve_ref(ctx, .regulating_cond_eq_control);
+    if (control == none_index) return;
+
+    const kinds = &ctx.columns.?.control_equipment_kinds[control];
+    if (matches_is_a(ctx.group_tid, ctx.group_type_name, "SynchronousMachine")) {
+        kinds.synchronous_machine = true;
+    }
+    if (matches_is_a(ctx.group_tid, ctx.group_type_name, "ShuntCompensator")) {
+        kinds.shunt_compensator = true;
+    }
+    if (matches_is_a(ctx.group_tid, ctx.group_type_name, "StaticVarCompensator")) {
+        kinds.static_var_compensator = true;
+    }
+}
+
 fn harvest_ce_base_voltage(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
     _ = obj;
     // A malformed BaseVoltage reference reads as absent, matching the
@@ -955,6 +1107,7 @@ fn check_measurement_terminal(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!
 
 comptime {
     assert(object_rules.len <= 64); // the engine's active set is a u64
+    assert(harvesters.len <= 8); // the engine's active harvester set is a u8
 }
 
 /// A containment table entry: the object's `prop` reference must resolve to
@@ -1302,6 +1455,44 @@ fn harvest_interchange_control_area(ctx: *Ctx, obj: cim.CimObject) error{OutOfMe
     const control_area_type = cim.uri.fragment_or_self(reference);
     if (!std.mem.eql(u8, control_area_type, "ControlAreaTypeKind.Interchange")) return;
     try ctx.columns.?.interchange_control_areas.append(ctx.gpa, ctx.object_index);
+}
+
+fn check_operational_limit_set_terminal(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    const terminal = resolve_ref(ctx, .operational_limit_set_terminal);
+    if (terminal == none_index) {
+        return ctx.emit(.OperationalLimitSetAtTerminal, obj, "");
+    }
+    if (!ctx.traits.?[terminal].terminal) {
+        try ctx.emit(.OperationalLimitSetAtTerminal, obj, "");
+    }
+}
+
+fn harvest_regulating_control(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    _ = obj;
+    const mode: ?ControlMode = switch (prop_ref(ctx.slots, .regulating_control_mode)) {
+        .malformed => .invalid,
+        .absent => if (prop_declared(ctx.slots, .regulating_control_mode)) .invalid else null,
+        .value => |reference| blk: {
+            const value = cim.uri.fragment_or_self(reference);
+            if (std.mem.eql(u8, value, "RegulatingControlModeKind.activePower")) {
+                break :blk .active_power;
+            }
+            if (std.mem.eql(u8, value, "RegulatingControlModeKind.voltage")) break :blk .voltage;
+            if (std.mem.eql(u8, value, "RegulatingControlModeKind.reactivePower")) {
+                break :blk .reactive_power;
+            }
+            if (std.mem.eql(u8, value, "RegulatingControlModeKind.powerFactor")) {
+                break :blk .power_factor;
+            }
+            break :blk .invalid;
+        },
+    };
+    try ctx.columns.?.controls.append(ctx.gpa, .{
+        .object_index = ctx.object_index,
+        .terminal_index = resolve_ref(ctx, .regulating_control_terminal),
+        .mode = mode,
+        .terminal_declared = prop_declared(ctx.slots, .regulating_control_terminal),
+    });
 }
 
 /// Whether a measurement type is allowed under the version the header

@@ -941,6 +941,319 @@ test "CATieFlow checks each interchange control area independently" {
     try expect_violation(&run, .CATieFlow, "_empty_association");
 }
 
+// ── OperationalLimitSetAtTerminal ─────────────────────────────────────────
+
+test "OperationalLimitSetAtTerminal accepts associations that resolve to Terminals" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:OperationalLimitSet rdf:ID="_terminal_only">
+        \\    <cim:OperationalLimitSet.Terminal rdf:resource="#_t1"/>
+        \\  </cim:OperationalLimitSet>
+        \\  <cim:OperationalLimitSet rdf:ID="_both_associations">
+        \\    <cim:OperationalLimitSet.Terminal rdf:resource="http://example.com/grid#_t2"/>
+        \\    <cim:OperationalLimitSet.Equipment rdf:resource="#_equipment"/>
+        \\  </cim:OperationalLimitSet>
+        \\  <cim:OperationalLimitSet rdf:ID="_urn_terminal">
+        \\    <cim:OperationalLimitSet.Terminal rdf:resource="urn:uuid:terminal"/>
+        \\  </cim:OperationalLimitSet>
+        \\  <cim:Terminal rdf:ID="_t1"/>
+        \\  <cim:Terminal rdf:about="http://example.com/grid#_t2"/>
+        \\  <cim:Terminal rdf:about="urn:uuid:terminal"/>
+        \\  <cim:Equipment rdf:ID="_equipment"/>
+        \\  <cim:BaseVoltage rdf:ID="_unrelated"/>
+        \\</rdf:RDF>
+    , .OperationalLimitSetAtTerminal);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "OperationalLimitSetAtTerminal ignores Equipment and rejects unusable Terminal associations" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:OperationalLimitSet rdf:ID="_missing"/>
+        \\  <cim:OperationalLimitSet rdf:ID="_equipment_only">
+        \\    <cim:OperationalLimitSet.Equipment rdf:resource="#_equipment"/>
+        \\  </cim:OperationalLimitSet>
+        \\  <cim:OperationalLimitSet rdf:ID="_self_closing">
+        \\    <cim:OperationalLimitSet.Terminal/>
+        \\  </cim:OperationalLimitSet>
+        \\  <cim:OperationalLimitSet rdf:ID="_literal">
+        \\    <cim:OperationalLimitSet.Terminal>#_t1</cim:OperationalLimitSet.Terminal>
+        \\  </cim:OperationalLimitSet>
+        \\  <cim:OperationalLimitSet rdf:ID="_empty_reference">
+        \\    <cim:OperationalLimitSet.Terminal rdf:resource=""/>
+        \\  </cim:OperationalLimitSet>
+        \\  <cim:OperationalLimitSet rdf:ID="_blank_reference">
+        \\    <cim:OperationalLimitSet.Terminal rdf:resource="   "/>
+        \\  </cim:OperationalLimitSet>
+        \\  <cim:OperationalLimitSet rdf:ID="_malformed_reference">
+        \\    <cim:OperationalLimitSet.Terminal rdf:resource="#_t1 />
+        \\  </cim:OperationalLimitSet>
+        \\  <cim:OperationalLimitSet rdf:ID="_dangling_reference">
+        \\    <cim:OperationalLimitSet.Terminal rdf:resource="#_missing"/>
+        \\  </cim:OperationalLimitSet>
+        \\  <cim:OperationalLimitSet rdf:ID="_wrong_target_type">
+        \\    <cim:OperationalLimitSet.Terminal rdf:resource="#_equipment"/>
+        \\  </cim:OperationalLimitSet>
+        \\  <cim:Equipment rdf:ID="_equipment"/>
+        \\</rdf:RDF>
+    , .OperationalLimitSetAtTerminal);
+    defer run.deinit();
+    try expect_rule(&run, .OperationalLimitSetAtTerminal, 9);
+    try expect_violation(&run, .OperationalLimitSetAtTerminal, "_missing");
+    try expect_violation(&run, .OperationalLimitSetAtTerminal, "_equipment_only");
+    try expect_violation(&run, .OperationalLimitSetAtTerminal, "_self_closing");
+    try expect_violation(&run, .OperationalLimitSetAtTerminal, "_literal");
+    try expect_violation(&run, .OperationalLimitSetAtTerminal, "_empty_reference");
+    try expect_violation(&run, .OperationalLimitSetAtTerminal, "_blank_reference");
+    try expect_violation(&run, .OperationalLimitSetAtTerminal, "_malformed_reference");
+    try expect_violation(&run, .OperationalLimitSetAtTerminal, "_dangling_reference");
+    try expect_violation(&run, .OperationalLimitSetAtTerminal, "_wrong_target_type");
+}
+
+// ── ControlModeCompatibility ──────────────────────────────────────────────
+
+const ControlModeCase = struct {
+    controller_class: []const u8,
+    controller_association: []const u8,
+    control_class: []const u8,
+    mode: []const u8,
+    target_class: []const u8 = "ACLineSegment",
+};
+
+fn control_mode_case_xml(buffer: []u8, case: ControlModeCase) ![]const u8 {
+    return std.fmt.bufPrint(buffer,
+        \\<rdf:RDF>
+        \\  <cim:{s} rdf:ID="_controller">
+        \\    <cim:{s} rdf:resource="#_control"/>
+        \\  </cim:{s}>
+        \\  <cim:{s} rdf:ID="_control">
+        \\    <cim:RegulatingControl.mode rdf:resource="http://iec.ch/TC57/CIM100#RegulatingControlModeKind.{s}"/>
+        \\    <cim:RegulatingControl.Terminal rdf:resource="#_terminal"/>
+        \\  </cim:{s}>
+        \\  <cim:{s} rdf:ID="_target"/>
+        \\  <cim:Terminal rdf:ID="_terminal">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_target"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    , .{
+        case.controller_class,
+        case.controller_association,
+        case.controller_class,
+        case.control_class,
+        case.mode,
+        case.control_class,
+        case.target_class,
+    });
+}
+
+test "ControlModeCompatibility accepts every class-specific mode" {
+    const allowed = [_]ControlModeCase{
+        .{ .controller_class = "PhaseTapChangerLinear", .controller_association = "TapChanger.TapChangerControl", .control_class = "TapChangerControl", .mode = "activePower" },
+        .{ .controller_class = "RatioTapChanger", .controller_association = "TapChanger.TapChangerControl", .control_class = "TapChangerControl", .mode = "voltage" },
+        .{ .controller_class = "RatioTapChanger", .controller_association = "TapChanger.TapChangerControl", .control_class = "TapChangerControl", .mode = "reactivePower" },
+        .{ .controller_class = "RatioTapChanger", .controller_association = "TapChanger.TapChangerControl", .control_class = "TapChangerControl", .mode = "powerFactor" },
+        .{ .controller_class = "SynchronousMachine", .controller_association = "RegulatingCondEq.RegulatingControl", .control_class = "RegulatingControl", .mode = "voltage" },
+        .{ .controller_class = "SynchronousMachine", .controller_association = "RegulatingCondEq.RegulatingControl", .control_class = "RegulatingControl", .mode = "reactivePower" },
+        .{ .controller_class = "SynchronousMachine", .controller_association = "RegulatingCondEq.RegulatingControl", .control_class = "RegulatingControl", .mode = "powerFactor" },
+        .{ .controller_class = "NonlinearShuntCompensator", .controller_association = "RegulatingCondEq.RegulatingControl", .control_class = "RegulatingControl", .mode = "voltage" },
+        .{ .controller_class = "NonlinearShuntCompensator", .controller_association = "RegulatingCondEq.RegulatingControl", .control_class = "RegulatingControl", .mode = "reactivePower" },
+        .{ .controller_class = "NonlinearShuntCompensator", .controller_association = "RegulatingCondEq.RegulatingControl", .control_class = "RegulatingControl", .mode = "powerFactor" },
+        .{ .controller_class = "StaticVarCompensator", .controller_association = "RegulatingCondEq.RegulatingControl", .control_class = "RegulatingControl", .mode = "voltage" },
+        .{ .controller_class = "StaticVarCompensator", .controller_association = "RegulatingCondEq.RegulatingControl", .control_class = "RegulatingControl", .mode = "reactivePower" },
+        .{ .controller_class = "SynchronousMachine", .controller_association = "RegulatingCondEq.RegulatingControl", .control_class = "RegulatingControl", .mode = "voltage", .target_class = "BusbarSection" },
+    };
+
+    var buffer: [2048]u8 = undefined;
+    for (allowed) |case| {
+        var run = try run_rule(try control_mode_case_xml(&buffer, case), .ControlModeCompatibility);
+        defer run.deinit();
+        try expect_clean(&run);
+    }
+}
+
+test "ControlModeCompatibility rejects every class-specific mismatch" {
+    const rejected = [_]ControlModeCase{
+        .{ .controller_class = "PhaseTapChangerTabular", .controller_association = "TapChanger.TapChangerControl", .control_class = "TapChangerControl", .mode = "voltage" },
+        .{ .controller_class = "RatioTapChanger", .controller_association = "TapChanger.TapChangerControl", .control_class = "TapChangerControl", .mode = "activePower" },
+        .{ .controller_class = "SynchronousMachine", .controller_association = "RegulatingCondEq.RegulatingControl", .control_class = "RegulatingControl", .mode = "activePower" },
+        .{ .controller_class = "LinearShuntCompensator", .controller_association = "RegulatingCondEq.RegulatingControl", .control_class = "RegulatingControl", .mode = "activePower" },
+        .{ .controller_class = "StaticVarCompensator", .controller_association = "RegulatingCondEq.RegulatingControl", .control_class = "RegulatingControl", .mode = "powerFactor" },
+        .{ .controller_class = "StaticVarCompensator", .controller_association = "RegulatingCondEq.RegulatingControl", .control_class = "RegulatingControl", .mode = "reactivePower", .target_class = "BusbarSection" },
+    };
+
+    var buffer: [2048]u8 = undefined;
+    for (rejected) |case| {
+        var run = try run_rule(try control_mode_case_xml(&buffer, case), .ControlModeCompatibility);
+        defer run.deinit();
+        try expect_rule(&run, .ControlModeCompatibility, 1);
+        try expect_violation(&run, .ControlModeCompatibility, "_control");
+    }
+}
+
+test "ControlModeCompatibility rejects prohibited and unknown modes globally" {
+    const rejected = [_][]const u8{
+        "currentFlow",
+        "admittance",
+        "timeScheduled",
+        "temperature",
+        "activePowerControl",
+        "unknown",
+    };
+
+    var buffer: [1024]u8 = undefined;
+    for (rejected) |mode| {
+        const xml = try std.fmt.bufPrint(&buffer,
+            \\<rdf:RDF>
+            \\  <cim:RegulatingControl rdf:ID="_control">
+            \\    <cim:RegulatingControl.mode rdf:resource="#RegulatingControlModeKind.{s}"/>
+            \\  </cim:RegulatingControl>
+            \\</rdf:RDF>
+        , .{mode});
+        var run = try run_rule(xml, .ControlModeCompatibility);
+        defer run.deinit();
+        try expect_rule(&run, .ControlModeCompatibility, 1);
+    }
+}
+
+test "ControlModeCompatibility treats absent optional associations differently from malformed ones" {
+    var absent = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:RegulatingControl rdf:ID="_both_absent"/>
+        \\  <cim:RegulatingControl rdf:ID="_terminal_absent">
+        \\    <cim:RegulatingControl.mode rdf:resource="#RegulatingControlModeKind.activePower"/>
+        \\  </cim:RegulatingControl>
+        \\  <cim:RegulatingControl rdf:ID="_mode_absent">
+        \\    <cim:RegulatingControl.Terminal rdf:resource="#_terminal"/>
+        \\  </cim:RegulatingControl>
+        \\  <cim:ACLineSegment rdf:ID="_line"/>
+        \\  <cim:Terminal rdf:ID="_terminal">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_line"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    , .ControlModeCompatibility);
+    defer absent.deinit();
+    try expect_clean(&absent);
+
+    var malformed = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:RegulatingControl rdf:ID="_literal">
+        \\    <cim:RegulatingControl.mode>RegulatingControlModeKind.voltage</cim:RegulatingControl.mode>
+        \\  </cim:RegulatingControl>
+        \\  <cim:RegulatingControl rdf:ID="_self_closing">
+        \\    <cim:RegulatingControl.mode/>
+        \\  </cim:RegulatingControl>
+        \\  <cim:RegulatingControl rdf:ID="_empty_reference">
+        \\    <cim:RegulatingControl.mode rdf:resource=""/>
+        \\  </cim:RegulatingControl>
+        \\</rdf:RDF>
+    , .ControlModeCompatibility);
+    defer malformed.deinit();
+    try expect_rule(&malformed, .ControlModeCompatibility, 3);
+    try expect_violation(&malformed, .ControlModeCompatibility, "_literal");
+    try expect_violation(&malformed, .ControlModeCompatibility, "_self_closing");
+    try expect_violation(&malformed, .ControlModeCompatibility, "_empty_reference");
+}
+
+test "ControlModeCompatibility validates the complete controlled Terminal path" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:RegulatingControl rdf:ID="_literal_terminal">
+        \\    <cim:RegulatingControl.mode rdf:resource="#RegulatingControlModeKind.voltage"/>
+        \\    <cim:RegulatingControl.Terminal>#_valid_terminal</cim:RegulatingControl.Terminal>
+        \\  </cim:RegulatingControl>
+        \\  <cim:RegulatingControl rdf:ID="_dangling_terminal">
+        \\    <cim:RegulatingControl.mode rdf:resource="#RegulatingControlModeKind.voltage"/>
+        \\    <cim:RegulatingControl.Terminal rdf:resource="#_missing"/>
+        \\  </cim:RegulatingControl>
+        \\  <cim:RegulatingControl rdf:ID="_wrong_terminal_type">
+        \\    <cim:RegulatingControl.mode rdf:resource="#RegulatingControlModeKind.voltage"/>
+        \\    <cim:RegulatingControl.Terminal rdf:resource="#_line"/>
+        \\  </cim:RegulatingControl>
+        \\  <cim:RegulatingControl rdf:ID="_dc_terminal">
+        \\    <cim:RegulatingControl.mode rdf:resource="#RegulatingControlModeKind.voltage"/>
+        \\    <cim:RegulatingControl.Terminal rdf:resource="#_dc"/>
+        \\  </cim:RegulatingControl>
+        \\  <cim:RegulatingControl rdf:ID="_terminal_without_equipment">
+        \\    <cim:RegulatingControl.mode rdf:resource="#RegulatingControlModeKind.voltage"/>
+        \\    <cim:RegulatingControl.Terminal rdf:resource="#_no_equipment"/>
+        \\  </cim:RegulatingControl>
+        \\  <cim:RegulatingControl rdf:ID="_terminal_dangling_equipment">
+        \\    <cim:RegulatingControl.mode rdf:resource="#RegulatingControlModeKind.voltage"/>
+        \\    <cim:RegulatingControl.Terminal rdf:resource="#_dangling_equipment"/>
+        \\  </cim:RegulatingControl>
+        \\  <cim:RegulatingControl rdf:ID="_terminal_wrong_equipment_type">
+        \\    <cim:RegulatingControl.mode rdf:resource="#RegulatingControlModeKind.voltage"/>
+        \\    <cim:RegulatingControl.Terminal rdf:resource="#_wrong_equipment"/>
+        \\  </cim:RegulatingControl>
+        \\  <cim:RegulatingControl rdf:ID="_valid">
+        \\    <cim:RegulatingControl.mode rdf:resource="#RegulatingControlModeKind.voltage"/>
+        \\    <cim:RegulatingControl.Terminal rdf:resource="http://example.com/grid#_valid_terminal"/>
+        \\  </cim:RegulatingControl>
+        \\  <cim:ACLineSegment rdf:ID="_line"/>
+        \\  <cim:BaseVoltage rdf:ID="_base_voltage"/>
+        \\  <cim:DCTerminal rdf:ID="_dc"/>
+        \\  <cim:Terminal rdf:ID="_no_equipment"/>
+        \\  <cim:Terminal rdf:ID="_dangling_equipment">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_missing_equipment"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_wrong_equipment">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_base_voltage"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:about="http://example.com/grid#_valid_terminal">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_line"/>
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    , .ControlModeCompatibility);
+    defer run.deinit();
+    try expect_rule(&run, .ControlModeCompatibility, 7);
+    try expect_violation(&run, .ControlModeCompatibility, "_literal_terminal");
+    try expect_violation(&run, .ControlModeCompatibility, "_dangling_terminal");
+    try expect_violation(&run, .ControlModeCompatibility, "_wrong_terminal_type");
+    try expect_violation(&run, .ControlModeCompatibility, "_dc_terminal");
+    try expect_violation(&run, .ControlModeCompatibility, "_terminal_without_equipment");
+    try expect_violation(&run, .ControlModeCompatibility, "_terminal_dangling_equipment");
+    try expect_violation(&run, .ControlModeCompatibility, "_terminal_wrong_equipment_type");
+}
+
+test "ControlModeCompatibility intersects restrictions for shared controls" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:SynchronousMachine rdf:ID="_sm_ok">
+        \\    <cim:RegulatingCondEq.RegulatingControl rdf:resource="#_shared_ok"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:StaticVarCompensator rdf:ID="_svc_ok">
+        \\    <cim:RegulatingCondEq.RegulatingControl rdf:resource="#_shared_ok"/>
+        \\  </cim:StaticVarCompensator>
+        \\  <cim:RegulatingControl rdf:ID="_shared_ok">
+        \\    <cim:RegulatingControl.mode rdf:resource="#RegulatingControlModeKind.reactivePower"/>
+        \\  </cim:RegulatingControl>
+        \\  <cim:SynchronousMachine rdf:ID="_sm_bad">
+        \\    <cim:RegulatingCondEq.RegulatingControl rdf:resource="#_shared_bad"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:StaticVarCompensator rdf:ID="_svc_bad">
+        \\    <cim:RegulatingCondEq.RegulatingControl rdf:resource="#_shared_bad"/>
+        \\  </cim:StaticVarCompensator>
+        \\  <cim:RegulatingControl rdf:ID="_shared_bad">
+        \\    <cim:RegulatingControl.mode rdf:resource="#RegulatingControlModeKind.powerFactor"/>
+        \\  </cim:RegulatingControl>
+        \\  <cim:PhaseTapChangerSymmetrical rdf:ID="_phase">
+        \\    <cim:TapChanger.TapChangerControl rdf:resource="#_tap_shared"/>
+        \\  </cim:PhaseTapChangerSymmetrical>
+        \\  <cim:RatioTapChanger rdf:ID="_ratio">
+        \\    <cim:TapChanger.TapChangerControl rdf:resource="#_tap_shared"/>
+        \\  </cim:RatioTapChanger>
+        \\  <cim:TapChangerControl rdf:ID="_tap_shared">
+        \\    <cim:RegulatingControl.mode rdf:resource="#RegulatingControlModeKind.activePower"/>
+        \\  </cim:TapChangerControl>
+        \\</rdf:RDF>
+    , .ControlModeCompatibility);
+    defer run.deinit();
+    try expect_rule(&run, .ControlModeCompatibility, 2);
+    try expect_violation(&run, .ControlModeCompatibility, "_shared_bad");
+    try expect_violation(&run, .ControlModeCompatibility, "_tap_shared");
+}
+
 // ── MeasType ──────────────────────────────────────────────────────────────
 
 fn measurement_type_xml(buffer: []u8, comptime header: []const u8, value: []const u8) ![]const u8 {
@@ -1902,21 +2215,26 @@ test "rendering shows the first 100 per rule in document order, verified by iden
 
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
-    const total = try qocdc.write_report(gpa, &out.writer, &run.model, &run.report);
-    try std.testing.expectEqual(@as(u64, 105), total);
+    const totals = try qocdc.write_report(gpa, &out.writer, &run.model, &run.report, .plain);
+    try std.testing.expectEqual(@as(u64, 105), totals.total());
 
     const text = out.written();
-    try std.testing.expectEqual(@as(usize, 100), std.mem.count(u8, text, "qocdc: NominalVoltage: _b"));
+    const level = @tagName(qocdc.severity(.NominalVoltage));
+    var prefix_buffer: [64]u8 = undefined;
+    const prefix = try std.fmt.bufPrint(&prefix_buffer, "qocdc: {s}: NominalVoltage: _b", .{level});
+    try std.testing.expectEqual(@as(usize, 100), std.mem.count(u8, text, prefix));
     // Identity: the earliest object is shown, the last five are not.
     try std.testing.expect(std.mem.indexOf(u8, text, "_b000 line") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "_b099 line") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "_b100 line") == null);
     try std.testing.expect(std.mem.indexOf(u8, text, "_b104 line") == null);
-    try std.testing.expect(std.mem.indexOf(
-        u8,
-        text,
-        "qocdc: NominalVoltage: 5 further violations suppressed (100 shown, 105 total)",
-    ) != null);
+    var suppressed_buffer: [128]u8 = undefined;
+    const suppressed = try std.fmt.bufPrint(
+        &suppressed_buffer,
+        "qocdc: {s}: NominalVoltage: 5 further violations suppressed (100 shown, 105 total)",
+        .{level},
+    );
+    try std.testing.expect(std.mem.indexOf(u8, text, suppressed) != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "qocdc: 105 violations across 1 rules") != null);
 }
 

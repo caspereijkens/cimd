@@ -364,6 +364,34 @@ fn run_phase_b(
             }
         }
     }
+
+    // B8: control-mode compatibility combines the control's forward point
+    // reference with reverse associations harvested from controlling
+    // equipment. A missing optional point is outside this rule; a provided
+    // one must resolve through Terminal to ConductingEquipment.
+    if (requested.contains(.ControlModeCompatibility)) {
+        for (columns.controls.items) |row| {
+            var controls_busbar = false;
+            if (row.terminal_declared) {
+                const terminal = row.terminal_index;
+                if (terminal == none_index or !traits[terminal].terminal) {
+                    try emit(report, gpa, model, .ControlModeCompatibility, row.object_index);
+                    continue;
+                }
+                const equipment = columns.terminal_equipment[terminal];
+                if (equipment == none_index or !traits[equipment].conducting_equipment) {
+                    try emit(report, gpa, model, .ControlModeCompatibility, row.object_index);
+                    continue;
+                }
+                controls_busbar = traits[equipment].busbar_section;
+            }
+
+            const kinds = columns.control_equipment_kinds[row.object_index];
+            if (!rules.control_mode_compatible(row.mode, kinds, controls_busbar)) {
+                try emit(report, gpa, model, .ControlModeCompatibility, row.object_index);
+            }
+        }
+    }
 }
 
 /// The containing VoltageLevel's declared BaseVoltage id, following a Bay to

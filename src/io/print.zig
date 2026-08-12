@@ -122,6 +122,7 @@ pub fn size_limit_text_comptime(comptime max_bytes: u64) []const u8 {
 /// `--output` leaves stdout a terminal, so the summary still appears -- which is
 /// the case that wants it most, since the data itself never reaches the screen.
 pub const StatsMode = enum { auto, always, never };
+pub const ColorMode = enum { auto, always, never };
 
 /// Process-wide output policy: requested during argument parsing, settled once
 /// by `resolve_stats` before any command runs, then read-only. Global rather
@@ -130,6 +131,20 @@ pub const StatsMode = enum { auto, always, never };
 var stats_mode: StatsMode = .auto;
 var stats_visible: bool = true;
 var stats_resolved: bool = false;
+
+/// Which stream a caller is about to write styled text to. Resolved per
+/// stream because they are redirected independently: `cimd browse > file`
+/// leaves stderr a terminal while stdout is a file, and escape sequences
+/// belong in neither the file nor a report piped to `grep`.
+pub const ColorStream = enum { stdout, stderr };
+
+/// Process-wide color policy, with the same parse-then-resolve lifecycle as
+/// stats. In auto mode, a non-empty NO_COLOR takes precedence over terminal
+/// detection. An explicit command-line mode takes precedence over NO_COLOR.
+var color_mode: ColorMode = .auto;
+var color_stdout: bool = false;
+var color_stderr: bool = false;
+var color_resolved: bool = false;
 
 /// Record the requested mode. Argument parsing calls this; the terminal check
 /// is deliberately not done here, so parsing stays free of I/O.
@@ -150,6 +165,92 @@ pub fn resolve_stats(io: std.Io) void {
         .auto => std.Io.File.stdout().isTty(io) catch false,
     };
     stats_resolved = true;
+}
+
+/// Record the requested color mode without doing I/O during argument parsing.
+pub fn set_color_mode(mode: ColorMode) void {
+    assert(!color_resolved);
+    color_mode = mode;
+}
+
+/// Settle color support once, after parsing and before command execution.
+/// Both streams are answered here, from one NO_COLOR read and one terminal
+/// check each, so a later `colors_enabled` is a branch on a known answer --
+/// the same shape as `resolve_stats`.
+pub fn resolve_color(io: std.Io, environ: *const std.process.Environ.Map) void {
+    assert(!color_resolved);
+    const no_color = if (environ.get("NO_COLOR")) |value| value.len > 0 else false;
+    color_stdout = color_enabled_for(
+        color_mode,
+        std.Io.File.stdout().isTty(io) catch false,
+        no_color,
+    );
+    color_stderr = color_enabled_for(
+        color_mode,
+        std.Io.File.stderr().isTty(io) catch false,
+        no_color,
+    );
+    color_resolved = true;
+}
+
+/// Whether styled text may be written to `stream`. Callers that build a
+/// palette should ask once and reuse the answer.
+///
+/// Deliberately unguarded, like `stats_visible`: renderers are called
+/// in-process by tests that never run `resolve_color`, and the unresolved
+/// default is the safe one -- plain text, which every consumer can read.
+pub fn colors_enabled(stream: ColorStream) bool {
+    return switch (stream) {
+        .stdout => color_stdout,
+        .stderr => color_stderr,
+    };
+}
+
+/// `code` when `stream` is styled, "" otherwise -- for writers that emit an
+/// escape sequence inline and would otherwise need a branch per site.
+pub fn color_code(stream: ColorStream, code: []const u8) []const u8 {
+    return if (colors_enabled(stream)) code else "";
+}
+
+fn color_enabled_for(mode: ColorMode, is_tty: bool, no_color: bool) bool {
+    return switch (mode) {
+        .always => true,
+        .never => false,
+        .auto => is_tty and !no_color,
+    };
+}
+
+test "color mode overrides terminal detection and NO_COLOR" {
+    try std.testing.expect(color_enabled_for(.always, false, true));
+    try std.testing.expect(!color_enabled_for(.never, true, false));
+    try std.testing.expect(color_enabled_for(.auto, true, false));
+    try std.testing.expect(!color_enabled_for(.auto, true, true));
+    try std.testing.expect(!color_enabled_for(.auto, false, false));
+}
+
+test "the two streams are answered independently" {
+    // Restore the process-wide state: renderers in this same test binary read
+    // it, and an unresolved policy must stay plain for them.
+    const saved_stdout = color_stdout;
+    const saved_stderr = color_stderr;
+    defer {
+        color_stdout = saved_stdout;
+        color_stderr = saved_stderr;
+    }
+
+    // `cimd browse > file` on a terminal: stderr styled, stdout not.
+    color_stdout = false;
+    color_stderr = true;
+    try std.testing.expect(!colors_enabled(.stdout));
+    try std.testing.expect(colors_enabled(.stderr));
+    try std.testing.expectEqualStrings("", color_code(.stdout, "\x1b[33m"));
+    try std.testing.expectEqualStrings("\x1b[33m", color_code(.stderr, "\x1b[33m"));
+}
+
+test "an unresolved color policy writes plain text" {
+    try std.testing.expect(!colors_enabled(.stdout));
+    try std.testing.expect(!colors_enabled(.stderr));
+    try std.testing.expectEqualStrings("", color_code(.stdout, "\x1b[91m"));
 }
 
 /// Write a summary of what the command produced to stderr. Suppressed under

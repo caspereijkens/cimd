@@ -14,12 +14,58 @@ const catalog = @import("catalog.zig");
 
 pub const Rule = catalog.Rule;
 pub const rule_count = catalog.rule_count;
+pub const Severity = catalog.Severity;
+
+/// Finding counts split by severity -- what a caller keys its exit code on.
+pub const Totals = struct {
+    errors: u64 = 0,
+    warnings: u64 = 0,
+    infos: u64 = 0,
+
+    pub fn total(self: Totals) u64 {
+        return self.errors + self.warnings + self.infos;
+    }
+};
+
+/// Caller-supplied terminal styling for severity words. Keeping the escape
+/// sequences out of this library lets the application decide whether its
+/// destination supports color without importing application code here.
+pub const SeverityColors = struct {
+    @"error": []const u8,
+    warning: []const u8,
+    info: []const u8,
+    reset: []const u8,
+
+    pub const plain: SeverityColors = .{
+        .@"error" = "",
+        .warning = "",
+        .info = "",
+        .reset = "",
+    };
+
+    fn assert_valid(self: SeverityColors) void {
+        if (self.@"error".len > 0) assert(self.reset.len > 0);
+        if (self.warning.len > 0) assert(self.reset.len > 0);
+        if (self.info.len > 0) assert(self.reset.len > 0);
+    }
+
+    fn start(self: SeverityColors, severity: Severity) []const u8 {
+        return switch (severity) {
+            .@"error" => self.@"error",
+            .warning => self.warning,
+            .info => self.info,
+        };
+    }
+};
 
 /// Offset value of a finding with no document location (filename and header
 /// rules).
 pub const no_offset: u32 = std.math.maxInt(u32);
 
 pub const Violation = struct {
+    /// The rule that found this. Severity is not stored: it is fixed per rule
+    /// (`catalog.severity`), so carrying it here would cost a byte on every
+    /// one of up to `stored_total_max` findings to repeat a constant.
     rule: Rule,
     /// Byte offset of the offending object's opening '<' in the document
     /// (`CimObject.xml_offset`), or `no_offset`. Line numbers are a
@@ -83,22 +129,46 @@ pub const Report = struct {
     pub fn count(self: *const Report, rule: Rule) u32 {
         return self.totals[@intFromEnum(rule)];
     }
+
+    /// Exact totals per severity, folded from the per-rule totals in one
+    /// pass. Exact past the storage bound, since `totals` is.
+    pub fn by_severity(self: *const Report) Totals {
+        var result: Totals = .{};
+        for (self.totals, 0..) |rule_total, index| {
+            const rule: Rule = @enumFromInt(index);
+            switch (catalog.severity(rule)) {
+                .@"error" => result.errors += rule_total,
+                .warning => result.warnings += rule_total,
+                .info => result.infos += rule_total,
+            }
+        }
+        return result;
+    }
 };
 
 /// Render the report: one line per shown violation, per-rule suppression
 /// lines, a global-truncation notice, and a summary. Deterministic:
 /// offsetless findings first in emission order, then document order
 /// (stable-sorted by offset, then rule; emission order breaks ties).
-/// Returns the exact violation total for the caller's exit-code decision.
+/// Returns the exact per-severity totals for the caller's exit-code decision.
+///
+/// Every per-rule line carries the rule's severity right after the `qocdc:`
+/// prefix, so `qocdc: error:` and `qocdc: <severity>: <Rule>:` are both grep
+/// keys. Ordering is severity-blind on purpose: document order is what makes
+/// a report diffable between runs.
 ///
 /// `model` supplies the bytes for line-number resolution; it may be null only
 /// when every stored violation is offsetless (filename-only validation).
+/// `colors` styles only severity words; `.plain` preserves the byte-for-byte
+/// text format for redirected output and library users.
 pub fn write_report(
     gpa: std.mem.Allocator,
     w: *std.Io.Writer,
     model: ?*const cim.CimDocument,
     report: *const Report,
-) !u64 {
+    colors: SeverityColors,
+) !Totals {
+    colors.assert_valid();
     const items = report.violations.items;
 
     // Transient sort index; `report` itself stays const.
@@ -134,7 +204,7 @@ pub fn write_report(
         if (shown[rule_index] >= rendered_per_rule_max) continue;
         shown[rule_index] += 1;
 
-        try w.print("qocdc: {s}: ", .{@tagName(violation.rule)});
+        try write_rule_prefix(w, violation.rule, colors);
         if (violation.offset != no_offset) {
             const document = model.?;
             if (newlines == null) {
@@ -160,13 +230,14 @@ pub fn write_report(
         rules_hit += 1;
         if (rule_total == rule_shown) continue;
         const rule: Rule = @enumFromInt(rule_index);
+        try write_rule_prefix(w, rule, colors);
         if (rule_shown == 0) {
-            try w.print("qocdc: {s}: {d} violations counted, none retained (collection limit reached)\n", .{
-                @tagName(rule), rule_total,
+            try w.print("{d} violations counted, none retained (collection limit reached)\n", .{
+                rule_total,
             });
         } else {
-            try w.print("qocdc: {s}: {d} further violations suppressed ({d} shown, {d} total)\n", .{
-                @tagName(rule), rule_total - rule_shown, rule_shown, rule_total,
+            try w.print("{d} further violations suppressed ({d} shown, {d} total)\n", .{
+                rule_total - rule_shown, rule_shown, rule_total,
             });
         }
     }
@@ -176,11 +247,35 @@ pub fn write_report(
         });
     }
 
-    const violation_total = report.total();
+    const totals = report.by_severity();
+    const violation_total = totals.total();
+    assert(violation_total == report.total());
     if (violation_total > 0) {
-        try w.print("qocdc: {d} violations across {d} rules\n", .{ violation_total, rules_hit });
+        try w.print("qocdc: {d} violations across {d} rules ({d} errors, {d} warnings, {d} info)\n", .{
+            violation_total, rules_hit, totals.errors, totals.warnings, totals.infos,
+        });
     }
-    return violation_total;
+    return totals;
+}
+
+fn write_rule_prefix(w: *std.Io.Writer, rule: Rule, colors: SeverityColors) !void {
+    try w.writeAll("qocdc: ");
+    const level = catalog.severity(rule);
+    try write_severity_text(w, level, @tagName(level), colors);
+    try w.print(": {s}: ", .{@tagName(rule)});
+}
+
+fn write_severity_text(
+    w: *std.Io.Writer,
+    severity: Severity,
+    text: []const u8,
+    colors: SeverityColors,
+) !void {
+    assert(text.len > 0);
+    const start = colors.start(severity);
+    try w.writeAll(start);
+    try w.writeAll(text);
+    if (start.len > 0) try w.writeAll(colors.reset);
 }
 
 /// Write `text` with control characters and quote-delimiters escaped, so a
@@ -249,8 +344,8 @@ test "write_report orders offsetless first then by document position" {
 
     var buffer: [1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
-    const total = try write_report(test_gpa, &writer, &model, &report);
-    try std.testing.expectEqual(@as(u64, 3), total);
+    const totals = try write_report(test_gpa, &writer, &model, &report, .plain);
+    try std.testing.expectEqual(@as(u64, 3), totals.total());
 
     const out = writer.buffered();
     const first = std.mem.indexOf(u8, out, "FileVersion").?;
@@ -272,7 +367,7 @@ test "write_escaped keeps a violation on one line" {
 
     var buffer: [512]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
-    _ = try write_report(test_gpa, &writer, null, &report);
+    _ = try write_report(test_gpa, &writer, null, &report, .plain);
     const out = writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, out, "['a\\nb\\t\\'c\\'\\\\d']") != null);
     // Exactly two lines: the violation and the summary.
@@ -284,7 +379,56 @@ test "write_report renders nothing for a clean report" {
     defer report.deinit(test_gpa);
     var buffer: [64]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buffer);
-    const total = try write_report(test_gpa, &writer, null, &report);
-    try std.testing.expectEqual(@as(u64, 0), total);
+    const totals = try write_report(test_gpa, &writer, null, &report, .plain);
+    try std.testing.expectEqual(@as(u64, 0), totals.total());
     try std.testing.expectEqual(@as(usize, 0), writer.buffered().len);
+}
+
+test "by_severity partitions the per-rule totals exactly" {
+    var report: Report = .empty;
+    defer report.deinit(test_gpa);
+    try report.add(test_gpa, .{ .rule = .NameLength, .offset = 10, .object_id = "_a", .detail = "" });
+    try report.add(test_gpa, .{ .rule = .NameLength, .offset = 20, .object_id = "_b", .detail = "" });
+    try report.add(test_gpa, .{ .rule = .FileVersion, .offset = no_offset, .object_id = "", .detail = "0a1" });
+
+    const totals = report.by_severity();
+    try std.testing.expectEqual(report.total(), totals.total());
+    // Severity-blind: whatever the assignment, the three buckets hold every
+    // finding and nothing else.
+    try std.testing.expectEqual(@as(u64, 3), totals.total());
+}
+
+test "write_report colors a rule severity and leaves the summary plain" {
+    var report: Report = .empty;
+    defer report.deinit(test_gpa);
+    try report.add(test_gpa, .{ .rule = .FileVersion, .offset = no_offset, .object_id = "", .detail = "0a1" });
+
+    var buffer: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    const colors: SeverityColors = .{
+        .@"error" = "<red>",
+        .warning = "<yellow>",
+        .info = "<cyan>",
+        .reset = "<reset>",
+    };
+    const totals = try write_report(test_gpa, &writer, null, &report, colors);
+
+    const out = writer.buffered();
+    const level = catalog.severity(.FileVersion);
+    var expected_prefix_buffer: [96]u8 = undefined;
+    const expected_prefix = try std.fmt.bufPrint(
+        &expected_prefix_buffer,
+        "qocdc: {s}{s}{s}: FileVersion: ",
+        .{ colors.start(level), @tagName(level), colors.reset },
+    );
+    try std.testing.expect(std.mem.indexOf(u8, out, expected_prefix) != null);
+
+    var expected_summary_buffer: [128]u8 = undefined;
+    const expected_summary = try std.fmt.bufPrint(
+        &expected_summary_buffer,
+        "qocdc: 1 violations across 1 rules ({d} errors, {d} warnings, {d} info)",
+        .{ totals.errors, totals.warnings, totals.infos },
+    );
+    try std.testing.expect(std.mem.indexOf(u8, out, expected_summary) != null);
+    try std.testing.expectEqual(@as(u64, 1), totals.total());
 }
