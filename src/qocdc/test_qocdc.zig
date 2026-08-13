@@ -512,6 +512,77 @@ test "SVCRatings rejects blank, malformed, non-finite, and wrong-sign ratings" {
     try expect_rule(&missing, .SVCRatings, 1);
 }
 
+// ── SVCSlope ────────────────────────────────────────────────────────────
+
+test "SVCSlope accepts absence, zero, and positive finite values" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:StaticVarCompensator rdf:ID="_absent"/>
+        \\  <cim:StaticVarCompensator rdf:ID="_zero">
+        \\    <cim:StaticVarCompensator.slope>0</cim:StaticVarCompensator.slope>
+        \\  </cim:StaticVarCompensator>
+        \\  <cim:StaticVarCompensator rdf:ID="_negative_zero">
+        \\    <cim:StaticVarCompensator.slope>-0</cim:StaticVarCompensator.slope>
+        \\  </cim:StaticVarCompensator>
+        \\  <cim:StaticVarCompensator rdf:ID="_positive">
+        \\    <cim:StaticVarCompensator.slope>
+        \\      1.5e-6
+        \\    </cim:StaticVarCompensator.slope>
+        \\  </cim:StaticVarCompensator>
+        \\  <cim:BaseVoltage rdf:ID="_unrelated">
+        \\    <cim:StaticVarCompensator.slope>-1</cim:StaticVarCompensator.slope>
+        \\  </cim:BaseVoltage>
+        \\</rdf:RDF>
+    , .SVCSlope);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "SVCSlope rejects negative and unusable provided values" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:StaticVarCompensator rdf:ID="_negative">
+        \\    <cim:StaticVarCompensator.slope>-1</cim:StaticVarCompensator.slope>
+        \\  </cim:StaticVarCompensator>
+        \\  <cim:StaticVarCompensator rdf:ID="_small_negative">
+        \\    <cim:StaticVarCompensator.slope>-1e-300</cim:StaticVarCompensator.slope>
+        \\  </cim:StaticVarCompensator>
+        \\  <cim:StaticVarCompensator rdf:ID="_self_closing">
+        \\    <cim:StaticVarCompensator.slope/>
+        \\  </cim:StaticVarCompensator>
+        \\  <cim:StaticVarCompensator rdf:ID="_empty">
+        \\    <cim:StaticVarCompensator.slope></cim:StaticVarCompensator.slope>
+        \\  </cim:StaticVarCompensator>
+        \\  <cim:StaticVarCompensator rdf:ID="_blank">
+        \\    <cim:StaticVarCompensator.slope> </cim:StaticVarCompensator.slope>
+        \\  </cim:StaticVarCompensator>
+        \\  <cim:StaticVarCompensator rdf:ID="_malformed">
+        \\    <cim:StaticVarCompensator.slope>unknown</cim:StaticVarCompensator.slope>
+        \\  </cim:StaticVarCompensator>
+        \\  <cim:StaticVarCompensator rdf:ID="_nan">
+        \\    <cim:StaticVarCompensator.slope>nan</cim:StaticVarCompensator.slope>
+        \\  </cim:StaticVarCompensator>
+        \\  <cim:StaticVarCompensator rdf:ID="_positive_inf">
+        \\    <cim:StaticVarCompensator.slope>inf</cim:StaticVarCompensator.slope>
+        \\  </cim:StaticVarCompensator>
+        \\  <cim:StaticVarCompensator rdf:ID="_negative_inf">
+        \\    <cim:StaticVarCompensator.slope>-inf</cim:StaticVarCompensator.slope>
+        \\  </cim:StaticVarCompensator>
+        \\</rdf:RDF>
+    , .SVCSlope);
+    defer run.deinit();
+    try expect_rule(&run, .SVCSlope, 9);
+    try expect_violation(&run, .SVCSlope, "_negative");
+    try expect_violation(&run, .SVCSlope, "_small_negative");
+    try expect_violation(&run, .SVCSlope, "_self_closing");
+    try expect_violation(&run, .SVCSlope, "_empty");
+    try expect_violation(&run, .SVCSlope, "_blank");
+    try expect_violation(&run, .SVCSlope, "_malformed");
+    try expect_violation(&run, .SVCSlope, "_nan");
+    try expect_violation(&run, .SVCSlope, "_positive_inf");
+    try expect_violation(&run, .SVCSlope, "_negative_inf");
+}
+
 // ── GeneratingUnitNominalP ────────────────────────────────────────────────
 
 fn generating_unit_xml(buffer: []u8, nominal_p: ?[]const u8, rated_s: ?[]const u8) ![]const u8 {
@@ -1252,6 +1323,263 @@ test "ControlModeCompatibility intersects restrictions for shared controls" {
     try expect_rule(&run, .ControlModeCompatibility, 2);
     try expect_violation(&run, .ControlModeCompatibility, "_shared_bad");
     try expect_violation(&run, .ControlModeCompatibility, "_tap_shared");
+}
+
+// ── ACLineSegmentR ────────────────────────────────────────────────────────
+
+test "ACLineSegmentR accepts absence, zero, and positive finite resistance" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_absent"/>
+        \\  <cim:ACLineSegment rdf:ID="_zero">
+        \\    <cim:ACLineSegment.r>0</cim:ACLineSegment.r>
+        \\  </cim:ACLineSegment>
+        \\  <cim:ACLineSegment rdf:ID="_negative_zero">
+        \\    <cim:ACLineSegment.r>-0</cim:ACLineSegment.r>
+        \\  </cim:ACLineSegment>
+        \\  <cim:ACLineSegment rdf:ID="_positive">
+        \\    <cim:ACLineSegment.r>
+        \\      1.5e-6
+        \\    </cim:ACLineSegment.r>
+        \\  </cim:ACLineSegment>
+        \\  <cim:SeriesCompensator rdf:ID="_unrelated">
+        \\    <cim:ACLineSegment.r>-1</cim:ACLineSegment.r>
+        \\  </cim:SeriesCompensator>
+        \\</rdf:RDF>
+    , .ACLineSegmentR);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "ACLineSegmentR rejects negative and unusable provided resistance" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ACLineSegment rdf:ID="_negative">
+        \\    <cim:ACLineSegment.r>-1</cim:ACLineSegment.r>
+        \\  </cim:ACLineSegment>
+        \\  <cim:ACLineSegment rdf:ID="_small_negative">
+        \\    <cim:ACLineSegment.r>-1e-300</cim:ACLineSegment.r>
+        \\  </cim:ACLineSegment>
+        \\  <cim:ACLineSegment rdf:ID="_self_closing">
+        \\    <cim:ACLineSegment.r/>
+        \\  </cim:ACLineSegment>
+        \\  <cim:ACLineSegment rdf:ID="_empty">
+        \\    <cim:ACLineSegment.r></cim:ACLineSegment.r>
+        \\  </cim:ACLineSegment>
+        \\  <cim:ACLineSegment rdf:ID="_blank">
+        \\    <cim:ACLineSegment.r> </cim:ACLineSegment.r>
+        \\  </cim:ACLineSegment>
+        \\  <cim:ACLineSegment rdf:ID="_malformed">
+        \\    <cim:ACLineSegment.r>unknown</cim:ACLineSegment.r>
+        \\  </cim:ACLineSegment>
+        \\  <cim:ACLineSegment rdf:ID="_nan">
+        \\    <cim:ACLineSegment.r>nan</cim:ACLineSegment.r>
+        \\  </cim:ACLineSegment>
+        \\  <cim:ACLineSegment rdf:ID="_positive_inf">
+        \\    <cim:ACLineSegment.r>inf</cim:ACLineSegment.r>
+        \\  </cim:ACLineSegment>
+        \\  <cim:ACLineSegment rdf:ID="_negative_inf">
+        \\    <cim:ACLineSegment.r>-inf</cim:ACLineSegment.r>
+        \\  </cim:ACLineSegment>
+        \\</rdf:RDF>
+    , .ACLineSegmentR);
+    defer run.deinit();
+    try expect_rule(&run, .ACLineSegmentR, 9);
+    try expect_violation(&run, .ACLineSegmentR, "_negative");
+    try expect_violation(&run, .ACLineSegmentR, "_small_negative");
+    try expect_violation(&run, .ACLineSegmentR, "_self_closing");
+    try expect_violation(&run, .ACLineSegmentR, "_empty");
+    try expect_violation(&run, .ACLineSegmentR, "_blank");
+    try expect_violation(&run, .ACLineSegmentR, "_malformed");
+    try expect_violation(&run, .ACLineSegmentR, "_nan");
+    try expect_violation(&run, .ACLineSegmentR, "_positive_inf");
+    try expect_violation(&run, .ACLineSegmentR, "_negative_inf");
+}
+
+// ── LinearShuntCompensatorG ─────────────────────────────────────────────
+
+test "LinearShuntCompensatorG accepts absence, zero, and positive finite conductance" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:LinearShuntCompensator rdf:ID="_absent"/>
+        \\  <cim:LinearShuntCompensator rdf:ID="_zero">
+        \\    <cim:LinearShuntCompensator.gPerSection>0</cim:LinearShuntCompensator.gPerSection>
+        \\  </cim:LinearShuntCompensator>
+        \\  <cim:LinearShuntCompensator rdf:ID="_negative_zero">
+        \\    <cim:LinearShuntCompensator.gPerSection>-0</cim:LinearShuntCompensator.gPerSection>
+        \\  </cim:LinearShuntCompensator>
+        \\  <cim:LinearShuntCompensator rdf:ID="_positive">
+        \\    <cim:LinearShuntCompensator.gPerSection>
+        \\      1.5e-6
+        \\    </cim:LinearShuntCompensator.gPerSection>
+        \\  </cim:LinearShuntCompensator>
+        \\  <cim:NonlinearShuntCompensator rdf:ID="_unrelated">
+        \\    <cim:LinearShuntCompensator.gPerSection>-1</cim:LinearShuntCompensator.gPerSection>
+        \\  </cim:NonlinearShuntCompensator>
+        \\</rdf:RDF>
+    , .LinearShuntCompensatorG);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "LinearShuntCompensatorG rejects negative and unusable provided conductance" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:LinearShuntCompensator rdf:ID="_negative">
+        \\    <cim:LinearShuntCompensator.gPerSection>-1</cim:LinearShuntCompensator.gPerSection>
+        \\  </cim:LinearShuntCompensator>
+        \\  <cim:LinearShuntCompensator rdf:ID="_small_negative">
+        \\    <cim:LinearShuntCompensator.gPerSection>-1e-300</cim:LinearShuntCompensator.gPerSection>
+        \\  </cim:LinearShuntCompensator>
+        \\  <cim:LinearShuntCompensator rdf:ID="_self_closing">
+        \\    <cim:LinearShuntCompensator.gPerSection/>
+        \\  </cim:LinearShuntCompensator>
+        \\  <cim:LinearShuntCompensator rdf:ID="_empty">
+        \\    <cim:LinearShuntCompensator.gPerSection></cim:LinearShuntCompensator.gPerSection>
+        \\  </cim:LinearShuntCompensator>
+        \\  <cim:LinearShuntCompensator rdf:ID="_blank">
+        \\    <cim:LinearShuntCompensator.gPerSection> </cim:LinearShuntCompensator.gPerSection>
+        \\  </cim:LinearShuntCompensator>
+        \\  <cim:LinearShuntCompensator rdf:ID="_malformed">
+        \\    <cim:LinearShuntCompensator.gPerSection>unknown</cim:LinearShuntCompensator.gPerSection>
+        \\  </cim:LinearShuntCompensator>
+        \\  <cim:LinearShuntCompensator rdf:ID="_nan">
+        \\    <cim:LinearShuntCompensator.gPerSection>nan</cim:LinearShuntCompensator.gPerSection>
+        \\  </cim:LinearShuntCompensator>
+        \\  <cim:LinearShuntCompensator rdf:ID="_positive_inf">
+        \\    <cim:LinearShuntCompensator.gPerSection>inf</cim:LinearShuntCompensator.gPerSection>
+        \\  </cim:LinearShuntCompensator>
+        \\  <cim:LinearShuntCompensator rdf:ID="_negative_inf">
+        \\    <cim:LinearShuntCompensator.gPerSection>-inf</cim:LinearShuntCompensator.gPerSection>
+        \\  </cim:LinearShuntCompensator>
+        \\</rdf:RDF>
+    , .LinearShuntCompensatorG);
+    defer run.deinit();
+    try expect_rule(&run, .LinearShuntCompensatorG, 9);
+    try expect_violation(&run, .LinearShuntCompensatorG, "_negative");
+    try expect_violation(&run, .LinearShuntCompensatorG, "_small_negative");
+    try expect_violation(&run, .LinearShuntCompensatorG, "_self_closing");
+    try expect_violation(&run, .LinearShuntCompensatorG, "_empty");
+    try expect_violation(&run, .LinearShuntCompensatorG, "_blank");
+    try expect_violation(&run, .LinearShuntCompensatorG, "_malformed");
+    try expect_violation(&run, .LinearShuntCompensatorG, "_nan");
+    try expect_violation(&run, .LinearShuntCompensatorG, "_positive_inf");
+    try expect_violation(&run, .LinearShuntCompensatorG, "_negative_inf");
+}
+
+// ── ShuntCompensatorSections ────────────────────────────────────────────
+
+test "ShuntCompensatorSections accepts inclusive bounds for every shunt kind" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ShuntCompensator rdf:ID="_absent"/>
+        \\  <cim:ShuntCompensator rdf:ID="_zero">
+        \\    <cim:ShuntCompensator.normalSections>0</cim:ShuntCompensator.normalSections>
+        \\    <cim:ShuntCompensator.maximumSections>0</cim:ShuntCompensator.maximumSections>
+        \\  </cim:ShuntCompensator>
+        \\  <cim:LinearShuntCompensator rdf:ID="_between">
+        \\    <cim:ShuntCompensator.normalSections>
+        \\      2
+        \\    </cim:ShuntCompensator.normalSections>
+        \\    <cim:ShuntCompensator.maximumSections>3</cim:ShuntCompensator.maximumSections>
+        \\  </cim:LinearShuntCompensator>
+        \\  <cim:NonlinearShuntCompensator rdf:ID="_equal">
+        \\    <cim:ShuntCompensator.normalSections>4</cim:ShuntCompensator.normalSections>
+        \\    <cim:ShuntCompensator.maximumSections>4</cim:ShuntCompensator.maximumSections>
+        \\  </cim:NonlinearShuntCompensator>
+        \\  <cim:BaseVoltage rdf:ID="_unrelated">
+        \\    <cim:ShuntCompensator.normalSections>2</cim:ShuntCompensator.normalSections>
+        \\    <cim:ShuntCompensator.maximumSections>1</cim:ShuntCompensator.maximumSections>
+        \\  </cim:BaseVoltage>
+        \\</rdf:RDF>
+    , .ShuntCompensatorSections);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "ShuntCompensatorSections rejects invalid normalSections" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ShuntCompensator rdf:ID="_negative">
+        \\    <cim:ShuntCompensator.normalSections>-1</cim:ShuntCompensator.normalSections>
+        \\  </cim:ShuntCompensator>
+        \\  <cim:LinearShuntCompensator rdf:ID="_above_maximum">
+        \\    <cim:ShuntCompensator.normalSections>3</cim:ShuntCompensator.normalSections>
+        \\    <cim:ShuntCompensator.maximumSections>2</cim:ShuntCompensator.maximumSections>
+        \\  </cim:LinearShuntCompensator>
+        \\  <cim:ShuntCompensator rdf:ID="_self_closing">
+        \\    <cim:ShuntCompensator.normalSections/>
+        \\  </cim:ShuntCompensator>
+        \\  <cim:ShuntCompensator rdf:ID="_empty">
+        \\    <cim:ShuntCompensator.normalSections></cim:ShuntCompensator.normalSections>
+        \\  </cim:ShuntCompensator>
+        \\  <cim:ShuntCompensator rdf:ID="_blank">
+        \\    <cim:ShuntCompensator.normalSections> </cim:ShuntCompensator.normalSections>
+        \\  </cim:ShuntCompensator>
+        \\  <cim:ShuntCompensator rdf:ID="_malformed">
+        \\    <cim:ShuntCompensator.normalSections>unknown</cim:ShuntCompensator.normalSections>
+        \\  </cim:ShuntCompensator>
+        \\  <cim:ShuntCompensator rdf:ID="_decimal">
+        \\    <cim:ShuntCompensator.normalSections>1.5</cim:ShuntCompensator.normalSections>
+        \\  </cim:ShuntCompensator>
+        \\  <cim:ShuntCompensator rdf:ID="_positive_inf">
+        \\    <cim:ShuntCompensator.normalSections>inf</cim:ShuntCompensator.normalSections>
+        \\  </cim:ShuntCompensator>
+        \\  <cim:ShuntCompensator rdf:ID="_overflow">
+        \\    <cim:ShuntCompensator.normalSections>4294967296</cim:ShuntCompensator.normalSections>
+        \\  </cim:ShuntCompensator>
+        \\</rdf:RDF>
+    , .ShuntCompensatorSections);
+    defer run.deinit();
+    try expect_rule(&run, .ShuntCompensatorSections, 9);
+    try expect_violation(&run, .ShuntCompensatorSections, "_negative");
+    try expect_violation(&run, .ShuntCompensatorSections, "_above_maximum");
+    try expect_violation(&run, .ShuntCompensatorSections, "_self_closing");
+    try expect_violation(&run, .ShuntCompensatorSections, "_empty");
+    try expect_violation(&run, .ShuntCompensatorSections, "_blank");
+    try expect_violation(&run, .ShuntCompensatorSections, "_malformed");
+    try expect_violation(&run, .ShuntCompensatorSections, "_decimal");
+    try expect_violation(&run, .ShuntCompensatorSections, "_positive_inf");
+    try expect_violation(&run, .ShuntCompensatorSections, "_overflow");
+}
+
+test "ShuntCompensatorSections rejects unusable maximumSections" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ShuntCompensator rdf:ID="_self_closing">
+        \\    <cim:ShuntCompensator.normalSections>0</cim:ShuntCompensator.normalSections>
+        \\    <cim:ShuntCompensator.maximumSections/>
+        \\  </cim:ShuntCompensator>
+        \\  <cim:ShuntCompensator rdf:ID="_empty">
+        \\    <cim:ShuntCompensator.normalSections>0</cim:ShuntCompensator.normalSections>
+        \\    <cim:ShuntCompensator.maximumSections></cim:ShuntCompensator.maximumSections>
+        \\  </cim:ShuntCompensator>
+        \\  <cim:ShuntCompensator rdf:ID="_blank">
+        \\    <cim:ShuntCompensator.normalSections>0</cim:ShuntCompensator.normalSections>
+        \\    <cim:ShuntCompensator.maximumSections> </cim:ShuntCompensator.maximumSections>
+        \\  </cim:ShuntCompensator>
+        \\  <cim:ShuntCompensator rdf:ID="_malformed">
+        \\    <cim:ShuntCompensator.normalSections>0</cim:ShuntCompensator.normalSections>
+        \\    <cim:ShuntCompensator.maximumSections>unknown</cim:ShuntCompensator.maximumSections>
+        \\  </cim:ShuntCompensator>
+        \\  <cim:ShuntCompensator rdf:ID="_negative">
+        \\    <cim:ShuntCompensator.normalSections>0</cim:ShuntCompensator.normalSections>
+        \\    <cim:ShuntCompensator.maximumSections>-1</cim:ShuntCompensator.maximumSections>
+        \\  </cim:ShuntCompensator>
+        \\  <cim:ShuntCompensator rdf:ID="_decimal">
+        \\    <cim:ShuntCompensator.normalSections>0</cim:ShuntCompensator.normalSections>
+        \\    <cim:ShuntCompensator.maximumSections>1.5</cim:ShuntCompensator.maximumSections>
+        \\  </cim:ShuntCompensator>
+        \\</rdf:RDF>
+    , .ShuntCompensatorSections);
+    defer run.deinit();
+    try expect_rule(&run, .ShuntCompensatorSections, 6);
+    try expect_violation(&run, .ShuntCompensatorSections, "_self_closing");
+    try expect_violation(&run, .ShuntCompensatorSections, "_empty");
+    try expect_violation(&run, .ShuntCompensatorSections, "_blank");
+    try expect_violation(&run, .ShuntCompensatorSections, "_malformed");
+    try expect_violation(&run, .ShuntCompensatorSections, "_negative");
+    try expect_violation(&run, .ShuntCompensatorSections, "_decimal");
 }
 
 // ── MeasType ──────────────────────────────────────────────────────────────

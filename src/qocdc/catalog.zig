@@ -75,6 +75,10 @@ pub const Rule = enum(u8) {
     CATieFlow,
     OperationalLimitSetAtTerminal,
     ControlModeCompatibility,
+    ACLineSegmentR,
+    LinearShuntCompensatorG,
+    ShuntCompensatorSections,
+    SVCSlope,
 };
 
 pub const rule_count = @typeInfo(Rule).@"enum".fields.len;
@@ -173,6 +177,10 @@ pub fn severity(rule: Rule) Severity {
         .CATieFlow,
         .OperationalLimitSetAtTerminal,
         .ControlModeCompatibility,
+        .ACLineSegmentR,
+        .LinearShuntCompensatorG,
+        .ShuntCompensatorSections,
+        .SVCSlope,
         => .@"error",
     };
 }
@@ -254,8 +262,8 @@ pub fn message(rule: Rule) []const u8 {
             "do not refer to cim:Terminals of two different cim:ACLineSegments",
         .MeasTerminal => "cim:Measurement.Terminal does not refer to a cim:Terminal of a " ++
             "cim:Equipment referenced by cim:Measurement.PowerSystemResource",
-        .SynchronousCondenser => "a synchronous condenser is associated with cim:GeneratingUnit.",
-        .SMQLimits2 => "missing operating limits for a Synchronous Machine.",
+        .SynchronousCondenser => "a synchronous condenser is associated with cim:GeneratingUnit",
+        .SMQLimits2 => "missing operating limits for a Synchronous Machine",
         .RatedS => "cim:RotatingMachine.ratedS or cim:PowerTransformerEnd.ratedS " ++
             "is missing or is not a positive finite number.",
         .ShuntCompensatorSensitivity => "cim:ShuntCompensator.voltageSensitivity is provided " ++
@@ -265,6 +273,16 @@ pub fn message(rule: Rule) []const u8 {
             "unreadable, dangling, or does not refer to a cim:Terminal",
         .ControlModeCompatibility => "cim:TapChangerControl or cim:RegulatingControl with " ++
             "invalid cim:RegulatingControl.mode.",
+        .ACLineSegmentR => "a provided cim:ACLineSegment.r is empty, unreadable, " ++
+            "non-finite, or negative",
+        .LinearShuntCompensatorG => "a provided " ++
+            "cim:LinearShuntCompensator.gPerSection is empty, unreadable, " ++
+            "non-finite, or negative",
+        .ShuntCompensatorSections => "cim:ShuntCompensator.normalSections or " ++
+            "cim:ShuntCompensator.maximumSections is empty, unreadable, or negative, " ++
+            "or normalSections exceeds maximumSections",
+        .SVCSlope => "a provided cim:StaticVarCompensator.slope is empty, " ++
+            "unreadable, non-finite, or negative",
     };
 }
 

@@ -84,6 +84,11 @@ pub const Prop = enum(u8) {
     regulating_control_terminal,
     regulating_cond_eq_control,
     tap_changer_control,
+    ac_line_segment_resistance,
+    linear_shunt_compensator_conductance,
+    shunt_compensator_normal_sections,
+    shunt_compensator_maximum_sections,
+    svc_slope,
 };
 
 pub const prop_count = @typeInfo(Prop).@"enum".fields.len;
@@ -148,6 +153,11 @@ pub fn prop_name(prop: Prop) []const u8 {
         .regulating_control_terminal => "RegulatingControl.Terminal",
         .regulating_cond_eq_control => "RegulatingCondEq.RegulatingControl",
         .tap_changer_control => "TapChanger.TapChangerControl",
+        .ac_line_segment_resistance => "ACLineSegment.r",
+        .linear_shunt_compensator_conductance => "LinearShuntCompensator.gPerSection",
+        .shunt_compensator_normal_sections => "ShuntCompensator.normalSections",
+        .shunt_compensator_maximum_sections => "ShuntCompensator.maximumSections",
+        .svc_slope => "StaticVarCompensator.slope",
     };
 }
 
@@ -804,6 +814,33 @@ pub const object_rules = [_]ObjectRule{
             .{ .prop = .regulating_control_terminal, .channels = .{ .ref = true, .declared = true } },
         },
         .check = &harvest_regulating_control,
+    },
+    .{
+        .rule = .ACLineSegmentR,
+        .filter = .{ .is_a_any = &.{"ACLineSegment"} },
+        .needs = &.{.{ .prop = .ac_line_segment_resistance, .channels = .{ .text = true, .declared = true } }},
+        .check = &check_ac_line_segment_resistance,
+    },
+    .{
+        .rule = .LinearShuntCompensatorG,
+        .filter = .{ .is_a_any = &.{"LinearShuntCompensator"} },
+        .needs = &.{.{ .prop = .linear_shunt_compensator_conductance, .channels = .{ .text = true, .declared = true } }},
+        .check = &check_linear_shunt_compensator_conductance,
+    },
+    .{
+        .rule = .ShuntCompensatorSections,
+        .filter = .{ .is_a_any = &.{"ShuntCompensator"} },
+        .needs = &.{
+            .{ .prop = .shunt_compensator_normal_sections, .channels = .{ .text = true, .declared = true } },
+            .{ .prop = .shunt_compensator_maximum_sections, .channels = .{ .text = true, .declared = true } },
+        },
+        .check = &check_shunt_compensator_sections,
+    },
+    .{
+        .rule = .SVCSlope,
+        .filter = .{ .exact = "StaticVarCompensator" },
+        .needs = &.{.{ .prop = .svc_slope, .channels = .{ .text = true, .declared = true } }},
+        .check = &check_svc_slope,
     },
     // Containment: the referenced container must exist and carry one of the
     // allowed traits. `required = false` tolerates an absent reference only;
@@ -1465,6 +1502,50 @@ fn check_operational_limit_set_terminal(ctx: *Ctx, obj: cim.CimObject) error{Out
     if (!ctx.traits.?[terminal].terminal) {
         try ctx.emit(.OperationalLimitSetAtTerminal, obj, "");
     }
+}
+
+fn check_ac_line_segment_resistance(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    if (!prop_declared(ctx.slots, .ac_line_segment_resistance)) return;
+    const text = prop_text(ctx.slots, .ac_line_segment_resistance) orelse
+        return ctx.emit(.ACLineSegmentR, obj, "");
+    const resistance = parse.float_req(text) catch
+        return ctx.emit(.ACLineSegmentR, obj, text);
+    if (resistance < 0) try ctx.emit(.ACLineSegmentR, obj, text);
+}
+
+fn check_linear_shunt_compensator_conductance(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    if (!prop_declared(ctx.slots, .linear_shunt_compensator_conductance)) return;
+    const text = prop_text(ctx.slots, .linear_shunt_compensator_conductance) orelse
+        return ctx.emit(.LinearShuntCompensatorG, obj, "");
+    const conductance = parse.float_req(text) catch
+        return ctx.emit(.LinearShuntCompensatorG, obj, text);
+    if (conductance < 0) try ctx.emit(.LinearShuntCompensatorG, obj, text);
+}
+
+fn check_shunt_compensator_sections(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    if (!prop_declared(ctx.slots, .shunt_compensator_normal_sections)) return;
+    const text_normal = prop_text(ctx.slots, .shunt_compensator_normal_sections) orelse
+        return ctx.emit(.ShuntCompensatorSections, obj, "");
+    const sections_normal = parse.int_req(u32, text_normal) catch
+        return ctx.emit(.ShuntCompensatorSections, obj, text_normal);
+
+    if (!prop_declared(ctx.slots, .shunt_compensator_maximum_sections)) return;
+    const text_max = prop_text(ctx.slots, .shunt_compensator_maximum_sections) orelse
+        return ctx.emit(.ShuntCompensatorSections, obj, "");
+    const sections_max = parse.int_req(u32, text_max) catch
+        return ctx.emit(.ShuntCompensatorSections, obj, text_max);
+    if (sections_normal > sections_max) {
+        try ctx.emit(.ShuntCompensatorSections, obj, text_normal);
+    }
+}
+
+fn check_svc_slope(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    if (!prop_declared(ctx.slots, .svc_slope)) return;
+    const text = prop_text(ctx.slots, .svc_slope) orelse
+        return ctx.emit(.SVCSlope, obj, "");
+    const slope = parse.float_req(text) catch
+        return ctx.emit(.SVCSlope, obj, text);
+    if (slope < 0) try ctx.emit(.SVCSlope, obj, text);
 }
 
 fn harvest_regulating_control(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
