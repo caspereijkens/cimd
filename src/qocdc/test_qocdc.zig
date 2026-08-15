@@ -2585,3 +2585,146 @@ test "every violation of one rule is counted, not just the first" {
     try expect_violation(&run, .NominalVoltage, "_b1");
     try expect_violation(&run, .NominalVoltage, "_b2");
 }
+
+// ── RCCYValues ─────────────────────────────────────────────────────────────────────────────
+
+test "RCCYValues accepts equality when another point has strict width" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_curve"/>
+        \\  <cim:CurveData rdf:ID="_equal">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve"/>
+        \\    <cim:CurveData.y1value>-1</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>-1.0</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_wide">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve"/>
+        \\    <cim:CurveData.y1value>-2</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>-1</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , .RCCYValues);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "RCCYValues rejects a point whose upper y value is lower" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_curve"/>
+        \\  <cim:CurveData rdf:ID="_reversed">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve"/>
+        \\    <cim:CurveData.y1value>1</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>0</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , .RCCYValues);
+    defer run.deinit();
+    try expect_rule(&run, .RCCYValues, 1);
+    try expect_violation(&run, .RCCYValues, "_reversed");
+}
+
+test "RCCYValues rejects every point when all y values are equal" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_curve"/>
+        \\  <cim:CurveData rdf:ID="_equal1">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve"/>
+        \\    <cim:CurveData.y1value>0</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>-0</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_equal2">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve"/>
+        \\    <cim:CurveData.y1value>2</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>2.0</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , .RCCYValues);
+    defer run.deinit();
+    try expect_rule(&run, .RCCYValues, 2);
+    try expect_violation(&run, .RCCYValues, "_equal1");
+    try expect_violation(&run, .RCCYValues, "_equal2");
+}
+
+test "RCCYValues keeps aggregate state separate for each curve" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_flat_curve"/>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_wide_curve"/>
+        \\  <cim:CurveData rdf:ID="_flat">
+        \\    <cim:CurveData.Curve rdf:resource="#_flat_curve"/>
+        \\    <cim:CurveData.y1value>3</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>3</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_wide">
+        \\    <cim:CurveData.Curve rdf:resource="#_wide_curve"/>
+        \\    <cim:CurveData.y1value>-2</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>-1</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , .RCCYValues);
+    defer run.deinit();
+    try expect_rule(&run, .RCCYValues, 1);
+    try expect_violation(&run, .RCCYValues, "_flat");
+}
+
+test "RCCYValues ignores CurveData outside its reference scope" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:Curve rdf:ID="_generic"/>
+        \\  <cim:BaseVoltage rdf:ID="_wrong_type"/>
+        \\  <cim:CurveData rdf:ID="_generic_point">
+        \\    <cim:CurveData.Curve rdf:resource="#_generic"/>
+        \\    <cim:CurveData.y1value>1</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>0</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_wrong_point">
+        \\    <cim:CurveData.Curve rdf:resource="#_wrong_type"/>
+        \\    <cim:CurveData.y1value>1</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>0</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_dangling_point">
+        \\    <cim:CurveData.Curve rdf:resource="#_missing"/>
+        \\    <cim:CurveData.y1value>1</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>0</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_unassociated_point">
+        \\    <cim:CurveData.y1value>1</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>0</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , .RCCYValues);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "RCCYValues does not infer all-equal across unusable points" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_missing_curve"/>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_blank_curve"/>
+        \\  <cim:CurveData rdf:ID="_missing_equal">
+        \\    <cim:CurveData.Curve rdf:resource="#_missing_curve"/>
+        \\    <cim:CurveData.y1value>1</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>1</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_missing_y2">
+        \\    <cim:CurveData.Curve rdf:resource="#_missing_curve"/>
+        \\    <cim:CurveData.y1value>2</cim:CurveData.y1value>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_blank_equal">
+        \\    <cim:CurveData.Curve rdf:resource="#_blank_curve"/>
+        \\    <cim:CurveData.y1value>3</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>3</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_blank_y2">
+        \\    <cim:CurveData.Curve rdf:resource="#_blank_curve"/>
+        \\    <cim:CurveData.y1value>4</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value> </cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , .RCCYValues);
+    defer run.deinit();
+    try expect_rule(&run, .RCCYValues, 1);
+    try expect_violation(&run, .RCCYValues, "_blank_y2");
+}

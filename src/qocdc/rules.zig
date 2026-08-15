@@ -89,6 +89,9 @@ pub const Prop = enum(u8) {
     shunt_compensator_normal_sections,
     shunt_compensator_maximum_sections,
     svc_slope,
+    curve_data_curve,
+    curve_data_y1value,
+    curve_data_y2value,
 };
 
 pub const prop_count = @typeInfo(Prop).@"enum".fields.len;
@@ -158,6 +161,9 @@ pub fn prop_name(prop: Prop) []const u8 {
         .shunt_compensator_normal_sections => "ShuntCompensator.normalSections",
         .shunt_compensator_maximum_sections => "ShuntCompensator.maximumSections",
         .svc_slope => "StaticVarCompensator.slope",
+        .curve_data_curve => "CurveData.Curve",
+        .curve_data_y1value => "CurveData.y1value",
+        .curve_data_y2value => "CurveData.y2value",
     };
 }
 
@@ -439,6 +445,13 @@ pub const BayRow = struct {
     voltage_level_index: u32,
 };
 
+/// A CurveData point whose two y values compare equal. Phase B emits the row
+/// only when no other point has disqualified its referenced curve.
+pub const CurveEqualRow = struct {
+    object_index: u32,
+    curve_index: u32,
+};
+
 /// Side tables filled during the fused sweep and consumed by the engine's
 /// Phase B. Everything is keyed by u32 object index; the string-keyed
 /// ReverseRefIndex is never built.
@@ -469,6 +482,10 @@ pub const Columns = struct {
     /// equipment, populated from the associations on that equipment.
     control_equipment_kinds: []ControlEquipmentKinds,
 
+    curve_equal_points: std.ArrayList(CurveEqualRow),
+    /// Curve indexes with a strict inequality or an unusable y value.
+    curve_all_equal_disqualified: std.DynamicBitSetUnmanaged,
+
     pub fn init(gpa: std.mem.Allocator, object_count: u32) error{OutOfMemory}!Columns {
         const terminal_equipment = try gpa.alloc(u32, object_count);
         errdefer gpa.free(terminal_equipment);
@@ -485,6 +502,8 @@ pub const Columns = struct {
         const control_equipment_kinds = try gpa.alloc(ControlEquipmentKinds, object_count);
         errdefer gpa.free(control_equipment_kinds);
         @memset(control_equipment_kinds, .{});
+        var curve_all_equal_disqualified = try std.DynamicBitSetUnmanaged.initEmpty(gpa, object_count);
+        errdefer curve_all_equal_disqualified.deinit(gpa);
         return .{
             .terminal_equipment = terminal_equipment,
             .terminal_count = terminal_count,
@@ -501,6 +520,8 @@ pub const Columns = struct {
             .tie_flow_control_areas = tie_flow_control_areas,
             .controls = .empty,
             .control_equipment_kinds = control_equipment_kinds,
+            .curve_equal_points = .empty,
+            .curve_all_equal_disqualified = curve_all_equal_disqualified,
         };
     }
 
@@ -520,6 +541,8 @@ pub const Columns = struct {
         self.tie_flow_control_areas.deinit(gpa);
         self.controls.deinit(gpa);
         gpa.free(self.control_equipment_kinds);
+        self.curve_equal_points.deinit(gpa);
+        self.curve_all_equal_disqualified.deinit(gpa);
     }
 };
 
@@ -528,7 +551,7 @@ pub const Columns = struct {
 pub const relational_rules = [_]Rule{
     .TerminalCount1,        .TerminalCount2,           .TerminalSeqNum, .TerminalSeqNumOrder,
     .PTTerminalConsistency, .MCFirstSecond,            .MeasTerminal,   .CEBaseVoltage,
-    .CATieFlow,             .ControlModeCompatibility,
+    .CATieFlow,             .ControlModeCompatibility, .RCCYValues,
 };
 
 // ── the object-rule table ─────────────────────────────────────────────────
@@ -841,6 +864,17 @@ pub const object_rules = [_]ObjectRule{
         .filter = .{ .exact = "StaticVarCompensator" },
         .needs = &.{.{ .prop = .svc_slope, .channels = .{ .text = true, .declared = true } }},
         .check = &check_svc_slope,
+    },
+    .{
+        .rule = .RCCYValues,
+        .filter = .{ .exact = "CurveData" },
+        .needs_resolution = true,
+        .needs = &.{
+            .{ .prop = .curve_data_curve, .channels = .{ .ref = true } },
+            .{ .prop = .curve_data_y1value, .channels = .{ .text = true, .declared = true } },
+            .{ .prop = .curve_data_y2value, .channels = .{ .text = true, .declared = true } },
+        },
+        .check = &check_curve_data_y_values,
     },
     // Containment: the referenced container must exist and carry one of the
     // allowed traits. `required = false` tolerates an absent reference only;
@@ -1548,6 +1582,49 @@ fn check_svc_slope(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
     if (slope < 0) try ctx.emit(.SVCSlope, obj, text);
 }
 
+fn check_curve_data_y_values(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    const curve = resolve_ref(ctx, .curve_data_curve);
+    if (curve == none_index) return;
+    if (!ctx.traits.?[curve].reactive_capability_curve) return;
+
+    const columns = ctx.columns.?;
+    if (!prop_declared(ctx.slots, .curve_data_y1value)) {
+        columns.curve_all_equal_disqualified.set(curve);
+        return;
+    }
+    const text_y1 = prop_text(ctx.slots, .curve_data_y1value) orelse {
+        columns.curve_all_equal_disqualified.set(curve);
+        return ctx.emit(.RCCYValues, obj, "");
+    };
+    const y1 = parse.float_req(text_y1) catch {
+        columns.curve_all_equal_disqualified.set(curve);
+        return ctx.emit(.RCCYValues, obj, text_y1);
+    };
+    if (!prop_declared(ctx.slots, .curve_data_y2value)) {
+        columns.curve_all_equal_disqualified.set(curve);
+        return;
+    }
+    const text_y2 = prop_text(ctx.slots, .curve_data_y2value) orelse {
+        columns.curve_all_equal_disqualified.set(curve);
+        return ctx.emit(.RCCYValues, obj, "");
+    };
+    const y2 = parse.float_req(text_y2) catch {
+        columns.curve_all_equal_disqualified.set(curve);
+        return ctx.emit(.RCCYValues, obj, text_y2);
+    };
+
+    if (y2 < y1) {
+        columns.curve_all_equal_disqualified.set(curve);
+        try ctx.emit(.RCCYValues, obj, text_y2);
+    } else if (y2 > y1) {
+        columns.curve_all_equal_disqualified.set(curve);
+    } else {
+        try columns.curve_equal_points.append(ctx.gpa, .{
+            .object_index = ctx.object_index,
+            .curve_index = curve,
+        });
+    }
+}
 fn harvest_regulating_control(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
     _ = obj;
     const mode: ?ControlMode = switch (prop_ref(ctx.slots, .regulating_control_mode)) {

@@ -392,6 +392,23 @@ fn run_phase_b(
             }
         }
     }
+
+    // B9: an RCC is invalid when every comparable point has equal y bounds.
+    // Phase A records equal points and disqualifies their curve as soon as it
+    // sees a strict inequality or an unusable bound.
+    if (requested.contains(.RCCYValues)) {
+        for (columns.curve_equal_points.items) |row| {
+            if (!columns.curve_all_equal_disqualified.isSet(row.curve_index)) {
+                try emit(
+                    report,
+                    gpa,
+                    model,
+                    .RCCYValues,
+                    row.object_index,
+                );
+            }
+        }
+    }
 }
 
 /// The containing VoltageLevel's declared BaseVoltage id, following a Bay to

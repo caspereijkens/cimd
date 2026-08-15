@@ -79,6 +79,7 @@ pub const Rule = enum(u8) {
     LinearShuntCompensatorG,
     ShuntCompensatorSections,
     SVCSlope,
+    RCCYValues,
 };
 
 pub const rule_count = @typeInfo(Rule).@"enum".fields.len;
@@ -181,6 +182,7 @@ pub fn severity(rule: Rule) Severity {
         .LinearShuntCompensatorG,
         .ShuntCompensatorSections,
         .SVCSlope,
+        .RCCYValues,
         => .@"error",
     };
 }
@@ -283,6 +285,8 @@ pub fn message(rule: Rule) []const u8 {
             "or normalSections exceeds maximumSections",
         .SVCSlope => "a provided cim:StaticVarCompensator.slope is empty, " ++
             "unreadable, non-finite, or negative",
+        .RCCYValues => "cim:CurveData.y2value is below cim:CurveData.y1value, " ++
+            "or both values are equal at every point of a ReactiveCapabilityCurve",
     };
 }
 
