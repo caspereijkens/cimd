@@ -95,6 +95,7 @@ pub const Prop = enum(u8) {
     curve_data_xvalue,
     generating_unit_operating_power_min,
     generating_unit_operating_power_max,
+    terminal_phase_code,
 };
 
 pub const prop_count = @typeInfo(Prop).@"enum".fields.len;
@@ -170,6 +171,7 @@ pub fn prop_name(prop: Prop) []const u8 {
         .curve_data_xvalue => "CurveData.xvalue",
         .generating_unit_operating_power_min => "GeneratingUnit.minOperatingP",
         .generating_unit_operating_power_max => "GeneratingUnit.maxOperatingP",
+        .terminal_phase_code => "Terminal.phases",
     };
 }
 
@@ -179,7 +181,7 @@ pub fn prop_name(prop: Prop) []const u8 {
 /// over the type's contiguous index range. Containment rules test their
 /// container's traits with one AND instead of resolving `is_a` per object;
 /// the relational passes test their row targets the same way.
-pub const TargetTraits = packed struct(u16) {
+pub const TargetTraits = packed struct(u32) {
     // Container classes (containment rules + CEBaseVoltage):
     substation: bool = false,
     voltage_level: bool = false,
@@ -203,9 +205,13 @@ pub const TargetTraits = packed struct(u16) {
     reactive_capability_curve: bool = false,
     conducting_equipment: bool = false,
     busbar_section: bool = false,
+    /// The PhaseCodeGround target set, including GroundDisconnector because
+    /// both of its terminals must be neutral terminals.
+    phase_code_ground: bool = false,
+    _pad: u15 = 0,
 
     pub fn intersects(self: TargetTraits, allowed: TargetTraits) bool {
-        return @as(u16, @bitCast(self)) & @as(u16, @bitCast(allowed)) != 0;
+        return @as(u32, @bitCast(self)) & @as(u32, @bitCast(allowed)) != 0;
     }
 };
 
@@ -255,6 +261,10 @@ pub fn compute_traits(type_name: []const u8) TargetTraits {
         .reactive_capability_curve = is_a(tid, type_name, "ReactiveCapabilityCurve"),
         .conducting_equipment = is_a(tid, type_name, "ConductingEquipment"),
         .busbar_section = is_a(tid, type_name, "BusbarSection"),
+        .phase_code_ground = is_a(tid, type_name, "PetersenCoil") or
+            is_a(tid, type_name, "Ground") or
+            is_a(tid, type_name, "GroundingImpedance") or
+            is_a(tid, type_name, "GroundDisconnector"),
     };
 }
 
@@ -323,11 +333,103 @@ pub const none_index: u32 = std.math.maxInt(u32);
 pub const seq_absent: u32 = std.math.maxInt(u32);
 pub const seq_invalid: u32 = std.math.maxInt(u32) - 1;
 
+/// The CIM PhaseCode value space plus parser states that cannot be represented
+/// by a PhaseCode URI. Keeping every known value distinct lets later rules
+/// reuse the harvested Terminal row without walking its properties again.
+pub const PhaseCode = enum(u8) {
+    absent,
+    invalid,
+    A,
+    AB,
+    ABC,
+    ABCN,
+    ABN,
+    AC,
+    ACN,
+    AN,
+    B,
+    BC,
+    BCN,
+    BN,
+    C,
+    CN,
+    N,
+    X,
+    XN,
+    XY,
+    XYN,
+    none,
+    s1,
+    s12,
+    s12N,
+    s1N,
+    s2,
+    s2N,
+};
+
+const phase_codes = std.StaticStringMap(PhaseCode).initComptime(.{
+    .{ "PhaseCode.A", .A },
+    .{ "PhaseCode.AB", .AB },
+    .{ "PhaseCode.ABC", .ABC },
+    .{ "PhaseCode.ABCN", .ABCN },
+    .{ "PhaseCode.ABN", .ABN },
+    .{ "PhaseCode.AC", .AC },
+    .{ "PhaseCode.ACN", .ACN },
+    .{ "PhaseCode.AN", .AN },
+    .{ "PhaseCode.B", .B },
+    .{ "PhaseCode.BC", .BC },
+    .{ "PhaseCode.BCN", .BCN },
+    .{ "PhaseCode.BN", .BN },
+    .{ "PhaseCode.C", .C },
+    .{ "PhaseCode.CN", .CN },
+    .{ "PhaseCode.N", .N },
+    .{ "PhaseCode.X", .X },
+    .{ "PhaseCode.XN", .XN },
+    .{ "PhaseCode.XY", .XY },
+    .{ "PhaseCode.XYN", .XYN },
+    .{ "PhaseCode.none", .none },
+    .{ "PhaseCode.s1", .s1 },
+    .{ "PhaseCode.s12", .s12 },
+    .{ "PhaseCode.s12N", .s12N },
+    .{ "PhaseCode.s1N", .s1N },
+    .{ "PhaseCode.s2", .s2 },
+    .{ "PhaseCode.s2N", .s2N },
+});
+
+fn parse_phase_code(reference: RefState, declared: bool) PhaseCode {
+    return switch (reference) {
+        .absent => if (declared) .invalid else .absent,
+        .malformed => .invalid,
+        .value => |value| phase_codes.get(cim.uri.fragment_or_self(value)) orelse .invalid,
+    };
+}
+
+test "parse_phase_code preserves every CIM PhaseCode value" {
+    const fields = @typeInfo(PhaseCode).@"enum".fields;
+    inline for (fields[2..]) |field| {
+        const expected: PhaseCode = @enumFromInt(field.value);
+        const reference = "#PhaseCode." ++ field.name;
+        try std.testing.expectEqual(expected, parse_phase_code(.{ .value = reference }, true));
+    }
+    try std.testing.expectEqual(
+        PhaseCode.ABCN,
+        parse_phase_code(.{ .value = "http://iec.ch/TC57/CIM100#PhaseCode.ABCN" }, true),
+    );
+    try std.testing.expectEqual(PhaseCode.absent, parse_phase_code(.absent, false));
+    try std.testing.expectEqual(PhaseCode.invalid, parse_phase_code(.absent, true));
+    try std.testing.expectEqual(PhaseCode.invalid, parse_phase_code(.malformed, true));
+    try std.testing.expectEqual(
+        PhaseCode.invalid,
+        parse_phase_code(.{ .value = "#PhaseCode.unknown" }, true),
+    );
+}
+
 pub const TerminalRow = struct {
     terminal_index: u32,
     /// Resolved equipment target; rows are only appended when it resolves.
     equipment_index: u32,
     seq: u32,
+    phase: PhaseCode,
     flags: packed struct(u8) {
         /// The terminal's class is exactly "Terminal" (the TerminalCount and
         /// TerminalSeqNum rules filter on the exact class, qocdc's original
@@ -681,7 +783,7 @@ pub const relational_rules = [_]Rule{
     .TerminalCount1,        .TerminalCount2,           .TerminalSeqNum, .TerminalSeqNumOrder,
     .PTTerminalConsistency, .MCFirstSecond,            .MeasTerminal,   .CEBaseVoltage,
     .CATieFlow,             .ControlModeCompatibility, .RCCYValues,     .RCCXValues2,
-    .RCCXValues3,
+    .RCCXValues3,           .PhaseCodeGround,
 };
 
 // ── the object-rule table ─────────────────────────────────────────────────
@@ -1119,12 +1221,14 @@ pub const harvesters = [_]Harvester{
         .rules = &.{
             .TerminalCount1,        .TerminalCount2, .TerminalSeqNum, .TerminalSeqNumOrder,
             .PTTerminalConsistency, .MCFirstSecond,  .MeasTerminal,   .ControlModeCompatibility,
+            .PhaseCodeGround,
         },
         .filter = .{ .is_a_any = &.{"ACDCTerminal"} },
         .needs = &.{
             .{ .prop = .term_conducting_equipment, .channels = .{ .ref = true } },
             .{ .prop = .dcterm_dc_conducting_equipment, .channels = .{ .ref = true } },
             .{ .prop = .acdc_seq_num, .channels = .{ .text = true } },
+            .{ .prop = .terminal_phase_code, .channels = .{ .ref = true } },
         },
         .harvest = &harvest_terminal,
     },
@@ -1216,10 +1320,17 @@ fn harvest_terminal(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
         columns.terminal_count[equipment] +|= 1;
         columns.terminal_exact_ce.set(terminal_index);
     }
+
+    const phase = parse_phase_code(
+        prop_ref(ctx.slots, .terminal_phase_code),
+        prop_declared(ctx.slots, .terminal_phase_code),
+    );
+
     try columns.terminals.append(ctx.gpa, .{
         .terminal_index = terminal_index,
         .equipment_index = equipment,
         .seq = seq,
+        .phase = phase,
         .flags = .{ .exact_terminal = exact_terminal, .via_terminal_ce = via_terminal_ce },
     });
 }

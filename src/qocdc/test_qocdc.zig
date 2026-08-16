@@ -2019,6 +2019,13 @@ fn numbered_terminal(comptime id: []const u8, comptime equipment: []const u8, co
         "  </cim:Terminal>\n";
 }
 
+fn phased_terminal(comptime id: []const u8, comptime equipment: []const u8, comptime phase: []const u8) []const u8 {
+    return "  <cim:Terminal rdf:ID=\"" ++ id ++ "\">\n" ++
+        "    <cim:Terminal.ConductingEquipment rdf:resource=\"#" ++ equipment ++ "\"/>\n" ++
+        "    <cim:Terminal.phases rdf:resource=\"#PhaseCode." ++ phase ++ "\"/>\n" ++
+        "  </cim:Terminal>\n";
+}
+
 test "TerminalCount1 requires exactly one terminal" {
     var ok = try run_rule(rdf("  <cim:EnergyConsumer rdf:ID=\"_ec1\"></cim:EnergyConsumer>\n" ++
         terminal("_t1", "_ec1")), .TerminalCount1);
@@ -2196,6 +2203,81 @@ test "TerminalSeqNumOrder has no arbitrary terminal-count limit" {
     var run = try run_rule(xml.items, .TerminalSeqNumOrder);
     defer run.deinit();
     try expect_clean(&run);
+}
+
+// ── PhaseCodeGround ───────────────────────────────────────────────────────
+
+test "PhaseCodeGround accepts N and the grounding default, and ignores other equipment" {
+    var run = try run_rule(rdf(
+        "  <cim:PetersenCoil rdf:ID=\"_coil\"></cim:PetersenCoil>\n" ++
+            "  <cim:Ground rdf:ID=\"_ground\"></cim:Ground>\n" ++
+            "  <cim:GroundingImpedance rdf:ID=\"_impedance\"></cim:GroundingImpedance>\n" ++
+            "  <cim:GroundDisconnector rdf:ID=\"_disconnector\"></cim:GroundDisconnector>\n" ++
+            "  <cim:Breaker rdf:ID=\"_breaker\"></cim:Breaker>\n" ++
+            phased_terminal("_coil_t", "_coil", "N") ++
+            terminal("_ground_t", "_ground") ++
+            phased_terminal("_impedance_t", "_impedance", "N") ++
+            phased_terminal("_disconnector_t1", "_disconnector", "N") ++
+            phased_terminal("_disconnector_t2", "_disconnector", "N") ++
+            phased_terminal("_breaker_t", "_breaker", "ABC"),
+    ), .PhaseCodeGround);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+fn phase_code_ground_case_xml(buffer: []u8, phase: []const u8) ![]const u8 {
+    return std.fmt.bufPrint(
+        buffer,
+        "<rdf:RDF>" ++
+            "<cim:Ground rdf:ID=\"_ground\"/>" ++
+            "<cim:Terminal rdf:ID=\"_terminal\">" ++
+            "<cim:Terminal.ConductingEquipment rdf:resource=\"#_ground\"/>" ++
+            "<cim:Terminal.phases rdf:resource=\"#PhaseCode.{s}\"/>" ++
+            "</cim:Terminal>" ++
+            "</rdf:RDF>",
+        .{phase},
+    );
+}
+
+test "PhaseCodeGround rejects every known non-neutral PhaseCode" {
+    const non_neutral_phase_codes = [_][]const u8{
+        "A",    "AB",  "ABC", "ABCN", "ABN", "AC", "ACN", "AN", "B",
+        "BC",   "BCN", "BN",  "C",    "CN",  "X",  "XN",  "XY", "XYN",
+        "none", "s1",  "s12", "s12N", "s1N", "s2", "s2N",
+    };
+    var buffer: [1024]u8 = undefined;
+    for (non_neutral_phase_codes) |phase| {
+        var run = try run_rule(
+            try phase_code_ground_case_xml(&buffer, phase),
+            .PhaseCodeGround,
+        );
+        defer run.deinit();
+        try expect_rule(&run, .PhaseCodeGround, 1);
+        try expect_violation(&run, .PhaseCodeGround, "_terminal");
+    }
+}
+
+test "PhaseCodeGround checks every target and both GroundDisconnector terminals" {
+    var run = try run_rule(rdf(
+        "  <cim:PetersenCoil rdf:ID=\"_coil\"></cim:PetersenCoil>\n" ++
+            "  <cim:Ground rdf:ID=\"_ground\"></cim:Ground>\n" ++
+            "  <cim:GroundingImpedance rdf:ID=\"_impedance\"></cim:GroundingImpedance>\n" ++
+            "  <cim:GroundDisconnector rdf:ID=\"_disconnector\"></cim:GroundDisconnector>\n" ++
+            phased_terminal("_coil_t", "_coil", "ABC") ++
+            phased_terminal("_ground_t", "_ground", "unknown") ++
+            "  <cim:Terminal rdf:ID=\"_impedance_t\">\n" ++
+            "    <cim:Terminal.ConductingEquipment rdf:resource=\"#_impedance\"/>\n" ++
+            "    <cim:Terminal.phases>PhaseCode.N</cim:Terminal.phases>\n" ++
+            "  </cim:Terminal>\n" ++
+            phased_terminal("_disconnector_t1", "_disconnector", "N") ++
+            phased_terminal("_disconnector_t2", "_disconnector", "A"),
+    ), .PhaseCodeGround);
+    defer run.deinit();
+    try expect_rule(&run, .PhaseCodeGround, 4);
+    try expect_violation(&run, .PhaseCodeGround, "_coil_t");
+    try expect_violation(&run, .PhaseCodeGround, "_ground_t");
+    try expect_violation(&run, .PhaseCodeGround, "_impedance_t");
+    try expect_violation(&run, .PhaseCodeGround, "_disconnector_t2");
 }
 
 // ── PTTerminalConsistency ─────────────────────────────────────────────────

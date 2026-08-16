@@ -82,6 +82,7 @@ pub const Rule = enum(u8) {
     RCCYValues,
     RCCXValues2,
     RCCXValues3,
+    PhaseCodeGround,
 };
 
 pub const rule_count = @typeInfo(Rule).@"enum".fields.len;
@@ -187,6 +188,7 @@ pub fn severity(rule: Rule) Severity {
         .RCCYValues,
         .RCCXValues2,
         .RCCXValues3,
+        .PhaseCodeGround,
         => .@"error",
     };
 }
@@ -294,6 +296,7 @@ pub fn message(rule: Rule) []const u8 {
         .RCCXValues2 => "a SynchronousMachine reactive capability curve has invalid " ++
             "CurveData x values for its machine type",
         .RCCXValues3 => "invalid reactive capability curve data for a cim:SynchronousMachine",
+        .PhaseCodeGround => "Grounding equipment does not have phase code N",
     };
 }
 

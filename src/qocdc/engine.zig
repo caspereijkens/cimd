@@ -239,9 +239,12 @@ fn run_phase_b(
         }
     }
 
-    // B3: sequence numbers. Group terminal rows by equipment, then judge
-    // each equipment's terminals.
-    if (requested.contains(.TerminalSeqNum) or requested.contains(.TerminalSeqNumOrder)) {
+    // B3: terminal-local relational checks. Group terminal rows by equipment,
+    // then judge each equipment's terminals once.
+    if (requested.contains(.TerminalSeqNum) or
+        requested.contains(.TerminalSeqNumOrder) or
+        requested.contains(.PhaseCodeGround))
+    {
         std.mem.sort(rules.TerminalRow, columns.terminals.items, {}, struct {
             fn less_than(_: void, a: rules.TerminalRow, b: rules.TerminalRow) bool {
                 return a.equipment_index < b.equipment_index;
@@ -298,6 +301,34 @@ fn run_phase_b(
                             try emit(report, gpa, model, .TerminalSeqNumOrder, equipment);
                             break;
                         }
+                    }
+                }
+            }
+
+            // PhaseCodeGround: terminals of the four grounding equipment
+            // classes must be neutral. An absent PhaseCode is also neutral by
+            // CIM's grounding-equipment default; every other value violates.
+            if (requested.contains(.PhaseCodeGround) and
+                traits[equipment].phase_code_ground)
+            {
+                for (run) |terminal| {
+                    // The shared row set also contains ACDCTerminal subclasses
+                    // and DC associations, which are outside this AC rule.
+                    if (!terminal.flags.exact_terminal or
+                        !terminal.flags.via_terminal_ce)
+                    {
+                        continue;
+                    }
+
+                    switch (terminal.phase) {
+                        .absent, .N => {},
+                        else => try emit(
+                            report,
+                            gpa,
+                            model,
+                            .PhaseCodeGround,
+                            terminal.terminal_index,
+                        ),
                     }
                 }
             }
