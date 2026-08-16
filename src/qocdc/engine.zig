@@ -409,6 +409,60 @@ fn run_phase_b(
             }
         }
     }
+
+    // B10: join each machine to the x-value summary of its resolved curve.
+    if (requested.contains(.RCCXValues2)) {
+        try run_rcc_x_values(report, gpa, model, columns);
+    }
+}
+
+fn run_rcc_x_values(
+    report: *Report,
+    gpa: std.mem.Allocator,
+    model: *const cim.CimDocument,
+    columns: *rules.Columns,
+) error{OutOfMemory}!void {
+    if (columns.machine_curves.items.len == 0) return;
+    std.mem.sort(rules.CurveXPointRow, columns.curve_x_points.items, {}, struct {
+        fn less_than(_: void, a: rules.CurveXPointRow, b: rules.CurveXPointRow) bool {
+            return a.curve_index < b.curve_index;
+        }
+    }.less_than);
+    std.mem.sort(rules.MachineCurveRow, columns.machine_curves.items, {}, struct {
+        fn less_than(_: void, a: rules.MachineCurveRow, b: rules.MachineCurveRow) bool {
+            return a.curve_index < b.curve_index;
+        }
+    }.less_than);
+
+    const points = columns.curve_x_points.items;
+    const machines = columns.machine_curves.items;
+    var point_start: usize = 0;
+    var machine_start: usize = 0;
+    while (machine_start < machines.len) {
+        const curve = machines[machine_start].curve_index;
+        var machine_end = machine_start + 1;
+        while (machine_end < machines.len and machines[machine_end].curve_index == curve) {
+            machine_end += 1;
+        }
+        while (point_start < points.len and points[point_start].curve_index < curve) {
+            point_start += 1;
+        }
+        var point_end = point_start;
+        while (point_end < points.len and points[point_end].curve_index == curve) point_end += 1;
+
+        for (machines[machine_start..machine_end]) |machine| {
+            if (rules.rcc_x_requirement_satisfied(machine.requirement, points[point_start..point_end])) continue;
+            const obj = model.object_at(machine.object_index);
+            try report.add(gpa, .{
+                .rule = .RCCXValues2,
+                .offset = obj.xml_offset(),
+                .object_id = obj.id(),
+                .detail = "",
+            });
+        }
+        point_start = point_end;
+        machine_start = machine_end;
+    }
 }
 
 /// The containing VoltageLevel's declared BaseVoltage id, following a Bay to

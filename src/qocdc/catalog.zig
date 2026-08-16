@@ -80,6 +80,7 @@ pub const Rule = enum(u8) {
     ShuntCompensatorSections,
     SVCSlope,
     RCCYValues,
+    RCCXValues2,
 };
 
 pub const rule_count = @typeInfo(Rule).@"enum".fields.len;
@@ -183,6 +184,7 @@ pub fn severity(rule: Rule) Severity {
         .ShuntCompensatorSections,
         .SVCSlope,
         .RCCYValues,
+        .RCCXValues2,
         => .@"error",
     };
 }
@@ -287,6 +289,8 @@ pub fn message(rule: Rule) []const u8 {
             "unreadable, non-finite, or negative",
         .RCCYValues => "cim:CurveData.y2value is below cim:CurveData.y1value, " ++
             "or both values are equal at every point of a ReactiveCapabilityCurve",
+        .RCCXValues2 => "a SynchronousMachine reactive capability curve has invalid " ++
+            "CurveData x values for its machine type",
     };
 }
 

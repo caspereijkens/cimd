@@ -2728,3 +2728,194 @@ test "RCCYValues does not infer all-equal across unusable points" {
     try expect_rule(&run, .RCCYValues, 1);
     try expect_violation(&run, .RCCYValues, "_blank_y2");
 }
+
+// ── RCCXValues2 ─────────────────────────────────────────────────────────────────────────────
+
+fn rcc_x_case_xml(
+    buffer: []u8,
+    machine_type: ?[]const u8,
+    x_values: []const ?[]const u8,
+) ![]const u8 {
+    var writer = std.Io.Writer.fixed(buffer);
+    try writer.writeAll(
+        "<rdf:RDF><cim:ReactiveCapabilityCurve rdf:ID=\"_curve\"/>" ++
+            "<cim:SynchronousMachine rdf:ID=\"_machine\">" ++
+            "<cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource=\"#_curve\"/>",
+    );
+    if (machine_type) |value| {
+        try writer.print(
+            "<cim:SynchronousMachine.type rdf:resource=\"#SynchronousMachineKind.{s}\"/>",
+            .{value},
+        );
+    }
+    try writer.writeAll("</cim:SynchronousMachine>");
+    for (x_values, 0..) |x_value, i| {
+        try writer.print(
+            "<cim:CurveData rdf:ID=\"_point{d}\">" ++
+                "<cim:CurveData.Curve rdf:resource=\"#_curve\"/>",
+            .{i},
+        );
+        if (x_value) |value| {
+            try writer.print(
+                "<cim:CurveData.xvalue>{s}</cim:CurveData.xvalue>",
+                .{value},
+            );
+        }
+        try writer.writeAll("</cim:CurveData>");
+    }
+    try writer.writeAll("</rdf:RDF>");
+    return writer.buffered();
+}
+
+test "RCCXValues2 accepts every machine-type boundary" {
+    const Case = struct { machine_type: ?[]const u8, x_values: []const ?[]const u8 };
+    const cases = [_]Case{
+        .{ .machine_type = "condenser", .x_values = &.{"-0"} },
+        .{ .machine_type = "generator", .x_values = &.{ "0", "1" } },
+        .{ .machine_type = "generatorOrCondenser", .x_values = &.{ "0", "2", "-5" } },
+        .{ .machine_type = "motor", .x_values = &.{ "0", "-1" } },
+        .{ .machine_type = "motorOrCondenser", .x_values = &.{ "0", "-2", "5" } },
+        .{ .machine_type = "generatorOrMotor", .x_values = &.{ "-1", "0", "1" } },
+        .{ .machine_type = "generatorOrCondenserOrMotor", .x_values = &.{ "-1", "-0", "1" } },
+    };
+    var buffer: [4096]u8 = undefined;
+    for (cases) |case| {
+        var run = try run_rule(
+            try rcc_x_case_xml(&buffer, case.machine_type, case.x_values),
+            .RCCXValues2,
+        );
+        defer run.deinit();
+        try expect_clean(&run);
+    }
+}
+
+test "RCCXValues2 rejects invalid counts and x-value signs" {
+    const Case = struct { machine_type: ?[]const u8, x_values: []const ?[]const u8 };
+    const cases = [_]Case{
+        .{ .machine_type = "condenser", .x_values = &.{} },
+        .{ .machine_type = "condenser", .x_values = &.{"1"} },
+        .{ .machine_type = "condenser", .x_values = &.{ "0", "0" } },
+        .{ .machine_type = "generator", .x_values = &.{"0"} },
+        .{ .machine_type = "generatorOrCondenser", .x_values = &.{ "-1", "-2" } },
+        .{ .machine_type = "motor", .x_values = &.{"0"} },
+        .{ .machine_type = "motorOrCondenser", .x_values = &.{ "1", "2" } },
+        .{ .machine_type = "generatorOrMotor", .x_values = &.{ "-1", "1" } },
+        .{ .machine_type = "generatorOrMotor", .x_values = &.{ "1", "2", "3" } },
+        .{ .machine_type = "generatorOrCondenserOrMotor", .x_values = &.{ "-1", "-2", "-3" } },
+    };
+    var buffer: [4096]u8 = undefined;
+    for (cases) |case| {
+        var run = try run_rule(
+            try rcc_x_case_xml(&buffer, case.machine_type, case.x_values),
+            .RCCXValues2,
+        );
+        defer run.deinit();
+        try expect_rule(&run, .RCCXValues2, 1);
+        try expect_violation(&run, .RCCXValues2, "_machine");
+    }
+}
+
+test "RCCXValues2 rejects unusable x values and machine types" {
+    const Case = struct { machine_type: ?[]const u8, x_values: []const ?[]const u8 };
+    const cases = [_]Case{
+        .{ .machine_type = "generator", .x_values = &.{ "0", "nan" } },
+        .{ .machine_type = "motor", .x_values = &.{ "0", null } },
+        .{ .machine_type = "generatorOrMotor", .x_values = &.{ "-1", "1", "" } },
+        .{ .machine_type = "unknown", .x_values = &.{ "-1", "0", "1" } },
+        .{ .machine_type = null, .x_values = &.{ "-1", "0", "1" } },
+    };
+    var buffer: [4096]u8 = undefined;
+    for (cases) |case| {
+        var run = try run_rule(
+            try rcc_x_case_xml(&buffer, case.machine_type, case.x_values),
+            .RCCXValues2,
+        );
+        defer run.deinit();
+        try expect_rule(&run, .RCCXValues2, 1);
+        try expect_violation(&run, .RCCXValues2, "_machine");
+    }
+}
+
+test "RCCXValues2 evaluates machines sharing one curve independently" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_curve"/>
+        \\  <cim:SynchronousMachine rdf:ID="_generator">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_curve"/>
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.generator"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_motor">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_curve"/>
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.motor"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:CurveData rdf:ID="_zero">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve"/>
+        \\    <cim:CurveData.xvalue>0</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_positive">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve"/>
+        \\    <cim:CurveData.xvalue>1</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , .RCCXValues2);
+    defer run.deinit();
+    try expect_rule(&run, .RCCXValues2, 1);
+    try expect_violation(&run, .RCCXValues2, "_motor");
+}
+
+test "RCCXValues2 keeps interleaved curves separate" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_generator_curve"/>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_motor_curve"/>
+        \\  <cim:SynchronousMachine rdf:ID="_generator">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_generator_curve"/>
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.generator"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_motor">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_motor_curve"/>
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.motor"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:CurveData rdf:ID="_g0">
+        \\    <cim:CurveData.Curve rdf:resource="#_generator_curve"/>
+        \\    <cim:CurveData.xvalue>0</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_m0">
+        \\    <cim:CurveData.Curve rdf:resource="#_motor_curve"/>
+        \\    <cim:CurveData.xvalue>0</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_g1">
+        \\    <cim:CurveData.Curve rdf:resource="#_generator_curve"/>
+        \\    <cim:CurveData.xvalue>1</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_m1">
+        \\    <cim:CurveData.Curve rdf:resource="#_motor_curve"/>
+        \\    <cim:CurveData.xvalue>1</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , .RCCXValues2);
+    defer run.deinit();
+    try expect_rule(&run, .RCCXValues2, 1);
+    try expect_violation(&run, .RCCXValues2, "_motor");
+}
+
+test "RCCXValues2 ignores machines without a resolved reactive curve" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:Curve rdf:ID="_generic"/>
+        \\  <cim:SynchronousMachine rdf:ID="_absent">
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.condenser"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_dangling">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_missing"/>
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.condenser"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_generic_curve">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_generic"/>
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.condenser"/>
+        \\  </cim:SynchronousMachine>
+        \\</rdf:RDF>
+    , .RCCXValues2);
+    defer run.deinit();
+    try expect_clean(&run);
+}
