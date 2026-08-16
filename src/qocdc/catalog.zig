@@ -67,6 +67,7 @@ pub const Rule = enum(u8) {
     PTTerminalConsistency,
     MCFirstSecond,
     MeasTerminal,
+    TooManyTapChangers,
     // Grid model: additional per-object checks.
     SMQLimits2,
     SynchronousCondenser,
@@ -173,6 +174,7 @@ pub fn severity(rule: Rule) Severity {
         .PTTerminalConsistency,
         .MCFirstSecond,
         .MeasTerminal,
+        .TooManyTapChangers,
         // Grid model: additional per-object checks.
         .SMQLimits2,
         .SynchronousCondenser,
@@ -270,6 +272,8 @@ pub fn message(rule: Rule) []const u8 {
             "do not refer to cim:Terminals of two different cim:ACLineSegments",
         .MeasTerminal => "cim:Measurement.Terminal does not refer to a cim:Terminal of a " ++
             "cim:Equipment referenced by cim:Measurement.PowerSystemResource",
+        .TooManyTapChangers => "More than allowed cim:TapChanger objects at a " ++
+            "cim:PowerTransformerEnd or the two cim:TapChanger objects are regulating.",
         .SynchronousCondenser => "a synchronous condenser is associated with cim:GeneratingUnit",
         .SMQLimits2 => "missing operating limits for a Synchronous Machine",
         .RatedS => "cim:RotatingMachine.ratedS or cim:PowerTransformerEnd.ratedS " ++

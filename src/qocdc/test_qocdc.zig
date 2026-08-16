@@ -2335,6 +2335,136 @@ test "PTTerminalConsistency rejects an equipment that is not a PowerTransformer"
     try expect_rule(&run, .PTTerminalConsistency, 1);
 }
 
+// ── TooManyTapChangers ───────────────────────────────────────────────────
+
+fn power_transformer_end(comptime id: []const u8) []const u8 {
+    return "  <cim:PowerTransformerEnd rdf:ID=\"" ++ id ++ "\"/>\n";
+}
+
+fn tap_changer(
+    comptime class: []const u8,
+    comptime end_property: []const u8,
+    comptime id: []const u8,
+    comptime end: []const u8,
+) []const u8 {
+    return "  <cim:" ++ class ++ " rdf:ID=\"" ++ id ++ "\">\n" ++
+        "    <cim:" ++ end_property ++ " rdf:resource=\"#" ++ end ++ "\"/>\n" ++
+        "  </cim:" ++ class ++ ">\n";
+}
+
+fn controlled_tap_changer(
+    comptime class: []const u8,
+    comptime end_property: []const u8,
+    comptime id: []const u8,
+    comptime end: []const u8,
+    comptime control: []const u8,
+    comptime enabled: []const u8,
+) []const u8 {
+    return "  <cim:" ++ class ++ " rdf:ID=\"" ++ id ++ "\">\n" ++
+        "    <cim:" ++ end_property ++ " rdf:resource=\"#" ++ end ++ "\"/>\n" ++
+        "    <cim:TapChanger.TapChangerControl rdf:resource=\"#" ++ control ++ "\"/>\n" ++
+        "    <cim:TapChanger.controlEnabled>" ++ enabled ++ "</cim:TapChanger.controlEnabled>\n" ++
+        "  </cim:" ++ class ++ ">\n";
+}
+
+fn tap_changer_control(comptime id: []const u8, comptime enabled: []const u8) []const u8 {
+    return "  <cim:TapChangerControl rdf:ID=\"" ++ id ++ "\">\n" ++
+        "    <cim:RegulatingControl.enabled>" ++ enabled ++ "</cim:RegulatingControl.enabled>\n" ++
+        "  </cim:TapChangerControl>\n";
+}
+
+test "TooManyTapChangers accepts at most one phase and one ratio changer per end" {
+    var run = try run_rule(rdf(
+        power_transformer_end("_empty") ++
+            power_transformer_end("_phase_only") ++
+            power_transformer_end("_ratio_only") ++
+            power_transformer_end("_combined") ++
+            tap_changer("PhaseTapChangerLinear", "PhaseTapChanger.TransformerEnd", "_phase1", "_phase_only") ++
+            tap_changer("PhaseTapChangerTabular", "PhaseTapChanger.TransformerEnd", "_phase2", "_combined") ++
+            tap_changer("RatioTapChanger", "RatioTapChanger.TransformerEnd", "_ratio1", "_ratio_only") ++
+            tap_changer("RatioTapChanger", "RatioTapChanger.TransformerEnd", "_ratio2", "_combined"),
+    ), .TooManyTapChangers);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "TooManyTapChangers rejects duplicate kinds once per transformer end" {
+    var run = try run_rule(rdf(
+        power_transformer_end("_duplicate_phase") ++
+            power_transformer_end("_duplicate_ratio") ++
+            power_transformer_end("_multiple_reasons") ++
+            tap_changer("PhaseTapChangerLinear", "PhaseTapChanger.TransformerEnd", "_p1", "_duplicate_phase") ++
+            tap_changer("PhaseTapChangerTabular", "PhaseTapChanger.TransformerEnd", "_p2", "_duplicate_phase") ++
+            tap_changer("RatioTapChanger", "RatioTapChanger.TransformerEnd", "_r1", "_duplicate_ratio") ++
+            tap_changer("RatioTapChanger", "RatioTapChanger.TransformerEnd", "_r2", "_duplicate_ratio") ++
+            tap_changer("PhaseTapChangerAsymmetrical", "PhaseTapChanger.TransformerEnd", "_mp1", "_multiple_reasons") ++
+            tap_changer("PhaseTapChangerSymmetrical", "PhaseTapChanger.TransformerEnd", "_mp2", "_multiple_reasons") ++
+            tap_changer("RatioTapChanger", "RatioTapChanger.TransformerEnd", "_mr1", "_multiple_reasons") ++
+            tap_changer("RatioTapChanger", "RatioTapChanger.TransformerEnd", "_mr2", "_multiple_reasons"),
+    ), .TooManyTapChangers);
+    defer run.deinit();
+    try expect_rule(&run, .TooManyTapChangers, 3);
+    try expect_violation(&run, .TooManyTapChangers, "_duplicate_phase");
+    try expect_violation(&run, .TooManyTapChangers, "_duplicate_ratio");
+    try expect_violation(&run, .TooManyTapChangers, "_multiple_reasons");
+}
+
+test "TooManyTapChangers rejects two regulating tap changers" {
+    var run = try run_rule(rdf(
+        power_transformer_end("_separate_controls") ++
+            power_transformer_end("_shared_control") ++
+            controlled_tap_changer("PhaseTapChangerLinear", "PhaseTapChanger.TransformerEnd", "_sp", "_separate_controls", "_phase_control", "true") ++
+            controlled_tap_changer("RatioTapChanger", "RatioTapChanger.TransformerEnd", "_sr", "_separate_controls", "_ratio_control", " true ") ++
+            controlled_tap_changer("PhaseTapChangerTabular", "PhaseTapChanger.TransformerEnd", "_hp", "_shared_control", "_shared", "true") ++
+            controlled_tap_changer("RatioTapChanger", "RatioTapChanger.TransformerEnd", "_hr", "_shared_control", "_shared", "true") ++
+            tap_changer_control("_phase_control", "true") ++
+            tap_changer_control("_ratio_control", "true") ++
+            tap_changer_control("_shared", "true"),
+    ), .TooManyTapChangers);
+    defer run.deinit();
+    try expect_rule(&run, .TooManyTapChangers, 2);
+    try expect_violation(&run, .TooManyTapChangers, "_separate_controls");
+    try expect_violation(&run, .TooManyTapChangers, "_shared_control");
+}
+
+test "TooManyTapChangers requires both enabled flags for regulation" {
+    var run = try run_rule(rdf(
+        power_transformer_end("_tap_disabled") ++
+            power_transformer_end("_control_disabled") ++
+            power_transformer_end("_no_controls") ++
+            controlled_tap_changer("PhaseTapChangerLinear", "PhaseTapChanger.TransformerEnd", "_tp", "_tap_disabled", "_tc1", "true") ++
+            controlled_tap_changer("RatioTapChanger", "RatioTapChanger.TransformerEnd", "_tr", "_tap_disabled", "_tc2", "false") ++
+            controlled_tap_changer("PhaseTapChangerLinear", "PhaseTapChanger.TransformerEnd", "_cp", "_control_disabled", "_cc1", "true") ++
+            controlled_tap_changer("RatioTapChanger", "RatioTapChanger.TransformerEnd", "_cr", "_control_disabled", "_cc2", "true") ++
+            tap_changer("PhaseTapChangerLinear", "PhaseTapChanger.TransformerEnd", "_np", "_no_controls") ++
+            tap_changer("RatioTapChanger", "RatioTapChanger.TransformerEnd", "_nr", "_no_controls") ++
+            tap_changer_control("_tc1", "true") ++
+            tap_changer_control("_tc2", "true") ++
+            tap_changer_control("_cc1", "true") ++
+            tap_changer_control("_cc2", "false"),
+    ), .TooManyTapChangers);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "TooManyTapChangers ignores unusable end associations and keeps ends separate" {
+    var run = try run_rule(rdf(
+        power_transformer_end("_end_a") ++
+            power_transformer_end("_end_b") ++
+            "  <cim:TransformerEnd rdf:ID=\"_generic_end\"/>\n" ++
+            tap_changer("PhaseTapChangerLinear", "PhaseTapChanger.TransformerEnd", "_pa", "_end_a") ++
+            tap_changer("PhaseTapChangerLinear", "PhaseTapChanger.TransformerEnd", "_pb", "_end_b") ++
+            tap_changer("RatioTapChanger", "RatioTapChanger.TransformerEnd", "_ra", "_end_a") ++
+            tap_changer("RatioTapChanger", "RatioTapChanger.TransformerEnd", "_rb", "_end_b") ++
+            tap_changer("PhaseTapChangerLinear", "PhaseTapChanger.TransformerEnd", "_wrong1", "_generic_end") ++
+            tap_changer("PhaseTapChangerTabular", "PhaseTapChanger.TransformerEnd", "_wrong2", "_generic_end") ++
+            tap_changer("RatioTapChanger", "RatioTapChanger.TransformerEnd", "_dangling1", "_missing") ++
+            tap_changer("RatioTapChanger", "RatioTapChanger.TransformerEnd", "_dangling2", "_missing"),
+    ), .TooManyTapChangers);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
 // ── MCFirstSecond ─────────────────────────────────────────────────────────
 
 test "MCFirstSecond accepts terminals of two different ACLineSegments" {

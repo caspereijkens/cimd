@@ -348,7 +348,13 @@ fn run_phase_b(
         }
     }
 
-    // B5: Measurement.Terminal against Measurement.PowerSystemResource.
+    // B5: tap-changer cardinality and simultaneous regulation per
+    // PowerTransformerEnd.
+    if (requested.contains(.TooManyTapChangers)) {
+        try run_too_many_tap_changers(report, gpa, model, columns);
+    }
+
+    // B6: Measurement.Terminal against Measurement.PowerSystemResource.
     if (requested.contains(.MeasTerminal)) {
         for (columns.measurements.items) |row| {
             if (!traits[row.terminal_index].terminal) {
@@ -365,7 +371,7 @@ fn run_phase_b(
         }
     }
 
-    // B6: ConductingEquipment BaseVoltage, resolved through the container
+    // B7: ConductingEquipment BaseVoltage, resolved through the container
     // chain (VoltageLevel directly, Bay via its VoltageLevel).
     if (requested.contains(.CEBaseVoltage)) {
         for (columns.ce_bv.items) |row| {
@@ -386,7 +392,7 @@ fn run_phase_b(
         }
     }
 
-    // B7: every interchange ControlArea needs at least one TieFlow whose
+    // B8: every interchange ControlArea needs at least one TieFlow whose
     // ControlArea association resolves back to it.
     if (requested.contains(.CATieFlow)) {
         for (columns.interchange_control_areas.items) |object_index| {
@@ -396,7 +402,7 @@ fn run_phase_b(
         }
     }
 
-    // B8: control-mode compatibility combines the control's forward point
+    // B9: control-mode compatibility combines the control's forward point
     // reference with reverse associations harvested from controlling
     // equipment. A missing optional point is outside this rule; a provided
     // one must resolve through Terminal to ConductingEquipment.
@@ -424,7 +430,7 @@ fn run_phase_b(
         }
     }
 
-    // B9: an RCC is invalid when every comparable point has equal y bounds.
+    // B10: an RCC is invalid when every comparable point has equal y bounds.
     // Phase A records equal points and disqualifies their curve as soon as it
     // sees a strict inequality or an unusable bound.
     if (requested.contains(.RCCYValues)) {
@@ -441,7 +447,7 @@ fn run_phase_b(
         }
     }
 
-    // B10: summarize every curve once, then join the summaries to the
+    // B11: summarize every curve once, then join the summaries to the
     // machine-type and generating-unit constraints that were requested.
     if (requested.contains(.RCCXValues2) or requested.contains(.RCCXValues3)) {
         var summaries = try build_curve_x_summaries(gpa, columns.curve_x_points.items);
@@ -452,6 +458,55 @@ fn run_phase_b(
         if (requested.contains(.RCCXValues3)) {
             try run_rcc_x_values3(report, gpa, model, columns, summaries.items);
         }
+    }
+}
+
+fn run_too_many_tap_changers(
+    report: *Report,
+    gpa: std.mem.Allocator,
+    model: *const cim.CimDocument,
+    columns: *rules.Columns,
+) error{OutOfMemory}!void {
+    // Phase and ratio tap changers occupy separate type groups, so document
+    // order cannot make one end's rows contiguous. Sort once before grouping.
+    std.mem.sort(rules.TapChangerRow, columns.tap_changers.items, {}, struct {
+        fn less_than(_: void, a: rules.TapChangerRow, b: rules.TapChangerRow) bool {
+            return a.end_index < b.end_index;
+        }
+    }.less_than);
+
+    const rows = columns.tap_changers.items;
+    var start: usize = 0;
+    while (start < rows.len) {
+        const end_index = rows[start].end_index;
+        var phase_count: u32 = 0;
+        var ratio_count: u32 = 0;
+        var regulating_count: u32 = 0;
+
+        var end = start;
+        while (end < rows.len and rows[end].end_index == end_index) : (end += 1) {
+            const row = rows[end];
+            switch (row.kind) {
+                .phase => phase_count += 1,
+                .ratio => ratio_count += 1,
+            }
+            if (row.control_enabled and
+                row.control_index != none_index and
+                columns.regulating_controls_enabled.isSet(row.control_index))
+            {
+                regulating_count += 1;
+            }
+        }
+        start = end;
+
+        if (phase_count <= 1 and ratio_count <= 1 and regulating_count <= 1) continue;
+        const object = model.object_at(end_index);
+        try report.add(gpa, .{
+            .rule = .TooManyTapChangers,
+            .offset = object.xml_offset(),
+            .object_id = object.id(),
+            .detail = "",
+        });
     }
 }
 

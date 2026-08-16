@@ -82,8 +82,12 @@ pub const Prop = enum(u8) {
     operational_limit_set_terminal,
     regulating_control_mode,
     regulating_control_terminal,
+    regulating_control_enabled,
     regulating_cond_eq_control,
     tap_changer_control,
+    tap_changer_control_enabled,
+    phase_tap_changer_transformer_end,
+    ratio_tap_changer_transformer_end,
     ac_line_segment_resistance,
     linear_shunt_compensator_conductance,
     shunt_compensator_normal_sections,
@@ -158,8 +162,12 @@ pub fn prop_name(prop: Prop) []const u8 {
         .operational_limit_set_terminal => "OperationalLimitSet.Terminal",
         .regulating_control_mode => "RegulatingControl.mode",
         .regulating_control_terminal => "RegulatingControl.Terminal",
+        .regulating_control_enabled => "RegulatingControl.enabled",
         .regulating_cond_eq_control => "RegulatingCondEq.RegulatingControl",
         .tap_changer_control => "TapChanger.TapChangerControl",
+        .tap_changer_control_enabled => "TapChanger.controlEnabled",
+        .phase_tap_changer_transformer_end => "PhaseTapChanger.TransformerEnd",
+        .ratio_tap_changer_transformer_end => "RatioTapChanger.TransformerEnd",
         .ac_line_segment_resistance => "ACLineSegment.r",
         .linear_shunt_compensator_conductance => "LinearShuntCompensator.gPerSection",
         .shunt_compensator_normal_sections => "ShuntCompensator.normalSections",
@@ -205,10 +213,11 @@ pub const TargetTraits = packed struct(u32) {
     reactive_capability_curve: bool = false,
     conducting_equipment: bool = false,
     busbar_section: bool = false,
+    power_transformer_end: bool = false,
     /// The PhaseCodeGround target set, including GroundDisconnector because
     /// both of its terminals must be neutral terminals.
     phase_code_ground: bool = false,
-    _pad: u15 = 0,
+    _pad: u14 = 0,
 
     pub fn intersects(self: TargetTraits, allowed: TargetTraits) bool {
         return @as(u32, @bitCast(self)) & @as(u32, @bitCast(allowed)) != 0;
@@ -261,6 +270,7 @@ pub fn compute_traits(type_name: []const u8) TargetTraits {
         .reactive_capability_curve = is_a(tid, type_name, "ReactiveCapabilityCurve"),
         .conducting_equipment = is_a(tid, type_name, "ConductingEquipment"),
         .busbar_section = is_a(tid, type_name, "BusbarSection"),
+        .power_transformer_end = is_a(tid, type_name, "PowerTransformerEnd"),
         .phase_code_ground = is_a(tid, type_name, "PetersenCoil") or
             is_a(tid, type_name, "Ground") or
             is_a(tid, type_name, "GroundingImpedance") or
@@ -458,6 +468,18 @@ pub const PtEndRow = struct {
     object_index: u32,
     terminal_index: u32,
     transformer_index: u32,
+};
+
+pub const TapChangerKind = enum(u8) { phase, ratio };
+
+/// A tap changer whose TransformerEnd association resolves to a
+/// PowerTransformerEnd. The two enabled flags are joined in Phase B because
+/// the referenced RegulatingControl may occur anywhere in document order.
+pub const TapChangerRow = struct {
+    end_index: u32,
+    control_index: u32,
+    kind: TapChangerKind,
+    control_enabled: bool,
 };
 
 pub const MeasurementRow = struct {
@@ -690,6 +712,10 @@ pub const Columns = struct {
     terminals: std.ArrayList(TerminalRow),
     mutual_couplings: std.ArrayList(McRow),
     pt_ends: std.ArrayList(PtEndRow),
+    tap_changers: std.ArrayList(TapChangerRow),
+    /// Dense bitset of RegulatingControl objects whose enabled property is
+    /// exactly true. TapChanger rows resolve their control against it later.
+    regulating_controls_enabled: std.DynamicBitSetUnmanaged,
     measurements: std.ArrayList(MeasurementRow),
     ce_bv: std.ArrayList(CeBvRow),
     vl_rows: std.ArrayList(VlRow),
@@ -722,6 +748,8 @@ pub const Columns = struct {
         errdefer coupled.deinit(gpa);
         var tie_flow_control_areas = try std.DynamicBitSetUnmanaged.initEmpty(gpa, object_count);
         errdefer tie_flow_control_areas.deinit(gpa);
+        var regulating_controls_enabled = try std.DynamicBitSetUnmanaged.initEmpty(gpa, object_count);
+        errdefer regulating_controls_enabled.deinit(gpa);
         const control_equipment_kinds = try gpa.alloc(ControlEquipmentKinds, object_count);
         errdefer gpa.free(control_equipment_kinds);
         @memset(control_equipment_kinds, .{});
@@ -735,6 +763,8 @@ pub const Columns = struct {
             .terminals = .empty,
             .mutual_couplings = .empty,
             .pt_ends = .empty,
+            .tap_changers = .empty,
+            .regulating_controls_enabled = regulating_controls_enabled,
             .measurements = .empty,
             .ce_bv = .empty,
             .vl_rows = .empty,
@@ -760,6 +790,8 @@ pub const Columns = struct {
         self.terminals.deinit(gpa);
         self.mutual_couplings.deinit(gpa);
         self.pt_ends.deinit(gpa);
+        self.tap_changers.deinit(gpa);
+        self.regulating_controls_enabled.deinit(gpa);
         self.measurements.deinit(gpa);
         self.ce_bv.deinit(gpa);
         self.vl_rows.deinit(gpa);
@@ -780,10 +812,10 @@ pub const Columns = struct {
 /// The rules whose verdicts need harvested columns (and so the traits column
 /// and reference resolution too).
 pub const relational_rules = [_]Rule{
-    .TerminalCount1,        .TerminalCount2,           .TerminalSeqNum, .TerminalSeqNumOrder,
-    .PTTerminalConsistency, .MCFirstSecond,            .MeasTerminal,   .CEBaseVoltage,
-    .CATieFlow,             .ControlModeCompatibility, .RCCYValues,     .RCCXValues2,
-    .RCCXValues3,           .PhaseCodeGround,
+    .TerminalCount1,        .TerminalCount2, .TerminalSeqNum,           .TerminalSeqNumOrder,
+    .PTTerminalConsistency, .MCFirstSecond,  .MeasTerminal,             .TooManyTapChangers,
+    .CEBaseVoltage,         .CATieFlow,      .ControlModeCompatibility, .RCCYValues,
+    .RCCXValues2,           .RCCXValues3,    .PhaseCodeGround,
 };
 
 // ── the object-rule table ─────────────────────────────────────────────────
@@ -1266,6 +1298,32 @@ pub const harvesters = [_]Harvester{
         .harvest = &harvest_tap_changer_control_source,
     },
     .{
+        .rules = &.{.TooManyTapChangers},
+        .filter = .{ .is_a_any = &.{"PhaseTapChanger"} },
+        .needs = &.{
+            .{ .prop = .phase_tap_changer_transformer_end, .channels = .{ .ref = true } },
+            .{ .prop = .tap_changer_control, .channels = .{ .ref = true } },
+            .{ .prop = .tap_changer_control_enabled, .channels = .{ .text = true } },
+        },
+        .harvest = &harvest_phase_tap_changer,
+    },
+    .{
+        .rules = &.{.TooManyTapChangers},
+        .filter = .{ .is_a_any = &.{"RatioTapChanger"} },
+        .needs = &.{
+            .{ .prop = .ratio_tap_changer_transformer_end, .channels = .{ .ref = true } },
+            .{ .prop = .tap_changer_control, .channels = .{ .ref = true } },
+            .{ .prop = .tap_changer_control_enabled, .channels = .{ .text = true } },
+        },
+        .harvest = &harvest_ratio_tap_changer,
+    },
+    .{
+        .rules = &.{.TooManyTapChangers},
+        .filter = .{ .is_a_any = &.{"RegulatingControl"} },
+        .needs = &.{.{ .prop = .regulating_control_enabled, .channels = .{ .text = true } }},
+        .harvest = &harvest_regulating_control_enabled,
+    },
+    .{
         .rules = &.{.ControlModeCompatibility},
         .filter = .{ .is_a_any = &.{
             "SynchronousMachine", "ShuntCompensator", "StaticVarCompensator",
@@ -1388,6 +1446,43 @@ fn harvest_tap_changer_control_source(ctx: *Ctx, obj: cim.CimObject) error{OutOf
     }
 }
 
+fn harvest_phase_tap_changer(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    _ = obj;
+    return harvest_tap_changer(ctx, .phase, .phase_tap_changer_transformer_end);
+}
+
+fn harvest_ratio_tap_changer(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    _ = obj;
+    return harvest_tap_changer(ctx, .ratio, .ratio_tap_changer_transformer_end);
+}
+
+fn harvest_tap_changer(
+    ctx: *Ctx,
+    kind: TapChangerKind,
+    end_prop: Prop,
+) error{OutOfMemory}!void {
+    const end = resolve_ref(ctx, end_prop);
+    if (end == none_index) return;
+    if (!ctx.traits.?[end].power_transformer_end) return;
+
+    try ctx.columns.?.tap_changers.append(ctx.gpa, .{
+        .end_index = end,
+        .control_index = resolve_ref(ctx, .tap_changer_control),
+        .kind = kind,
+        .control_enabled = parse.flag(prop_text(ctx.slots, .tap_changer_control_enabled)),
+    });
+}
+
+fn harvest_regulating_control_enabled(
+    ctx: *Ctx,
+    obj: cim.CimObject,
+) error{OutOfMemory}!void {
+    _ = obj;
+    if (parse.flag(prop_text(ctx.slots, .regulating_control_enabled))) {
+        ctx.columns.?.regulating_controls_enabled.set(ctx.object_index);
+    }
+}
+
 fn harvest_regulating_equipment_control_source(
     ctx: *Ctx,
     obj: cim.CimObject,
@@ -1457,7 +1552,7 @@ fn check_measurement_terminal(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!
 
 comptime {
     assert(object_rules.len <= 64); // the engine's active set is a u64
-    assert(harvesters.len <= 8); // the engine's active harvester set is a u8
+    assert(harvesters.len <= 16); // the engine's active harvester set is a u16
 }
 
 /// A containment table entry: the object's `prop` reference must resolve to
