@@ -93,6 +93,8 @@ pub const Prop = enum(u8) {
     curve_data_y1value,
     curve_data_y2value,
     curve_data_xvalue,
+    generating_unit_operating_power_min,
+    generating_unit_operating_power_max,
 };
 
 pub const prop_count = @typeInfo(Prop).@"enum".fields.len;
@@ -166,6 +168,8 @@ pub fn prop_name(prop: Prop) []const u8 {
         .curve_data_y1value => "CurveData.y1value",
         .curve_data_y2value => "CurveData.y2value",
         .curve_data_xvalue => "CurveData.xvalue",
+        .generating_unit_operating_power_min => "GeneratingUnit.minOperatingP",
+        .generating_unit_operating_power_max => "GeneratingUnit.maxOperatingP",
     };
 }
 
@@ -454,13 +458,16 @@ pub const CurveEqualRow = struct {
     curve_index: u32,
 };
 
-/// Parsed sign of one CurveData.xvalue. Unusable values remain in the point
-/// count but make every machine using the curve fail this rule.
-pub const CurveXSign = enum(u8) { unusable, negative, zero, positive };
+/// Parsed CurveData.xvalue. Unusable values remain in the point count but
+/// make every machine using the curve fail either RCC x-value rule.
+pub const CurveXValue = union(enum) {
+    unusable,
+    value: f64,
+};
 
 pub const CurveXPointRow = struct {
     curve_index: u32,
-    sign: CurveXSign,
+    x: CurveXValue,
 };
 
 /// Constraint selected by SynchronousMachine.type.
@@ -478,35 +485,88 @@ pub const MachineCurveRow = struct {
     requirement: RccXRequirement,
 };
 
-/// Whether one curve's contiguous point run satisfies a machine type.
-pub fn rcc_x_requirement_satisfied(
-    requirement: RccXRequirement,
-    points: []const CurveXPointRow,
-) bool {
-    assert(points.len <= std.math.maxInt(u32));
-    var nonnegative: u32 = 0;
-    var nonpositive: u32 = 0;
-    var zeros: u32 = 0;
-    for (points) |point| {
-        switch (point.sign) {
-            .unusable => return false,
-            .negative => nonpositive +|= 1,
-            .zero => {
-                nonnegative +|= 1;
-                nonpositive +|= 1;
-                zeros +|= 1;
+pub const MachineCurveUnitRow = struct {
+    object_index: u32,
+    curve_index: u32,
+    generating_unit_index: u32,
+};
+
+pub const OperatingPowerBounds = union(enum) {
+    unusable,
+    value: struct { min: f64, max: f64 },
+};
+
+pub const GeneratingUnitBoundsRow = struct {
+    object_index: u32,
+    bounds: OperatingPowerBounds,
+};
+
+/// One derived row per curve. Phase B builds it once so machines sharing a
+/// curve do not repeatedly scan the same CurveData points.
+pub const CurveXSummaryRow = struct {
+    curve_index: u32,
+    point_count: u32 = 0,
+    nonnegative_count: u32 = 0,
+    nonpositive_count: u32 = 0,
+    zero_count: u32 = 0,
+    min_x: f64 = std.math.inf(f64),
+    max_x: f64 = -std.math.inf(f64),
+    unusable: bool = false,
+
+    pub fn add(self: *CurveXSummaryRow, x: CurveXValue) void {
+        self.point_count +|= 1;
+        switch (x) {
+            .unusable => self.unusable = true,
+            .value => |value| {
+                assert(std.math.isFinite(value));
+                self.min_x = @min(self.min_x, value);
+                self.max_x = @max(self.max_x, value);
+                if (value < 0) {
+                    self.nonpositive_count +|= 1;
+                } else if (value == 0) {
+                    self.nonnegative_count +|= 1;
+                    self.nonpositive_count +|= 1;
+                    self.zero_count +|= 1;
+                } else {
+                    self.nonnegative_count +|= 1;
+                }
             },
-            .positive => nonnegative +|= 1,
         }
     }
-    const count: u32 = @intCast(points.len);
+};
+
+/// Whether one curve summary satisfies a machine type.
+pub fn rcc_x_requirement_satisfied(
+    requirement: RccXRequirement,
+    summary_optional: ?CurveXSummaryRow,
+) bool {
+    const summary = summary_optional orelse return false;
+    if (summary.unusable) return false;
     return switch (requirement) {
         .invalid => false,
-        .condenser => count == 1 and zeros == 1,
-        .generator => nonnegative >= 2,
-        .motor => nonpositive >= 2,
-        .generator_or_motor => count >= 3 and nonnegative >= 1 and nonpositive >= 1,
+        .condenser => summary.point_count == 1 and summary.zero_count == 1,
+        .generator => summary.nonnegative_count >= 2,
+        .motor => summary.nonpositive_count >= 2,
+        .generator_or_motor => summary.point_count >= 3 and
+            summary.nonnegative_count >= 1 and summary.nonpositive_count >= 1,
     };
+}
+
+/// RCCXValues3 is vacuously satisfied when a curve has no points; point
+/// cardinality belongs to RCCXValues2. Otherwise every point must be usable
+/// and the curve extrema must fall inside the generating-unit bounds.
+pub fn rcc_x_bounds_satisfied(
+    bounds: OperatingPowerBounds,
+    summary_optional: ?CurveXSummaryRow,
+) bool {
+    const summary = summary_optional orelse return true;
+    assert(summary.point_count > 0);
+    if (summary.unusable) return false;
+    const limits = switch (bounds) {
+        .unusable => return false,
+        .value => |value| value,
+    };
+    return summary.min_x >= limits.min and summary.max_x <= limits.max;
 }
 
 /// Side tables filled during the fused sweep and consumed by the engine's
@@ -544,6 +604,8 @@ pub const Columns = struct {
     curve_all_equal_disqualified: std.DynamicBitSetUnmanaged,
     curve_x_points: std.ArrayList(CurveXPointRow),
     machine_curves: std.ArrayList(MachineCurveRow),
+    machine_curve_units: std.ArrayList(MachineCurveUnitRow),
+    generating_unit_bounds: std.ArrayList(GeneratingUnitBoundsRow),
 
     pub fn init(gpa: std.mem.Allocator, object_count: u32) error{OutOfMemory}!Columns {
         const terminal_equipment = try gpa.alloc(u32, object_count);
@@ -583,6 +645,8 @@ pub const Columns = struct {
             .curve_all_equal_disqualified = curve_all_equal_disqualified,
             .curve_x_points = .empty,
             .machine_curves = .empty,
+            .machine_curve_units = .empty,
+            .generating_unit_bounds = .empty,
         };
     }
 
@@ -606,6 +670,8 @@ pub const Columns = struct {
         self.curve_all_equal_disqualified.deinit(gpa);
         self.curve_x_points.deinit(gpa);
         self.machine_curves.deinit(gpa);
+        self.machine_curve_units.deinit(gpa);
+        self.generating_unit_bounds.deinit(gpa);
     }
 };
 
@@ -615,6 +681,7 @@ pub const relational_rules = [_]Rule{
     .TerminalCount1,        .TerminalCount2,           .TerminalSeqNum, .TerminalSeqNumOrder,
     .PTTerminalConsistency, .MCFirstSecond,            .MeasTerminal,   .CEBaseVoltage,
     .CATieFlow,             .ControlModeCompatibility, .RCCYValues,     .RCCXValues2,
+    .RCCXValues3,
 };
 
 // ── the object-rule table ─────────────────────────────────────────────────
@@ -941,16 +1008,6 @@ pub const object_rules = [_]ObjectRule{
     },
     .{
         .rule = .RCCXValues2,
-        .filter = .{ .exact = "CurveData" },
-        .needs_resolution = true,
-        .needs = &.{
-            .{ .prop = .curve_data_curve, .channels = .{ .ref = true } },
-            .{ .prop = .curve_data_xvalue, .channels = .{ .text = true } },
-        },
-        .check = &harvest_curve_data_x_value,
-    },
-    .{
-        .rule = .RCCXValues2,
         .filter = .{ .is_a_any = &.{"SynchronousMachine"} },
         .needs_resolution = true,
         .needs = &.{
@@ -958,6 +1015,25 @@ pub const object_rules = [_]ObjectRule{
             .{ .prop = .sm_type, .channels = .{ .ref = true } },
         },
         .check = &harvest_synchronous_machine_curve,
+    },
+    .{
+        .rule = .RCCXValues3,
+        .filter = .{ .is_a_any = &.{"SynchronousMachine"} },
+        .needs_resolution = true,
+        .needs = &.{
+            .{ .prop = .sm_initial_reactive_capability_curve, .channels = .{ .ref = true } },
+            .{ .prop = .rm_generating_unit, .channels = .{ .ref = true } },
+        },
+        .check = &harvest_synchronous_machine_curve_unit,
+    },
+    .{
+        .rule = .RCCXValues3,
+        .filter = .{ .is_a_any = &.{"GeneratingUnit"} },
+        .needs = &.{
+            .{ .prop = .generating_unit_operating_power_min, .channels = .{ .text = true } },
+            .{ .prop = .generating_unit_operating_power_max, .channels = .{ .text = true } },
+        },
+        .check = &harvest_generating_unit_bounds,
     },
     // Containment: the referenced container must exist and carry one of the
     // allowed traits. `required = false` tolerates an absent reference only;
@@ -1092,6 +1168,15 @@ pub const harvesters = [_]Harvester{
         } },
         .needs = &.{.{ .prop = .regulating_cond_eq_control, .channels = .{ .ref = true } }},
         .harvest = &harvest_regulating_equipment_control_source,
+    },
+    .{
+        .rules = &.{ .RCCXValues2, .RCCXValues3 },
+        .filter = .{ .exact = "CurveData" },
+        .needs = &.{
+            .{ .prop = .curve_data_curve, .channels = .{ .ref = true } },
+            .{ .prop = .curve_data_xvalue, .channels = .{ .text = true } },
+        },
+        .harvest = &harvest_curve_data_x_value,
     },
 };
 
@@ -1715,16 +1800,16 @@ fn harvest_curve_data_x_value(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!
     if (curve == none_index) return;
     if (!ctx.traits.?[curve].reactive_capability_curve) return;
 
-    const sign: CurveXSign = sign: {
-        const text = prop_text(ctx.slots, .curve_data_xvalue) orelse break :sign .unusable;
-        const x = parse.float_req(text) catch break :sign .unusable;
-        if (x < 0) break :sign .negative;
-        if (x > 0) break :sign .positive;
-        break :sign .zero;
+    const x: CurveXValue = blk: {
+        const text = prop_text(ctx.slots, .curve_data_xvalue) orelse
+            break :blk .unusable;
+        const value = parse.float_req(text) catch
+            break :blk .unusable;
+        break :blk .{ .value = value };
     };
     try ctx.columns.?.curve_x_points.append(ctx.gpa, .{
         .curve_index = curve,
-        .sign = sign,
+        .x = x,
     });
 }
 
@@ -1739,6 +1824,38 @@ fn harvest_synchronous_machine_curve(ctx: *Ctx, obj: cim.CimObject) error{OutOfM
         .object_index = ctx.object_index,
         .curve_index = curve,
         .requirement = requirement,
+    });
+}
+
+fn harvest_synchronous_machine_curve_unit(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    _ = obj;
+    const curve = resolve_ref(ctx, .sm_initial_reactive_capability_curve);
+    if (curve == none_index) return;
+    if (!ctx.traits.?[curve].reactive_capability_curve) return;
+
+    const generating_unit = resolve_ref(ctx, .rm_generating_unit);
+    if (generating_unit == none_index) return;
+    try ctx.columns.?.machine_curve_units.append(ctx.gpa, .{
+        .object_index = ctx.object_index,
+        .curve_index = curve,
+        .generating_unit_index = generating_unit,
+    });
+}
+
+fn harvest_generating_unit_bounds(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    _ = obj;
+    const bounds: OperatingPowerBounds = bounds: {
+        const min_text = prop_text(ctx.slots, .generating_unit_operating_power_min) orelse
+            break :bounds .unusable;
+        const min = parse.float_req(min_text) catch break :bounds .unusable;
+        const max_text = prop_text(ctx.slots, .generating_unit_operating_power_max) orelse
+            break :bounds .unusable;
+        const max = parse.float_req(max_text) catch break :bounds .unusable;
+        break :bounds .{ .value = .{ .min = min, .max = max } };
+    };
+    try ctx.columns.?.generating_unit_bounds.append(ctx.gpa, .{
+        .object_index = ctx.object_index,
+        .bounds = bounds,
     });
 }
 

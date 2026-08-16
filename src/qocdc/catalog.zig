@@ -81,6 +81,7 @@ pub const Rule = enum(u8) {
     SVCSlope,
     RCCYValues,
     RCCXValues2,
+    RCCXValues3,
 };
 
 pub const rule_count = @typeInfo(Rule).@"enum".fields.len;
@@ -185,6 +186,7 @@ pub fn severity(rule: Rule) Severity {
         .SVCSlope,
         .RCCYValues,
         .RCCXValues2,
+        .RCCXValues3,
         => .@"error",
     };
 }
@@ -291,6 +293,7 @@ pub fn message(rule: Rule) []const u8 {
             "or both values are equal at every point of a ReactiveCapabilityCurve",
         .RCCXValues2 => "a SynchronousMachine reactive capability curve has invalid " ++
             "CurveData x values for its machine type",
+        .RCCXValues3 => "invalid reactive capability curve data for a cim:SynchronousMachine",
     };
 }
 

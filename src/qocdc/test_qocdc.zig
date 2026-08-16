@@ -2919,3 +2919,260 @@ test "RCCXValues2 ignores machines without a resolved reactive curve" {
     defer run.deinit();
     try expect_clean(&run);
 }
+
+// ── RCCXValues3 ──────────────────────────────────────────────────────────
+
+fn rcc_x_bounds_case_xml(
+    buffer: []u8,
+    min_p: ?[]const u8,
+    max_p: ?[]const u8,
+    x_values: []const ?[]const u8,
+) ![]const u8 {
+    var writer = std.Io.Writer.fixed(buffer);
+    try writer.writeAll("<rdf:RDF><cim:HydroGeneratingUnit rdf:ID=\"_unit\">");
+    if (min_p) |value| {
+        try writer.print(
+            "<cim:GeneratingUnit.minOperatingP>{s}</cim:GeneratingUnit.minOperatingP>",
+            .{value},
+        );
+    }
+    if (max_p) |value| {
+        try writer.print(
+            "<cim:GeneratingUnit.maxOperatingP>{s}</cim:GeneratingUnit.maxOperatingP>",
+            .{value},
+        );
+    }
+    try writer.writeAll(
+        "</cim:HydroGeneratingUnit>" ++
+            "<cim:ReactiveCapabilityCurve rdf:ID=\"_curve\"/>" ++
+            "<cim:SynchronousMachine rdf:ID=\"_machine\">" ++
+            "<cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource=\"#_curve\"/>" ++
+            "<cim:RotatingMachine.GeneratingUnit rdf:resource=\"#_unit\"/>" ++
+            "</cim:SynchronousMachine>",
+    );
+    for (x_values, 0..) |x_value, i| {
+        try writer.print(
+            "<cim:CurveData rdf:ID=\"_point{d}\">" ++
+                "<cim:CurveData.Curve rdf:resource=\"#_curve\"/>",
+            .{i},
+        );
+        if (x_value) |value| {
+            try writer.print(
+                "<cim:CurveData.xvalue>{s}</cim:CurveData.xvalue>",
+                .{value},
+            );
+        }
+        try writer.writeAll("</cim:CurveData>");
+    }
+    try writer.writeAll("</rdf:RDF>");
+    return writer.buffered();
+}
+
+test "RCCXValues3 accepts boundary and interior values for a generating-unit subtype" {
+    var buffer: [4096]u8 = undefined;
+    var run = try run_rule(
+        try rcc_x_bounds_case_xml(&buffer, "-10", "20", &.{ "-10", "0", "20" }),
+        .RCCXValues3,
+    );
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "RCCXValues3 rejects values outside the generating-unit bounds once per machine" {
+    const cases = [_][]const ?[]const u8{
+        &.{ "-11", "0", "20" },
+        &.{ "-10", "0", "21" },
+        &.{ "-11", "21" },
+    };
+    var buffer: [4096]u8 = undefined;
+    for (cases) |x_values| {
+        var run = try run_rule(
+            try rcc_x_bounds_case_xml(&buffer, "-10", "20", x_values),
+            .RCCXValues3,
+        );
+        defer run.deinit();
+        try expect_rule(&run, .RCCXValues3, 1);
+        try expect_violation(&run, .RCCXValues3, "_machine");
+    }
+}
+
+test "RCCXValues3 rejects unusable points and generating-unit bounds" {
+    const Case = struct {
+        min_p: ?[]const u8,
+        max_p: ?[]const u8,
+        x_values: []const ?[]const u8,
+    };
+    const cases = [_]Case{
+        .{ .min_p = "-10", .max_p = "20", .x_values = &.{ "0", null } },
+        .{ .min_p = "-10", .max_p = "20", .x_values = &.{ "0", "nan" } },
+        .{ .min_p = null, .max_p = "20", .x_values = &.{"0"} },
+        .{ .min_p = "-10", .max_p = "", .x_values = &.{"0"} },
+    };
+    var buffer: [4096]u8 = undefined;
+    for (cases) |case| {
+        var run = try run_rule(
+            try rcc_x_bounds_case_xml(&buffer, case.min_p, case.max_p, case.x_values),
+            .RCCXValues3,
+        );
+        defer run.deinit();
+        try expect_rule(&run, .RCCXValues3, 1);
+        try expect_violation(&run, .RCCXValues3, "_machine");
+    }
+}
+
+test "RCCXValues3 evaluates machines sharing a curve against their own units" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:GeneratingUnit rdf:ID="_wide_unit">
+        \\    <cim:GeneratingUnit.minOperatingP>-10</cim:GeneratingUnit.minOperatingP>
+        \\    <cim:GeneratingUnit.maxOperatingP>20</cim:GeneratingUnit.maxOperatingP>
+        \\  </cim:GeneratingUnit>
+        \\  <cim:GeneratingUnit rdf:ID="_narrow_unit">
+        \\    <cim:GeneratingUnit.minOperatingP>0</cim:GeneratingUnit.minOperatingP>
+        \\    <cim:GeneratingUnit.maxOperatingP>10</cim:GeneratingUnit.maxOperatingP>
+        \\  </cim:GeneratingUnit>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_curve"/>
+        \\  <cim:SynchronousMachine rdf:ID="_wide_machine">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_curve"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_wide_unit"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_narrow_machine">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_curve"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_narrow_unit"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:CurveData rdf:ID="_low">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve"/>
+        \\    <cim:CurveData.xvalue>-5</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_high">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve"/>
+        \\    <cim:CurveData.xvalue>15</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , .RCCXValues3);
+    defer run.deinit();
+    try expect_rule(&run, .RCCXValues3, 1);
+    try expect_violation(&run, .RCCXValues3, "_narrow_machine");
+}
+
+test "RCCXValues3 keeps interleaved curves separate" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:GeneratingUnit rdf:ID="_unit_a">
+        \\    <cim:GeneratingUnit.minOperatingP>0</cim:GeneratingUnit.minOperatingP>
+        \\    <cim:GeneratingUnit.maxOperatingP>10</cim:GeneratingUnit.maxOperatingP>
+        \\  </cim:GeneratingUnit>
+        \\  <cim:GeneratingUnit rdf:ID="_unit_b">
+        \\    <cim:GeneratingUnit.minOperatingP>-10</cim:GeneratingUnit.minOperatingP>
+        \\    <cim:GeneratingUnit.maxOperatingP>0</cim:GeneratingUnit.maxOperatingP>
+        \\  </cim:GeneratingUnit>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_curve_a"/>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_curve_b"/>
+        \\  <cim:SynchronousMachine rdf:ID="_machine_a">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_curve_a"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_unit_a"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_machine_b">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_curve_b"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_unit_b"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:CurveData rdf:ID="_a0">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve_a"/>
+        \\    <cim:CurveData.xvalue>0</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_b0">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve_b"/>
+        \\    <cim:CurveData.xvalue>-10</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_a1">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve_a"/>
+        \\    <cim:CurveData.xvalue>10</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_b1">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve_b"/>
+        \\    <cim:CurveData.xvalue>1</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , .RCCXValues3);
+    defer run.deinit();
+    try expect_rule(&run, .RCCXValues3, 1);
+    try expect_violation(&run, .RCCXValues3, "_machine_b");
+}
+
+test "RCCXValues3 ignores machines outside its resolved relationship scope" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:GeneratingUnit rdf:ID="_unit">
+        \\    <cim:GeneratingUnit.minOperatingP>0</cim:GeneratingUnit.minOperatingP>
+        \\    <cim:GeneratingUnit.maxOperatingP>10</cim:GeneratingUnit.maxOperatingP>
+        \\  </cim:GeneratingUnit>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_curve"/>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_empty_curve"/>
+        \\  <cim:Curve rdf:ID="_generic_curve"/>
+        \\  <cim:BaseVoltage rdf:ID="_wrong_unit"/>
+        \\  <cim:SynchronousMachine rdf:ID="_no_curve">
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_unit"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_dangling_curve">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_missing"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_unit"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_wrong_curve">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_generic_curve"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_unit"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_no_unit">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_curve"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_dangling_unit">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_curve"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_missing"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_wrong_unit_type">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_curve"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_wrong_unit"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_no_points">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_empty_curve"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_unit"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:CurveData rdf:ID="_outside">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve"/>
+        \\    <cim:CurveData.xvalue>20</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , .RCCXValues3);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "RCCXValues2 and RCCXValues3 share point harvesting without duplicate rows" {
+    var mask = qocdc.RuleMask.initEmpty();
+    mask.insert(.RCCXValues2);
+    mask.insert(.RCCXValues3);
+    var run = try run_rules(
+        \\<rdf:RDF>
+        \\  <cim:GeneratingUnit rdf:ID="_unit">
+        \\    <cim:GeneratingUnit.minOperatingP>0</cim:GeneratingUnit.minOperatingP>
+        \\    <cim:GeneratingUnit.maxOperatingP>10</cim:GeneratingUnit.maxOperatingP>
+        \\  </cim:GeneratingUnit>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_curve"/>
+        \\  <cim:SynchronousMachine rdf:ID="_machine">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_curve"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_unit"/>
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.generator"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:CurveData rdf:ID="_zero">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve"/>
+        \\    <cim:CurveData.xvalue>0</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_high">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve"/>
+        \\    <cim:CurveData.xvalue>20</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , mask);
+    defer run.deinit();
+    try expect_rule(&run, .RCCXValues3, 1);
+    try expect_violation(&run, .RCCXValues3, "_machine");
+}
