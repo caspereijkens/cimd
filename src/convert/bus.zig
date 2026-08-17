@@ -2,7 +2,7 @@ const std = @import("std");
 const cim = @import("../cim/cim.zig");
 const iidm = @import("../iidm/model.zig");
 const CimDocument = cim.CimDocument;
-const TP = cim.TP;
+const Overlay = cim.Overlay;
 const parse = cim.parse;
 const utils = cim.ids;
 
@@ -34,7 +34,7 @@ pub const BusMap = std.StringHashMapUnmanaged(BusPlacement);
 /// Caller owns the returned BusMap and must call .deinit(gpa).
 pub fn convert_buses(
     gpa: std.mem.Allocator,
-    tp: TP,
+    tp: Overlay,
     voltage_level_map: *const std.StringHashMapUnmanaged(*iidm.VoltageLevel),
 ) !BusMap {
     var bus_map: BusMap = .empty;
@@ -43,7 +43,7 @@ pub fn convert_buses(
     // Count TNs first so we can pre-size the map and each VL's bus array.
     var tn_count: usize = 0;
     for (tp.new_objects) |obj| {
-        if (std.mem.eql(u8, obj.type_name, "TopologicalNode")) tn_count += 1;
+        if (std.mem.eql(u8, obj.type_name(), "TopologicalNode")) tn_count += 1;
     }
     try bus_map.ensureTotalCapacity(gpa, @intCast(tn_count));
 
@@ -52,9 +52,9 @@ pub fn convert_buses(
     defer per_vl_counts.deinit(gpa);
     try per_vl_counts.ensureTotalCapacity(gpa, @intCast(voltage_level_map.count()));
     for (tp.new_objects) |obj| {
-        if (!std.mem.eql(u8, obj.type_name, "TopologicalNode")) continue;
-        const view = tp.get_object_by_id(obj.id) orelse continue;
-        const container_ref = try view.getReference("TopologicalNode.ConnectivityNodeContainer") orelse continue;
+        if (!std.mem.eql(u8, obj.type_name(), "TopologicalNode")) continue;
+        const view = tp.object_by_id(obj.id()) orelse continue;
+        const container_ref = try view.reference("TopologicalNode.ConnectivityNodeContainer") orelse continue;
         const container_id = strip_hash(container_ref);
         if (!voltage_level_map.contains(container_id)) continue;
         const gop = try per_vl_counts.getOrPut(gpa, container_id);
@@ -71,18 +71,18 @@ pub fn convert_buses(
 
     // Emit buses and populate the TN → BusPlacement map.
     for (tp.new_objects) |obj| {
-        if (!std.mem.eql(u8, obj.type_name, "TopologicalNode")) continue;
-        const view = tp.get_object_by_id(obj.id) orelse continue;
-        const container_ref = try view.getReference("TopologicalNode.ConnectivityNodeContainer") orelse continue;
+        if (!std.mem.eql(u8, obj.type_name(), "TopologicalNode")) continue;
+        const view = tp.object_by_id(obj.id()) orelse continue;
+        const container_ref = try view.reference("TopologicalNode.ConnectivityNodeContainer") orelse continue;
         const container_id = strip_hash(container_ref);
         const vl = voltage_level_map.get(container_id) orelse continue;
 
         const mrid = try view.mrid();
-        const name = parse.non_blank(try view.getProperty("IdentifiedObject.name"));
+        const name = parse.non_blank(try view.property("IdentifiedObject.name"));
 
         vl.bus_breaker_topology.buses.appendAssumeCapacity(.{ .id = mrid, .name = name });
 
-        bus_map.putAssumeCapacityNoClobber(obj.id, .{
+        bus_map.putAssumeCapacityNoClobber(obj.id(), .{
             .bus_id = mrid,
             .voltage_level = vl,
             .voltage_level_id = vl.id,
@@ -97,13 +97,13 @@ pub fn convert_buses(
 /// BusPlacement the terminal sits on. Returns null if the terminal has no
 /// patch, no TopologicalNode reference, or the TN doesn't map to a known VL.
 pub fn resolve_terminal_bus(
-    tp: TP,
+    tp: Overlay,
     bus_map: *const BusMap,
     terminal_mrid_stripped: []const u8,
 ) !?BusPlacement {
     assert(terminal_mrid_stripped.len > 0);
     const patch = tp.find_patch(terminal_mrid_stripped) orelse return null;
-    const tn_ref = try tp.getReferenceFromPatch(patch, "Terminal.TopologicalNode") orelse return null;
+    const tn_ref = try tp.reference_from_patch(patch, "Terminal.TopologicalNode") orelse return null;
     // rdf:resource is "#_TNID"; strip_hash leaves "_TNID" which matches bus_map keys.
     return bus_map.get(strip_hash(tn_ref));
 }

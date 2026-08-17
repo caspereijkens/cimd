@@ -7,7 +7,7 @@ const std = @import("std");
 const cim = @import("../cim/cim.zig");
 const converter = @import("network.zig");
 const CimDocument = cim.CimDocument;
-const SSH = cim.SSH;
+const Overlay = cim.Overlay;
 
 /// Minimal EQ model with enough objects to exercise every edge case.
 /// Objects and their purpose:
@@ -1048,7 +1048,7 @@ test "shunt: targetDeadband defaults to 0.0 when SSH provided but no RegulatingC
     const gpa = std.testing.allocator;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
+    var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
@@ -1644,7 +1644,7 @@ test "SSH: switch open and retained state come from SSH overlay" {
     const gpa = std.testing.allocator;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
+    var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
@@ -1662,7 +1662,7 @@ test "SSH: load p0 and q0 read from EnergyConsumer.p and .q in SSH" {
     const gpa = std.testing.allocator;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
+    var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
@@ -1681,7 +1681,7 @@ test "SSH: disconnected terminal creates fictitious switch for any equipment typ
     const gpa = std.testing.allocator;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
+    var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
@@ -1708,7 +1708,7 @@ test "SSH: case_date comes from SSH scenarioTime, not EQ" {
     const gpa = std.testing.allocator;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
+    var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
@@ -1725,7 +1725,7 @@ test "SSH: forecastDistance computed from SSH times, not EQ" {
     const gpa = std.testing.allocator;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
+    var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
@@ -1741,7 +1741,7 @@ test "SSH: FullModel appears as MetadataModel with long-form subset after EQ ent
     const gpa = std.testing.allocator;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
+    var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
@@ -1768,7 +1768,7 @@ test "SSH: minimumValidationLevel follows SSH presence" {
     const gpa = std.testing.allocator;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_XML));
     defer model.deinit(gpa);
-    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_XML));
+    var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, SSH_XML));
     defer ssh.deinit(gpa);
     var network = try converter.convert(gpa, &model, null, ssh, false);
     defer network.deinit(gpa);
@@ -1955,4 +1955,66 @@ test "whitespace: pretty-printed numeric and boolean values parse correctly" {
     const limits = gen.min_max_reactive_limits orelse return error.TestFailed;
     try std.testing.expectEqual(@as(f64, -50.0), limits.min_q);
     try std.testing.expectEqual(@as(f64, 60.0), limits.max_q);
+}
+
+// ── FullModel header: commented-out children are not children ─────────────────
+
+/// The header walk used to skip only closing tags, so a commented-out
+/// Model.profile or Model.DependentOn was read as live -- the same defect class
+/// as the CIM child walks, in the one place that walks the header. It now goes
+/// through the shared child iterator.
+const EQ_XML_COMMENTED_HEADER =
+    \\<rdf:RDF>
+    \\  <md:FullModel rdf:about="_FM1">
+    \\    <md:Model.scenarioTime>2026-01-01T09:00:00Z</md:Model.scenarioTime>
+    \\    <md:Model.created>2026-01-01T01:00:00Z</md:Model.created>
+    \\    <!-- <md:Model.profile>http://iec.ch/TC57/ns/CIM/Ghost-EU/3.0</md:Model.profile> -->
+    \\    <!-- <md:Model.DependentOn rdf:resource="#_GHOST"/> -->
+    \\    <md:Model.profile>http://iec.ch/TC57/ns/CIM/EquipmentCore-EU/3.0</md:Model.profile>
+    \\    <md:Model.DependentOn rdf:resource="#_FM_REAL"/>
+    \\  </md:FullModel>
+    \\  <cim:Substation rdf:ID="_SS1">
+    \\    <cim:IdentifiedObject.mRID>SS1</cim:IdentifiedObject.mRID>
+    \\  </cim:Substation>
+    \\  <cim:BaseVoltage rdf:ID="_BV1">
+    \\    <cim:BaseVoltage.nominalVoltage>220</cim:BaseVoltage.nominalVoltage>
+    \\  </cim:BaseVoltage>
+    \\  <cim:VoltageLevel rdf:ID="_VL1">
+    \\    <cim:IdentifiedObject.mRID>VL1</cim:IdentifiedObject.mRID>
+    \\    <cim:VoltageLevel.Substation rdf:resource="#_SS1"/>
+    \\    <cim:VoltageLevel.BaseVoltage rdf:resource="#_BV1"/>
+    \\  </cim:VoltageLevel>
+    \\  <cim:ConnectivityNode rdf:ID="_CN1">
+    \\    <cim:ConnectivityNode.ConnectivityNodeContainer rdf:resource="#_VL1"/>
+    \\  </cim:ConnectivityNode>
+    \\  <cim:BusbarSection rdf:ID="_BB1">
+    \\    <cim:IdentifiedObject.name>BB1</cim:IdentifiedObject.name>
+    \\  </cim:BusbarSection>
+    \\  <cim:Terminal rdf:ID="_T_BB1">
+    \\    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+    \\    <cim:Terminal.ConductingEquipment rdf:resource="#_BB1"/>
+    \\    <cim:Terminal.ConnectivityNode rdf:resource="#_CN1"/>
+    \\  </cim:Terminal>
+    \\</rdf:RDF>
+;
+
+test "FullModel: commented-out Model.profile and Model.DependentOn are ignored" {
+    const gpa = std.testing.allocator;
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_XML_COMMENTED_HEADER));
+    defer model.deinit(gpa);
+    var network = try converter.convert(gpa, &model, null, null, false);
+    defer network.deinit(gpa);
+
+    const ext = find_extension(network, network.id) orelse return error.TestFailed;
+    const meta = ext.cgmes_metadata_models orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(usize, 1), meta.models.items.len);
+
+    const entry = meta.models.items[0];
+    try std.testing.expectEqual(@as(usize, 1), entry.profiles.items.len);
+    try std.testing.expectEqualStrings(
+        "http://iec.ch/TC57/ns/CIM/EquipmentCore-EU/3.0",
+        entry.profiles.items[0].content,
+    );
+    try std.testing.expectEqual(@as(usize, 1), entry.dependent_on_models.items.len);
+    try std.testing.expectEqualStrings("#_FM_REAL", entry.dependent_on_models.items[0].content);
 }

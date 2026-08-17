@@ -1,12 +1,11 @@
 const std = @import("std");
 const cim = @import("../cim/cim.zig");
 const topology = @import("resolve.zig");
-const tag_index = cim.tag_index;
 const CrossRef = @import("cross_ref.zig").CrossRef;
 const CimDocument = cim.CimDocument;
-const SSH = cim.SSH;
+const Overlay = cim.Overlay;
 
-const CimObject = tag_index.CimObject;
+const CimObject = cim.CimObject;
 
 const EQ_MALFORMED_LATE_TOPOLOGY_REFERENCE =
     \\<rdf:RDF>
@@ -364,7 +363,7 @@ test "is_switch_closed: open switch returns false" {
     const gpa = std.testing.allocator;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_SWITCH_XML));
     defer model.deinit(gpa);
-    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
+    var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);
 
     try std.testing.expectEqual(false, try topology.is_switch_closed(&model, &ssh, "_BRK_OPEN"));
@@ -374,7 +373,7 @@ test "is_switch_closed: closed switch returns true" {
     const gpa = std.testing.allocator;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_SWITCH_XML));
     defer model.deinit(gpa);
-    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
+    var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);
 
     try std.testing.expectEqual(true, try topology.is_switch_closed(&model, &ssh, "_BRK_CLOSED"));
@@ -384,7 +383,7 @@ test "is_switch_closed: no SSH patch defaults to closed" {
     const gpa = std.testing.allocator;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_SWITCH_XML));
     defer model.deinit(gpa);
-    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
+    var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);
 
     try std.testing.expectEqual(true, try topology.is_switch_closed(&model, &ssh, "_BRK_UNKNOWN"));
@@ -394,7 +393,7 @@ test "is_switch_closed: patch present without Switch.open defaults to closed" {
     const gpa = std.testing.allocator;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, EQ_SWITCH_XML));
     defer model.deinit(gpa);
-    var ssh = try SSH.init(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
+    var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, SSH_SWITCH_XML));
     defer ssh.deinit(gpa);
 
     try std.testing.expectEqual(true, try topology.is_switch_closed(&model, &ssh, "_BRK_NO_OPEN_FIELD"));

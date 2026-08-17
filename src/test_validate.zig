@@ -503,3 +503,142 @@ test "the QoCDC constant table reaches users as value and unit" {
         rules.constraints[0].message,
     );
 }
+
+test "name interning: rule names absent from the document match no child" {
+    const gpa = testing.allocator;
+
+    // Every rule path below except IdentifiedObject.name is a name this
+    // document never uses, so it interns to NameTable.absent. Absent must
+    // behave exactly like "no such child": vacuous where a value is required,
+    // firing where presence is required. A commented-out child must not
+    // register either, in the closed-shape scan or the cardinality counts.
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_b1">
+        \\    <cim:IdentifiedObject.name>B1</cim:IdentifiedObject.name>
+        \\    <!-- <cim:Switch.absentHere>9</cim:Switch.absentHere> -->
+        \\  </cim:Breaker>
+        \\</rdf:RDF>
+    ;
+    const rules_source =
+        \\@prefix sh:  <http://www.w3.org/ns/shacl#> .
+        \\@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        \\@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        \\@prefix cim: <https://cim.ucaiug.io/ns#> .
+        \\@prefix ex:  <http://example.org/rules#> .
+        \\ex:Absent a sh:NodeShape ;
+        \\    sh:targetClass cim:Breaker ;
+        \\    sh:property [ sh:path cim:Switch.absentHere ; sh:minCount 1 ;
+        \\                  sh:name "absent-min" ; sh:message "m" ] ;
+        \\    sh:property [ sh:path cim:Switch.absentHere ; sh:maxCount 0 ;
+        \\                  sh:name "absent-max" ; sh:message "m" ] ;
+        \\    sh:property [ sh:path cim:Switch.absentHere ; sh:datatype xsd:float ;
+        \\                  sh:name "absent-datatype" ; sh:message "m" ] ;
+        \\    sh:property [ sh:path cim:IdentifiedObject.name ; sh:minCount 1 ;
+        \\                  sh:name "present-min" ; sh:message "m" ] .
+        \\# Closed shape whose allowed set is entirely absent from the document,
+        \\# plus the one name that is present.
+        \\ex:Closed a sh:NodeShape ;
+        \\    sh:targetClass cim:Breaker ;
+        \\    sh:closed true ;
+        \\    sh:name "closed-absent" ;
+        \\    sh:message "m" ;
+        \\    sh:property [ sh:path cim:Switch.absentHere ] ;
+        \\    sh:property [ sh:path cim:IdentifiedObject.name ] .
+    ;
+
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+    var rules = try RuleSet.load(gpa, try gpa.dupe(u8, rules_source), "fixture.ttl", &.{}, null);
+    defer rules.deinit(gpa);
+    var evaluation = try validate.evaluate(gpa, &model, &rules);
+    defer evaluation.deinit(gpa);
+
+    var absent_min: u32 = 0;
+    var others: u32 = 0;
+    for (evaluation.violations.items) |violation| {
+        const rule_name = if (violation.constraint == validate.constraint_none)
+            rules.shapes[violation.shape].name
+        else
+            rules.constraints[violation.constraint].name;
+        if (std.mem.eql(u8, rule_name, "absent-min")) absent_min += 1 else others += 1;
+    }
+
+    // minCount 1 on an absent name fires once, for _b1.
+    try testing.expectEqual(@as(u32, 1), absent_min);
+    // maxCount 0 and the datatype check are vacuous; the present name
+    // satisfies its minCount; and the comment is neither a closed-shape
+    // violation nor a value for Switch.absentHere.
+    try testing.expectEqual(@as(u32, 0), others);
+}
+
+test "a subjects-of shape reports nothing when the document lacks its target property" {
+    const gpa = testing.allocator;
+
+    // The three shapes below carry the *same* constraint and differ only in
+    // what they target, which is what makes the first one's silence meaningful
+    // rather than incidental: _b2 has no Switch.kind, so any shape that
+    // actually reaches it fires.
+    //
+    // This is the invariant `evaluate_shape` skips the sweep on. A subjects-of
+    // shape targets the subjects of one predicate, so a document containing
+    // that predicate nowhere has an empty target set and can produce no
+    // result -- SHACL semantics, not an implementation shortcut. Getting the
+    // skip wrong in the other direction is the real risk, so the live target
+    // and the rdf:type idiom are checked here too.
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_b1">
+        \\    <cim:IdentifiedObject.name>B1</cim:IdentifiedObject.name>
+        \\    <cim:Switch.kind rdf:resource="http://ex#SwitchKind.gasInsulated"/>
+        \\  </cim:Breaker>
+        \\  <cim:Breaker rdf:ID="_b2">
+        \\    <cim:IdentifiedObject.name>B2</cim:IdentifiedObject.name>
+        \\  </cim:Breaker>
+        \\</rdf:RDF>
+    ;
+    const rules_source =
+        \\@prefix sh:  <http://www.w3.org/ns/shacl#> .
+        \\@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        \\@prefix cim: <https://cim.ucaiug.io/ns#> .
+        \\@prefix ex:  <http://example.org/rules#> .
+        \\# Target property absent from the document: no subjects, no findings.
+        \\ex:Dead a sh:NodeShape ;
+        \\    sh:targetSubjectsOf cim:Switch.absentHere ;
+        \\    sh:property [ sh:path cim:Switch.kind ; sh:minCount 1 ;
+        \\                  sh:name "dead-sweep" ; sh:message "m" ] .
+        \\# Target property present on both objects: _b2 fires.
+        \\ex:Live a sh:NodeShape ;
+        \\    sh:targetSubjectsOf cim:IdentifiedObject.name ;
+        \\    sh:property [ sh:path cim:Switch.kind ; sh:minCount 1 ;
+        \\                  sh:name "live-sweep" ; sh:message "m" ] .
+        \\# rdf:type is the "every object" idiom, and is never a child tag --
+        \\# it must not be mistaken for a property the document lacks.
+        \\ex:Typed a sh:NodeShape ;
+        \\    sh:targetSubjectsOf rdf:type ;
+        \\    sh:property [ sh:path cim:Switch.kind ; sh:minCount 1 ;
+        \\                  sh:name "type-sweep" ; sh:message "m" ] .
+    ;
+
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+    var rules = try RuleSet.load(gpa, try gpa.dupe(u8, rules_source), "fixture.ttl", &.{}, null);
+    defer rules.deinit(gpa);
+    var evaluation = try validate.evaluate(gpa, &model, &rules);
+    defer evaluation.deinit(gpa);
+
+    var dead: u32 = 0;
+    var live: u32 = 0;
+    var typed: u32 = 0;
+    for (evaluation.violations.items) |violation| {
+        const rule_name = rules.constraints[violation.constraint].name;
+        if (std.mem.eql(u8, rule_name, "dead-sweep")) dead += 1;
+        if (std.mem.eql(u8, rule_name, "live-sweep")) live += 1;
+        if (std.mem.eql(u8, rule_name, "type-sweep")) typed += 1;
+    }
+
+    try testing.expectEqual(@as(u32, 0), dead);
+    // Both reach _b2 and only _b2, so neither skipped a shape it owed work.
+    try testing.expectEqual(@as(u32, 1), live);
+    try testing.expectEqual(@as(u32, 1), typed);
+}

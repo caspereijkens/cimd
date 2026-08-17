@@ -29,94 +29,19 @@ const CimDocument = @import("document.zig").CimDocument;
 const tag_index = @import("tag_index.zig");
 const cim_types = @import("cim_types.zig");
 
-// ── Statements ────────────────────────────────────────────────────────────────
+// ── Statements ─────────────────────────────────────────────────────────────────
 
-/// One child element of a CIM object.
-pub const Statement = struct {
-    /// Tag name with namespace prefix stripped -- the comparison key.
-    name: []const u8,
-    /// Text content for property elements, rdf:resource for references --
-    /// the comparison value.
-    value: []const u8,
-    /// Part of the match key alongside name and value: the CIM schema fixes
-    /// each property's kind, so a flip between <cim:X>#_A</cim:X> and
-    /// <cim:X rdf:resource="#_A"/> is a real change even when name and value
-    /// coincide lexically.
-    kind: Kind,
-    /// The complete element slice, for renderers that copy it verbatim.
-    raw: []const u8,
-
-    pub const Kind = enum {
-        /// Literal text content (including empty, in either syntax).
-        property,
-        /// Carries an rdf:resource attribute.
-        reference,
-    };
-};
-
-/// Walk the child elements of an object in document order. Skips comments,
-/// processing instructions, and malformed tags, mirroring the tolerance of
-/// CimObjectView.getAllProperties/getAllReferences.
-pub const StatementIterator = struct {
-    xml: []const u8,
-    boundaries: []const tag_index.TagBoundary,
-    next_idx: u32,
-    end_idx: u32,
-
-    pub fn init(view: tag_index.CimObjectView) StatementIterator {
-        return .{
-            .xml = view.xml,
-            .boundaries = view.boundaries,
-            .next_idx = view.object_tag_idx + 1,
-            .end_idx = view.closing_tag_idx,
-        };
-    }
-
-    pub fn next(self: *StatementIterator) ?Statement {
-        while (self.next_idx < self.end_idx) {
-            const i = self.next_idx;
-            const tag = self.boundaries[i];
-            self.next_idx += 1;
-
-            switch (self.xml[tag.start + 1]) {
-                '/', '!', '?' => continue, // closing tag, comment, or PI
-                else => {},
-            }
-            const name = tag_index.extract_tag_type(self.xml, tag.start) catch continue;
-
-            // Self-closing: a reference when it carries rdf:resource. The
-            // kind follows the attribute, not the syntax -- a self-closing
-            // element without rdf:resource is an empty literal, equivalent
-            // to <name></name>.
-            if (self.xml[tag.end - 1] == '/') {
-                const resource = tag_index.extract_rdf_resource_within(self.xml, tag.start, tag.end) catch null;
-                return .{
-                    .name = name,
-                    .value = resource orelse "",
-                    .kind = if (resource != null) .reference else .property,
-                    .raw = self.xml[tag.start .. tag.end + 1],
-                };
-            }
-
-            // Expanded element, closed by the next boundary. CIM properties
-            // never nest -- the same assumption getAllProperties makes when
-            // slicing content up to the following tag. As above, the kind
-            // follows the rdf:resource attribute, not the element form:
-            // <name rdf:resource="#_A"></name> is the expanded serialization
-            // of the self-closing reference, not a literal.
-            const closing = self.boundaries[i + 1];
-            self.next_idx = i + 2;
-            const resource = tag_index.extract_rdf_resource_within(self.xml, tag.start, tag.end) catch null;
-            return .{
-                .name = name,
-                .value = resource orelse self.xml[tag.end + 1 .. closing.start],
-                .kind = if (resource != null) .reference else .property,
-                .raw = self.xml[tag.start .. closing.end + 1],
-            };
-        }
-        return null;
-    }
-};
+/// A statement *is* a child element: this walk started here and moved into
+/// `tag_index` as the one child walk the whole codebase shares, so diff and
+/// every other consumer now agree on what a child is by construction rather
+/// than by four independently maintained skip loops. `kind` is part of the
+/// match key alongside name and value -- the CIM schema fixes each property's
+/// kind, so a flip between `<cim:X>#_A</cim:X>` and
+/// `<cim:X rdf:resource="#_A"/>` is a real change even when the two coincide
+/// lexically. `self_closing` is deliberately *not* compared: `<cim:X/>` and
+/// `<cim:X></cim:X>` are the same empty literal.
+pub const Statement = tag_index.Child;
+pub const StatementIterator = tag_index.ChildIterator;
 
 // ── Statement comparison ──────────────────────────────────────────────────────
 
@@ -142,12 +67,12 @@ pub const ChangeSet = struct {
 /// lists are sorted by name for deterministic output.
 pub fn change_set(
     gpa: std.mem.Allocator,
-    view1: tag_index.CimObjectView,
-    view2: tag_index.CimObjectView,
+    view1: tag_index.CimObject,
+    view2: tag_index.CimObject,
 ) !ChangeSet {
     var statements1: std.ArrayList(Statement) = .empty;
     defer statements1.deinit(gpa);
-    var it1 = StatementIterator.init(view1);
+    var it1 = view1.children();
     while (it1.next()) |statement| try statements1.append(gpa, statement);
 
     var changes: ChangeSet = .{ .forward = .empty, .reverse = .empty };
@@ -158,7 +83,7 @@ pub fn change_set(
     @memset(matched, false);
 
     // Bounded by the object's child count squared -- objects are small.
-    var it2 = StatementIterator.init(view2);
+    var it2 = view2.children();
     outer: while (it2.next()) |new_statement| {
         for (statements1.items, matched) |old_statement, *was_matched| {
             if (!was_matched.* and
@@ -198,8 +123,8 @@ fn sort_by_name(statements: []Statement) void {
 /// skips the statement walk for the overwhelming majority of matched objects.
 pub fn object_changes(
     gpa: std.mem.Allocator,
-    view1: tag_index.CimObjectView,
-    view2: tag_index.CimObjectView,
+    view1: tag_index.CimObject,
+    view2: tag_index.CimObject,
 ) !?ChangeSet {
     if (std.mem.eql(u8, view1.raw_xml(), view2.raw_xml())) return null;
     var changes = try change_set(gpa, view1, view2);
@@ -235,9 +160,9 @@ fn same_type_counterpart(
     model: *CimDocument,
     id: []const u8,
     type_name: []const u8,
-) ?tag_index.CimObjectView {
-    const other = model.getObjectById(id) orelse return null;
-    if (!same_cim_type(other.type_name, type_name)) return null;
+) ?tag_index.CimObject {
+    const other = model.object_by_id(id) orelse return null;
+    if (!same_cim_type(other.type_name(), type_name)) return null;
     return other;
 }
 
@@ -256,12 +181,12 @@ pub fn match_type(
 ) !TypeStats {
     var stats = TypeStats{ .type_name = type_name, .added = 0, .removed = 0, .changed = 0 };
 
-    const objects1 = model1.get_objects_by_type(type_name);
-    const objects2 = model2.get_objects_by_type(type_name);
+    const objects1 = model1.objects_by_type(type_name);
+    const objects2 = model2.objects_by_type(type_name);
 
     for (objects1) |obj1| {
-        if (same_type_counterpart(model2, obj1.id, type_name)) |other| {
-            const view1 = model1.view(obj1);
+        if (same_type_counterpart(model2, obj1.id(), type_name)) |other| {
+            const view1 = obj1;
             if (try object_changes(gpa, view1, other)) |changes_owned| {
                 var changes = changes_owned;
                 defer changes.deinit(gpa);
@@ -270,13 +195,13 @@ pub fn match_type(
             }
             continue;
         }
-        try emitter.removed(model1.view(obj1));
+        try emitter.removed(obj1);
         stats.removed += 1;
     }
 
     for (objects2) |obj2| {
-        if (same_type_counterpart(model1, obj2.id, type_name) != null) continue;
-        try emitter.added(model2.view(obj2));
+        if (same_type_counterpart(model1, obj2.id(), type_name) != null) continue;
+        try emitter.added(obj2);
         stats.added += 1;
     }
     return stats;
@@ -346,15 +271,15 @@ pub const SingleMatch = union(enum) {
     /// Found, but its type does not match the filter; carries the actual type.
     type_mismatch: []const u8,
     /// Only in model2.
-    added: tag_index.CimObjectView,
+    added: tag_index.CimObject,
     /// Only in model1.
-    removed: tag_index.CimObjectView,
+    removed: tag_index.CimObject,
     /// Same mRID, different CIM type: a replacement, not a property change.
     /// Renderers report the old object as removed and the new one as added --
     /// a child-statement delta cannot retype an object.
-    replaced: struct { old: tag_index.CimObjectView, new: tag_index.CimObjectView },
+    replaced: struct { old: tag_index.CimObject, new: tag_index.CimObject },
     /// Same type in both models; statements may still differ.
-    matched: struct { old: tag_index.CimObjectView, new: tag_index.CimObjectView },
+    matched: struct { old: tag_index.CimObject, new: tag_index.CimObject },
 };
 
 /// Classify `mrid` across the two models. O(1) lookups via id_to_index.
@@ -366,17 +291,17 @@ pub fn match_single(
     mrid: []const u8,
     type_filter: ?[]const u8,
 ) SingleMatch {
-    const v1 = model1.getObjectById(mrid);
-    const v2 = model2.getObjectById(mrid);
+    const v1 = model1.object_by_id(mrid);
+    const v2 = model2.object_by_id(mrid);
 
     if (v1 == null and v2 == null) return .not_found;
 
-    if (v1) |v| if (!cim_types.matches_filter(v.type_name, type_filter)) return .{ .type_mismatch = v.type_name };
-    if (v2) |v| if (!cim_types.matches_filter(v.type_name, type_filter)) return .{ .type_mismatch = v.type_name };
+    if (v1) |v| if (!cim_types.matches_filter(v.type_name(), type_filter)) return .{ .type_mismatch = v.type_name() };
+    if (v2) |v| if (!cim_types.matches_filter(v.type_name(), type_filter)) return .{ .type_mismatch = v.type_name() };
 
     if (v1 == null) return .{ .added = v2.? };
     if (v2 == null) return .{ .removed = v1.? };
-    if (!same_cim_type(v1.?.type_name, v2.?.type_name)) {
+    if (!same_cim_type(v1.?.type_name(), v2.?.type_name())) {
         return .{ .replaced = .{ .old = v1.?, .new = v2.? } };
     }
     return .{ .matched = .{ .old = v1.?, .new = v2.? } };
@@ -385,10 +310,10 @@ pub fn match_single(
 // ── FullModel ─────────────────────────────────────────────────────────────────
 
 /// The exchange-metadata header object, when the model has one.
-pub fn full_model(model: *const CimDocument) ?tag_index.CimObjectView {
-    const objects = model.get_objects_by_type("FullModel");
+pub fn full_model(model: *const CimDocument) ?tag_index.CimObject {
+    const objects = model.objects_by_type("FullModel");
     if (objects.len == 0) return null;
-    return model.view(objects[0]);
+    return objects[0];
 }
 
 /// Semantic comparison of the two FullModel headers: differing presence, id,
@@ -397,7 +322,7 @@ pub fn full_models_differ(gpa: std.mem.Allocator, model1: *const CimDocument, mo
     const fm1 = full_model(model1) orelse return full_model(model2) != null;
     const fm2 = full_model(model2) orelse return true;
 
-    if (!std.mem.eql(u8, fm1.id, fm2.id)) return true;
+    if (!std.mem.eql(u8, fm1.id(), fm2.id())) return true;
     if (std.mem.eql(u8, fm1.raw_xml(), fm2.raw_xml())) return false;
 
     var changes = try change_set(gpa, fm1, fm2);

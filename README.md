@@ -27,8 +27,8 @@ Usage: cimd <command> [options]
 A high-performance CGMES file parser and analysis tool.
 
 Input limits:
-  XML data: max supported size is 4294967295 bytes (~4096 MiB) total after unzip (up to 8 inputs,
-    16 XML parts per ZIP).
+  XML data: max supported size is 4294967295 bytes (~4096 MiB) total after unzip 
+  (up to 8 inputs, 16 XML parts per ZIP).
   SHACL rule files: max supported size is 67108864 bytes (~64 MiB) after unzip.
   Non-interactive commands accept '-' as the primary data path to read
   uncompressed XML from stdin.
@@ -44,6 +44,18 @@ Commands:
   validate   Validate a CGMES file against a SHACL rule set
   qocdc      Run Quality of CGMES Datasets and Calculations checks
   version    Print version information
+
+Global options:
+      --stats <when>   When to print human-readable summaries to stderr:
+                       auto (default) prints them only when stdout is a
+                       terminal, so piped or redirected data stays clean;
+                       always prints them regardless (useful in CI logs);
+                       never suppresses them. Errors are always shown.
+      --color <when>   Color terminal output -- qocdc severities and
+                       browsed XML: auto (default) colors a stream only
+                       when it is a terminal, so redirected output stays
+                       plain; always and never force it either way.
+                       NO_COLOR disables auto color when it is non-empty.
 
 Use 'cimd <command> --help' for more information about a command.
 ```
@@ -361,6 +373,10 @@ Usage: cimd convert <file>... [options]
 
 Convert a CGMES EQ profile to JIIDM JSON format.
 Output is written to stdout unless --output is given.
+
+A network summary is printed to stderr when stdout is a terminal, so
+`cimd convert eq.zip | jq` emits nothing but JSON. See --stats in
+`cimd --help` to force it on or off.
 
 Arguments:
   <file>...               CGMES parts or a bundle (XML or ZIP)

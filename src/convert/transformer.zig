@@ -3,7 +3,6 @@ const cim = @import("../cim/cim.zig");
 const iidm = @import("../iidm/model.zig");
 const CimDocument = cim.CimDocument;
 const cross_ref = @import("../topology/cross_ref.zig");
-const tag_index = cim.tag_index;
 const utils = cim.ids;
 const topology = @import("../topology/resolve.zig");
 const parse = cim.parse;
@@ -11,8 +10,7 @@ const parse = cim.parse;
 const assert = std.debug.assert;
 const testing = std.testing;
 
-const CimObject = tag_index.CimObject;
-const CimObjectView = tag_index.CimObjectView;
+const CimObject = cim.CimObject;
 const CrossRef = cross_ref.CrossRef;
 const placement_mod = @import("placement.zig");
 
@@ -37,26 +35,25 @@ pub fn deinit_tap_changer_info_map(gpa: std.mem.Allocator, map: *TapChangerInfoM
 fn build_ends_by_transformer(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-) !std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObjectView)) {
-    var ends_by_transformer: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObjectView)) = .empty;
+) !std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObject)) {
+    var ends_by_transformer: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObject)) = .empty;
 
-    const ends = model.get_objects_by_type("PowerTransformerEnd");
+    const ends = model.objects_by_type("PowerTransformerEnd");
 
     try ends_by_transformer.ensureTotalCapacity(gpa, @intCast(ends.len));
 
     for (ends) |end| {
-        const end_view = model.view(end);
-        const transformer_ref = try end_view.getReference("PowerTransformerEnd.PowerTransformer") orelse continue;
+        const transformer_ref = try end.reference("PowerTransformerEnd.PowerTransformer") orelse continue;
         const transformer_id = strip_hash(transformer_ref);
 
         const gop = ends_by_transformer.getOrPutAssumeCapacity(transformer_id);
         if (!gop.found_existing) gop.value_ptr.* = .empty;
-        try gop.value_ptr.append(gpa, end_view);
+        try gop.value_ptr.append(gpa, end);
     }
 
     var it = ends_by_transformer.valueIterator();
     while (it.next()) |transformer_ends| {
-        std.sort.block(CimObjectView, transformer_ends.items, {}, view_less_than);
+        std.sort.block(CimObject, transformer_ends.items, {}, view_less_than);
     }
 
     return ends_by_transformer;
@@ -84,23 +81,23 @@ const TapChangerCommon = struct { low_step: i32, normal_step: i32, ltc_flag: boo
 
 fn read_tap_changer_regulating(
     model: *const CimDocument,
-    tap_changer: CimObjectView,
-    ssh_opt: ?cim.SSH,
+    tap_changer: CimObject,
+    ssh_opt: ?cim.Overlay,
 ) !?bool {
-    const control_ref = try tap_changer.getReference("TapChanger.TapChangerControl") orelse return null;
+    const control_ref = try tap_changer.reference("TapChanger.TapChangerControl") orelse return null;
     if (ssh_opt) |ssh| {
         const control_id = strip_hash(control_ref);
-        const control_mrid = if (model.getObjectById(control_id)) |control_view|
-            try control_view.mrid()
+        const control_mrid = if (model.object_by_id(control_id)) |control|
+            try control.mrid()
         else
             strip_underscore(control_id);
-        return parse.flag(try ssh.getProperty(control_mrid, "RegulatingCondEq.controlEnabled"));
+        return parse.flag(try ssh.property(control_mrid, "RegulatingCondEq.controlEnabled"));
     }
     return false;
 }
 
-fn read_tap_changer_common(tap_changer: CimObjectView) !?TapChangerCommon {
-    const props = try tap_changer.getProperties(.{
+fn read_tap_changer_common(tap_changer: CimObject) !?TapChangerCommon {
+    const props = try tap_changer.properties(.{
         "TapChanger.lowStep",
         "TapChanger.normalStep",
         "TapChanger.ltcFlag",
@@ -121,7 +118,7 @@ test "blank ltcFlag keeps the tap changer disabled" {
     ;
     var model = try CimDocument.init(testing.allocator, try testing.allocator.dupe(u8, xml));
     defer model.deinit(testing.allocator);
-    const tap_changer = model.view(model.get_objects_by_type("RatioTapChanger")[0]);
+    const tap_changer = model.objects_by_type("RatioTapChanger")[0];
     const common = (try read_tap_changer_common(tap_changer)).?;
     try testing.expect(!common.ltc_flag);
 }
@@ -135,10 +132,10 @@ fn append_tap_changer_info(
     tap_changer_type: ?[]const u8,
     normal_step: i32,
 ) !void {
-    const end_obj = model.getObjectById(end_id) orelse return;
-    const transformer_ref = try end_obj.getReference("PowerTransformerEnd.PowerTransformer") orelse return;
+    const end_obj = model.object_by_id(end_id) orelse return;
+    const transformer_ref = try end_obj.reference("PowerTransformerEnd.PowerTransformer") orelse return;
     const transformer_id = strip_hash(transformer_ref);
-    const transformer_obj = model.getObjectById(transformer_id) orelse return;
+    const transformer_obj = model.object_by_id(transformer_id) orelse return;
     const transformer_mrid = try transformer_obj.mrid();
 
     const gop = try map.getOrPut(gpa, transformer_mrid);
@@ -160,8 +157,8 @@ fn validate_tap_ratio(ratio: f64) error{InvalidNumericValue}!void {
     }
 }
 
-fn read_tap_changer_base_step(point: CimObjectView) !?TapChangerBaseStep {
-    const props = try point.getProperties(.{
+fn read_tap_changer_base_step(point: CimObject) !?TapChangerBaseStep {
+    const props = try point.properties(.{
         "TapChangerTablePoint.r",
         "TapChangerTablePoint.x",
         "TapChangerTablePoint.g",
@@ -188,8 +185,8 @@ test "tap changer table points reject zero ratio for ratio and phase paths" {
     ;
     var model = try CimDocument.init(testing.allocator, try testing.allocator.dupe(u8, xml));
     defer model.deinit(testing.allocator);
-    const point = model.view(model.get_objects_by_type("RatioTapChangerTablePoint")[0]);
-    const phase_point = model.view(model.get_objects_by_type("PhaseTapChangerTablePoint")[0]);
+    const point = model.objects_by_type("RatioTapChangerTablePoint")[0];
+    const phase_point = model.objects_by_type("PhaseTapChangerTablePoint")[0];
 
     try testing.expectError(error.InvalidNumericValue, read_tap_changer_base_step(point));
     try testing.expectError(error.InvalidNumericValue, read_tap_changer_base_step(phase_point));
@@ -207,8 +204,8 @@ fn build_ratio_table_points(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
 ) !std.StringHashMapUnmanaged(std.ArrayListUnmanaged(OrderedRatioStep)) {
-    const tables = model.get_objects_by_type("RatioTapChangerTable");
-    const points = model.get_objects_by_type("RatioTapChangerTablePoint");
+    const tables = model.objects_by_type("RatioTapChangerTable");
+    const points = model.objects_by_type("RatioTapChangerTablePoint");
     var points_by_table: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(OrderedRatioStep)) = .empty;
     errdefer {
         var it = points_by_table.valueIterator();
@@ -217,10 +214,9 @@ fn build_ratio_table_points(
     }
     try points_by_table.ensureTotalCapacity(gpa, @intCast(tables.len));
     for (points) |point| {
-        const point_view = model.view(point);
-        const table_ref = try point_view.getReference("RatioTapChangerTablePoint.RatioTapChangerTable") orelse continue;
-        const base = try read_tap_changer_base_step(point_view) orelse continue;
-        const step_num_str = parse.non_blank(try point_view.getProperty("TapChangerTablePoint.step")) orelse continue;
+        const table_ref = try point.reference("RatioTapChangerTablePoint.RatioTapChangerTable") orelse continue;
+        const base = try read_tap_changer_base_step(point) orelse continue;
+        const step_num_str = parse.non_blank(try point.property("TapChangerTablePoint.step")) orelse continue;
         const step_num = try parse.int_req(i32, step_num_str);
         // pypowsybl inverts cgmes_ratio for ratio tap changers.
         const rho = 1.0 / base.cgmes_ratio;
@@ -288,14 +284,14 @@ test "tap point maps tolerate dangling table references and skipped points" {
 
 fn build_linear_ratio_steps(
     gpa: std.mem.Allocator,
-    tap_changer: CimObjectView,
+    tap_changer: CimObject,
     low_step: i32,
 ) !?std.ArrayListUnmanaged(iidm.RatioTapChangerStep) {
-    const high_step_str = parse.non_blank(try tap_changer.getProperty("TapChanger.highStep")) orelse return null;
+    const high_step_str = parse.non_blank(try tap_changer.property("TapChanger.highStep")) orelse return null;
     const high_step = try parse.int_req(i32, high_step_str);
-    const neutral_step_str = parse.non_blank(try tap_changer.getProperty("TapChanger.neutralStep")) orelse return null;
+    const neutral_step_str = parse.non_blank(try tap_changer.property("TapChanger.neutralStep")) orelse return null;
     const neutral_step = try parse.int_req(i32, neutral_step_str);
-    const increment_str = parse.non_blank(try tap_changer.getProperty("RatioTapChanger.stepVoltageIncrement")) orelse return null;
+    const increment_str = parse.non_blank(try tap_changer.property("RatioTapChanger.stepVoltageIncrement")) orelse return null;
     const increment = try parse.float_req(increment_str);
 
     if (high_step < low_step) return error.InvalidTapStepRange;
@@ -329,7 +325,7 @@ test "build_linear_ratio_steps rejects a computed near-zero ratio" {
     ;
     var model = try CimDocument.init(testing.allocator, try testing.allocator.dupe(u8, xml));
     defer model.deinit(testing.allocator);
-    const tap_changer = model.view(model.get_objects_by_type("RatioTapChanger")[0]);
+    const tap_changer = model.objects_by_type("RatioTapChanger")[0];
 
     try testing.expectError(error.InvalidNumericValue, build_linear_ratio_steps(testing.allocator, tap_changer, 0));
 }
@@ -357,7 +353,7 @@ const PhaseTapChangerEntry = struct {
 fn build_ratio_tap_changer_map(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    ssh_opt: ?cim.SSH,
+    ssh_opt: ?cim.Overlay,
     tap_changer_info_map: ?*TapChangerInfoMap,
 ) !std.StringHashMapUnmanaged(RatioTapChangerEntry) {
     var points_by_table = try build_ratio_table_points(gpa, model);
@@ -367,7 +363,7 @@ fn build_ratio_tap_changer_map(
         points_by_table.deinit(gpa);
     }
 
-    const tap_changers = model.get_objects_by_type("RatioTapChanger");
+    const tap_changers = model.objects_by_type("RatioTapChanger");
     var ratio_tap_changer_map: std.StringHashMapUnmanaged(RatioTapChangerEntry) = .empty;
     errdefer {
         var it = ratio_tap_changer_map.valueIterator();
@@ -377,27 +373,26 @@ fn build_ratio_tap_changer_map(
     try ratio_tap_changer_map.ensureTotalCapacity(gpa, @intCast(tap_changers.len));
 
     for (tap_changers) |tap_changer| {
-        const tap_changer_view = model.view(tap_changer);
-        const end_ref = try tap_changer_view.getReference("RatioTapChanger.TransformerEnd") orelse continue;
+        const end_ref = try tap_changer.reference("RatioTapChanger.TransformerEnd") orelse continue;
         const end_id = strip_hash(end_ref);
-        const common = try read_tap_changer_common(tap_changer_view) orelse continue;
-        const regulating = try read_tap_changer_regulating(model, tap_changer_view, ssh_opt);
-        const mrid = try tap_changer_view.mrid();
+        const common = try read_tap_changer_common(tap_changer) orelse continue;
+        const regulating = try read_tap_changer_regulating(model, tap_changer, ssh_opt);
+        const mrid = try tap_changer.mrid();
 
-        const owned_steps = if (try tap_changer_view.getReference("RatioTapChanger.RatioTapChangerTable")) |table_ref| blk: {
+        const owned_steps = if (try tap_changer.reference("RatioTapChanger.RatioTapChangerTable")) |table_ref| blk: {
             const ordered = points_by_table.get(strip_hash(table_ref)) orelse continue;
             var s: std.ArrayListUnmanaged(iidm.RatioTapChangerStep) = .empty;
             try s.ensureTotalCapacity(gpa, ordered.items.len);
             for (ordered.items) |os| s.appendAssumeCapacity(os.step);
             break :blk s;
         } else blk: {
-            break :blk try build_linear_ratio_steps(gpa, tap_changer_view, common.low_step) orelse continue;
+            break :blk try build_linear_ratio_steps(gpa, tap_changer, common.low_step) orelse continue;
         };
 
         const gop = ratio_tap_changer_map.getOrPutAssumeCapacity(end_id);
         if (gop.found_existing) gop.value_ptr.deinit(gpa);
         gop.value_ptr.* = .{
-            .rdf_id = tap_changer.id,
+            .rdf_id = tap_changer.id(),
             .mrid = mrid,
             .tap_changer = .{
                 .low_tap_position = common.low_step,
@@ -416,11 +411,10 @@ fn build_ratio_tap_changer_map(
     // changers on the same TransformerEnd down to the retained entry.
     if (tap_changer_info_map) |info_map| {
         for (tap_changers) |tap_changer| {
-            const tap_changer_view = model.view(tap_changer);
-            const end_ref = try tap_changer_view.getReference("RatioTapChanger.TransformerEnd") orelse continue;
+            const end_ref = try tap_changer.reference("RatioTapChanger.TransformerEnd") orelse continue;
             const end_id = strip_hash(end_ref);
             const retained = ratio_tap_changer_map.get(end_id) orelse continue;
-            if (!std.mem.eql(u8, tap_changer.id, retained.rdf_id)) continue;
+            if (!std.mem.eql(u8, tap_changer.id(), retained.rdf_id)) continue;
             try append_tap_changer_info(gpa, model, info_map, end_id, retained.mrid, null, retained.tap_changer.tap_position);
         }
     }
@@ -438,7 +432,7 @@ const OrderedPhaseStep = struct {
 fn build_phase_tap_changer_map(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    ssh_opt: ?cim.SSH,
+    ssh_opt: ?cim.Overlay,
     tap_changer_info_map: ?*TapChangerInfoMap,
 ) !std.StringHashMapUnmanaged(PhaseTapChangerEntry) {
     var points_by_table: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(OrderedPhaseStep)) = .empty;
@@ -448,20 +442,19 @@ fn build_phase_tap_changer_map(
         points_by_table.deinit(gpa);
     }
 
-    const points = model.get_objects_by_type("PhaseTapChangerTablePoint");
-    const tables = model.get_objects_by_type("PhaseTapChangerTable");
+    const points = model.objects_by_type("PhaseTapChangerTablePoint");
+    const tables = model.objects_by_type("PhaseTapChangerTable");
     try points_by_table.ensureTotalCapacity(gpa, @intCast(tables.len));
 
     // Build RAW (pre-movement) steps keyed by table. Scaling and rho/alpha movement
     // depend on which end the tap changer sits on; both are applied per tap changer below.
     for (points) |point| {
-        const point_view = model.view(point);
-        const table_ref = try point_view.getReference("PhaseTapChangerTablePoint.PhaseTapChangerTable") orelse continue;
+        const table_ref = try point.reference("PhaseTapChangerTablePoint.PhaseTapChangerTable") orelse continue;
         const table_id = strip_hash(table_ref);
 
-        const base = try read_tap_changer_base_step(point_view) orelse continue;
-        const alpha = try parse.float_strict(try point_view.getProperty("PhaseTapChangerTablePoint.angle"), 0.0);
-        const step_num_str = parse.non_blank(try point_view.getProperty("TapChangerTablePoint.step")) orelse continue;
+        const base = try read_tap_changer_base_step(point) orelse continue;
+        const alpha = try parse.float_strict(try point.property("PhaseTapChangerTablePoint.angle"), 0.0);
+        const step_num_str = parse.non_blank(try point.property("TapChangerTablePoint.step")) orelse continue;
         const step_num = try parse.int_req(i32, step_num_str);
 
         const gop = try points_by_table.getOrPut(gpa, table_id);
@@ -483,7 +476,7 @@ fn build_phase_tap_changer_map(
     var sort_it = points_by_table.valueIterator();
     while (sort_it.next()) |list| std.sort.block(OrderedPhaseStep, list.items, {}, OrderedPhaseStep.less_than);
 
-    const tap_changers = model.get_objects_by_type("PhaseTapChangerTabular");
+    const tap_changers = model.objects_by_type("PhaseTapChangerTabular");
 
     var phase_tap_changer_map: std.StringHashMapUnmanaged(PhaseTapChangerEntry) = .empty;
     errdefer {
@@ -494,15 +487,14 @@ fn build_phase_tap_changer_map(
     try phase_tap_changer_map.ensureTotalCapacity(gpa, @intCast(tap_changers.len));
 
     for (tap_changers) |tap_changer| {
-        const tap_changer_view = model.view(tap_changer);
-        const end_ref = try tap_changer_view.getReference("PhaseTapChanger.TransformerEnd") orelse continue;
+        const end_ref = try tap_changer.reference("PhaseTapChanger.TransformerEnd") orelse continue;
         const end_id = strip_hash(end_ref);
-        const regulating = try read_tap_changer_regulating(model, tap_changer_view, ssh_opt);
+        const regulating = try read_tap_changer_regulating(model, tap_changer, ssh_opt);
 
-        const common = try read_tap_changer_common(tap_changer_view) orelse continue;
-        const mrid = try tap_changer_view.mrid();
+        const common = try read_tap_changer_common(tap_changer) orelse continue;
+        const mrid = try tap_changer.mrid();
 
-        const table_ref = try tap_changer_view.getReference("PhaseTapChangerTabular.PhaseTapChangerTable") orelse continue;
+        const table_ref = try tap_changer.reference("PhaseTapChangerTabular.PhaseTapChangerTable") orelse continue;
         const table_id = strip_hash(table_ref);
         const ordered_steps = points_by_table.get(table_id) orelse continue;
 
@@ -513,8 +505,8 @@ fn build_phase_tap_changer_map(
         //     referral formula:
         //       step.r = 100 * ((1 + cgmes_r/100) * a² - 1)
         //       step.g = 100 * ((1 + cgmes_g/100) / a² - 1)
-        const end_obj = model.getObjectById(end_id) orelse continue;
-        const end_number = parse.int_or(u32, try end_obj.getProperty("TransformerEnd.endNumber"), 0);
+        const end_obj = model.object_by_id(end_id) orelse continue;
+        const end_number = parse.int_or(u32, try end_obj.property("TransformerEnd.endNumber"), 0);
         const move = end_number == 1;
 
         var owned_steps: std.ArrayListUnmanaged(iidm.PhaseTapChangerStep) = .empty;
@@ -538,7 +530,7 @@ fn build_phase_tap_changer_map(
         const gop = phase_tap_changer_map.getOrPutAssumeCapacity(end_id);
         if (gop.found_existing) gop.value_ptr.deinit(gpa);
         gop.value_ptr.* = .{
-            .rdf_id = tap_changer.id,
+            .rdf_id = tap_changer.id(),
             .mrid = mrid,
             .tap_changer = .{
                 .low_tap_position = common.low_step,
@@ -553,11 +545,10 @@ fn build_phase_tap_changer_map(
 
     if (tap_changer_info_map) |info_map| {
         for (tap_changers) |tap_changer| {
-            const tap_changer_view = model.view(tap_changer);
-            const end_ref = try tap_changer_view.getReference("PhaseTapChanger.TransformerEnd") orelse continue;
+            const end_ref = try tap_changer.reference("PhaseTapChanger.TransformerEnd") orelse continue;
             const end_id = strip_hash(end_ref);
             const retained = phase_tap_changer_map.get(end_id) orelse continue;
-            if (!std.mem.eql(u8, tap_changer.id, retained.rdf_id)) continue;
+            if (!std.mem.eql(u8, tap_changer.id(), retained.rdf_id)) continue;
             try append_tap_changer_info(gpa, model, info_map, end_id, retained.mrid, "PhaseTapChangerTabular", retained.tap_changer.tap_position);
         }
     }
@@ -691,17 +682,17 @@ test "tap changer info includes only retained map entries" {
     try testing.expectEqualStrings("phase_same", retained_info.items[1].id);
 }
 
-fn view_less_than(_: void, a: CimObjectView, b: CimObjectView) bool {
-    const end_number0 = parse.int_or(u32, a.getProperty("TransformerEnd.endNumber") catch null, 0);
-    const end_number1 = parse.int_or(u32, b.getProperty("TransformerEnd.endNumber") catch null, 0);
+fn view_less_than(_: void, a: CimObject, b: CimObject) bool {
+    const end_number0 = parse.int_or(u32, a.property("TransformerEnd.endNumber") catch null, 0);
+    const end_number1 = parse.int_or(u32, b.property("TransformerEnd.endNumber") catch null, 0);
     return end_number0 < end_number1;
 }
 
-const TestEnd = struct { model: CimDocument, end: CimObjectView };
+const TestEnd = struct { model: CimDocument, end: CimObject };
 
 fn make_end(xml: []const u8) !TestEnd {
     const model = try CimDocument.init(testing.allocator, try testing.allocator.dupe(u8, xml));
-    return .{ .model = model, .end = model.view(model.get_objects_by_type("PowerTransformerEnd")[0]) };
+    return .{ .model = model, .end = model.objects_by_type("PowerTransformerEnd")[0] };
 }
 
 test "view_less_than: end 1 < end 2" {
@@ -721,7 +712,7 @@ test "view_less_than: end 1 < end 2" {
     try testing.expect(!view_less_than({}, t2.end, t1.end));
 }
 
-test "CimObjectView.mrid treats blank content as absent" {
+test "CimObject.mrid treats blank content as absent" {
     var t = try make_end(
         \\<rdf:RDF><cim:PowerTransformerEnd rdf:ID="_fallback">
         \\  <cim:IdentifiedObject.mRID>
@@ -803,8 +794,8 @@ test "view_less_than: transitivity -- end1 < end2 and end2 < end3 implies end1 <
 
 const EndElectrical = struct { r: f64, x: f64, g: f64, b: f64, rated_u: f64, rated_s: ?f64 };
 
-fn read_end_electrical(end: CimObjectView) !?EndElectrical {
-    const props = try end.getProperties(.{
+fn read_end_electrical(end: CimObject) !?EndElectrical {
+    const props = try end.properties(.{
         "PowerTransformerEnd.ratedU",
         "PowerTransformerEnd.r",
         "PowerTransformerEnd.x",
@@ -860,19 +851,25 @@ test "read_end_electrical treats explicit-empty and self-closing values as absen
 }
 
 fn resolve_end_placement(
-    end: CimObjectView,
+    end: CimObject,
     placer: TerminalPlacer,
 ) !?Placement {
-    const terminal_ref = try end.getReference("TransformerEnd.Terminal") orelse return null;
+    const terminal_ref = try end.reference("TransformerEnd.Terminal") orelse return null;
     const terminal_id = strip_hash(terminal_ref);
-    // terminal_conn_node may be missing in bus-branch mode (no CN); placer handles that.
-    const conn_node_id = placer.index.terminal_conn_node.get(terminal_id);
-    return placer.resolve_terminal(terminal_id, conn_node_id);
+    // terminal_conn_node may be missing in bus-branch mode (no CN); placer handles
+    // that. One lookup yields both the CN and the ordinal, so the node comes out
+    // of NodeMap without hashing the id a second time.
+    const terminal_ref_info = placer.index.terminal_conn_node.get(terminal_id);
+    return placer.resolve_terminal(
+        terminal_id,
+        if (terminal_ref_info) |info| info.conn_node_id else null,
+        if (terminal_ref_info) |info| info.ordinal else null,
+    );
 }
 
 fn pre_allocate_transformers(
     gpa: std.mem.Allocator,
-    ends_by_transformer: *const std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObjectView)),
+    ends_by_transformer: *const std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObject)),
     substation_map: *const std.StringHashMapUnmanaged(*iidm.Substation),
     placer: TerminalPlacer,
 ) !void {
@@ -907,9 +904,8 @@ fn pre_allocate_transformers(
 
 fn append_two_windings_transformer(
     gpa: std.mem.Allocator,
-    model: *const CimDocument,
-    transformer: CimObjectView,
-    ends: []const CimObjectView,
+    transformer: CimObject,
+    ends: []const CimObject,
     substation: *iidm.Substation,
     placer: TerminalPlacer,
     ratio_tap_changer_map: *std.StringHashMapUnmanaged(RatioTapChangerEntry),
@@ -926,25 +922,25 @@ fn append_two_windings_transformer(
     const ratio2 = ratio * ratio;
 
     const mrid = try transformer.mrid();
-    const name = parse.non_blank(try transformer.getProperty("IdentifiedObject.name"));
+    const name = parse.non_blank(try transformer.property("IdentifiedObject.name"));
 
     // Tap changers keyed by end rdf:ID (= end.id). Track which end (1 or 2) so we can
     // emit the correct CGMES.RatioTapChanger<N> / CGMES.PhaseTapChanger<N> alias.
     var ratio_tc: ?RatioTapChangerEntry = null;
     var ratio_tc_side: u8 = 0;
-    if (ratio_tap_changer_map.fetchRemove(ends[0].id)) |kv| {
+    if (ratio_tap_changer_map.fetchRemove(ends[0].id())) |kv| {
         ratio_tc = kv.value;
         ratio_tc_side = 1;
-    } else if (ratio_tap_changer_map.fetchRemove(ends[1].id)) |kv| {
+    } else if (ratio_tap_changer_map.fetchRemove(ends[1].id())) |kv| {
         ratio_tc = kv.value;
         ratio_tc_side = 2;
     }
     var phase_tc: ?PhaseTapChangerEntry = null;
     var phase_tc_side: u8 = 0;
-    if (phase_tap_changer_map.fetchRemove(ends[0].id)) |kv| {
+    if (phase_tap_changer_map.fetchRemove(ends[0].id())) |kv| {
         phase_tc = kv.value;
         phase_tc_side = 1;
-    } else if (phase_tap_changer_map.fetchRemove(ends[1].id)) |kv| {
+    } else if (phase_tap_changer_map.fetchRemove(ends[1].id())) |kv| {
         phase_tc = kv.value;
         phase_tc_side = 2;
     }
@@ -955,16 +951,16 @@ fn append_two_windings_transformer(
     };
 
     // aliases + operational limits per terminal, keyed by end's own Terminal.
-    const t1_id = strip_hash(try ends[0].getReference("TransformerEnd.Terminal") orelse return);
-    const t2_id = strip_hash(try ends[1].getReference("TransformerEnd.Terminal") orelse return);
+    const t1_id = strip_hash(try ends[0].reference("TransformerEnd.Terminal") orelse return);
+    const t2_id = strip_hash(try ends[1].reference("TransformerEnd.Terminal") orelse return);
 
     var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
     errdefer aliases.deinit(gpa);
     try aliases.ensureTotalCapacity(gpa, 6);
     aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal1" }, .content = strip_underscore(t1_id) });
     aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal2" }, .content = strip_underscore(t2_id) });
-    aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.TransformerEnd1" }, .content = strip_underscore(ends[0].id) });
-    aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.TransformerEnd2" }, .content = strip_underscore(ends[1].id) });
+    aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.TransformerEnd1" }, .content = strip_underscore(ends[0].id()) });
+    aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.TransformerEnd2" }, .content = strip_underscore(ends[1].id()) });
     if (ratio_tc) |rtc| {
         const type_str: []const u8 = if (ratio_tc_side == 1) "CGMES.RatioTapChanger1" else "CGMES.RatioTapChanger2";
         aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = type_str }, .content = rtc.mrid });
@@ -974,12 +970,12 @@ fn append_two_windings_transformer(
         aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = type_str }, .content = ptc.mrid });
     }
 
-    var op_lims_groups_1 = try placement_mod.build_op_lims(gpa, model, placer.index, t1_id);
+    var op_lims_groups_1 = try placement_mod.build_op_lims(gpa, placer.index, t1_id);
     errdefer {
         for (op_lims_groups_1.items) |*group| group.deinit(gpa);
         op_lims_groups_1.deinit(gpa);
     }
-    var op_lims_groups_2 = try placement_mod.build_op_lims(gpa, model, placer.index, t2_id);
+    var op_lims_groups_2 = try placement_mod.build_op_lims(gpa, placer.index, t2_id);
     errdefer {
         for (op_lims_groups_2.items) |*group| group.deinit(gpa);
         op_lims_groups_2.deinit(gpa);
@@ -1018,9 +1014,8 @@ fn append_two_windings_transformer(
 
 fn append_three_windings_transformer(
     gpa: std.mem.Allocator,
-    model: *const CimDocument,
-    transformer: CimObjectView,
-    ends: []const CimObjectView,
+    transformer: CimObject,
+    ends: []const CimObject,
     substation: *iidm.Substation,
     placer: TerminalPlacer,
     ratio_tap_changer_map: *std.StringHashMapUnmanaged(RatioTapChangerEntry),
@@ -1035,12 +1030,12 @@ fn append_three_windings_transformer(
     const e3 = try read_end_electrical(ends[2]) orelse return;
 
     const mrid = try transformer.mrid();
-    const name = parse.non_blank(try transformer.getProperty("IdentifiedObject.name"));
+    const name = parse.non_blank(try transformer.property("IdentifiedObject.name"));
 
     // Tap changers keyed by end rdf:ID (= end.id). fetchRemove takes ownership.
-    const rtc1 = ratio_tap_changer_map.fetchRemove(ends[0].id);
-    const rtc2 = ratio_tap_changer_map.fetchRemove(ends[1].id);
-    const rtc3 = ratio_tap_changer_map.fetchRemove(ends[2].id);
+    const rtc1 = ratio_tap_changer_map.fetchRemove(ends[0].id());
+    const rtc2 = ratio_tap_changer_map.fetchRemove(ends[1].id());
+    const rtc3 = ratio_tap_changer_map.fetchRemove(ends[2].id());
     var tap_changers_transferred = false;
     defer if (!tap_changers_transferred) {
         if (rtc1) |kv| {
@@ -1058,9 +1053,9 @@ fn append_three_windings_transformer(
     };
 
     // aliases + operational limits per terminal, keyed by end's own Terminal.
-    const t1_id = strip_hash(try ends[0].getReference("TransformerEnd.Terminal") orelse return);
-    const t2_id = strip_hash(try ends[1].getReference("TransformerEnd.Terminal") orelse return);
-    const t3_id = strip_hash(try ends[2].getReference("TransformerEnd.Terminal") orelse return);
+    const t1_id = strip_hash(try ends[0].reference("TransformerEnd.Terminal") orelse return);
+    const t2_id = strip_hash(try ends[1].reference("TransformerEnd.Terminal") orelse return);
+    const t3_id = strip_hash(try ends[2].reference("TransformerEnd.Terminal") orelse return);
 
     var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
     errdefer aliases.deinit(gpa);
@@ -1068,24 +1063,24 @@ fn append_three_windings_transformer(
     aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal1" }, .content = strip_underscore(t1_id) });
     aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal2" }, .content = strip_underscore(t2_id) });
     aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.Terminal3" }, .content = strip_underscore(t3_id) });
-    aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.TransformerEnd1" }, .content = strip_underscore(ends[0].id) });
-    aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.TransformerEnd2" }, .content = strip_underscore(ends[1].id) });
-    aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.TransformerEnd3" }, .content = strip_underscore(ends[2].id) });
+    aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.TransformerEnd1" }, .content = strip_underscore(ends[0].id()) });
+    aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.TransformerEnd2" }, .content = strip_underscore(ends[1].id()) });
+    aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.TransformerEnd3" }, .content = strip_underscore(ends[2].id()) });
     if (rtc1) |kv| aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.RatioTapChanger1" }, .content = kv.value.mrid });
     if (rtc2) |kv| aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.RatioTapChanger2" }, .content = kv.value.mrid });
     if (rtc3) |kv| aliases.appendAssumeCapacity(.{ .type_info = .{ .static_string = "CGMES.RatioTapChanger3" }, .content = kv.value.mrid });
 
-    var op_lims_groups_1 = try placement_mod.build_op_lims(gpa, model, placer.index, t1_id);
+    var op_lims_groups_1 = try placement_mod.build_op_lims(gpa, placer.index, t1_id);
     errdefer {
         for (op_lims_groups_1.items) |*group| group.deinit(gpa);
         op_lims_groups_1.deinit(gpa);
     }
-    var op_lims_groups_2 = try placement_mod.build_op_lims(gpa, model, placer.index, t2_id);
+    var op_lims_groups_2 = try placement_mod.build_op_lims(gpa, placer.index, t2_id);
     errdefer {
         for (op_lims_groups_2.items) |*group| group.deinit(gpa);
         op_lims_groups_2.deinit(gpa);
     }
-    var op_lims_groups_3 = try placement_mod.build_op_lims(gpa, model, placer.index, t3_id);
+    var op_lims_groups_3 = try placement_mod.build_op_lims(gpa, placer.index, t3_id);
     errdefer {
         for (op_lims_groups_3.items) |*group| group.deinit(gpa);
         op_lims_groups_3.deinit(gpa);
@@ -1152,10 +1147,10 @@ pub fn convert_transformers(
     model: *const CimDocument,
     substation_map: *const std.StringHashMapUnmanaged(*iidm.Substation),
     placer: TerminalPlacer,
-    ssh_opt: ?cim.SSH,
+    ssh_opt: ?cim.Overlay,
     tap_changer_info_map: ?*TapChangerInfoMap,
 ) !void {
-    var ends_by_transformer: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObjectView)) = try build_ends_by_transformer(gpa, model);
+    var ends_by_transformer: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(CimObject)) = try build_ends_by_transformer(gpa, model);
     defer {
         var it = ends_by_transformer.valueIterator();
         while (it.next()) |list| list.deinit(gpa);
@@ -1178,17 +1173,16 @@ pub fn convert_transformers(
 
     try pre_allocate_transformers(gpa, &ends_by_transformer, substation_map, placer);
 
-    const transformers = model.get_objects_by_type("PowerTransformer");
+    const transformers = model.objects_by_type("PowerTransformer");
     for (transformers) |transformer| {
-        const transformer_view = model.view(transformer);
-        const ends = ends_by_transformer.get(transformer.id) orelse continue;
+        const ends = ends_by_transformer.get(transformer.id()) orelse continue;
         const end1 = ends.items[0];
         const placement = try resolve_end_placement(end1, placer) orelse continue;
         const substation = substation_map.get(placement.repr_voltage_level_id) orelse continue;
 
         switch (ends.items.len) {
-            2 => try append_two_windings_transformer(gpa, model, transformer_view, ends.items, substation, placer, &ratio_tap_changer_map, &phase_tap_changer_map),
-            3 => try append_three_windings_transformer(gpa, model, transformer_view, ends.items, substation, placer, &ratio_tap_changer_map),
+            2 => try append_two_windings_transformer(gpa, transformer, ends.items, substation, placer, &ratio_tap_changer_map, &phase_tap_changer_map),
+            3 => try append_three_windings_transformer(gpa, transformer, ends.items, substation, placer, &ratio_tap_changer_map),
             else => continue,
         }
     }

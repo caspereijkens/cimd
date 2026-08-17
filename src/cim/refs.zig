@@ -1,8 +1,8 @@
 const std = @import("std");
 const CimDocument = @import("document.zig").CimDocument;
-const TP = @import("cgmes/tp.zig").TP;
-const SSH = @import("cgmes/ssh.zig").SSH;
+const Overlay = @import("cgmes/overlay.zig").Overlay;
 const tag_index = @import("tag_index.zig");
+const xml_scan = @import("xml_scan.zig");
 const ids = @import("ids.zig");
 const cim_types = @import("cim_types.zig");
 
@@ -36,8 +36,8 @@ pub const ReverseRefIndex = struct {
     pub fn build_with_overlays(
         gpa: std.mem.Allocator,
         model: *const CimDocument,
-        tp_opt: ?TP,
-        ssh_opt: ?SSH,
+        tp_opt: ?Overlay,
+        ssh_opt: ?Overlay,
     ) !ReverseRefIndex {
         var index: ReverseRefIndex = .empty;
         errdefer index.deinit(gpa);
@@ -100,58 +100,24 @@ const EdgeSink = union(enum) {
     }
 };
 
-/// View over a TP-added (rdf:ID) object, mirroring CimDocument.view.
-fn tp_object_view(tp: TP, obj: tag_index.CimObject) tag_index.CimObjectView {
-    return .{
-        .xml = tp.xml,
-        .boundaries = tp.boundaries,
-        .object_tag_idx = obj.object_tag_idx,
-        .closing_tag_idx = obj.closing_tag_idx,
-        .id = obj.id,
-        .type_name = obj.type_name,
-    };
-}
-
 /// Precedence order for overlay references: SSH shadows TP shadows EQ.
 const Layer = enum { ssh, tp, eq };
 
 /// The child-tag span of one object (or patch), as (xml, boundaries, range).
+/// A patch is an element inside a document `refs` does not own, so there is no
+/// view to hand around -- only the span.
 const RefRange = struct {
     xml: []const u8,
-    boundaries: []const tag_index.TagBoundary,
+    boundaries: []const xml_scan.TagBoundary,
     open_idx: u32,
     close_idx: u32,
-};
 
-/// Streams (reference_name, raw_resource) for each rdf:resource child tag in a
-/// range, tolerating comments/PIs and malformed tags. Unlike a name→value map,
-/// it preserves repeated same-name tags, so multi-valued associations keep
-/// every reverse edge.
-const ReferenceTagIterator = struct {
-    range: RefRange,
-    i: u32,
-
-    const Entry = struct { name: []const u8, resource: []const u8 };
-
-    fn init(range: RefRange) ReferenceTagIterator {
-        assert(range.close_idx >= range.open_idx);
-        return .{ .range = range, .i = range.open_idx + 1 };
-    }
-
-    fn next(self: *ReferenceTagIterator) ?Entry {
-        const xml = self.range.xml;
-        while (self.i < self.range.close_idx) {
-            const tag = self.range.boundaries[self.i];
-            self.i += 1;
-            if (xml[tag.start + 1] == '/') continue;
-            // A comment (<!--) or PI (<?) carrying rdf:resource="#_A" is not a
-            // reference; skip it as getAllProperties does.
-            if (xml[tag.start + 1] == '!' or xml[tag.start + 1] == '?') continue;
-            const resource = (tag_index.extract_rdf_resource_within(xml, tag.start, tag.end) catch continue) orelse continue;
-            const name = tag_index.extract_tag_type(xml, tag.start) catch continue;
-            return .{ .name = name, .resource = resource };
-        }
-        return null;
+    /// Walk the range's children. Reference edges are the ones with
+    /// `kind == .reference`; iterating children rather than a name→value map
+    /// preserves repeated same-name tags, so multi-valued associations keep
+    /// every reverse edge.
+    fn children(self: RefRange) tag_index.ChildIterator {
+        return tag_index.ChildIterator.init_range(self.xml, self.boundaries, self.open_idx, self.close_idx);
     }
 };
 
@@ -162,16 +128,16 @@ const ReferenceTagIterator = struct {
 fn emit_merged_edges(
     gpa: std.mem.Allocator,
     sink: EdgeSink,
-    base: tag_index.CimObjectView,
-    tp_opt: ?TP,
-    ssh_opt: ?SSH,
+    base: tag_index.CimObject,
+    tp_opt: ?Overlay,
+    ssh_opt: ?Overlay,
 ) !void {
-    assert(base.id.len > 0);
-    assert(base.type_name.len > 0);
+    assert(base.id().len > 0);
+    assert(base.type_name().len > 0);
 
     const eq_range: RefRange = .{
-        .xml = base.xml,
-        .boundaries = base.boundaries,
+        .xml = base.context.xml,
+        .boundaries = base.context.boundaries,
         .open_idx = base.object_tag_idx,
         .close_idx = base.closing_tag_idx,
     };
@@ -180,7 +146,7 @@ fn emit_merged_edges(
     // a patch lookup would need. The common `cimd refs` path, kept at plain
     // reverse-scan cost.
     if (tp_opt == null and ssh_opt == null) {
-        try stream_edges(gpa, sink, eq_range, base.id, base.type_name, null, .eq);
+        try stream_edges(gpa, sink, eq_range, base.id(), base.type_name(), null, .eq);
         return;
     }
 
@@ -201,7 +167,7 @@ fn emit_merged_edges(
     // No overlay touches this object: stream EQ directly, no allocation -- the
     // cost of a plain reverse scan, which is the common path.
     if (tp_range == null and ssh_range == null) {
-        try stream_edges(gpa, sink, eq_range, base.id, base.type_name, null, .eq);
+        try stream_edges(gpa, sink, eq_range, base.id(), base.type_name(), null, .eq);
         return;
     }
 
@@ -213,9 +179,9 @@ fn emit_merged_edges(
     if (tp_range) |r| try record_owners(gpa, &owner, .tp, r);
     try record_owners(gpa, &owner, .eq, eq_range);
 
-    if (ssh_range) |r| try stream_edges(gpa, sink, r, base.id, base.type_name, &owner, .ssh);
-    if (tp_range) |r| try stream_edges(gpa, sink, r, base.id, base.type_name, &owner, .tp);
-    try stream_edges(gpa, sink, eq_range, base.id, base.type_name, &owner, .eq);
+    if (ssh_range) |r| try stream_edges(gpa, sink, r, base.id(), base.type_name(), &owner, .ssh);
+    if (tp_range) |r| try stream_edges(gpa, sink, r, base.id(), base.type_name(), &owner, .tp);
+    try stream_edges(gpa, sink, eq_range, base.id(), base.type_name(), &owner, .eq);
 }
 
 /// Claim `layer` as owner of each reference name in `range` unless a
@@ -226,9 +192,10 @@ fn record_owners(
     layer: Layer,
     range: RefRange,
 ) !void {
-    var it = ReferenceTagIterator.init(range);
-    while (it.next()) |ref| {
-        const gop = try owner.getOrPut(gpa, ref.name);
+    var it = range.children();
+    while (it.next()) |child| {
+        if (child.kind != .reference) continue;
+        const gop = try owner.getOrPut(gpa, child.name);
         if (!gop.found_existing) gop.value_ptr.* = layer;
     }
 }
@@ -245,15 +212,16 @@ fn stream_edges(
     owner: ?*const std.StringHashMapUnmanaged(Layer),
     layer: Layer,
 ) !void {
-    var it = ReferenceTagIterator.init(range);
-    while (it.next()) |ref| {
-        if (owner) |o| if (o.get(ref.name).? != layer) continue;
-        const target = ids.strip_hash(ref.resource);
+    var it = range.children();
+    while (it.next()) |child| {
+        if (child.kind != .reference) continue;
+        if (owner) |o| if (o.get(child.name).? != layer) continue;
+        const target = ids.strip_hash(child.value);
         if (target.len == 0) continue;
         try sink.emit(gpa, target, .{
             .referrer_id = referrer_id,
             .referrer_type = referrer_type,
-            .reference_name = ref.name,
+            .reference_name = child.name,
         });
     }
 }
@@ -263,16 +231,16 @@ fn stream_edges(
 fn iterate_merged_edges(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    tp_opt: ?TP,
-    ssh_opt: ?SSH,
+    tp_opt: ?Overlay,
+    ssh_opt: ?Overlay,
     sink: EdgeSink,
 ) !void {
     for (model.objects) |obj| {
-        try emit_merged_edges(gpa, sink, model.view(obj), tp_opt, ssh_opt);
+        try emit_merged_edges(gpa, sink, obj, tp_opt, ssh_opt);
     }
     // TP-added objects are referrers too; TP can't patch itself, so overlay = SSH.
     if (tp_opt) |tp| for (tp.new_objects) |obj| {
-        try emit_merged_edges(gpa, sink, tp_object_view(tp, obj), null, ssh_opt);
+        try emit_merged_edges(gpa, sink, obj, null, ssh_opt);
     };
 }
 
@@ -282,8 +250,8 @@ fn iterate_merged_edges(
 pub fn collect_referrers_for_target(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    tp_opt: ?TP,
-    ssh_opt: ?SSH,
+    tp_opt: ?Overlay,
+    ssh_opt: ?Overlay,
     target_id: []const u8,
 ) ![]ReverseRef {
     assert(target_id.len > 0);
@@ -299,17 +267,17 @@ pub fn collect_referrers_for_target(
 /// EQ takes precedence; the command layer collision-checks before calling.
 pub fn resolve_object(
     model: *const CimDocument,
-    tp_opt: ?TP,
+    tp_opt: ?Overlay,
     id: []const u8,
-) ?tag_index.CimObjectView {
-    if (model.getObjectById(id)) |view| {
+) ?tag_index.CimObject {
+    if (model.object_by_id(id)) |view| {
         // Round-trip pair: the EQ index must hand us back the same id.
-        assert(std.mem.eql(u8, view.id, id));
+        assert(std.mem.eql(u8, view.id(), id));
         return view;
     }
     if (tp_opt) |tp| {
-        if (tp.get_object_by_id(id)) |view| {
-            assert(std.mem.eql(u8, view.id, id));
+        if (tp.object_by_id(id)) |view| {
+            assert(std.mem.eql(u8, view.id(), id));
             return view;
         }
     }
@@ -323,9 +291,9 @@ pub fn resolve_object(
 pub fn resolve_object_normalized(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    tp_opt: ?TP,
+    tp_opt: ?Overlay,
     id: []const u8,
-) !?tag_index.CimObjectView {
+) !?tag_index.CimObject {
     if (resolve_object(model, tp_opt, id)) |view| return view;
     if (id.len > 0 and id[0] != '_') {
         const prefixed = try ids.with_leading_underscore(gpa, id);
@@ -345,10 +313,10 @@ pub const TpPrimaryMridCollision = struct {
 /// free and prevents EQ from silently shadowing the TP object.
 pub fn find_tp_primary_id_collision(
     model: *const CimDocument,
-    tp: TP,
+    tp: Overlay,
 ) ?tag_index.CimObject {
     for (tp.new_objects) |obj| {
-        if (model.getObjectById(obj.id) != null) return obj;
+        if (model.object_by_id(obj.id()) != null) return obj;
     }
     return null;
 }
@@ -359,20 +327,20 @@ pub fn find_tp_primary_id_collision(
 pub fn find_tp_primary_mrid_collision(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    tp: TP,
+    tp: Overlay,
 ) !?TpPrimaryMridCollision {
     var primary_mrids: std.StringHashMapUnmanaged(void) = .empty;
     defer primary_mrids.deinit(gpa);
     try primary_mrids.ensureTotalCapacity(gpa, @intCast(model.objects.len));
 
     for (model.objects) |obj| {
-        const mrid = try model.view(obj).mrid();
+        const mrid = try obj.mrid();
         if (mrid.len == 0) continue;
         primary_mrids.putAssumeCapacity(mrid, {});
     }
 
     for (tp.new_objects) |obj| {
-        const mrid = try tp.view(obj).mrid();
+        const mrid = try obj.mrid();
         if (mrid.len > 0 and primary_mrids.contains(mrid)) {
             return .{ .object = obj, .mrid = mrid };
         }
@@ -389,7 +357,7 @@ pub fn find_tp_primary_mrid_collision(
 pub fn collect_target_candidates(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    tp_opt: ?TP,
+    tp_opt: ?Overlay,
     mrid_prefix: []const u8,
 ) ![]const tag_index.CimObject {
     var matches: std.ArrayList(tag_index.CimObject) = .empty;
@@ -402,8 +370,8 @@ pub fn collect_target_candidates(
     // Downstream consumers (lookup, display, mrid stripping) all require a
     // non-empty id; any empty here means an upstream parser admitted garbage.
     for (out) |obj| {
-        assert(obj.id.len > 0);
-        assert(obj.type_name.len > 0);
+        assert(obj.id().len > 0);
+        assert(obj.type_name().len > 0);
     }
     return out;
 }
@@ -416,9 +384,9 @@ fn append_target_candidates(
 ) !void {
     const start_len = matches.items.len;
     for (objects) |obj| {
-        if (ids.id_prefix_matches(obj.id, mrid_prefix)) try matches.append(gpa, obj);
+        if (ids.id_prefix_matches(obj.id(), mrid_prefix)) try matches.append(gpa, obj);
     }
-    for (matches.items[start_len..]) |obj| assert(ids.id_prefix_matches(obj.id, mrid_prefix));
+    for (matches.items[start_len..]) |obj| assert(ids.id_prefix_matches(obj.id(), mrid_prefix));
 }
 
 /// Return a freshly-allocated, sorted slice of referrers filtered by
@@ -583,7 +551,7 @@ test "ReverseRefIndex.build_with_overlays indexes TP patch referrers" {
     ;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
     defer model.deinit(gpa);
-    var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
+    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, tp_xml));
     defer tp.deinit(gpa);
 
     var index = try ReverseRefIndex.build_with_overlays(gpa, &model, tp, null);
@@ -614,7 +582,7 @@ test "ReverseRefIndex.build_with_overlays indexes SSH patch referrers" {
     ;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
     defer model.deinit(gpa);
-    var ssh = try SSH.init(gpa, try gpa.dupe(u8, ssh_xml));
+    var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, ssh_xml));
     defer ssh.deinit(gpa);
 
     var index = try ReverseRefIndex.build_with_overlays(gpa, &model, null, ssh);
@@ -697,7 +665,7 @@ test "ReverseRefIndex applies overlay precedence to a retargeted reference" {
     ;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
     defer model.deinit(gpa);
-    var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
+    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, tp_xml));
     defer tp.deinit(gpa);
 
     var index = try ReverseRefIndex.build_with_overlays(gpa, &model, tp, null);
@@ -763,7 +731,7 @@ test "resolve_object_normalized handles ids longer than any stack buffer" {
     const expected = try std.fmt.allocPrint(gpa, "_{s}", .{long});
     defer gpa.free(expected);
     const hit = try resolve_object_normalized(gpa, &model, null, long) orelse return error.NotFound;
-    try std.testing.expectEqualStrings(expected, hit.id);
+    try std.testing.expectEqualStrings(expected, hit.id());
 }
 
 test "resolve_object_normalized resolves a full id typed without its leading underscore" {
@@ -778,11 +746,11 @@ test "resolve_object_normalized resolves a full id typed without its leading und
 
     // Literal hit when the underscore is present.
     const exact = try resolve_object_normalized(gpa, &model, null, "_SS1") orelse return error.NotFound;
-    try std.testing.expectEqualStrings("_SS1", exact.id);
+    try std.testing.expectEqualStrings("_SS1", exact.id());
 
     // Underscore-optional convenience: "SS1" resolves the stored "_SS1".
     const convenient = try resolve_object_normalized(gpa, &model, null, "SS1") orelse return error.NotFound;
-    try std.testing.expectEqualStrings("_SS1", convenient.id);
+    try std.testing.expectEqualStrings("_SS1", convenient.id());
 
     try std.testing.expect(try resolve_object_normalized(gpa, &model, null, "SS9") == null);
 }
@@ -800,8 +768,8 @@ test "resolve_object_normalized prefers an exact literal hit over the underscore
 
     // Literal "A" is authoritative; the "_A" retry must not shadow it.
     const hit = try resolve_object_normalized(gpa, &model, null, "A") orelse return error.NotFound;
-    try std.testing.expectEqualStrings("A", hit.id);
-    try std.testing.expectEqualStrings("Substation", hit.type_name);
+    try std.testing.expectEqualStrings("A", hit.id());
+    try std.testing.expectEqualStrings("Substation", hit.type_name());
 }
 
 test "filter_referrers: no filter returns all, sorted by (type, id, ref)" {
@@ -959,7 +927,7 @@ test "collect_target_candidates: TP-only target resolves under --tp" {
     ;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
     defer model.deinit(gpa);
-    var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
+    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, tp_xml));
     defer tp.deinit(gpa);
 
     // Without --tp the TP-added id is invisible.
@@ -971,13 +939,13 @@ test "collect_target_candidates: TP-only target resolves under --tp" {
     const with_tp = try collect_target_candidates(gpa, &model, tp, "TN1");
     defer gpa.free(with_tp);
     try std.testing.expectEqual(@as(usize, 1), with_tp.len);
-    try std.testing.expectEqualStrings("_TN1", with_tp[0].id);
-    try std.testing.expectEqualStrings("TopologicalNode", with_tp[0].type_name);
+    try std.testing.expectEqualStrings("_TN1", with_tp[0].id());
+    try std.testing.expectEqualStrings("TopologicalNode", with_tp[0].type_name());
 
     // The overlay-aware index then finds the patched Terminal as its referrer.
     var index = try ReverseRefIndex.build_with_overlays(gpa, &model, tp, null);
     defer index.deinit(gpa);
-    const refs = index.lookup(with_tp[0].id);
+    const refs = index.lookup(with_tp[0].id());
     try std.testing.expectEqual(@as(usize, 1), refs.len);
     try std.testing.expectEqualStrings("_T1", refs[0].referrer_id);
 }
@@ -996,15 +964,15 @@ test "collect_target_candidates: EQ and TP matches both included" {
     ;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
     defer model.deinit(gpa);
-    var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
+    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, tp_xml));
     defer tp.deinit(gpa);
 
     const matches = try collect_target_candidates(gpa, &model, tp, "X");
     defer gpa.free(matches);
     try std.testing.expectEqual(@as(usize, 2), matches.len);
     // EQ matches come first by construction.
-    try std.testing.expectEqualStrings("_X1", matches[0].id);
-    try std.testing.expectEqualStrings("_X2", matches[1].id);
+    try std.testing.expectEqualStrings("_X1", matches[0].id());
+    try std.testing.expectEqualStrings("_X2", matches[1].id());
 }
 
 test "find_tp_primary_id_collision compares raw RDF identifiers" {
@@ -1023,18 +991,18 @@ test "find_tp_primary_id_collision compares raw RDF identifiers" {
     ;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
     defer model.deinit(gpa);
-    var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
+    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, tp_xml));
     defer tp.deinit(gpa);
 
     const collision = find_tp_primary_id_collision(&model, tp) orelse return error.TestExpectedCollision;
-    try std.testing.expectEqualStrings("_T1", collision.id);
+    try std.testing.expectEqualStrings("_T1", collision.id());
 }
 
 test "find_tp_primary_id_collision allows distinct raw ids with equal mRIDs" {
     const gpa = std.testing.allocator;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, "<rdf:RDF><cim:Terminal rdf:ID=\"_T1\"/></rdf:RDF>"));
     defer model.deinit(gpa);
-    var tp = try TP.init(gpa, try gpa.dupe(u8, "<rdf:RDF><cim:TopologicalNode rdf:ID=\"T1\"/></rdf:RDF>"));
+    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, "<rdf:RDF><cim:TopologicalNode rdf:ID=\"T1\"/></rdf:RDF>"));
     defer tp.deinit(gpa);
 
     try std.testing.expect(find_tp_primary_id_collision(&model, tp) == null);
@@ -1052,7 +1020,7 @@ test "find_tp_primary_mrid_collision honors explicit primary mRID" {
     const tp_xml = "<rdf:RDF><cim:TopologicalNode rdf:ID=\"_SHARED\"/></rdf:RDF>";
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
     defer model.deinit(gpa);
-    var tp = try TP.init(gpa, try gpa.dupe(u8, tp_xml));
+    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, tp_xml));
     defer tp.deinit(gpa);
 
     const collision = try find_tp_primary_mrid_collision(gpa, &model, tp) orelse return error.TestExpectedCollision;

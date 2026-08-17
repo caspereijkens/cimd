@@ -41,21 +41,46 @@
 
 pub const CimDocument = @import("document.zig").CimDocument;
 pub const CimObject = @import("tag_index.zig").CimObject;
-pub const CimObjectView = @import("tag_index.zig").CimObjectView;
-pub const TagBoundary = @import("tag_index.zig").TagBoundary;
 pub const Diagnostics = @import("diagnostics.zig").Diagnostics;
 
-/// Raw tag scanning: boundaries, tag types, rdf attribute extraction. The
-/// layer under CimDocument, exposed because callers legitimately scan XML that
-/// is not a CIM document -- the CIM type-table generator reads RDFS schema
-/// files with it, and SHACL evaluation walks tags the index does not model.
-pub const tag_index = @import("tag_index.zig");
+/// Object lookup by raw reference value ("_x", "#_x", fragment IRI, path IRI,
+/// URN). Owns id normalization and its collision rules -- exact raw match
+/// wins, a unique local alias resolves, an ambiguous alias resolves to null.
+/// Built by the run that needs it. See reference_index.zig.
+pub const ReferenceIndex = @import("reference_index.zig").ReferenceIndex;
+
+/// One child element of an object, and the walk that yields them. This is the
+/// level a CIM consumer works at; nothing here needs a tag boundary.
+pub const Child = @import("tag_index.zig").Child;
+pub const ChildIterator = @import("tag_index.zig").ChildIterator;
+
+/// Opt-in index over a document's children: interned names, precomputed kinds
+/// and value spans. For consumers that walk the same object many times -- SHACL
+/// validation walks it once per shape -- where re-parsing through
+/// `object.children()` dominates. Built and owned by the run that wants it, so
+/// commands that read each child once do not pay for it. See child_table.zig.
+pub const ChildTable = @import("child_table.zig").ChildTable;
+
+/// Raw XML and RDF/XML scanning: tag boundaries, tag types, rdf attribute
+/// extraction. The layer under CimDocument, and a module a CIM consumer has no
+/// reason to import -- `CimDocument`, `CimObject` and `object.children()`
+/// above cover working with a parsed document. It is exported for the callers
+/// that scan XML this library does not model: the type-table generator reads
+/// RDFS schema files, `profile` reads a FullModel header, `browse` slices
+/// source text for display, `validate` counts newlines for line numbers.
+///
+/// The CIM object layer is deliberately *not* exported alongside it. Its types
+/// are named individually above, so `TagBoundary` is reachable only through
+/// this module and a consumer that indexes boundaries has to say that it does.
+pub const xml_scan = @import("xml_scan.zig");
 /// Source positions for error reporting (duplicate-id offsets, line numbers).
 pub const diagnostics = @import("diagnostics.zig");
 /// CIM class ancestry: `is_a`, `matches_filter` for type filtering.
 pub const cim_types = @import("cim_types.zig");
 /// mRID normalization: fragment markers, leading underscores, prefix matching.
 pub const ids = @import("ids.zig");
+/// URI fragment extraction for CIM and RDF references.
+pub const uri = @import("uri.zig");
 /// Trim-tolerant parsing of CIM property values.
 pub const parse = @import("parse.zig");
 
@@ -64,12 +89,16 @@ pub const parse = @import("parse.zig");
 // The profile-specific layer: header classification, and the two overlays that
 // patch a primary document.
 
-/// Classify a part from its FullModel header (profile URIs to a Kind).
+/// Classify a part from its FullModel header and inspect its exact profile
+/// declarations.
 pub const profile = @import("cgmes/profile.zig");
-pub const TP = @import("cgmes/tp.zig").TP;
-pub const SSH = @import("cgmes/ssh.zig").SSH;
+/// A supplementary part (TP, SSH) read as patches on a primary document: a
+/// `CimDocument` plus an index on the normalized mRID. One type for both
+/// profiles; `Overlay.IdPolicy` names the one way they differ.
+pub const Overlay = @import("cgmes/overlay.zig").Overlay;
+pub const IdPolicy = @import("cgmes/overlay.zig").IdPolicy;
 /// Merged read across a document plus its TP/SSH overlays, SSH > TP > document.
-pub const CimMergedView = @import("cgmes/ssh.zig").CimMergedView;
+pub const CimMergedView = @import("cgmes/overlay.zig").CimMergedView;
 
 // ── References ────────────────────────────────────────────────────────────────
 //

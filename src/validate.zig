@@ -15,8 +15,9 @@ const std = @import("std");
 const cim = @import("cim/cim.zig");
 const assert = std.debug.assert;
 const CimDocument = cim.CimDocument;
-const CimObjectView = cim.CimObjectView;
-const tag_index = cim.tag_index;
+const CimObject = cim.CimObject;
+const ChildTable = cim.ChildTable;
+const xml_scan = cim.xml_scan;
 const cim_types = cim.cim_types;
 const rule_set_mod = @import("shacl/rule_set.zig");
 const RuleSet = rule_set_mod.RuleSet;
@@ -132,6 +133,13 @@ pub fn evaluate_with_limit(
     var referrers = try ReferrerCounts.build(gpa, &ids, rules);
     defer referrers.deinit(gpa);
 
+    // Interned child names, kinds and value spans, built once for the run. The
+    // shape x object x child x constraint loop below compares u32 ids instead of
+    // re-deriving and re-comparing strings; see cim/child_table.zig for why this
+    // is opt-in rather than part of the parse.
+    var children = try ChildTable.build(gpa, model);
+    defer children.deinit(gpa);
+
     var evaluator = Evaluator{
         .gpa = gpa,
         .model = model,
@@ -139,12 +147,18 @@ pub fn evaluate_with_limit(
         .evaluation = &evaluation,
         .ids = &ids,
         .referrers = &referrers,
+        .children = &children,
         .stored_max = stored_max,
         .counts = .empty,
         .staged = .empty,
+        .path_ids = .empty,
+        .allowed_ids = .empty,
+        .subjects_id = ChildTable.absent,
     };
     defer evaluator.counts.deinit(gpa);
     defer evaluator.staged.deinit(gpa);
+    defer evaluator.path_ids.deinit(gpa);
+    defer evaluator.allowed_ids.deinit(gpa);
 
     for (rules.shapes, 0..) |shape, shape_index| {
         try evaluator.evaluate_shape(@intCast(shape_index), shape);
@@ -152,50 +166,30 @@ pub fn evaluate_with_limit(
     return evaluation;
 }
 
-/// Object lookup by the local (hash-stripped) form of an id. EQ stores ids
-/// raw: the rdf:ID form ("_x") already equals the local form of a reference,
-/// but flat rdf:about instance files (SSH, TP, SV) carry "#_x", which a
-/// reference's local form would miss. The extra map is built only for ids
-/// that need stripping; empty for rdf:ID documents.
-const IdIndex = struct {
-    model: *const CimDocument,
-    /// strip_hash(id) → object index, only for '#'-prefixed ids.
-    about: std.StringHashMap(u32),
-
-    fn init(gpa: std.mem.Allocator, model: *const CimDocument) !IdIndex {
-        assert(model.objects.len <= std.math.maxInt(u32));
-        var about = std.StringHashMap(u32).init(gpa);
-        errdefer about.deinit();
-        var total: u32 = 0;
-        for (model.objects) |obj| {
-            if (obj.id[0] == '#') total += 1;
-        }
-        if (total > 0) {
-            try about.ensureTotalCapacity(total);
-            for (model.objects, 0..) |obj, index| {
-                // CimDocument.init rejects duplicate raw ids, so keys are unique.
-                if (obj.id[0] == '#') about.putAssumeCapacity(obj.id[1..], @intCast(index));
-            }
-        }
-        assert(about.count() == total);
-        return .{ .model = model, .about = about };
+/// Membership in a sorted id list. `ChildTable.absent` entries sort to the end
+/// and are inert: no child's id is ever `absent`, so a closed-path name the
+/// document never uses can never match.
+fn contains_sorted_u32(haystack: []const u32, needle: u32) bool {
+    var low: usize = 0;
+    var high: usize = haystack.len;
+    while (low < high) {
+        const mid = low + (high - low) / 2;
+        if (haystack[mid] < needle) low = mid + 1 else high = mid;
     }
+    return low < haystack.len and haystack[low] == needle;
+}
 
-    fn deinit(ids: *IdIndex) void {
-        ids.about.deinit();
-    }
+/// Object lookup by reference, including the local (hash-stripped) form of
+/// full-IRI ids. The normalization and its collision rules live in the
+/// library; this file only asks for object indexes.
+const IdIndex = cim.ReferenceIndex;
 
-    /// Object index for a reference's local form, or null when dangling.
-    fn get(ids: *const IdIndex, local_id: []const u8) ?u32 {
-        if (ids.model.id_to_index.get(local_id)) |index| return index;
-        return ids.about.get(local_id);
-    }
-
-    fn type_name_of(ids: *const IdIndex, local_id: []const u8) ?[]const u8 {
-        const index = ids.get(local_id) orelse return null;
-        return ids.model.objects[index].type_name;
-    }
-};
+/// Type name of the object a reference resolves to, or null when dangling
+/// or ambiguous.
+fn type_name_of(ids: *const IdIndex, reference: []const u8) ?[]const u8 {
+    const index = ids.object_index_by_reference(reference) orelse return null;
+    return ids.model.objects[index].type_name();
+}
 
 /// A property occurrence, normalized for comparison: references compare by
 /// the local name of their target IRI so namespace variants collapse, text
@@ -214,7 +208,17 @@ const Evaluator = struct {
     evaluation: *Evaluation,
     ids: *const IdIndex,
     referrers: *const ReferrerCounts,
+    children: *const ChildTable,
     stored_max: u32,
+    /// The active shape's rule strings, mapped into the document's name-id
+    /// space once per shape so the inner loops compare u32s. Rebuilt by
+    /// `evaluate_shape`; `ChildTable.absent` for a name this document never
+    /// uses, and for path kinds that do not name a child tag.
+    path_ids: std.ArrayList(u32),
+    /// The active shape's closed-path set as ids, sorted for binary search.
+    allowed_ids: std.ArrayList(u32),
+    /// The active shape's `subjects_of` target property as an id.
+    subjects_id: u32,
     /// Per-constraint occurrence counts, reset per object.
     counts: std.ArrayList(u32),
     /// Violations of the object under evaluation; committed only when the
@@ -231,6 +235,40 @@ const Evaluator = struct {
     fn evaluate_shape(ev: *Evaluator, shape_index: u32, shape: RuleSet.Shape) !void {
         const constraints = ev.constraints_of(shape);
         try ev.counts.resize(ev.gpa, constraints.len);
+
+        // Intern this shape's rule strings once per shape, rather than
+        // comparing them as strings once per (object, child, constraint).
+        try ev.path_ids.resize(ev.gpa, constraints.len);
+        for (constraints, 0..) |constraint, i| {
+            ev.path_ids.items[i] = switch (constraint.path_kind) {
+                .direct, .ref_type => ev.children.id_of(constraint.path),
+                .own_type, .inverse => ChildTable.absent,
+            };
+        }
+        const allowed = ev.rules.closed_paths_of(shape);
+        try ev.allowed_ids.resize(ev.gpa, allowed.len);
+        for (allowed, 0..) |path, i| ev.allowed_ids.items[i] = ev.children.id_of(path);
+        std.mem.sort(u32, ev.allowed_ids.items, {}, std.sort.asc(u32));
+        ev.subjects_id = switch (shape.target) {
+            .subjects_of => |property| ev.children.id_of(property),
+            else => ChildTable.absent,
+        };
+
+        // A subjects-of shape only reports on objects carrying its target
+        // property, and `evaluate_object` discards everything it staged unless
+        // the scan saw that tag. So when the document contains the tag nowhere
+        // -- `absent`, which no child id can equal -- the whole sweep is dead:
+        // it would visit every object in the document to throw all of it away.
+        // Profile-specific rule sets make this the common case, not a corner
+        // one; 133 of the reference set's 825 shapes are dead this way, which
+        // is 87M object visits.
+        if (shape.target == .subjects_of and
+            ev.subjects_id == ChildTable.absent and
+            !std.mem.eql(u8, shape.target.subjects_of, "rdf:type"))
+        {
+            return;
+        }
+
         switch (shape.target) {
             .class => |class_name| {
                 // Subtype targeting: a shape on ConductingEquipment applies
@@ -247,7 +285,7 @@ const Evaluator = struct {
             .node => |id| {
                 // A node target that resolves to nothing is valid; corpus
                 // node targets are synthetic SPARQL hooks.
-                const index = ev.ids.get(id) orelse return;
+                const index = ev.ids.object_index_by_reference(id) orelse return;
                 try ev.evaluate_object(shape_index, shape, constraints, index);
             },
             .subjects_of => {
@@ -267,7 +305,7 @@ const Evaluator = struct {
     ) !void {
         assert(ev.counts.items.len == constraints.len);
         assert(object_index < ev.model.objects.len);
-        const view = ev.model.view(ev.model.objects[object_index]);
+        const view = ev.model.objects[object_index];
         ev.staged.clearRetainingCapacity();
         @memset(ev.counts.items, 0);
 
@@ -277,7 +315,7 @@ const Evaluator = struct {
             // once the scan sees that child tag.
             .subjects_of => |property| std.mem.eql(u8, property, "rdf:type"),
         };
-        try ev.scan_children(shape_index, shape, constraints, view, &matched);
+        try ev.scan_children(shape_index, shape, constraints, view, object_index, &matched);
 
         for (constraints, 0..) |constraint, i| {
             // Violations carry the global index into rules.constraints.
@@ -285,7 +323,7 @@ const Evaluator = struct {
             // Own-type paths run once per object; the type always exists.
             if (constraint.path_kind == .own_type) {
                 ev.counts.items[i] = 1;
-                const value = Value{ .comparable = view.type_name, .kind = .reference };
+                const value = Value{ .comparable = view.type_name(), .kind = .reference };
                 try ev.stage_value_check(shape_index, constraint, global, view, value);
             }
             // Cardinality over counted occurrences. Inverse paths count
@@ -313,39 +351,38 @@ const Evaluator = struct {
         shape_index: u32,
         shape: RuleSet.Shape,
         constraints: []const RuleSet.Constraint,
-        view: CimObjectView,
+        view: CimObject,
+        object_index: u32,
         matched: *bool,
     ) !void {
-        const xml = ev.model.xml;
-        const allowed = ev.rules.closed_paths_of(shape);
+        const allowed_ids = ev.allowed_ids.items;
+        const children = ev.children.children_of(object_index);
 
-        var i = view.object_tag_idx + 1;
-        while (i < view.closing_tag_idx) : (i += 1) {
-            const tag = ev.model.boundaries[i];
-            if (xml[tag.start + 1] == '/') continue;
-            if (xml[tag.start + 1] == '!' or xml[tag.start + 1] == '?') continue;
-            const tag_type = tag_index.extract_tag_type(xml, tag.start) catch continue;
+        for (children.tags, 0..) |tag, ci_child| {
+            // Contiguous and already filtered: closing tags, comments, PIs and
+            // unparseable names are not in the table at all, so there is no
+            // per-entry skip test and no stride over boundaries that are not
+            // children.
+            const name_id = ChildTable.name_id(tag);
 
             if (shape.target == .subjects_of) {
-                if (std.mem.eql(u8, tag_type, shape.target.subjects_of)) matched.* = true;
+                if (name_id == ev.subjects_id) matched.* = true;
             }
             if (shape.closed_paths != null) {
                 // Property-not-in-profile: every child tag must be in the
                 // allowed set.
-                if (!contains_sorted(allowed, tag_type)) {
-                    try ev.stage(shape_index, constraint_none, view, tag_type);
+                if (!contains_sorted_u32(allowed_ids, name_id)) {
+                    try ev.stage(shape_index, constraint_none, view, ev.children.name_of(name_id));
                 }
             }
             // The value is extracted at most once per child tag, and only
-            // when some constraint actually needs it.
+            // when some constraint actually needs it -- which is why the spans
+            // live in a second array the hot scan above never touches.
             var value: ?Value = null;
             for (constraints, 0..) |constraint, ci| {
-                const on_this_tag = switch (constraint.path_kind) {
-                    .direct, .ref_type => std.mem.eql(u8, constraint.path, tag_type),
-                    .own_type, .inverse => false,
-                };
+                const on_this_tag = ev.path_ids.items[ci] == name_id;
                 if (!on_this_tag) continue;
-                if (value == null) value = ev.child_value(i);
+                if (value == null) value = ev.child_value(tag, children.spans[ci_child]);
                 // Violations carry the global index into rules.constraints.
                 const global: u32 = shape.constraints.start + @as(u32, @intCast(ci));
                 switch (constraint.path_kind) {
@@ -368,24 +405,24 @@ const Evaluator = struct {
     }
 
     /// The occurrence's value: rdf:resource references by target local
-    /// name, text content trimmed. In CIM XML references are self-closing
-    /// child tags; properties carry text up to their closing tag.
-    fn child_value(ev: *const Evaluator, boundary_index: u32) Value {
-        const xml = ev.model.xml;
-        const tag = ev.model.boundaries[boundary_index];
-        const reference = tag_index.extract_rdf_resource_within(xml, tag.start, tag.end) catch null;
-        if (reference) |ref| {
-            return .{ .comparable = reference_local(ref), .kind = .reference };
+    /// name, text content trimmed.
+    ///
+    /// The kind and the value span are both decided at table-build time, so what
+    /// used to be an `rdf:resource` scan plus a lead-byte probe per visit is now
+    /// a bit test and a slice. Trimming stays here rather than in the table
+    /// because the trimmed form is what *validation* compares; the table keeps
+    /// the value as `ChildIterator` defines it.
+    fn child_value(ev: *const Evaluator, tag: u32, span: ChildTable.Span) Value {
+        const raw = ev.children.value_of(span);
+        if (ChildTable.is_reference(tag)) {
+            return .{ .comparable = reference_local(raw), .kind = .reference };
         }
-        if (xml[tag.end - 1] == '/') return .{ .comparable = "", .kind = .text };
-        assert(boundary_index + 1 < ev.model.boundaries.len);
-        const content = xml[tag.end + 1 .. ev.model.boundaries[boundary_index + 1].start];
-        return .{ .comparable = std.mem.trim(u8, content, whitespace), .kind = .text };
+        return .{ .comparable = std.mem.trim(u8, raw, whitespace), .kind = .text };
     }
 
     fn resolve_reference_type(ev: *const Evaluator, value: Value) ?[]const u8 {
         if (value.kind != .reference) return null;
-        return ev.ids.type_name_of(value.comparable);
+        return type_name_of(ev.ids, value.comparable);
     }
 
     fn stage_value_check(
@@ -393,7 +430,7 @@ const Evaluator = struct {
         shape_index: u32,
         constraint: RuleSet.Constraint,
         constraint_index: u32,
-        view: CimObjectView,
+        view: CimObject,
         value: Value,
     ) !void {
         if (!value_violates(ev.rules, ev.ids, constraint, value)) return;
@@ -404,14 +441,14 @@ const Evaluator = struct {
         ev: *Evaluator,
         shape_index: u32,
         constraint_index: u32,
-        view: CimObjectView,
+        view: CimObject,
         detail: []const u8,
     ) !void {
         try ev.staged.append(ev.gpa, .{
             .shape = shape_index,
             .constraint = constraint_index,
-            .offset = ev.model.boundaries[view.object_tag_idx].start,
-            .object_id = view.id,
+            .offset = view.xml_offset(),
+            .object_id = view.id(),
             .detail = detail,
         });
     }
@@ -480,20 +517,12 @@ const ReferrerCounts = struct {
         const model = ids.model;
         assert(rc.properties.len > 0);
         assert(rc.counts.len == rc.properties.len * model.objects.len);
-        const xml = model.xml;
         for (model.objects) |obj| {
-            const view = model.view(obj);
-            var i = view.object_tag_idx + 1;
-            while (i < view.closing_tag_idx) : (i += 1) {
-                const tag = model.boundaries[i];
-                if (xml[tag.start + 1] == '/') continue;
-                if (xml[tag.start + 1] == '!' or xml[tag.start + 1] == '?') continue;
-                const tag_type = tag_index.extract_tag_type(xml, tag.start) catch continue;
-                const property_index = index_sorted(rc.properties, tag_type) orelse continue;
-                const reference =
-                    tag_index.extract_rdf_resource_within(xml, tag.start, tag.end) catch null;
-                const ref = reference orelse continue;
-                const target = ids.get(reference_local(ref)) orelse continue;
+            var it = obj.children();
+            while (it.next()) |child| {
+                if (child.kind != .reference) continue;
+                const property_index = index_sorted(rc.properties, child.name) orelse continue;
+                const target = ids.object_index_by_reference(child.value) orelse continue;
                 rc.counts[property_index * rc.object_count + target] += 1;
             }
         }
@@ -566,7 +595,7 @@ fn value_violates(
             // The reference must resolve to an instance of the class
             // (subtypes ok). A dangling reference has no type: violation.
             if (value.kind != .reference) return true;
-            const type_name = ids.type_name_of(value.comparable) orelse return true;
+            const type_name = type_name_of(ids, value.comparable) orelse return true;
             return !cim_types.is_a(type_name, class_name);
         },
         .in => return !contains_sorted(rules.in_values_of(constraint), value.comparable),
@@ -596,7 +625,7 @@ fn value_violates(
 /// document, full IRIs (enum values, cross-document references) by their
 /// fragment or last path segment.
 fn reference_local(reference: []const u8) []const u8 {
-    if (std.mem.lastIndexOfScalar(u8, reference, '#')) |index| return reference[index + 1 ..];
+    if (cim.uri.fragment(reference)) |fragment| return fragment;
     if (std.mem.lastIndexOfScalar(u8, reference, '/')) |index| return reference[index + 1 ..];
     return reference;
 }
@@ -877,7 +906,7 @@ pub fn write_report(
         totals.infos += entry.evaluation.infos_total;
         for (entry.evaluation.violations.items) |violation| {
             if (newlines == null) {
-                newlines = try tag_index.find_byte_simd(gpa, model.xml, '\n');
+                newlines = try xml_scan.find_byte_simd(gpa, model.xml, '\n');
             }
             try write_violation(w, entry.rules, segments, newlines.?.items, violation);
         }

@@ -1,43 +1,36 @@
-//! Enforces the library boundary described in cim.zig.
+//! Enforces the library boundary described in qocdc.zig.
 //!
-//! These rules are the difference between "code that happens to sit in a
-//! directory" and "a library that can be lifted out". Left to convention they
-//! erode one convenient import at a time -- an `io/print.zig` here to format an
-//! error, a `process.exit` there -- and the eventual split turns into a
-//! refactor. Checked here, a violation fails the build the day it lands.
+//! Adapted from src/cim/test_boundary.zig: the same erosion argument applies
+//! -- one convenient `io/print.zig` import and the eventual repository split
+//! turns into a refactor. The one difference from the cim rules: this library
+//! is allowed exactly one external import, the CIM library facade, which
+//! becomes a named package dependency at split time. Reaching past that
+//! facade into cim internals fails the build just like reaching into the
+//! application would.
 //!
-//! The checks read the source files rather than inspecting the compiled graph:
-//! an import that escapes the directory is a textual fact, and this way the
-//! failure names the offending file and line.
-//!
-//! After the library moves to its own package, `library_root` becomes "src"
-//! and everything else holds unchanged.
+//! After the library moves to its own package, `library_root` becomes "src",
+//! the cim dependency becomes `@import("cim")`, and everything else holds.
 
 const std = @import("std");
 
 const io = std.testing.io;
 
 /// Repo-relative path to the library. Tests run with the project root as cwd.
-const library_root = "src/cim";
+const library_root = "src/qocdc";
 
 /// Repo-relative path to all Zig sources, library and application alike.
 const source_root = "src";
 
 /// The library's public API. The application may import this and nothing else
-/// from `library_root`; see the "application code imports only the library"
-/// test below.
-const facade = library_root ++ "/cim.zig";
+/// from `library_root`.
+const facade = library_root ++ "/qocdc.zig";
 
-/// Second entry point, for the build only: it references the library's test
-/// files so `zig build test` runs them. Kept out of cim.zig deliberately --
-/// every consumer imports the API, and a comptime test list there compiles the
-/// whole suite into each of them.
+/// Second entry point, for the build only: references the library's test
+/// files so `zig build test` runs them.
 const test_entry = library_root ++ "/test_all.zig";
 
-/// The bottom layer: raw XML scanning, which knows nothing about CIM. Split out
-/// of tag_index.zig so a CIM consumer never has to import it; see the "raw
-/// scanning stays the bottom layer" test below for what keeps it split.
-const scanner = library_root ++ "/xml_scan.zig";
+/// The one import allowed to leave the directory: the CIM library facade.
+const cim_facade = "src/cim/cim.zig";
 
 const Scope = enum { library, application };
 
@@ -62,16 +55,23 @@ fn walk_zig_files(
         if (!std.mem.endsWith(u8, entry.path, ".zig")) continue;
         const full = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ root, entry.path });
         defer gpa.free(full);
-        // Walking the application means walking all of src/, library included.
-        // Compare components: on Windows the walker yields "cim\\document.zig".
+        // Walking the application means walking all of src/. The cim library
+        // has its own boundary test; this library is checked by scope
+        // .library.
         if (scope == .application and contains_path("cim", entry.path)) continue;
+        if (scope == .application and contains_path("qocdc", entry.path)) continue;
         const source = try dir.readFileAlloc(io, entry.path, gpa, .limited(1 << 22));
         defer gpa.free(source);
         try check(gpa, full, source);
         seen += 1;
     }
-    // A miswired path would silently check nothing and pass.
-    try std.testing.expect(seen >= 10);
+    // A miswired path would silently check nothing and pass. The library is
+    // small; the application tree is not.
+    const floor: u32 = switch (scope) {
+        .library => 5,
+        .application => 10,
+    };
+    try std.testing.expect(seen >= floor);
 }
 
 fn walk_library_files(
@@ -81,50 +81,23 @@ fn walk_library_files(
     return walk_zig_files(gpa, .library, check);
 }
 
-/// Whether `path` is `root` itself or sits beneath it. Compares whole path
-/// components: a plain prefix test would accept a sibling directory whose name
-/// merely starts with the root's -- `src/cimd/foo.zig` "starts with" `src/cim`,
-/// and an `../cimd/foo.zig` import would escape unnoticed.
-///
-/// Separator handling is `std.fs.path.isSep`, not a literal `/`: Windows is a
-/// release target, where `std.fs.path.resolve` returns backslashes and
-/// `Dir.walk` yields them too. Accepts a relative or resolved pair, as long as
-/// both are the same kind.
+/// Whether `path` is `root` itself or sits beneath it, comparing whole path
+/// components with `std.fs.path.isSep`. See src/cim/test_boundary.zig for
+/// the separator rationale.
 fn contains_path(root: []const u8, path: []const u8) bool {
     if (!std.mem.startsWith(u8, path, root)) return false;
     if (path.len == root.len) return true;
     return std.fs.path.isSep(path[root.len]);
 }
 
-test "contains_path compares whole components" {
-    // '/' is a separator on every target cimd releases for, Windows included.
-    try std.testing.expect(contains_path("/a/src/cim", "/a/src/cim"));
-    try std.testing.expect(contains_path("/a/src/cim", "/a/src/cim/refs.zig"));
-    try std.testing.expect(contains_path("/a/src/cim", "/a/src/cim/cgmes/overlay.zig"));
-    try std.testing.expect(!contains_path("/a/src/cim", "/a/src/cimd/foo.zig"));
-    try std.testing.expect(!contains_path("/a/src/cim", "/a/src/cim-extra.zig"));
-    try std.testing.expect(!contains_path("/a/src/cim", "/a/src/io/print.zig"));
-
-    // ...and so is the host's own separator, which is what the walkers and
-    // std.fs.path.resolve actually produce.
-    const sep = [_]u8{std.fs.path.sep};
-    try std.testing.expect(contains_path("/a/src/cim", "/a/src/cim" ++ sep ++ "refs.zig"));
-    try std.testing.expect(contains_path("cim", "cim" ++ sep ++ "document.zig"));
-    try std.testing.expect(!contains_path("cim", "cimd" ++ sep ++ "foo.zig"));
-}
-
-/// Named modules the library may depend on. Deliberately tiny: a named import
-/// is a build-graph dependency the eventual package would have to declare in
-/// its own build.zig.zon, so every addition is a decision, not a convenience.
+/// Named modules the library may depend on.
 const allowed_modules = [_][]const u8{"std"};
 
 fn is_module_import(path: []const u8) bool {
     return !std.mem.endsWith(u8, path, ".zig");
 }
 
-/// Every import in `source`, as (line number, path) pairs. Named module
-/// imports are included, not skipped -- a dependency on an external package
-/// escapes the library just as surely as a relative path does. Feed it
+/// Every import in `source`, as (line number, path) pairs. Feed it
 /// comment-blanked source: prose in this file names the very syntax it scans
 /// for.
 const ImportIterator = struct {
@@ -149,10 +122,9 @@ const ImportIterator = struct {
 };
 
 /// A copy of `source` with comment text blanked out, so a rule cannot be
-/// tripped by prose describing the construct it bans -- cim.zig's own
-/// documentation names every one of them. Line numbers and offsets are
-/// preserved so diagnostics still point at the right place. Lines that are
-/// multiline string literals are left alone; they are data, not code.
+/// tripped by prose describing the construct it bans. Line numbers and
+/// offsets are preserved. Multiline string literals are left alone; they are
+/// data, not code.
 fn blank_comments(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
     const out = try gpa.dupe(u8, source);
     var line_start: usize = 0;
@@ -179,9 +151,9 @@ fn blank_comments(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
     return out;
 }
 
-/// Fail if any of `needles` appears in library code. `path` is reported.
-/// This file is exempt: it carries every banned construct as a string literal
-/// in order to search for it.
+/// Fail if any of `needles` appears in library code. This file is exempt: it
+/// carries every banned construct as a string literal in order to search for
+/// it.
 fn reject_constructs(
     gpa: std.mem.Allocator,
     path: []const u8,
@@ -201,7 +173,7 @@ fn reject_constructs(
     }
 }
 
-test "no import escapes the library directory" {
+test "no import escapes the library directory except the cim facade" {
     try walk_library_files(std.testing.allocator, struct {
         fn check(gpa: std.mem.Allocator, path: []const u8, source: []const u8) anyerror!void {
             const dir = std.fs.path.dirname(path).?;
@@ -228,10 +200,16 @@ test "no import escapes the library directory" {
                 const root = try std.fs.path.resolve(gpa, &.{library_root});
                 defer gpa.free(root);
                 if (contains_path(root, resolved)) continue;
+                // The one conceptual dependency: the CIM library, and only
+                // through its facade. At split time this import becomes a
+                // named package dependency.
+                const cim_full = try std.fs.path.resolve(gpa, &.{cim_facade});
+                defer gpa.free(cim_full);
+                if (std.mem.eql(u8, resolved, cim_full)) continue;
                 std.debug.print(
                     "\n{s}:{d}: import '{s}' escapes {s}\n" ++
-                        "The library must not depend on the application around it.\n",
-                    .{ path, import.line, import.path, library_root },
+                        "The library depends on '{s}' and nothing else outside itself.\n",
+                    .{ path, import.line, import.path, library_root, cim_facade },
                 );
                 return error.ImportEscapesLibrary;
             }
@@ -242,15 +220,12 @@ test "no import escapes the library directory" {
 test "the library never terminates the process" {
     try walk_library_files(std.testing.allocator, struct {
         fn check(gpa: std.mem.Allocator, path: []const u8, source: []const u8) anyerror!void {
-            // `abort` is intentionally allowed: it is what a failed assert
-            // does, and an assert marks a bug in the library itself, not a
-            // condition a caller could have handled.
             try reject_constructs(
                 gpa,
                 path,
                 source,
                 &.{ "std.process.exit", "std.posix.exit" },
-                "Return an error instead; only the application decides to exit.",
+                "Return the report instead; only the application decides to exit.",
                 error.LibraryExitsProcess,
             );
         }
@@ -265,7 +240,7 @@ test "the library does no file or network I/O" {
                 path,
                 source,
                 &.{ "std.Io.File", "std.Io.Dir", "std.net" },
-                "Callers supply the bytes and the writer; the library opens nothing.",
+                "Callers supply the stems and the bytes; the library opens nothing.",
                 error.LibraryPerformsIo,
             );
         }
@@ -309,35 +284,13 @@ test "application code imports only the library facade" {
     }.check);
 }
 
-test "raw scanning stays the bottom layer" {
-    // xml_scan.zig exists so that "find a tag in some bytes" and "read a CIM
-    // object" are two different requests, and only the second one is on the
-    // facade. That holds only while the dependency runs one way: the moment
-    // this file imports a sibling, the two layers are one again and the
-    // facade's promise -- that a CIM consumer never needs a TagBoundary --
-    // becomes documentation. A reverse import is also the cheapest way for it
-    // to happen, since everything it would reach for is one directory away.
-    const gpa = std.testing.allocator;
-    const source = try std.Io.Dir.cwd().readFileAlloc(io, scanner, gpa, .limited(1 << 20));
-    defer gpa.free(source);
+test "contains_path compares whole components" {
+    try std.testing.expect(contains_path("/a/src/qocdc", "/a/src/qocdc"));
+    try std.testing.expect(contains_path("/a/src/qocdc", "/a/src/qocdc/rules.zig"));
+    try std.testing.expect(!contains_path("/a/src/qocdc", "/a/src/qocdc.zig"));
+    try std.testing.expect(!contains_path("/a/src/qocdc", "/a/src/io/print.zig"));
 
-    const code = try blank_comments(gpa, source);
-    defer gpa.free(code);
-
-    var seen: u32 = 0;
-    var it: ImportIterator = .{ .source = code };
-    while (it.next()) |import| {
-        seen += 1;
-        if (std.mem.eql(u8, import.path, "std")) continue;
-        std.debug.print(
-            "\n{s}:{d}: import of '{s}'\n" ++
-                "Raw scanning is the layer everything else is built on, so it may\n" ++
-                "import nothing but std. Whatever it needs from above belongs in\n" ++
-                "the caller, or it is not raw scanning.\n",
-            .{ scanner, import.line, import.path },
-        );
-        return error.ScannerDependsUpward;
-    }
-    // A renamed or moved file would import nothing and pass silently.
-    try std.testing.expect(seen >= 1);
+    const sep = [_]u8{std.fs.path.sep};
+    try std.testing.expect(contains_path("qocdc", "qocdc" ++ sep ++ "rules.zig"));
+    try std.testing.expect(!contains_path("qocdc", "qocdc.zig"));
 }

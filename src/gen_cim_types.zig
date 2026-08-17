@@ -11,7 +11,7 @@
 //! edges are unioned and deduped. The output is the initializer body for
 //! `parent_edges`; review the diff and splice it in (then `zig fmt`).
 //!
-//! Crucially, this reuses the very same tag scanner (`tag_index.zig`) that cimd
+//! Crucially, this reuses the very same tag scanner (`xml_scan.zig`) that cimd
 //! parses CIM with at runtime, so the class names emitted here are exactly the
 //! ones cimd recognizes, with no second XML implementation to drift from.
 //!
@@ -23,10 +23,10 @@
 
 const std = @import("std");
 const cim = @import("cim/cim.zig");
-const tag_index = cim.tag_index;
+const xml_scan = cim.xml_scan;
 const read_path = @import("io/read.zig").read_path;
 
-const TagBoundary = tag_index.TagBoundary;
+const TagBoundary = xml_scan.TagBoundary;
 
 const Edge = struct {
     child: []const u8,
@@ -37,8 +37,7 @@ const Edge = struct {
 /// including the last '#' or '/', then if a '.' remains keep the trailing
 /// segment (so "ACLineSegment.r" → "r", which `is_class_name` then rejects).
 fn local_name(value: []const u8) []const u8 {
-    var v = value;
-    if (std.mem.lastIndexOfScalar(u8, v, '#')) |i| v = v[i + 1 ..];
+    var v = cim.uri.fragment_or_self(value);
     if (std.mem.lastIndexOfScalar(u8, v, '/')) |i| v = v[i + 1 ..];
     if (std.mem.lastIndexOfScalar(u8, v, '.')) |i| v = v[i + 1 ..];
     return v;
@@ -59,8 +58,8 @@ fn is_class_name(name: []const u8) bool {
 /// The class declared by an opening tag, via rdf:about (preferred) or rdf:ID.
 /// Returns null when the tag declares no class or the name isn't a class name.
 fn class_id(xml: []const u8, start: u32) ?[]const u8 {
-    const raw = tag_index.extract_rdf_about(xml, start) catch
-        tag_index.extract_rdf_id(xml, start) catch return null;
+    const raw = xml_scan.extract_rdf_about(xml, start) catch
+        xml_scan.extract_rdf_id(xml, start) catch return null;
     const name = local_name(raw);
     return if (is_class_name(name)) name else null;
 }
@@ -73,7 +72,7 @@ fn class_id(xml: []const u8, start: u32) ?[]const u8 {
 fn parent_id(xml: []const u8, boundaries: []const TagBoundary, opening_idx: u32) ?[]const u8 {
     // Scope the search to this element's children; self-closing / unclosed
     // elements have none, so any error here just means "no parent".
-    const close = tag_index.find_closing_tag(xml, boundaries, opening_idx) catch return null;
+    const close = xml_scan.find_closing_tag(xml, boundaries, opening_idx) catch return null;
 
     // Walk *direct* children only. A nested rdfs:subClassOf (e.g. one wrapping an
     // inline owl:Restriction) is not this class's superclass, so we step over
@@ -91,11 +90,11 @@ fn parent_id(xml: []const u8, boundaries: []const TagBoundary, opening_idx: u32)
             continue;
         }
 
-        if (std.mem.eql(u8, tag_index.extract_tag_type(xml, boundary.start) catch "", "subClassOf")) {
+        if (std.mem.eql(u8, xml_scan.extract_tag_type(xml, boundary.start) catch "", "subClassOf")) {
             // The superclass rides on rdf:resource of the subClassOf tag itself;
             // a subClassOf that instead wraps an inline node carries none here
             // and is correctly skipped.
-            if (tag_index.extract_rdf_resource_within(xml, boundary.start, boundary.end) catch null) |resource| {
+            if (xml_scan.extract_rdf_resource_within(xml, boundary.start, boundary.end) catch null) |resource| {
                 const name = local_name(resource);
                 if (is_class_name(name)) return name;
             }
@@ -105,7 +104,7 @@ fn parent_id(xml: []const u8, boundaries: []const TagBoundary, opening_idx: u32)
         // container child's entire subtree.
         if (xml[boundary.end - 1] == '/') {
             j += 1;
-        } else if (tag_index.find_closing_tag(xml, boundaries, j)) |child_close| {
+        } else if (xml_scan.find_closing_tag(xml, boundaries, j)) |child_close| {
             j = child_close + 1;
         } else |_| {
             j += 1;
@@ -117,7 +116,7 @@ fn parent_id(xml: []const u8, boundaries: []const TagBoundary, opening_idx: u32)
 /// Append every child→parent edge found in one RDFS document to `edges`.
 /// Emitted slices borrow `xml`, which the caller must keep alive.
 fn collect_edges(gpa: std.mem.Allocator, xml: []const u8, edges: *std.ArrayList(Edge)) !void {
-    var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
+    var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
     defer boundaries.deinit(gpa);
     const items = boundaries.items;
 

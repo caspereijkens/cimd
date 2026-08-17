@@ -1,8 +1,8 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const cim = @import("../cim/cim.zig");
 const CimDocument = cim.CimDocument;
 
-const tag_index = cim.tag_index;
 const utils = cim.ids;
 const units = @import("../units.zig");
 
@@ -113,9 +113,169 @@ pub fn size_limit_text_comptime(comptime max_bytes: u64) []const u8 {
     return std.fmt.comptimePrint("{s}", .{text});
 }
 
-/// Write informational (non-error) output to stderr. Returns an error on write failure.
-/// Use for diagnostic/progress output that should not pollute stdout data.
+/// When human-readable diagnostics are written to stderr.
+///
+/// `auto` prints them only when stdout is a terminal. A summary describes the
+/// data the command just produced, so it is addressed to whoever is reading
+/// that data; when stdout is a pipe or a file, that reader is a machine and the
+/// summary is noise competing for the terminal. Redirecting the data with
+/// `--output` leaves stdout a terminal, so the summary still appears -- which is
+/// the case that wants it most, since the data itself never reaches the screen.
+pub const StatsMode = enum { auto, always, never };
+pub const ColorMode = enum { auto, always, never };
+
+/// Process-wide output policy: requested during argument parsing, settled once
+/// by `resolve_stats` before any command runs, then read-only. Global rather
+/// than a parameter threaded through eighteen call sites across four modules,
+/// none of which make the decision.
+var stats_mode: StatsMode = .auto;
+var stats_visible: bool = true;
+var stats_resolved: bool = false;
+
+/// Which stream a caller is about to write styled text to. Resolved per
+/// stream because they are redirected independently: `cimd browse > file`
+/// leaves stderr a terminal while stdout is a file, and escape sequences
+/// belong in neither the file nor a report piped to `grep`.
+pub const ColorStream = enum { stdout, stderr };
+
+/// Process-wide color policy, with the same parse-then-resolve lifecycle as
+/// stats. In auto mode, a non-empty NO_COLOR takes precedence over terminal
+/// detection. An explicit command-line mode takes precedence over NO_COLOR.
+var color_mode: ColorMode = .auto;
+var color_stdout: bool = false;
+var color_stderr: bool = false;
+var color_resolved: bool = false;
+
+/// Record the requested mode. Argument parsing calls this; the terminal check
+/// is deliberately not done here, so parsing stays free of I/O.
+pub fn set_stats_mode(mode: StatsMode) void {
+    assert(!stats_resolved);
+    stats_mode = mode;
+}
+
+/// Settle whether diagnostics are visible. Called exactly once, after parsing
+/// and before the command runs, so every later `stderr_info` is a branch on an
+/// answer already known. A terminal check that fails is not worth reporting:
+/// treat an undeterminable stdout as not-a-terminal, the quieter reading.
+pub fn resolve_stats(io: std.Io) void {
+    assert(!stats_resolved);
+    stats_visible = switch (stats_mode) {
+        .always => true,
+        .never => false,
+        .auto => std.Io.File.stdout().isTty(io) catch false,
+    };
+    stats_resolved = true;
+}
+
+/// Record the requested color mode without doing I/O during argument parsing.
+pub fn set_color_mode(mode: ColorMode) void {
+    assert(!color_resolved);
+    color_mode = mode;
+}
+
+/// Settle color support once, after parsing and before command execution.
+/// Both streams are answered here, from one NO_COLOR read and one terminal
+/// check each, so a later `colors_enabled` is a branch on a known answer --
+/// the same shape as `resolve_stats`.
+pub fn resolve_color(io: std.Io, environ: *const std.process.Environ.Map) void {
+    assert(!color_resolved);
+    const no_color = if (environ.get("NO_COLOR")) |value| value.len > 0 else false;
+    color_stdout = color_enabled_for(
+        color_mode,
+        std.Io.File.stdout().isTty(io) catch false,
+        no_color,
+    );
+    color_stderr = color_enabled_for(
+        color_mode,
+        std.Io.File.stderr().isTty(io) catch false,
+        no_color,
+    );
+    color_resolved = true;
+}
+
+/// Whether styled text may be written to `stream`. Callers that build a
+/// palette should ask once and reuse the answer.
+///
+/// Deliberately unguarded, like `stats_visible`: renderers are called
+/// in-process by tests that never run `resolve_color`, and the unresolved
+/// default is the safe one -- plain text, which every consumer can read.
+pub fn colors_enabled(stream: ColorStream) bool {
+    return switch (stream) {
+        .stdout => color_stdout,
+        .stderr => color_stderr,
+    };
+}
+
+/// `code` when `stream` is styled, "" otherwise -- for writers that emit an
+/// escape sequence inline and would otherwise need a branch per site.
+pub fn color_code(stream: ColorStream, code: []const u8) []const u8 {
+    return if (colors_enabled(stream)) code else "";
+}
+
+fn color_enabled_for(mode: ColorMode, is_tty: bool, no_color: bool) bool {
+    return switch (mode) {
+        .always => true,
+        .never => false,
+        .auto => is_tty and !no_color,
+    };
+}
+
+test "color mode overrides terminal detection and NO_COLOR" {
+    try std.testing.expect(color_enabled_for(.always, false, true));
+    try std.testing.expect(!color_enabled_for(.never, true, false));
+    try std.testing.expect(color_enabled_for(.auto, true, false));
+    try std.testing.expect(!color_enabled_for(.auto, true, true));
+    try std.testing.expect(!color_enabled_for(.auto, false, false));
+}
+
+test "the two streams are answered independently" {
+    // Restore the process-wide state: renderers in this same test binary read
+    // it, and an unresolved policy must stay plain for them.
+    const saved_stdout = color_stdout;
+    const saved_stderr = color_stderr;
+    defer {
+        color_stdout = saved_stdout;
+        color_stderr = saved_stderr;
+    }
+
+    // `cimd browse > file` on a terminal: stderr styled, stdout not.
+    color_stdout = false;
+    color_stderr = true;
+    try std.testing.expect(!colors_enabled(.stdout));
+    try std.testing.expect(colors_enabled(.stderr));
+    try std.testing.expectEqualStrings("", color_code(.stdout, "\x1b[33m"));
+    try std.testing.expectEqualStrings("\x1b[33m", color_code(.stderr, "\x1b[33m"));
+}
+
+test "an unresolved color policy writes plain text" {
+    try std.testing.expect(!colors_enabled(.stdout));
+    try std.testing.expect(!colors_enabled(.stderr));
+    try std.testing.expectEqualStrings("", color_code(.stdout, "\x1b[91m"));
+}
+
+/// Write a summary of what the command produced to stderr. Suppressed under
+/// `--stats never`, and by default when stdout is not a terminal.
+///
+/// Only for output that restates the result: a caller who cannot see it has
+/// lost nothing, because the data on stdout still says it. Anything reporting
+/// that input was ignored or adjusted is a `warn`, and anything reporting
+/// failure is an `exit_message`; neither may be silenced.
 pub fn stderr_info(io: std.Io, comptime fmt_str: []const u8, args: anytype) !void {
+    if (!stats_visible) return;
+    return write_stderr(io, fmt_str, args);
+}
+
+/// Write a warning to stderr. Never suppressed, whatever `--stats` says.
+///
+/// A warning means the command did something other than what the arguments
+/// literally asked -- ignored a part, fell back to a default. Gating that
+/// behind a terminal check would hide the mistake exactly when it is least
+/// likely to be noticed: in a pipeline or a CI job, where nobody is watching.
+pub fn warn(io: std.Io, comptime fmt_str: []const u8, args: anytype) !void {
+    return write_stderr(io, fmt_str, args);
+}
+
+fn write_stderr(io: std.Io, comptime fmt_str: []const u8, args: anytype) !void {
     var buffer: [4096]u8 = undefined;
     var file_writer = std.Io.File.Writer.initStreaming(std.Io.File.stderr(), io, &buffer);
     file_writer_result(&file_writer, file_writer.interface.print(fmt_str, args)) catch |err| switch (err) {
@@ -273,8 +433,7 @@ pub fn write_object_inventory(w: *std.Io.Writer, counts: []const CimDocument.Typ
 pub fn display_object_list_json(
     io: std.Io,
     gpa: std.mem.Allocator,
-    model: *const CimDocument,
-    objects: []const tag_index.CimObject,
+    objects: []const cim.CimObject,
     fields: []const []const u8,
 ) !void {
     var write_buffer: [64 * 1024]u8 = undefined;
@@ -282,7 +441,6 @@ pub fn display_object_list_json(
     try file_writer_result(&file_writer, write_object_list_json(
         &file_writer.interface,
         gpa,
-        model,
         objects,
         fields,
     ));
@@ -292,30 +450,28 @@ pub fn display_object_list_json(
 fn write_object_list_json(
     w: *std.Io.Writer,
     gpa: std.mem.Allocator,
-    model: *const CimDocument,
-    objects: []const tag_index.CimObject,
+    objects: []const cim.CimObject,
     fields: []const []const u8,
 ) !void {
     try w.writeByte('[');
     for (objects, 0..) |obj, i| {
         if (i > 0) try w.writeByte(',');
-        const view = model.view(obj);
         if (fields.len == 0) {
             // Full dump: same shape as single-object JSON. Lets callers do
             // joins and reference resolution in Python without re-fetching.
-            try write_object_full_json(w, gpa, view);
+            try write_object_full_json(w, gpa, obj);
         } else {
             // Projection mode: only id, type, and the requested fields.
             try w.writeAll("{\"id\":");
-            try std.json.Stringify.value(obj.id, .{}, w);
+            try std.json.Stringify.value(obj.id(), .{}, w);
             try w.writeAll(",\"type\":");
-            try std.json.Stringify.value(obj.type_name, .{}, w);
+            try std.json.Stringify.value(obj.type_name(), .{}, w);
             for (fields) |field| {
                 // Fall back to a reference when the field isn't a text property;
                 // strip the '#' so the value matches the references map shape.
-                const val = if (try view.getProperty(field)) |p|
+                const val = if (try obj.property(field)) |p|
                     p
-                else if (try view.getReference(field)) |r|
+                else if (try obj.reference(field)) |r|
                     utils.strip_hash(r)
                 else
                     "";
@@ -333,17 +489,17 @@ fn write_object_list_json(
 fn write_object_full_json(
     w: *std.Io.Writer,
     gpa: std.mem.Allocator,
-    obj: tag_index.CimObjectView,
+    obj: cim.CimObject,
 ) !void {
-    var props = try obj.getAllProperties(gpa);
+    var props = try obj.all_properties(gpa);
     defer props.deinit();
-    var refs = try obj.getAllReferences(gpa);
+    var refs = try obj.all_references(gpa);
     defer refs.deinit();
 
     try w.writeAll("{\"id\":");
-    try std.json.Stringify.value(obj.id, .{}, w);
+    try std.json.Stringify.value(obj.id(), .{}, w);
     try w.writeAll(",\"type\":");
-    try std.json.Stringify.value(obj.type_name, .{}, w);
+    try std.json.Stringify.value(obj.type_name(), .{}, w);
 
     try w.writeAll(",\"properties\":{");
     var first = true;

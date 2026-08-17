@@ -5,7 +5,7 @@ const CimDocument = cim.CimDocument;
 const cross_ref = @import("../topology/cross_ref.zig");
 const utils = cim.ids;
 const topology = @import("../topology/resolve.zig");
-const tag_index = cim.tag_index;
+const xml_scan = cim.xml_scan;
 const substation_conv = @import("substation.zig");
 const voltage_level_conv = @import("voltage_level.zig");
 const equipment_conv = @import("equipment.zig");
@@ -13,8 +13,7 @@ const transformer_conv = @import("transformer.zig");
 const line_conv = @import("line.zig");
 const bus_conv = @import("bus.zig");
 const placement_conv = @import("placement.zig");
-const SSH = cim.SSH;
-const TP = cim.TP;
+const Overlay = cim.Overlay;
 const parse = cim.parse;
 const populate_internal_connections = @import("internal_connections.zig").populate_internal_connections;
 
@@ -45,7 +44,7 @@ const standalone_iidm_source_types = [_][]const u8{
 
 fn record_conversion_mrid(
     seen: *std.StringHashMapUnmanaged(void),
-    view: tag_index.CimObjectView,
+    view: cim.CimObject,
     diagnostics: ?*ConversionDiagnostics,
 ) !void {
     const mrid = try view.mrid();
@@ -53,8 +52,8 @@ fn record_conversion_mrid(
         if (diagnostics) |d| d.id_issue = .{
             .kind = .empty,
             .mrid = mrid,
-            .raw_id = view.id,
-            .offset = view.boundaries[view.object_tag_idx].start,
+            .raw_id = view.id(),
+            .offset = view.xml_offset(),
         };
         return error.EmptyMrid;
     }
@@ -63,8 +62,8 @@ fn record_conversion_mrid(
         if (diagnostics) |d| d.id_issue = .{
             .kind = .duplicate,
             .mrid = mrid,
-            .raw_id = view.id,
-            .offset = view.boundaries[view.object_tag_idx].start,
+            .raw_id = view.id(),
+            .offset = view.xml_offset(),
         };
         return error.DuplicateMrid;
     }
@@ -84,29 +83,29 @@ fn validate_conversion_mrids(
 
     var source_count: u32 = 0;
     inline for (standalone_iidm_source_types) |type_name| {
-        source_count += @intCast(model.get_objects_by_type(type_name).len);
+        source_count += @intCast(model.objects_by_type(type_name).len);
     }
     inline for (topology.switch_types) |type_name| {
-        source_count += @intCast(model.get_objects_by_type(type_name).len);
+        source_count += @intCast(model.objects_by_type(type_name).len);
     }
     inline for (topology.phase2_equipment_types) |type_name| {
-        source_count += @intCast(model.get_objects_by_type(type_name).len);
+        source_count += @intCast(model.objects_by_type(type_name).len);
     }
     try seen.ensureTotalCapacity(gpa, source_count);
 
     inline for (standalone_iidm_source_types) |type_name| {
-        for (model.get_objects_by_type(type_name)) |object| {
-            try record_conversion_mrid(&seen, model.view(object), diagnostics);
+        for (model.objects_by_type(type_name)) |object| {
+            try record_conversion_mrid(&seen, object, diagnostics);
         }
     }
     inline for (topology.switch_types) |type_name| {
-        for (model.get_objects_by_type(type_name)) |object| {
-            try record_conversion_mrid(&seen, model.view(object), diagnostics);
+        for (model.objects_by_type(type_name)) |object| {
+            try record_conversion_mrid(&seen, object, diagnostics);
         }
     }
     inline for (topology.phase2_equipment_types) |type_name| {
-        for (model.get_objects_by_type(type_name)) |object| {
-            try record_conversion_mrid(&seen, model.view(object), diagnostics);
+        for (model.objects_by_type(type_name)) |object| {
+            try record_conversion_mrid(&seen, object, diagnostics);
         }
     }
 }
@@ -505,40 +504,41 @@ fn extension_version(extension_name: []const u8) []const u8 {
     return "1.0";
 }
 
-/// Append one MetadataModel entry derived from a FullModel CimObjectView.
+/// Append one MetadataModel entry derived from a FullModel CimObject.
 fn append_metadata_model(
     gpa: std.mem.Allocator,
-    view: tag_index.CimObjectView,
+    view: cim.CimObject,
     metadata_models: *std.ArrayListUnmanaged(iidm.MetadataModel),
 ) !void {
-    assert(view.id.len > 0);
+    assert(view.id().len > 0);
     assert(view.closing_tag_idx > view.object_tag_idx);
-    const mas = try view.getProperty("Model.modelingAuthoritySet") orelse "";
-    const raw_desc = try view.getProperty("Model.description") orelse "";
+    const mas = try view.property("Model.modelingAuthoritySet") orelse "";
+    const raw_desc = try view.property("Model.description") orelse "";
     const desc = try decode_xml_entities(gpa, raw_desc);
-    const version = parse.int_or(u32, try view.getProperty("Model.version"), 0);
+    const version = parse.int_or(u32, try view.property("Model.version"), 0);
 
     var profiles: std.ArrayListUnmanaged(iidm.ModelProfile) = .empty;
     var dependent_on: std.ArrayListUnmanaged(iidm.DependentOnModel) = .empty;
     var subset: []const u8 = "UNKNOWN";
-    for (view.boundaries[view.object_tag_idx + 1 .. view.closing_tag_idx], view.object_tag_idx + 1..) |tag, ti| {
-        if (view.xml[tag.start + 1] == '/') continue; // skip closing tags
-        const is_self_closing = view.xml[tag.end - 1] == '/';
-        const tag_type = tag_index.extract_tag_type(view.xml, tag.start) catch continue;
-        if (std.mem.eql(u8, tag_type, "Model.profile") and !is_self_closing) {
-            const content = view.xml[tag.end + 1 .. view.boundaries[ti + 1].start];
-            try profiles.append(gpa, .{ .content = content });
-            const s = profile_to_subset(content);
+    // A header can repeat both of these, so this walks children rather than
+    // asking for properties by name -- all_properties would keep only the
+    // last Model.profile.
+    var it = view.children();
+    while (it.next()) |child| {
+        if (child.kind == .property and !child.self_closing and
+            std.mem.eql(u8, child.name, "Model.profile"))
+        {
+            try profiles.append(gpa, .{ .content = child.value });
+            const s = profile_to_subset(child.value);
             if (!std.mem.eql(u8, s, "UNKNOWN")) subset = s;
-        } else if (std.mem.eql(u8, tag_type, "Model.DependentOn")) {
-            const ref = tag_index.extract_rdf_resource(view.xml, tag.start) catch continue;
-            if (ref) |r| try dependent_on.append(gpa, .{ .content = r });
+        } else if (child.kind == .reference and std.mem.eql(u8, child.name, "Model.DependentOn")) {
+            try dependent_on.append(gpa, .{ .content = child.value });
         }
     }
     try metadata_models.append(gpa, .{
         .subset = subset,
         .modeling_authority_set = mas,
-        .id = view.id,
+        .id = view.id(),
         .version = version,
         .description = desc,
         .profiles = profiles,
@@ -551,8 +551,8 @@ fn append_metadata_model(
 ///   boundary.id   = ConductingEquipment mRID of the TieFlow.Terminal
 ///   boundary.side = sequenceNumber of the TieFlow.Terminal (1→"ONE", 2→"TWO")
 ///   boundary.ac   = true (always, as all equipment is AC in EQ profiles)
-fn convert_areas(gpa: std.mem.Allocator, model: *const CimDocument, ssh_opt: ?SSH, network: *iidm.Network) !void {
-    const control_areas = model.get_objects_by_type("ControlArea");
+fn convert_areas(gpa: std.mem.Allocator, model: *const CimDocument, ssh_opt: ?Overlay, network: *iidm.Network) !void {
+    const control_areas = model.objects_by_type("ControlArea");
     assert(network.areas.items.len == 0);
     if (control_areas.len == 0) return;
 
@@ -560,47 +560,44 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimDocument, ssh_opt: ?SS
 
     // The TieFlow set is the same for every ControlArea; fetch it once rather
     // than re-looking-it-up per area.
-    const tie_flows = model.get_objects_by_type("TieFlow");
+    const tie_flows = model.objects_by_type("TieFlow");
 
     for (control_areas) |control_area| {
-        const control_area_view = model.view(control_area);
-        const control_area_mrid = try control_area_view.mrid();
-        const control_area_name = parse.non_blank(try control_area_view.getProperty("IdentifiedObject.name")) orelse control_area_mrid;
+        const control_area_mrid = try control_area.mrid();
+        const control_area_name = parse.non_blank(try control_area.property("IdentifiedObject.name")) orelse control_area_mrid;
 
         // ControlArea.type is a rdf:resource; extract the fragment after '#'.
-        const area_type: []const u8 = blk: {
-            const raw = try control_area_view.getReference("ControlArea.type") orelse break :blk "ControlAreaTypeKind.Interchange";
-            const hash = std.mem.lastIndexOfScalar(u8, raw, '#') orelse break :blk raw;
-            break :blk raw[hash + 1 ..];
-        };
+        const area_type = if (try control_area.reference("ControlArea.type")) |raw|
+            cim.uri.fragment_or_self(raw)
+        else
+            "ControlAreaTypeKind.Interchange";
 
         // Collect all TieFlow objects that reference this ControlArea.
         var boundaries: std.ArrayListUnmanaged(iidm.AreaBoundary) = .empty;
         errdefer boundaries.deinit(gpa);
 
         for (tie_flows) |tie_flow| {
-            const tie_flow_view = model.view(tie_flow);
-            const control_area_ref = try tie_flow_view.getReference("TieFlow.ControlArea") orelse continue;
+            const control_area_ref = try tie_flow.reference("TieFlow.ControlArea") orelse continue;
             const control_area_id = strip_hash(control_area_ref);
-            if (!std.mem.eql(u8, control_area_id, control_area.id) and !std.mem.eql(u8, control_area_id, control_area_mrid)) continue;
+            if (!std.mem.eql(u8, control_area_id, control_area.id()) and !std.mem.eql(u8, control_area_id, control_area_mrid)) continue;
 
-            const term_ref = try tie_flow_view.getReference("TieFlow.Terminal") orelse continue;
+            const term_ref = try tie_flow.reference("TieFlow.Terminal") orelse continue;
             const term_id = strip_hash(term_ref);
-            const term_obj = model.getObjectById(term_id) orelse continue;
+            const term_obj = model.object_by_id(term_id) orelse continue;
 
-            const equipment_ref = try term_obj.getReference("Terminal.ConductingEquipment") orelse continue;
+            const equipment_ref = try term_obj.reference("Terminal.ConductingEquipment") orelse continue;
             const equipment_id = strip_hash(equipment_ref);
-            const equipment = model.getObjectById(equipment_id) orelse continue;
+            const equipment = model.object_by_id(equipment_id) orelse continue;
             const eq_mrid = try equipment.mrid();
 
-            const seq = parse.int_or(u32, try term_obj.getProperty("ACDCTerminal.sequenceNumber"), 1);
+            const seq = parse.int_or(u32, try term_obj.property("ACDCTerminal.sequenceNumber"), 1);
             const side: []const u8 = if (seq == 1) "ONE" else "TWO";
 
             try boundaries.append(gpa, .{ .id = eq_mrid, .side = side });
         }
 
         const interchange_target: ?f64 = if (ssh_opt) |ssh| blk: {
-            const v = try ssh.getProperty(control_area_mrid, "ControlArea.netInterchange") orelse break :blk null;
+            const v = try ssh.property(control_area_mrid, "ControlArea.netInterchange") orelse break :blk null;
             break :blk parse.float_opt(v);
         } else null;
 
@@ -623,8 +620,8 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimDocument, ssh_opt: ?SS
 pub fn convert(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    tp_opt: ?TP,
-    ssh_opt: ?SSH,
+    tp_opt: ?Overlay,
+    ssh_opt: ?Overlay,
     bus_branch: bool,
 ) !iidm.Network {
     return convertWithDiagnostics(gpa, model, tp_opt, ssh_opt, bus_branch, null);
@@ -633,16 +630,16 @@ pub fn convert(
 pub fn convertWithDiagnostics(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    tp_opt: ?TP,
-    ssh_opt: ?SSH,
+    tp_opt: ?Overlay,
+    ssh_opt: ?Overlay,
     bus_branch: bool,
     diagnostics: ?*ConversionDiagnostics,
 ) !iidm.Network {
-    if (model.get_objects_by_type("Substation").len == 0) return error.MissingSubstations;
+    if (model.objects_by_type("Substation").len == 0) return error.MissingSubstations;
     // Fast path: avoid building cross-reference and topology indexes when no
     // VoltageLevel declarations exist. The post-conversion map check below
     // remains necessary for declared levels whose Substation cannot resolve.
-    if (model.get_objects_by_type("VoltageLevel").len == 0) return error.MissingVoltageLevels;
+    if (model.objects_by_type("VoltageLevel").len == 0) return error.MissingVoltageLevels;
     try validate_conversion_mrids(gpa, model, diagnostics);
     assert(!bus_branch or tp_opt != null);
 
@@ -658,24 +655,24 @@ pub fn convertWithDiagnostics(
     try cross_ref.build_voltage_limits(gpa, model, &index, &topology_data);
 
     // ---- FullModel metadata: id, caseDate, forecastDistance ----
-    const full_models = model.get_objects_by_type("FullModel");
-    const eq_full_model: ?tag_index.CimObjectView = if (full_models.len > 0) model.view(full_models[0]) else null;
-    const network_id = if (eq_full_model) |full_model_view| full_model_view.id else "unknown";
+    const full_models = model.objects_by_type("FullModel");
+    const eq_full_model: ?cim.CimObject = if (full_models.len > 0) full_models[0] else null;
+    const network_id = if (eq_full_model) |full_model| full_model.id() else "unknown";
     const scenario_time: ?[]const u8 = blk: {
         if (ssh_opt) |ssh| {
-            if (try ssh.getFullModelProperty("Model.scenarioTime")) |st| break :blk st;
+            if (try ssh.full_model_property("Model.scenarioTime")) |st| break :blk st;
         }
-        break :blk if (eq_full_model) |full_model_view|
-            try full_model_view.getProperty("Model.scenarioTime")
+        break :blk if (eq_full_model) |full_model|
+            try full_model.property("Model.scenarioTime")
         else
             null;
     };
     const created_time: ?[]const u8 = blk: {
         if (ssh_opt) |ssh| {
-            if (try ssh.getFullModelProperty("Model.created")) |ct| break :blk ct;
+            if (try ssh.full_model_property("Model.created")) |ct| break :blk ct;
         }
-        break :blk if (eq_full_model) |full_model_view|
-            try full_model_view.getProperty("Model.created")
+        break :blk if (eq_full_model) |full_model|
+            try full_model.property("Model.created")
         else
             null;
     };
@@ -718,7 +715,7 @@ pub fn convertWithDiagnostics(
     // land in the map. A shortfall means one was skipped for a missing or
     // dangling VoltageLevel.Substation reference, so the network would be built
     // with that level and its attached equipment silently dropped -- reject it.
-    const declared_voltage_levels = model.get_objects_by_type("VoltageLevel").len - topology_data.voltage_level_merge.count();
+    const declared_voltage_levels = model.objects_by_type("VoltageLevel").len - topology_data.voltage_level_merge.count();
     if (voltage_level_map.count() < declared_voltage_levels) return error.UnresolvedVoltageLevels;
 
     var tap_changer_info_map: transformer_conv.TapChangerInfoMap = .empty;
@@ -902,18 +899,18 @@ pub fn convertWithDiagnostics(
         }
 
         const full_model_count = full_models.len;
-        const ssh_full_model_view: ?tag_index.CimObjectView = if (ssh_opt) |ssh| try ssh.getFullModelView() else null;
-        const expected_model_count = full_model_count + @as(usize, if (ssh_full_model_view != null) 1 else 0);
+        const ssh_full_model: ?cim.CimObject = if (ssh_opt) |ssh| ssh.full_model() else null;
+        const expected_model_count = full_model_count + @as(usize, if (ssh_full_model != null) 1 else 0);
 
         // full_models[0] is the EQ FullModel; full_models[1..] are dependency
         // FullModels (EQBD). Append dependencies first, then the EQ itself.
         if (full_model_count > 0) {
             for (full_models[1..]) |full_model| {
-                try append_metadata_model(gpa, model.view(full_model), &metadata_models);
+                try append_metadata_model(gpa, full_model, &metadata_models);
             }
-            try append_metadata_model(gpa, model.view(full_models[0]), &metadata_models);
+            try append_metadata_model(gpa, full_models[0], &metadata_models);
         }
-        if (ssh_full_model_view) |view| {
+        if (ssh_full_model) |view| {
             try append_metadata_model(gpa, view, &metadata_models);
         }
         assert(metadata_models.items.len == expected_model_count);
@@ -921,20 +918,19 @@ pub fn convertWithDiagnostics(
         // --- baseVoltageMapping ---
         // EQ FullModel is always first in XML order; EQBD FullModel (if present) comes after.
         const eq_boundary: u32 = if (full_models.len >= 2) blk: {
-            const full_model_view = model.view(full_models[1]);
-            break :blk full_model_view.boundaries[full_model_view.object_tag_idx].start;
+            const full_model = full_models[1];
+            break :blk full_model.xml_offset();
         } else std.math.maxInt(u32);
 
-        const base_voltages = model.get_objects_by_type("BaseVoltage");
+        const base_voltages = model.objects_by_type("BaseVoltage");
         var base_voltage_list: std.ArrayListUnmanaged(iidm.BaseVoltage) = .empty;
         errdefer base_voltage_list.deinit(gpa);
         try base_voltage_list.ensureTotalCapacity(gpa, base_voltages.len);
         for (base_voltages) |base_voltage| {
-            const base_voltage_view = model.view(base_voltage);
-            const base_voltage_mrid = try base_voltage_view.mrid();
-            const nom_v_str = try base_voltage_view.getProperty("BaseVoltage.nominalVoltage") orelse continue;
+            const base_voltage_mrid = try base_voltage.mrid();
+            const nom_v_str = try base_voltage.property("BaseVoltage.nominalVoltage") orelse continue;
             const nom_v = parse.float_opt(nom_v_str) orelse continue;
-            const xml_pos = base_voltage_view.boundaries[base_voltage_view.object_tag_idx].start;
+            const xml_pos = base_voltage.xml_offset();
             const source: []const u8 = if (xml_pos < eq_boundary) "IGM" else "BOUNDARY";
             base_voltage_list.appendAssumeCapacity(.{ .nominal_voltageoltage = nom_v, .source = source, .id = base_voltage_mrid });
         }
@@ -1046,28 +1042,10 @@ test "append_metadata_model: reads id/version/subset/profiles/DependentOn" {
         \\  </md:FullModel>
         \\</rdf:RDF>
     ;
-    var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
-    defer boundaries.deinit(gpa);
-
-    // Find FullModel tag and its closing tag.
-    var fm_tag_idx: u32 = 0;
-    var fm_closing_idx: u32 = 0;
-    for (boundaries.items, 0..) |tag, i| {
-        const type_name = tag_index.extract_tag_type(xml, tag.start) catch continue;
-        if (!std.mem.eql(u8, type_name, "FullModel")) continue;
-        fm_tag_idx = @intCast(i);
-        fm_closing_idx = try tag_index.find_closing_tag(xml, boundaries.items, fm_tag_idx);
-        break;
-    }
-
-    const view = tag_index.CimObjectView{
-        .xml = xml,
-        .boundaries = boundaries.items,
-        .object_tag_idx = fm_tag_idx,
-        .closing_tag_idx = fm_closing_idx,
-        .id = "urn:uuid:test-fm-1",
-        .type_name = "FullModel",
-    };
+    var document = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    defer document.deinit(gpa);
+    const view = document.object_by_id("urn:uuid:test-fm-1") orelse
+        return error.TestFailed;
 
     var metadata_models: std.ArrayListUnmanaged(iidm.MetadataModel) = .empty;
     defer {

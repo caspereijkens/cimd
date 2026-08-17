@@ -111,32 +111,32 @@ const Renderer = struct {
     format: DiffOptions.Format,
     writer: *std.Io.Writer,
 
-    pub fn added(self: *const Renderer, view: tag_index.CimObjectView) !void {
+    pub fn added(self: *const Renderer, view: tag_index.CimObject) !void {
         switch (self.format) {
             .summary => {},
-            .json => try emit_object_status_json(self.writer, view.type_name, view.id, "added"),
+            .json => try emit_object_status_json(self.writer, view.type_name(), view.id(), "added"),
             .patch => {
-                const name = (try view.getProperty("IdentifiedObject.name")) orelse "";
-                try self.writer.print("+ {s}  \"{s}\"\n", .{ view.id, name });
+                const name = (try view.property("IdentifiedObject.name")) orelse "";
+                try self.writer.print("+ {s}  \"{s}\"\n", .{ view.id(), name });
             },
         }
     }
 
-    pub fn removed(self: *const Renderer, view: tag_index.CimObjectView) !void {
+    pub fn removed(self: *const Renderer, view: tag_index.CimObject) !void {
         switch (self.format) {
             .summary => {},
-            .json => try emit_object_status_json(self.writer, view.type_name, view.id, "removed"),
+            .json => try emit_object_status_json(self.writer, view.type_name(), view.id(), "removed"),
             .patch => {
-                const name = (try view.getProperty("IdentifiedObject.name")) orelse "";
-                try self.writer.print("- {s}  \"{s}\"\n", .{ view.id, name });
+                const name = (try view.property("IdentifiedObject.name")) orelse "";
+                try self.writer.print("- {s}  \"{s}\"\n", .{ view.id(), name });
             },
         }
     }
 
     pub fn changed(
         self: *const Renderer,
-        view1: tag_index.CimObjectView,
-        view2: tag_index.CimObjectView,
+        view1: tag_index.CimObject,
+        view2: tag_index.CimObject,
         changes: *const core.ChangeSet,
     ) !void {
         try render_changed(self.writer, self.format, view1, view2, changes);
@@ -172,22 +172,22 @@ pub fn diff_single(
         .not_found, .type_mismatch => unreachable,
         .added => |view| {
             switch (options.format) {
-                .summary => try writer.print("{s}  +1 -0 ~0\n", .{view.type_name}),
-                .json => try emit_object_status_json(writer, view.type_name, view.id, "added"),
+                .summary => try writer.print("{s}  +1 -0 ~0\n", .{view.type_name()}),
+                .json => try emit_object_status_json(writer, view.type_name(), view.id(), "added"),
                 .patch => {
-                    const name = (try view.getProperty("IdentifiedObject.name")) orelse "";
-                    try writer.print("+ {s}  \"{s}\"\n", .{ view.id, name });
+                    const name = (try view.property("IdentifiedObject.name")) orelse "";
+                    try writer.print("+ {s}  \"{s}\"\n", .{ view.id(), name });
                 },
             }
             return .{ .diff = true };
         },
         .removed => |view| {
             switch (options.format) {
-                .summary => try writer.print("{s}  +0 -1 ~0\n", .{view.type_name}),
-                .json => try emit_object_status_json(writer, view.type_name, view.id, "removed"),
+                .summary => try writer.print("{s}  +0 -1 ~0\n", .{view.type_name()}),
+                .json => try emit_object_status_json(writer, view.type_name(), view.id(), "removed"),
                 .patch => {
-                    const name = (try view.getProperty("IdentifiedObject.name")) orelse "";
-                    try writer.print("- {s}  \"{s}\"\n", .{ view.id, name });
+                    const name = (try view.property("IdentifiedObject.name")) orelse "";
+                    try writer.print("- {s}  \"{s}\"\n", .{ view.id(), name });
                 },
             }
             return .{ .diff = true };
@@ -195,18 +195,18 @@ pub fn diff_single(
         .replaced => |r| {
             switch (options.format) {
                 .summary => {
-                    try writer.print("{s}  +0 -1 ~0\n", .{r.old.type_name});
-                    try writer.print("{s}  +1 -0 ~0\n", .{r.new.type_name});
+                    try writer.print("{s}  +0 -1 ~0\n", .{r.old.type_name()});
+                    try writer.print("{s}  +1 -0 ~0\n", .{r.new.type_name()});
                 },
                 .json => {
-                    try emit_object_status_json(writer, r.old.type_name, r.old.id, "removed");
-                    try emit_object_status_json(writer, r.new.type_name, r.new.id, "added");
+                    try emit_object_status_json(writer, r.old.type_name(), r.old.id(), "removed");
+                    try emit_object_status_json(writer, r.new.type_name(), r.new.id(), "added");
                 },
                 .patch => {
-                    const name1 = (try r.old.getProperty("IdentifiedObject.name")) orelse "";
-                    const name2 = (try r.new.getProperty("IdentifiedObject.name")) orelse "";
-                    try writer.print("- {s}  \"{s}\"\n", .{ r.old.id, name1 });
-                    try writer.print("+ {s}  \"{s}\"\n", .{ r.new.id, name2 });
+                    const name1 = (try r.old.property("IdentifiedObject.name")) orelse "";
+                    const name2 = (try r.new.property("IdentifiedObject.name")) orelse "";
+                    try writer.print("- {s}  \"{s}\"\n", .{ r.old.id(), name1 });
+                    try writer.print("+ {s}  \"{s}\"\n", .{ r.new.id(), name2 });
                 },
             }
             return .{ .diff = true };
@@ -217,7 +217,7 @@ pub fn diff_single(
             defer changes.deinit(gpa);
             try render_changed(writer, options.format, m.old, m.new, &changes);
             if (options.format == .summary) {
-                try writer.print("{s}  +0 -0 ~1\n", .{m.old.type_name});
+                try writer.print("{s}  +0 -0 ~1\n", .{m.old.type_name()});
             }
             return .{ .diff = true };
         },
@@ -287,17 +287,17 @@ const FieldChangeIterator = struct {
 fn render_changed(
     writer: *std.Io.Writer,
     format: DiffOptions.Format,
-    view1: tag_index.CimObjectView,
-    view2: tag_index.CimObjectView,
+    view1: tag_index.CimObject,
+    view2: tag_index.CimObject,
     changes: *const core.ChangeSet,
 ) !void {
     switch (format) {
         .summary => {},
         .json => {
             try writer.writeByte('{');
-            try emit_json_field(writer, "type", view1.type_name);
+            try emit_json_field(writer, "type", view1.type_name());
             try writer.writeByte(',');
-            try emit_json_field(writer, "mrid", view1.id);
+            try emit_json_field(writer, "mrid", view1.id());
             try writer.writeAll(",\"status\":\"changed\",\"changes\":[");
             var it = FieldChangeIterator{ .reverse = changes.reverse.items, .forward = changes.forward.items };
             var first = true;
@@ -309,9 +309,9 @@ fn render_changed(
             try writer.writeAll("]}\n");
         },
         .patch => {
-            const name = (try view1.getProperty("IdentifiedObject.name")) orelse
-                (try view2.getProperty("IdentifiedObject.name")) orelse "";
-            try writer.print("~ {s}  \"{s}\"\n", .{ view1.id, name });
+            const name = (try view1.property("IdentifiedObject.name")) orelse
+                (try view2.property("IdentifiedObject.name")) orelse "";
+            try writer.print("~ {s}  \"{s}\"\n", .{ view1.id(), name });
             var it = FieldChangeIterator{ .reverse = changes.reverse.items, .forward = changes.forward.items };
             while (it.next()) |change| {
                 if (change.from) |value| try writer.print("  - {s}: \"{s}\"\n", .{ change.property, value });

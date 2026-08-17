@@ -4,13 +4,12 @@ const assert = std.debug.assert;
 const cli = @import("cli.zig");
 const CimDocument = cim.CimDocument;
 
-const TP = cim.TP;
-const SSH = cim.SSH;
-const tag_index = cim.tag_index;
+const Overlay = cim.Overlay;
+const xml_scan = cim.xml_scan;
 const refs = cim.refs;
 const print = @import("io/print.zig");
-const extract_rdf_resource = tag_index.extract_rdf_resource;
-const extract_rdf_id = tag_index.extract_rdf_id;
+const extract_rdf_resource = xml_scan.extract_rdf_resource;
+const extract_rdf_id = xml_scan.extract_rdf_id;
 const strip_hash = cim.ids.strip_hash;
 const strip_underscore = cim.ids.strip_underscore;
 
@@ -146,8 +145,8 @@ pub fn browse(
     gpa: std.mem.Allocator,
     interactive: InteractiveIo,
     model: *const CimDocument,
-    tp_opt: ?TP,
-    ssh_opt: ?SSH,
+    tp_opt: ?Overlay,
+    ssh_opt: ?Overlay,
     mrid: []const u8,
 ) !void {
     var trace: std.ArrayList(Breadcrumb) = .empty;
@@ -177,7 +176,7 @@ pub fn browse(
         };
 
         const has_back = trace.items.len > 0 or mode != .regular;
-        try print.allocating_writer_result(&screen, render_footer(writer, trace.items, object.type_name, counter, has_back, mode, referrers.len));
+        try print.allocating_writer_result(&screen, render_footer(writer, trace.items, object.type_name(), counter, has_back, mode, referrers.len));
         try interactive.output.writeAll(screen.written());
         try interactive.output.flush();
 
@@ -206,7 +205,7 @@ pub fn browse(
                 },
             },
             .follow => |new_id| {
-                try trace.append(gpa, .{ .id = id, .type_name = object.type_name });
+                try trace.append(gpa, .{ .id = id, .type_name = object.type_name() });
                 id = new_id;
                 mode = .regular;
             },
@@ -226,7 +225,7 @@ pub const resolve_object = refs.resolve_object;
 /// Used for primary objects (EQ/EQBD/TP new) and for TP/SSH patches.
 fn tag_slice(
     xml: []const u8,
-    boundaries: []const tag_index.TagBoundary,
+    boundaries: []const xml_scan.TagBoundary,
     open_idx: u32,
     close_idx: u32,
 ) []const u8 {
@@ -241,13 +240,13 @@ fn tag_slice(
 fn render_regular(
     writer: *std.Io.Writer,
     gpa: std.mem.Allocator,
-    tp_opt: ?TP,
-    ssh_opt: ?SSH,
-    object: tag_index.CimObjectView,
+    tp_opt: ?Overlay,
+    ssh_opt: ?Overlay,
+    object: cim.CimObject,
     selections: *std.ArrayList(Selection),
 ) !u32 {
     var counter: u32 = 1;
-    counter = try render_fragment(writer, gpa, tag_slice(object.xml, object.boundaries, object.object_tag_idx, object.closing_tag_idx), counter, selections);
+    counter = try render_fragment(writer, gpa, object.raw_xml(), counter, selections);
 
     const overlay_key = try object.mrid();
     if (tp_opt) |tp| {
@@ -347,17 +346,17 @@ fn render_back_refs(
     writer: *std.Io.Writer,
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    tp_opt: ?TP,
-    target: tag_index.CimObjectView,
+    tp_opt: ?Overlay,
+    target: cim.CimObject,
     referrers: []const refs.ReverseRef,
     view: ListView,
     selections: *std.ArrayList(Selection),
 ) !u32 {
-    assert(target.type_name.len > 0);
-    try writer.print("\nReferences to {s} ", .{target.type_name});
-    try writer.writeAll(cli.ansi_yellow);
-    try writer.writeAll(strip_underscore(target.id));
-    try writer.writeAll(cli.ansi_default);
+    assert(target.type_name().len > 0);
+    try writer.print("\nReferences to {s} ", .{target.type_name()});
+    try writer.writeAll(print.color_code(.stdout, cli.ansi_yellow));
+    try writer.writeAll(strip_underscore(target.id()));
+    try writer.writeAll(print.color_code(.stdout, cli.ansi_default));
 
     if (referrers.len == 0) {
         try writer.writeAll("\n\n  (no referrers)");
@@ -374,7 +373,7 @@ fn render_back_refs_flat(
     writer: *std.Io.Writer,
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    tp_opt: ?TP,
+    tp_opt: ?Overlay,
     referrers: []const refs.ReverseRef,
     filter_type: ?[]const u8,
     selections: *std.ArrayList(Selection),
@@ -395,7 +394,7 @@ fn render_back_refs_flat(
             .e = std.math.log10_int(referrers.len) + 1,
             .type = ref.referrer_type,
             .w = max_type_len,
-            .c = strip_underscore(v.id),
+            .c = strip_underscore(v.id()),
         });
         try selections.append(gpa, .{ .follow = ref.referrer_id });
         counter += 1;
@@ -410,7 +409,7 @@ fn render_back_refs_grouped(
     writer: *std.Io.Writer,
     gpa: std.mem.Allocator,
     model: *const CimDocument,
-    tp_opt: ?TP,
+    tp_opt: ?Overlay,
     referrers: []const refs.ReverseRef,
     selections: *std.ArrayList(Selection),
 ) !u32 {
@@ -528,9 +527,9 @@ fn append_colored_id_line(writer: *std.Io.Writer, line: []const u8) !void {
         return;
     };
     try writer.writeAll(line[0 .. colon + 1]);
-    try writer.writeAll(cli.ansi_yellow);
+    try writer.writeAll(print.color_code(.stdout, cli.ansi_yellow));
     try writer.writeAll(line[colon + 1 .. rdf_marker]);
-    try writer.writeAll(cli.ansi_default);
+    try writer.writeAll(print.color_code(.stdout, cli.ansi_default));
     try writer.writeAll(line[rdf_marker..]);
 }
 
@@ -548,9 +547,9 @@ fn append_colored_ref_line(writer: *std.Io.Writer, line: []const u8) !void {
         return;
     };
     try writer.writeAll(line[0 .. dot + 1]);
-    try writer.writeAll(cli.ansi_green);
+    try writer.writeAll(print.color_code(.stdout, cli.ansi_green));
     try writer.writeAll(line[dot + 1 .. rdf_marker]);
-    try writer.writeAll(cli.ansi_default);
+    try writer.writeAll(print.color_code(.stdout, cli.ansi_default));
     try writer.writeAll(line[rdf_marker..]);
 }
 
@@ -575,7 +574,7 @@ pub fn pick_from_prefix(
     gpa: std.mem.Allocator,
     interactive: InteractiveIo,
     prefix: []const u8,
-    matches: []const tag_index.CimObject,
+    matches: []const cim.CimObject,
 ) !?[]const u8 {
     assert(matches.len > 1);
 
@@ -632,7 +631,7 @@ fn render_prefix_screen(
     writer: *std.Io.Writer,
     gpa: std.mem.Allocator,
     prefix: []const u8,
-    matches: []const tag_index.CimObject,
+    matches: []const cim.CimObject,
     view: ListView,
     selections: *std.ArrayList(PickSel),
 ) !u32 {
@@ -654,7 +653,7 @@ fn render_prefix_grouped(
     writer: *std.Io.Writer,
     gpa: std.mem.Allocator,
     prefix: []const u8,
-    matches: []const tag_index.CimObject,
+    matches: []const cim.CimObject,
     selections: *std.ArrayList(PickSel),
 ) !u32 {
     var counts: std.StringHashMapUnmanaged(u32) = .empty;
@@ -662,10 +661,10 @@ fn render_prefix_grouped(
 
     var max_type_len: usize = 0;
     for (matches) |m| {
-        const gop = try counts.getOrPut(gpa, m.type_name);
+        const gop = try counts.getOrPut(gpa, m.type_name());
         if (!gop.found_existing) gop.value_ptr.* = 0;
         gop.value_ptr.* += 1;
-        if (max_type_len < m.type_name.len) max_type_len = m.type_name.len;
+        if (max_type_len < m.type_name().len) max_type_len = m.type_name().len;
     }
 
     try writer.print("\n  '{s}' matched {d} objects -- pick a type to drill in:\n", .{ prefix, matches.len });
@@ -702,15 +701,15 @@ fn render_prefix_flat(
     writer: *std.Io.Writer,
     gpa: std.mem.Allocator,
     prefix: []const u8,
-    matches: []const tag_index.CimObject,
+    matches: []const cim.CimObject,
     filter_type: ?[]const u8,
     selections: *std.ArrayList(PickSel),
 ) !u32 {
     var shown: usize = 0;
     var max_type_len: usize = 0;
     for (matches) |m| {
-        if (filter_type) |t| if (!std.mem.eql(u8, t, m.type_name)) continue;
-        if (m.type_name.len > max_type_len) max_type_len = m.type_name.len;
+        if (filter_type) |t| if (!std.mem.eql(u8, t, m.type_name())) continue;
+        if (m.type_name().len > max_type_len) max_type_len = m.type_name().len;
         shown += 1;
     }
 
@@ -723,15 +722,15 @@ fn render_prefix_flat(
     var counter: u32 = 1;
     const n_width = std.math.log10_int(shown + 1) + 1;
     for (matches) |m| {
-        if (filter_type) |t| if (!std.mem.eql(u8, t, m.type_name)) continue;
+        if (filter_type) |t| if (!std.mem.eql(u8, t, m.type_name())) continue;
         try writer.print("\n| {[n]d: >[e]} |  {[type]s: <[w]}  |  {[id]s}", .{
             .n = counter,
             .e = n_width,
-            .type = m.type_name,
+            .type = m.type_name(),
             .w = max_type_len,
-            .id = m.id,
+            .id = m.id(),
         });
-        try selections.append(gpa, .{ .pick = m.id });
+        try selections.append(gpa, .{ .pick = m.id() });
         counter += 1;
     }
     return counter;

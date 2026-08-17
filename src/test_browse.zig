@@ -2,15 +2,14 @@ const std = @import("std");
 const cim = @import("cim/cim.zig");
 const browse = @import("browse.zig");
 const CimDocument = cim.CimDocument;
-const TP = cim.TP;
-const SSH = cim.SSH;
+const Overlay = cim.Overlay;
 const refs = cim.refs;
 const CimObject = cim.CimObject;
 
 const BrowseFixture = struct {
     eq: CimDocument,
-    tp: ?TP = null,
-    ssh: ?SSH = null,
+    tp: ?Overlay = null,
+    ssh: ?Overlay = null,
 
     fn init(
         gpa: std.mem.Allocator,
@@ -20,8 +19,8 @@ const BrowseFixture = struct {
     ) !BrowseFixture {
         return .{
             .eq = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml)),
-            .tp = if (tp_xml) |xml| try TP.init(gpa, try gpa.dupe(u8, xml)) else null,
-            .ssh = if (ssh_xml) |xml| try SSH.init(gpa, try gpa.dupe(u8, xml)) else null,
+            .tp = if (tp_xml) |xml| try Overlay.init_tp(gpa, try gpa.dupe(u8, xml)) else null,
+            .ssh = if (ssh_xml) |xml| try Overlay.init_ssh(gpa, try gpa.dupe(u8, xml)) else null,
         };
     }
 
@@ -90,7 +89,7 @@ fn expectNotContains(haystack: []const u8, needle: []const u8) !void {
 fn combined_candidates(
     gpa: std.mem.Allocator,
     eq: *const CimDocument,
-    tp: TP,
+    tp: Overlay,
     prefix: []const u8,
 ) ![]const CimObject {
     return refs.collect_target_candidates(gpa, eq, tp, prefix);
@@ -216,7 +215,7 @@ test "prefix picker flat below threshold" {
     , null, null);
     defer fixture.deinit(gpa);
 
-    const matches = try fixture.eq.get_object_by_id_prefix(gpa, "P");
+    const matches = try fixture.eq.objects_by_id_prefix(gpa, "P");
     defer gpa.free(matches);
     const result = try run_pick_session(gpa, "P", matches, "1\n");
     defer gpa.free(result.output);
@@ -238,7 +237,7 @@ test "prefix picker EOF and q exit without a selection" {
     , null, null);
     defer fixture.deinit(gpa);
 
-    const matches = try fixture.eq.get_object_by_id_prefix(gpa, "P");
+    const matches = try fixture.eq.objects_by_id_prefix(gpa, "P");
     defer gpa.free(matches);
     var output: std.Io.Writer.Allocating = .init(gpa);
     defer output.deinit();
@@ -274,7 +273,7 @@ test "prefix picker grouped above threshold and drill-down" {
     , null, null);
     defer fixture.deinit(gpa);
 
-    const matches = try fixture.eq.get_object_by_id_prefix(gpa, "P");
+    const matches = try fixture.eq.objects_by_id_prefix(gpa, "P");
     defer gpa.free(matches);
     const result = try run_pick_session(gpa, "P", matches, "1\n1\n");
     defer gpa.free(result.output);
@@ -413,7 +412,7 @@ test "prefix picker can expand grouped overview to flat all" {
     , null, null);
     defer fixture.deinit(gpa);
 
-    const matches = try fixture.eq.get_object_by_id_prefix(gpa, "Q");
+    const matches = try fixture.eq.objects_by_id_prefix(gpa, "Q");
     defer gpa.free(matches);
     const result = try run_pick_session(gpa, "Q", matches, "3\n10\n");
     defer gpa.free(result.output);

@@ -4,7 +4,8 @@
 //! `rdf:about`, which is every CGMES profile (EQ, SSH, TP, SV, DL, DY, GL) and
 //! any other CIM document of that shape. Nothing here knows what a profile is;
 //! routing a file to a profile is cgmes/profile.zig's job, and the
-//! CGMES-specific overlay reads live in cgmes/ssh.zig and cgmes/tp.zig.
+//! CGMES-specific overlay reads live in cgmes/overlay.zig, which is this
+//! same parse plus an index on the normalized mRID.
 //!
 //! It is *not* a general RDF/XML parser, and does not resolve namespaces.
 //! Matching is on literal qualified names: `rdf:ID="`, `rdf:about="`, and a
@@ -18,14 +19,15 @@
 //!
 //! Three indexes are built in one pass over the tag boundaries: objects by
 //! document order, mRID to object, and type name to a contiguous range of
-//! objects (so `get_objects_by_type` is a slice, not a scan). Every string it
-//! hands back borrows from the `xml` buffer the document owns, so views stay
+//! objects (so `objects_by_type` is a slice, not a scan). Every string it
+//! hands back borrows from the `xml` buffer the document owns, so objects stay
 //! valid exactly as long as the document does.
 
 const std = @import("std");
 const tag_index = @import("tag_index.zig");
+const xml_scan = @import("xml_scan.zig");
 pub const CimObject = tag_index.CimObject;
-const TagBoundary = tag_index.TagBoundary;
+const TagBoundary = xml_scan.TagBoundary;
 const ids = @import("ids.zig");
 const cim_types = @import("cim_types.zig");
 
@@ -37,10 +39,44 @@ pub const CimDocument = struct {
     id_to_index: std.StringHashMap(u32),
     type_index: std.StringHashMap(TypeRange),
 
+    context: *tag_index.ObjectContext,
     xml: []const u8,
     boundaries: []TagBoundary,
 
     const TypeRange = struct { start: u32, len: u32 };
+    pub const TypeGroup = struct {
+        type_name: []const u8,
+        objects: []const CimObject,
+        /// Index of `objects[0]` in the document's object array; the counting
+        /// sort guarantees the group occupies `start..start + objects.len`.
+        /// Lets consumers key side tables by object index without touching
+        /// the storage layout.
+        start: u32,
+    };
+    pub const TypeGroupIterator = struct {
+        model: *const CimDocument,
+        next_index: u32 = 0,
+
+        pub fn next(self: *TypeGroupIterator) ?TypeGroup {
+            const objects_count: u32 = @intCast(self.model.objects.len);
+            if (self.next_index == objects_count) return null;
+            assert(self.next_index < objects_count);
+
+            const start = self.next_index;
+            const type_name = self.model.objects[start].type_name();
+            const range = self.model.type_index.get(type_name).?;
+            assert(range.start == start);
+            assert(range.len > 0);
+            const end = start + range.len;
+            assert(end <= objects_count);
+            self.next_index = end;
+
+            const objects = self.model.objects[start..end];
+            assert(std.mem.eql(u8, objects[0].type_name(), type_name));
+            assert(std.mem.eql(u8, objects[objects.len - 1].type_name(), type_name));
+            return .{ .type_name = type_name, .objects = objects, .start = start };
+        }
+    };
     pub const TypeCount = struct {
         type_name: []const u8,
         count: u32,
@@ -63,8 +99,14 @@ pub const CimDocument = struct {
         errdefer gpa.free(xml);
         if (xml.len == 0) return error.EmptyInput;
 
-        var boundaries = try tag_index.find_tag_boundaries(gpa, xml);
-        errdefer boundaries.deinit(gpa);
+        var boundary_list = try xml_scan.find_tag_boundaries(gpa, xml);
+        errdefer boundary_list.deinit(gpa);
+        const boundaries = try boundary_list.toOwnedSlice(gpa);
+        errdefer gpa.free(boundaries);
+
+        const context = try gpa.create(tag_index.ObjectContext);
+        errdefer gpa.destroy(context);
+        context.* = .{ .xml = xml, .boundaries = boundaries };
 
         var objects: std.ArrayList(tag_index.CimObject) = .empty;
         errdefer objects.deinit(gpa);
@@ -72,7 +114,7 @@ pub const CimDocument = struct {
         var id_to_index = std.StringHashMap(u32).init(gpa);
         errdefer id_to_index.deinit();
 
-        const closing_for = try tag_index.build_closing_index(gpa, xml, boundaries.items);
+        const closing_for = try xml_scan.build_closing_index(gpa, xml, boundaries);
         defer gpa.free(closing_for);
 
         // Pass 1: collect objects and count per type.
@@ -80,11 +122,11 @@ pub const CimDocument = struct {
         defer type_counts.deinit();
         var seen_ids = std.StringHashMap(void).init(gpa);
         defer seen_ids.deinit();
-        try seen_ids.ensureTotalCapacity(@intCast(boundaries.items.len));
+        try seen_ids.ensureTotalCapacity(@intCast(boundaries.len));
 
         var i: usize = 0;
-        while (i < boundaries.items.len) : (i += 1) {
-            const tag = boundaries.items[i];
+        while (i < boundaries.len) : (i += 1) {
+            const tag = boundaries[i];
             const id = extract_object_id_from_tag(xml, tag) orelse continue;
             const seen = seen_ids.getOrPutAssumeCapacity(id);
             if (seen.found_existing) {
@@ -94,14 +136,13 @@ pub const CimDocument = struct {
             seen.value_ptr.* = {};
 
             const object = try tag_index.CimObject.init(
-                xml,
-                boundaries.items,
+                context,
                 @intCast(i),
                 closing_for[i],
                 id,
             );
             try objects.append(gpa, object);
-            const entry = try type_counts.getOrPut(object.type_name);
+            const entry = try type_counts.getOrPut(object.type_name());
             if (!entry.found_existing) entry.value_ptr.* = 0;
             entry.value_ptr.* += 1;
 
@@ -134,7 +175,7 @@ pub const CimDocument = struct {
 
         // Pass 3: fill sorted_objects using write cursors.
         for (objects.items) |obj| {
-            const cursor = write_cursors.getPtr(obj.type_name).?;
+            const cursor = write_cursors.getPtr(obj.type_name()).?;
             sorted_objects[cursor.*] = obj;
             cursor.* += 1;
         }
@@ -154,8 +195,8 @@ pub const CimDocument = struct {
         // Build id_to_index from sorted positions.
         try id_to_index.ensureTotalCapacity(@intCast(sorted_objects.len));
         for (sorted_objects, 0..) |obj, index| {
-            assert(obj.id.len > 0);
-            id_to_index.putAssumeCapacity(obj.id, @intCast(index));
+            assert(obj.id().len > 0);
+            id_to_index.putAssumeCapacity(obj.id(), @intCast(index));
         }
         // Pairs with the duplicate-id rejection at the seen_ids check: every object must
         // have produced exactly one id_to_index entry.
@@ -165,8 +206,9 @@ pub const CimDocument = struct {
             .objects = sorted_objects,
             .id_to_index = id_to_index,
             .type_index = type_index,
+            .context = context,
             .xml = xml,
-            .boundaries = try boundaries.toOwnedSlice(gpa),
+            .boundaries = boundaries,
         };
     }
 
@@ -174,33 +216,34 @@ pub const CimDocument = struct {
         self.type_index.deinit();
         self.id_to_index.deinit();
         gpa.free(self.objects);
+        gpa.destroy(self.context);
         gpa.free(self.boundaries);
         gpa.free(self.xml);
     }
 
-    /// Bind a stored CimObject to this model's XML context for property access.
-    pub fn view(self: CimDocument, obj: CimObject) tag_index.CimObjectView {
-        // Catch the cross-document mix-up: passing a CimObject that was indexed against
-        // a different model's boundaries would otherwise slice into the wrong XML.
-        assert(obj.object_tag_idx < self.boundaries.len);
-        assert(obj.closing_tag_idx < self.boundaries.len);
-        assert(obj.closing_tag_idx >= obj.object_tag_idx);
-        assert(obj.id.len > 0);
-        return .{
-            .xml = self.xml,
-            .boundaries = self.boundaries,
-            .object_tag_idx = obj.object_tag_idx,
-            .closing_tag_idx = obj.closing_tag_idx,
-            .id = obj.id,
-            .type_name = obj.type_name,
-        };
+    /// The document's XML bytes. The stable accessor for consumers that need
+    /// the source text (header classification, offset-to-line mapping)
+    /// without coupling to the storage field.
+    pub fn source(self: *const CimDocument) []const u8 {
+        return self.xml;
     }
 
-    pub fn getObjectById(self: CimDocument, id: []const u8) ?tag_index.CimObjectView {
+    pub fn object_count(self: *const CimDocument) u32 {
+        assert(self.objects.len <= std.math.maxInt(u32));
+        return @intCast(self.objects.len);
+    }
+
+    pub fn object_at(self: *const CimDocument, index: u32) CimObject {
+        assert(index < self.objects.len);
+        return self.objects[index];
+    }
+
+    pub fn object_by_id(self: CimDocument, id: []const u8) ?CimObject {
         const idx = self.id_to_index.get(id) orelse return null;
-        const result = self.view(self.objects[idx]);
+        const result = self.objects[idx];
         // Pair with the index lookup: the stored object's id must round-trip.
-        assert(std.mem.eql(u8, result.id, id));
+        assert(result.context == self.context);
+        assert(std.mem.eql(u8, result.id(), id));
         return result;
     }
 
@@ -208,7 +251,7 @@ pub const CimDocument = struct {
     /// (grouped by type). The caller owns the returned slice. Matching follows
     /// `ids.id_prefix_matches`: literal startsWith (so FullModel `urn:uuid:...`
     /// ids resolve) plus a leading-underscore convenience for the rdf:ID form.
-    pub fn get_object_by_id_prefix(
+    pub fn objects_by_id_prefix(
         self: CimDocument,
         gpa: std.mem.Allocator,
         id_prefix: []const u8,
@@ -216,18 +259,25 @@ pub const CimDocument = struct {
         var matches: std.ArrayList(CimObject) = .empty;
         errdefer matches.deinit(gpa);
         for (self.objects) |obj| {
-            if (ids.id_prefix_matches(obj.id, id_prefix)) try matches.append(gpa, obj);
+            if (ids.id_prefix_matches(obj.id(), id_prefix)) try matches.append(gpa, obj);
         }
         const out = try matches.toOwnedSlice(gpa);
         // Postcondition pairs with the filter loop: a regression in the prefix
         // check would let foreign ids leak through.
-        for (out) |m| assert(ids.id_prefix_matches(m.id, id_prefix));
+        for (out) |m| assert(ids.id_prefix_matches(m.id(), id_prefix));
         return out;
     }
 
-    pub fn get_objects_by_type(self: CimDocument, type_name: []const u8) []const CimObject {
+    pub fn objects_by_type(self: CimDocument, type_name: []const u8) []const CimObject {
         const range = self.type_index.get(type_name) orelse return &[_]CimObject{};
         return self.objects[range.start .. range.start + range.len];
+    }
+
+    /// Iterate the document's allocation-free exact-type groups. Every object
+    /// appears once, and every returned slice contains one exact CIM type.
+    pub fn type_groups(self: *const CimDocument) TypeGroupIterator {
+        assert(self.objects.len <= std.math.maxInt(u32));
+        return .{ .model = self };
     }
 
     /// Count objects matching `requested_type`, including CIM subtypes.
@@ -257,13 +307,13 @@ pub const CimDocument = struct {
 
         var i: usize = 0;
         for (self.objects) |obj| {
-            if (!cim_types.matches_filter(obj.type_name, requested_type)) continue;
+            if (!cim_types.matches_filter(obj.type_name(), requested_type)) continue;
             assert(i < out.len);
             out[i] = obj;
             i += 1;
         }
         assert(i == out.len);
-        for (out) |obj| assert(cim_types.matches_filter(obj.type_name, requested_type));
+        for (out) |obj| assert(cim_types.matches_filter(obj.type_name(), requested_type));
         return out;
     }
 
@@ -293,7 +343,7 @@ pub const CimDocument = struct {
 
 fn extract_attribute_from_tag(xml: []const u8, tag: TagBoundary, comptime pattern: []const u8) ?[]const u8 {
     const tag_content = xml[tag.start..tag.end];
-    const pattern_offset = std.mem.indexOf(u8, tag_content, pattern) orelse return null;
+    const pattern_offset = xml_scan.find_needle_anchored(tag_content, pattern) orelse return null;
     const value_start = tag.start + pattern_offset + pattern.len;
     const value_end = std.mem.indexOfScalarPos(u8, xml, value_start, '"') orelse return null;
     if (value_end >= tag.end) return null;
@@ -368,8 +418,8 @@ test "EQ inventory retains identifiers that conversion cannot use" {
     ;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
-    try std.testing.expect(model.getObjectById("_") != null);
-    try std.testing.expect(model.getObjectById("__") != null);
+    try std.testing.expect(model.object_by_id("_") != null);
+    try std.testing.expect(model.object_by_id("__") != null);
 }
 
 test "EQ inventory ignores identifier-looking text in comments" {
@@ -382,7 +432,7 @@ test "EQ inventory ignores identifier-looking text in comments" {
     ;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
-    try std.testing.expect(model.getObjectById("_SS1") != null);
+    try std.testing.expect(model.object_by_id("_SS1") != null);
 }
 
 test "EQ normalizes local rdf:about identifiers for lookup and mRID resolution" {
@@ -391,9 +441,9 @@ test "EQ normalizes local rdf:about identifiers for lookup and mRID resolution" 
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
-    const view = model.getObjectById("_SSX") orelse return error.TestFailed;
+    const view = model.object_by_id("_SSX") orelse return error.TestFailed;
     try std.testing.expectEqualStrings("SSX", try view.mrid());
-    const matches = try model.get_object_by_id_prefix(gpa, "SSX");
+    const matches = try model.objects_by_id_prefix(gpa, "SSX");
     defer gpa.free(matches);
     try std.testing.expectEqual(@as(usize, 1), matches.len);
 }
@@ -423,63 +473,63 @@ const PREFIX_TEST_XML =
     \\</rdf:RDF>
 ;
 
-test "get_object_by_id_prefix returns a unique match" {
+test "objects_by_id_prefix returns a unique match" {
     const gpa = std.testing.allocator;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
     defer model.deinit(gpa);
 
-    const matches = try model.get_object_by_id_prefix(gpa, "xyz");
+    const matches = try model.objects_by_id_prefix(gpa, "xyz");
     defer gpa.free(matches);
     try std.testing.expectEqual(@as(usize, 1), matches.len);
-    try std.testing.expectEqualStrings("_xyz789", matches[0].id);
+    try std.testing.expectEqualStrings("_xyz789", matches[0].id());
 }
 
-test "get_object_by_id_prefix returns all ambiguous matches" {
+test "objects_by_id_prefix returns all ambiguous matches" {
     const gpa = std.testing.allocator;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
     defer model.deinit(gpa);
 
-    const matches = try model.get_object_by_id_prefix(gpa, "abc");
+    const matches = try model.objects_by_id_prefix(gpa, "abc");
     defer gpa.free(matches);
     try std.testing.expectEqual(@as(usize, 2), matches.len);
 
     var seen_123 = false;
     var seen_456 = false;
     for (matches) |m| {
-        if (std.mem.eql(u8, m.id, "_abc123")) seen_123 = true;
-        if (std.mem.eql(u8, m.id, "_abc456")) seen_456 = true;
+        if (std.mem.eql(u8, m.id(), "_abc123")) seen_123 = true;
+        if (std.mem.eql(u8, m.id(), "_abc456")) seen_456 = true;
     }
     try std.testing.expect(seen_123 and seen_456);
 }
 
-test "get_object_by_id_prefix returns empty slice on no match" {
+test "objects_by_id_prefix returns empty slice on no match" {
     const gpa = std.testing.allocator;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
     defer model.deinit(gpa);
 
-    const matches = try model.get_object_by_id_prefix(gpa, "nope");
+    const matches = try model.objects_by_id_prefix(gpa, "nope");
     defer gpa.free(matches);
     try std.testing.expectEqual(@as(usize, 0), matches.len);
 }
 
-test "get_object_by_id_prefix accepts prefix with explicit underscore" {
+test "objects_by_id_prefix accepts prefix with explicit underscore" {
     const gpa = std.testing.allocator;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
     defer model.deinit(gpa);
 
-    const matches = try model.get_object_by_id_prefix(gpa, "_xyz");
+    const matches = try model.objects_by_id_prefix(gpa, "_xyz");
     defer gpa.free(matches);
     try std.testing.expectEqual(@as(usize, 1), matches.len);
-    try std.testing.expectEqualStrings("_xyz789", matches[0].id);
+    try std.testing.expectEqualStrings("_xyz789", matches[0].id());
 }
 
-test "get_object_by_id_prefix matches full mRID" {
+test "objects_by_id_prefix matches full mRID" {
     const gpa = std.testing.allocator;
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, PREFIX_TEST_XML));
     defer model.deinit(gpa);
 
-    const matches = try model.get_object_by_id_prefix(gpa, "_abc123");
+    const matches = try model.objects_by_id_prefix(gpa, "_abc123");
     defer gpa.free(matches);
     try std.testing.expectEqual(@as(usize, 1), matches.len);
-    try std.testing.expectEqualStrings("_abc123", matches[0].id);
+    try std.testing.expectEqualStrings("_abc123", matches[0].id());
 }

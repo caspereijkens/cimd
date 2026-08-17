@@ -22,9 +22,18 @@ const io_read = @import("io/read.zig");
 const model_set = @import("model_set.zig");
 const rule_set = @import("shacl/rule_set.zig");
 
-pub const ansi_green = "\x1b[92m";
+// Two palettes on purpose, not two spellings of one. The base colors mark
+// *syntax* in browsed XML (identifiers, reference attributes); the bright
+// colors mark *severity* in diagnostics. Keeping them apart means a severity
+// word is never mistaken for highlighted markup on a screen showing both.
+// Every write of these goes through `print.color_code`, so `--color never`
+// and NO_COLOR suppress them all.
 pub const ansi_default = "\x1b[0m";
+pub const ansi_green = "\x1b[92m";
 pub const ansi_yellow = "\x1b[33m";
+pub const ansi_bright_red = "\x1b[91m";
+pub const ansi_bright_yellow = "\x1b[93m";
+pub const ansi_bright_cyan = "\x1b[96m";
 
 const path_separator = if (builtin.os.tag == .windows) "\\" else "/";
 
@@ -40,8 +49,8 @@ const help_main = std.fmt.comptimePrint(
     \\A high-performance CGMES file parser and analysis tool.
     \\
     \\Input limits:
-    \\  XML data: {[xml_limit]s} total after unzip (up to 8 inputs,
-    \\    16 XML parts per ZIP).
+    \\  XML data: {[xml_limit]s} total after unzip 
+    \\  (up to 8 inputs, 16 XML parts per ZIP).
     \\  SHACL rule files: {[rules_limit]s} after unzip.
     \\  Non-interactive commands accept '-' as the primary data path to read
     \\  uncompressed XML from stdin.
@@ -58,6 +67,18 @@ const help_main = std.fmt.comptimePrint(
     \\  qocdc      Run Quality of CGMES Datasets and Calculations checks
     \\  version    Print version information
     \\
+    \\Global options:
+    \\      --stats <when>   When to print human-readable summaries to stderr:
+    \\                       auto (default) prints them only when stdout is a
+    \\                       terminal, so piped or redirected data stays clean;
+    \\                       always prints them regardless (useful in CI logs);
+    \\                       never suppresses them. Errors are always shown.
+    \\      --color <when>   Color terminal output -- qocdc severities and
+    \\                       browsed XML: auto (default) colors a stream only
+    \\                       when it is a terminal, so redirected output stays
+    \\                       plain; always and never force it either way.
+    \\                       NO_COLOR disables auto color when it is non-empty.
+    \\
     \\Use 'cimd <command> --help' for more information about a command.
     \\
 ,
@@ -72,6 +93,10 @@ const help_convert = std.fmt.comptimePrint(
     \\
     \\Convert a CGMES EQ profile to JIIDM JSON format.
     \\Output is written to stdout unless --output is given.
+    \\
+    \\A network summary is printed to stderr when stdout is a terminal, so
+    \\`cimd convert eq.zip | jq` emits nothing but JSON. See --stats in
+    \\`cimd --help` to force it on or off.
     \\
     \\Arguments:
     \\  <file>...               CGMES parts or a bundle (XML or ZIP)
@@ -409,6 +434,8 @@ const help_version =
     \\
 ;
 
+const unknown_option_message = ": unknown option '{s}', use --help for usage";
+
 // ── Command types ─────────────────────────────────────────────────────────────
 
 pub const Command = union(enum) {
@@ -532,7 +559,7 @@ pub fn parse_args(io: std.Io, args: *std.process.Args.Iterator) !Command {
     const command_name = args.next() orelse
         print.stderr(io, "subcommand required\n\n" ++ help_main, .{});
 
-    if (std.mem.eql(u8, command_name, "-h") or std.mem.eql(u8, command_name, "--help")) {
+    if (std.mem.eql(u8, command_name, "--help")) {
         try print.write(io, help_main);
         std.process.exit(0);
     }
@@ -658,7 +685,7 @@ fn parse_convert(io: std.Io, args: *std.process.Args.Iterator) !Command {
     var bus_branch: bool = false;
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+        if (std.mem.eql(u8, arg, "--help")) {
             try print.write(io, help_convert);
             std.process.exit(0);
         }
@@ -672,8 +699,10 @@ fn parse_convert(io: std.Io, args: *std.process.Args.Iterator) !Command {
             output_path = take_output_arg(io, args, command_name);
         } else if (std.mem.eql(u8, arg, "--bus-branch")) {
             bus_branch = true;
+        } else if (parse_output_flag(io, args, command_name, arg)) {
+            continue;
         } else if (is_flag(arg)) {
-            print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
+            print.stderr(io, command_name ++ unknown_option_message, .{arg});
         } else {
             inputs.add_positional(io, command_name, arg);
         }
@@ -693,7 +722,7 @@ fn parse_browse(io: std.Io, args: *std.process.Args.Iterator) !Command {
     var mrid: ?[]const u8 = null;
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+        if (std.mem.eql(u8, arg, "--help")) {
             try print.write(io, help_browse);
             std.process.exit(0);
         }
@@ -703,8 +732,10 @@ fn parse_browse(io: std.Io, args: *std.process.Args.Iterator) !Command {
             inputs.add_flagged(io, args, command_name, "--ssh", .ssh);
         } else if (parse_kind_flag(&inputs, io, args, command_name, arg)) {
             continue;
+        } else if (parse_output_flag(io, args, command_name, arg)) {
+            continue;
         } else if (is_flag(arg)) {
-            print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
+            print.stderr(io, command_name ++ unknown_option_message, .{arg});
         } else if (is_cgmes_operand(arg)) {
             inputs.add_positional(io, command_name, arg);
         } else if (mrid == null) {
@@ -736,7 +767,7 @@ fn parse_get(io: std.Io, args: *std.process.Args.Iterator) !Command {
     var json = false;
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+        if (std.mem.eql(u8, arg, "--help")) {
             try print.write(io, help_get);
             std.process.exit(0);
         }
@@ -750,8 +781,10 @@ fn parse_get(io: std.Io, args: *std.process.Args.Iterator) !Command {
             continue;
         } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
             json = true;
+        } else if (parse_output_flag(io, args, command_name, arg)) {
+            continue;
         } else if (is_flag(arg)) {
-            print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
+            print.stderr(io, command_name ++ unknown_option_message, .{arg});
         } else if (is_cgmes_operand(arg)) {
             inputs.add_positional(io, command_name, arg);
         } else if (mrid == null) {
@@ -784,7 +817,7 @@ fn parse_refs(io: std.Io, args: *std.process.Args.Iterator) !Command {
     var json = false;
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+        if (std.mem.eql(u8, arg, "--help")) {
             try print.write(io, help_refs);
             std.process.exit(0);
         }
@@ -796,8 +829,10 @@ fn parse_refs(io: std.Io, args: *std.process.Args.Iterator) !Command {
             continue;
         } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
             json = true;
+        } else if (parse_output_flag(io, args, command_name, arg)) {
+            continue;
         } else if (is_flag(arg)) {
-            print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
+            print.stderr(io, command_name ++ unknown_option_message, .{arg});
         } else if (is_cgmes_operand(arg)) {
             inputs.add_positional(io, command_name, arg);
         } else if (mrid == null) {
@@ -825,7 +860,7 @@ fn parse_types(io: std.Io, args: *std.process.Args.Iterator) !Command {
     var json = false;
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+        if (std.mem.eql(u8, arg, "--help")) {
             try print.write(io, help_types);
             std.process.exit(0);
         }
@@ -833,8 +868,10 @@ fn parse_types(io: std.Io, args: *std.process.Args.Iterator) !Command {
             continue;
         } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
             json = true;
+        } else if (parse_output_flag(io, args, command_name, arg)) {
+            continue;
         } else if (is_flag(arg)) {
-            print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
+            print.stderr(io, command_name ++ unknown_option_message, .{arg});
         } else {
             inputs.add_positional(io, command_name, arg);
         }
@@ -860,7 +897,7 @@ fn parse_diff(io: std.Io, args: *std.process.Args.Iterator) !Command {
     var json = false;
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+        if (std.mem.eql(u8, arg, "--help")) {
             try print.write(io, help_diff);
             std.process.exit(0);
         }
@@ -881,8 +918,10 @@ fn parse_diff(io: std.Io, args: *std.process.Args.Iterator) !Command {
             summary = true;
         } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
             json = true;
+        } else if (parse_output_flag(io, args, command_name, arg)) {
+            continue;
         } else if (is_flag(arg)) {
-            print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
+            print.stderr(io, command_name ++ unknown_option_message, .{arg});
         } else {
             if (sides_count >= sides.len) print.stderr(io, command_name ++ ": exactly two side operands are required", .{});
             validate_path(io, arg, command_name);
@@ -984,7 +1023,7 @@ fn parse_topology(io: std.Io, args: *std.process.Args.Iterator) !Command {
     var output_path: ?[]const u8 = null;
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+        if (std.mem.eql(u8, arg, "--help")) {
             try print.write(io, help_topology);
             std.process.exit(0);
         }
@@ -994,8 +1033,10 @@ fn parse_topology(io: std.Io, args: *std.process.Args.Iterator) !Command {
             continue;
         } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
             output_path = take_output_arg(io, args, command_name);
+        } else if (parse_output_flag(io, args, command_name, arg)) {
+            continue;
         } else if (is_flag(arg)) {
-            print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
+            print.stderr(io, command_name ++ unknown_option_message, .{arg});
         } else {
             inputs.add_positional(io, command_name, arg);
         }
@@ -1017,7 +1058,7 @@ fn parse_validate(io: std.Io, args: *std.process.Args.Iterator) !Command {
     var rules_paths: [Command.Validate.rules_count_max][]const u8 = undefined;
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+        if (std.mem.eql(u8, arg, "--help")) {
             try print.write(io, help_validate);
             std.process.exit(0);
         }
@@ -1044,8 +1085,10 @@ fn parse_validate(io: std.Io, args: *std.process.Args.Iterator) !Command {
             output_path = take_output_arg(io, args, command_name);
         } else if (std.mem.eql(u8, arg, "--list-skipped")) {
             list_skipped = true;
+        } else if (parse_output_flag(io, args, command_name, arg)) {
+            continue;
         } else if (is_flag(arg)) {
-            print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
+            print.stderr(io, command_name ++ unknown_option_message, .{arg});
         } else {
             inputs.add_positional(io, command_name, arg);
         }
@@ -1071,12 +1114,15 @@ fn parse_qocdc(io: std.Io, args: *std.process.Args.Iterator) !Command {
     var eq_path: ?[]const u8 = null;
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+        if (std.mem.eql(u8, arg, "--help")) {
             try print.write(io, help_qocdc);
             std.process.exit(0);
         }
+        if (parse_output_flag(io, args, command_name, arg)) {
+            continue;
+        }
         if (is_flag(arg)) {
-            print.stderr(io, command_name ++ ": unknown option '{s}'", .{arg});
+            print.stderr(io, command_name ++ unknown_option_message, .{arg});
         } else {
             if (eq_path != null) print.stderr(io, command_name ++ ": unexpected argument '{s}'", .{arg});
             validate_path(io, arg, command_name);
@@ -1092,11 +1138,12 @@ fn parse_qocdc(io: std.Io, args: *std.process.Args.Iterator) !Command {
     return .{ .qocdc = .{ .eq_path = eq_path.? } };
 }
 fn parse_version(io: std.Io, args: *std.process.Args.Iterator) !Command {
+    const command_name = "version";
     var verbose = false;
     var json = false;
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+        if (std.mem.eql(u8, arg, "--help")) {
             try print.write(io, help_version);
             std.process.exit(0);
         }
@@ -1104,8 +1151,10 @@ fn parse_version(io: std.Io, args: *std.process.Args.Iterator) !Command {
             verbose = true;
         } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--json")) {
             json = true;
+        } else if (parse_output_flag(io, args, command_name, arg)) {
+            continue;
         } else {
-            print.stderr(io, "version: unknown option '{s}'", .{arg});
+            print.stderr(io, command_name ++ unknown_option_message, .{arg});
         }
     }
 
@@ -1180,6 +1229,48 @@ fn take_output_arg(
 
 inline fn is_flag(arg: []const u8) bool {
     return arg.len > 1 and arg[0] == '-';
+}
+
+/// Match either process-wide output-policy flag. Keeping this dispatch in one
+/// helper makes their documented global scope exhaustive across parse loops.
+fn parse_output_flag(
+    io: std.Io,
+    args: *std.process.Args.Iterator,
+    comptime command_name: []const u8,
+    arg: []const u8,
+) bool {
+    if (parse_mode_flag(print.StatsMode, io, args, command_name, arg, "--stats")) |mode| {
+        print.set_stats_mode(mode);
+        return true;
+    }
+    if (parse_mode_flag(print.ColorMode, io, args, command_name, arg, "--color")) |mode| {
+        print.set_color_mode(mode);
+        return true;
+    }
+    return false;
+}
+
+fn parse_mode_flag(
+    comptime Mode: type,
+    io: std.Io,
+    args: *std.process.Args.Iterator,
+    comptime command_name: []const u8,
+    arg: []const u8,
+    comptime flag: []const u8,
+) ?Mode {
+    const values = "auto, always or never";
+    const value = if (std.mem.eql(u8, arg, flag))
+        take_value_arg(io, args, command_name, flag, values)
+    else if (std.mem.startsWith(u8, arg, flag ++ "="))
+        arg[flag.len + 1 ..]
+    else
+        return null;
+
+    return std.meta.stringToEnum(Mode, value) orelse print.stderr(
+        io,
+        command_name ++ ": " ++ flag ++ ": expected " ++ values ++ ", got '{s}'",
+        .{value},
+    );
 }
 
 fn validate_path(io: std.Io, path: []const u8, comptime command_name: []const u8) void {
