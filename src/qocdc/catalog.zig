@@ -84,6 +84,13 @@ pub const Rule = enum(u8) {
     RCCXValues2,
     RCCXValues3,
     PhaseCodeGround,
+    PowerTransformerEndRatedU,
+    SMQLimits1,
+    SMPLimits,
+    CurveXValues,
+    RCCXValues4,
+    RCandTCCcontrollingObjects,
+    WindingConnectionAngle,
 };
 
 pub const rule_count = @typeInfo(Rule).@"enum".fields.len;
@@ -111,11 +118,9 @@ pub const Severity = enum(u8) {
 /// the individual finding, so a severity is never stored per violation and no
 /// predicate decides one: the report derives it here at render time.
 ///
-/// Every rule currently reports as an error -- the all-or-nothing verdict
-/// this validator had before severities existed, so classifying the inventory
-/// against the v4.1.4 severity column changes behaviour rather than
-/// introducing it. Reclassifying a rule is moving its tag to the `.warning`
-/// or `.info` arm. The switch is exhaustive on purpose: a new rule without a
+/// Rules retain the error verdict this validator had before severities existed
+/// unless their v4.1.4 classification places them in the `.warning` or `.info`
+/// arm below. The switch is exhaustive on purpose: a new rule without a
 /// severity is a compile error, which is what makes "every rule has a
 /// severity" a property of the build rather than of review.
 pub fn severity(rule: Rule) Severity {
@@ -192,6 +197,16 @@ pub fn severity(rule: Rule) Severity {
         .RCCXValues3,
         .PhaseCodeGround,
         => .@"error",
+        .PowerTransformerEndRatedU,
+        .SMQLimits1,
+        .SMPLimits,
+        .CurveXValues,
+        .RCCXValues4,
+        // The corresponding CGMES v3 constraint is a violation; this QoCDC
+        // catalog rule is intentionally reported as a warning.
+        .RCandTCCcontrollingObjects,
+        .WindingConnectionAngle,
+        => .warning,
     };
 }
 
@@ -301,6 +316,20 @@ pub fn message(rule: Rule) []const u8 {
             "CurveData x values for its machine type",
         .RCCXValues3 => "invalid reactive capability curve data for a cim:SynchronousMachine",
         .PhaseCodeGround => "Grounding equipment does not have phase code N",
+        .PowerTransformerEndRatedU => "cim:PowerTransformerEnd.ratedU is not greater " ++
+            "than zero",
+        .SMQLimits1 => "cim:SynchronousMachine.maxQ is not greater than or equal to " ++
+            "cim:SynchronousMachine.minQ",
+        .SMPLimits => "The active power limit values do not match the " ++
+            "cim:SynchronousMachine.type.",
+        .CurveXValues => "Some points in the reactive capability curve have " ++
+            "the same x value.",
+        .RCCXValues4 => "Invalid reactive capability curve data for a " ++
+            "cim:SynchronousMachine.",
+        .RCandTCCcontrollingObjects => "cim:RegulatingControl or " ++
+            "cim:TapChangerControl without controlling objects.",
+        .WindingConnectionAngle => "cim:PhaseTapChangerAsymmetrical." ++
+            "windingConnectionAngle value is not one of the defined values.",
     };
 }
 

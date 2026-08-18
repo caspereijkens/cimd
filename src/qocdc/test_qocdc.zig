@@ -666,6 +666,101 @@ test "SynchronousCondenser accepts an unassociated condenser and associated gene
     try expect_clean(&run);
 }
 
+// ── SMQLimits1 ──────────────────────────────────────────────────────────
+
+test "SMQLimits1 accepts absent, one-sided, equal, and ordered limits" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:SynchronousMachine rdf:ID="_neither"/>
+        \\  <cim:SynchronousMachine rdf:ID="_min_only">
+        \\    <cim:SynchronousMachine.minQ>-50</cim:SynchronousMachine.minQ>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_max_only">
+        \\    <cim:SynchronousMachine.maxQ>60</cim:SynchronousMachine.maxQ>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_equal">
+        \\    <cim:SynchronousMachine.minQ>25</cim:SynchronousMachine.minQ>
+        \\    <cim:SynchronousMachine.maxQ>25</cim:SynchronousMachine.maxQ>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_negative_ordered">
+        \\    <cim:SynchronousMachine.minQ>-60</cim:SynchronousMachine.minQ>
+        \\    <cim:SynchronousMachine.maxQ>-20</cim:SynchronousMachine.maxQ>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_cross_zero">
+        \\    <cim:SynchronousMachine.minQ>-50</cim:SynchronousMachine.minQ>
+        \\    <cim:SynchronousMachine.maxQ>60</cim:SynchronousMachine.maxQ>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:AsynchronousMachine rdf:ID="_unrelated">
+        \\    <cim:SynchronousMachine.minQ>10</cim:SynchronousMachine.minQ>
+        \\    <cim:SynchronousMachine.maxQ>-10</cim:SynchronousMachine.maxQ>
+        \\  </cim:AsynchronousMachine>
+        \\</rdf:RDF>
+    , .SMQLimits1);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "SMQLimits1 rejects maxQ below minQ using generation sign convention" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:SynchronousMachine rdf:ID="_cross_zero_reversed">
+        \\    <cim:SynchronousMachine.minQ>60</cim:SynchronousMachine.minQ>
+        \\    <cim:SynchronousMachine.maxQ>-50</cim:SynchronousMachine.maxQ>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_negative_reversed">
+        \\    <cim:SynchronousMachine.minQ>-10</cim:SynchronousMachine.minQ>
+        \\    <cim:SynchronousMachine.maxQ>-50</cim:SynchronousMachine.maxQ>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_positive_reversed">
+        \\    <cim:SynchronousMachine.minQ>30</cim:SynchronousMachine.minQ>
+        \\    <cim:SynchronousMachine.maxQ>20</cim:SynchronousMachine.maxQ>
+        \\  </cim:SynchronousMachine>
+        \\</rdf:RDF>
+    , .SMQLimits1);
+    defer run.deinit();
+    try expect_rule(&run, .SMQLimits1, 3);
+    try expect_violation(&run, .SMQLimits1, "_cross_zero_reversed");
+    try expect_violation(&run, .SMQLimits1, "_negative_reversed");
+    try expect_violation(&run, .SMQLimits1, "_positive_reversed");
+}
+
+test "SMQLimits1 rejects provided limits that are not finite numbers" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:SynchronousMachine rdf:ID="_empty_min">
+        \\    <cim:SynchronousMachine.minQ/>
+        \\    <cim:SynchronousMachine.maxQ>1</cim:SynchronousMachine.maxQ>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_blank_max">
+        \\    <cim:SynchronousMachine.minQ>-1</cim:SynchronousMachine.minQ>
+        \\    <cim:SynchronousMachine.maxQ> </cim:SynchronousMachine.maxQ>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_malformed_min_only">
+        \\    <cim:SynchronousMachine.minQ>unknown</cim:SynchronousMachine.minQ>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_malformed_max_only">
+        \\    <cim:SynchronousMachine.maxQ>unknown</cim:SynchronousMachine.maxQ>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_nan_min">
+        \\    <cim:SynchronousMachine.minQ>nan</cim:SynchronousMachine.minQ>
+        \\    <cim:SynchronousMachine.maxQ>1</cim:SynchronousMachine.maxQ>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_infinite_max">
+        \\    <cim:SynchronousMachine.minQ>-1</cim:SynchronousMachine.minQ>
+        \\    <cim:SynchronousMachine.maxQ>inf</cim:SynchronousMachine.maxQ>
+        \\  </cim:SynchronousMachine>
+        \\</rdf:RDF>
+    , .SMQLimits1);
+    defer run.deinit();
+    try expect_rule(&run, .SMQLimits1, 6);
+    try expect_violation(&run, .SMQLimits1, "_empty_min");
+    try expect_violation(&run, .SMQLimits1, "_blank_max");
+    try expect_violation(&run, .SMQLimits1, "_malformed_min_only");
+    try expect_violation(&run, .SMQLimits1, "_malformed_max_only");
+    try expect_violation(&run, .SMQLimits1, "_nan_min");
+    try expect_violation(&run, .SMQLimits1, "_infinite_max");
+}
+
 // ── SMQLimits2 ───────────────────────────────────────────────────────────
 
 test "SMQLimits2 accepts a complete minQ and maxQ pair" {
@@ -731,6 +826,258 @@ test "SMQLimits2 rejects incomplete limits and unusable curve references" {
     try expect_violation(&run, .SMQLimits2, "_empty_curve");
     try expect_violation(&run, .SMQLimits2, "_dangling_curve");
     try expect_violation(&run, .SMQLimits2, "_wrong_curve_type");
+}
+
+// ── SMPLimits ──────────────────────────────────────────────────────────
+
+const SynchronousMachinePowerLimitsCase = struct {
+    machine_type: []const u8,
+    min_operating_power: ?[]const u8,
+    max_operating_power: ?[]const u8,
+    generating_unit_type: []const u8 = "GeneratingUnit",
+};
+
+fn synchronous_machine_power_limits_case_xml(
+    buffer: []u8,
+    case: SynchronousMachinePowerLimitsCase,
+) ![]const u8 {
+    var writer = std.Io.Writer.fixed(buffer);
+    try writer.print("<rdf:RDF><cim:{s} rdf:ID=\"_unit\">", .{case.generating_unit_type});
+    if (case.min_operating_power) |value| {
+        try writer.print(
+            "<cim:GeneratingUnit.minOperatingP>{s}</cim:GeneratingUnit.minOperatingP>",
+            .{value},
+        );
+    }
+    if (case.max_operating_power) |value| {
+        try writer.print(
+            "<cim:GeneratingUnit.maxOperatingP>{s}</cim:GeneratingUnit.maxOperatingP>",
+            .{value},
+        );
+    }
+    try writer.print(
+        "</cim:{s}><cim:SynchronousMachine rdf:ID=\"_machine\">" ++
+            "<cim:SynchronousMachine.type " ++
+            "rdf:resource=\"#SynchronousMachineKind.{s}\"/>" ++
+            "<cim:RotatingMachine.GeneratingUnit rdf:resource=\"#_unit\"/>" ++
+            "</cim:SynchronousMachine></rdf:RDF>",
+        .{ case.generating_unit_type, case.machine_type },
+    );
+    return writer.buffered();
+}
+
+test "SMPLimits accepts every supported machine type at its boundaries" {
+    const cases = [_]SynchronousMachinePowerLimitsCase{
+        .{ .machine_type = "generator", .min_operating_power = "0", .max_operating_power = "1" },
+        .{ .machine_type = "generator", .min_operating_power = "5", .max_operating_power = "5" },
+        .{
+            .machine_type = "generatorOrCondenser",
+            .min_operating_power = "0",
+            .max_operating_power = "10",
+            .generating_unit_type = "HydroGeneratingUnit",
+        },
+        .{ .machine_type = "motor", .min_operating_power = "-1", .max_operating_power = "0" },
+        .{ .machine_type = "motor", .min_operating_power = "-100", .max_operating_power = "-5" },
+        .{
+            .machine_type = "motorOrCondenser",
+            .min_operating_power = "-5",
+            .max_operating_power = "-5",
+        },
+        .{
+            .machine_type = "generatorOrMotor",
+            .min_operating_power = "-1",
+            .max_operating_power = "1",
+        },
+        .{
+            .machine_type = "generatorOrCondenserOrMotor",
+            .min_operating_power = "-100",
+            .max_operating_power = "5",
+        },
+    };
+    var buffer: [2048]u8 = undefined;
+    for (cases) |case| {
+        var run = try run_rule(
+            try synchronous_machine_power_limits_case_xml(&buffer, case),
+            .SMPLimits,
+        );
+        defer run.deinit();
+        try expect_clean(&run);
+    }
+}
+
+test "SMPLimits rejects every sign and ordering violation" {
+    const cases = [_]SynchronousMachinePowerLimitsCase{
+        .{ .machine_type = "generator", .min_operating_power = "-1", .max_operating_power = "1" },
+        .{ .machine_type = "generator", .min_operating_power = "0", .max_operating_power = "0" },
+        .{ .machine_type = "generator", .min_operating_power = "10", .max_operating_power = "5" },
+        .{
+            .machine_type = "generatorOrCondenser",
+            .min_operating_power = "0",
+            .max_operating_power = "-1",
+        },
+        .{ .machine_type = "motor", .min_operating_power = "0", .max_operating_power = "0" },
+        .{ .machine_type = "motor", .min_operating_power = "-1", .max_operating_power = "1" },
+        .{ .machine_type = "motor", .min_operating_power = "-5", .max_operating_power = "-10" },
+        .{
+            .machine_type = "motorOrCondenser",
+            .min_operating_power = "1",
+            .max_operating_power = "0",
+        },
+        .{
+            .machine_type = "generatorOrMotor",
+            .min_operating_power = "0",
+            .max_operating_power = "1",
+        },
+        .{
+            .machine_type = "generatorOrMotor",
+            .min_operating_power = "-1",
+            .max_operating_power = "0",
+        },
+        .{
+            .machine_type = "generatorOrCondenserOrMotor",
+            .min_operating_power = "1",
+            .max_operating_power = "2",
+        },
+    };
+    var buffer: [2048]u8 = undefined;
+    for (cases) |case| {
+        var run = try run_rule(
+            try synchronous_machine_power_limits_case_xml(&buffer, case),
+            .SMPLimits,
+        );
+        defer run.deinit();
+        try expect_rule(&run, .SMPLimits, 1);
+        try expect_violation(&run, .SMPLimits, "_machine");
+    }
+}
+
+test "SMPLimits rejects missing, malformed, and non-finite associated unit bounds" {
+    const cases = [_]SynchronousMachinePowerLimitsCase{
+        .{ .machine_type = "generator", .min_operating_power = null, .max_operating_power = "1" },
+        .{ .machine_type = "generator", .min_operating_power = "0", .max_operating_power = null },
+        .{ .machine_type = "motor", .min_operating_power = "", .max_operating_power = "0" },
+        .{ .machine_type = "motor", .min_operating_power = "-1", .max_operating_power = "unknown" },
+        .{
+            .machine_type = "generatorOrMotor",
+            .min_operating_power = "nan",
+            .max_operating_power = "1",
+        },
+        .{
+            .machine_type = "generatorOrMotor",
+            .min_operating_power = "-1",
+            .max_operating_power = "inf",
+        },
+    };
+    var buffer: [2048]u8 = undefined;
+    for (cases) |case| {
+        var run = try run_rule(
+            try synchronous_machine_power_limits_case_xml(&buffer, case),
+            .SMPLimits,
+        );
+        defer run.deinit();
+        try expect_rule(&run, .SMPLimits, 1);
+        try expect_violation(&run, .SMPLimits, "_machine");
+    }
+}
+
+test "SMPLimits joins each machine to its own generating-unit subtype" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:HydroGeneratingUnit rdf:ID="_generator_unit">
+        \\    <cim:GeneratingUnit.minOperatingP>0</cim:GeneratingUnit.minOperatingP>
+        \\    <cim:GeneratingUnit.maxOperatingP>10</cim:GeneratingUnit.maxOperatingP>
+        \\  </cim:HydroGeneratingUnit>
+        \\  <cim:ThermalGeneratingUnit rdf:ID="_motor_unit">
+        \\    <cim:GeneratingUnit.minOperatingP>-10</cim:GeneratingUnit.minOperatingP>
+        \\    <cim:GeneratingUnit.maxOperatingP>0</cim:GeneratingUnit.maxOperatingP>
+        \\  </cim:ThermalGeneratingUnit>
+        \\  <cim:SynchronousMachine rdf:ID="_generator">
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.generator"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_generator_unit"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_motor">
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.motor"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_motor_unit"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_wrong_unit">
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.motor"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_generator_unit"/>
+        \\  </cim:SynchronousMachine>
+        \\</rdf:RDF>
+    , .SMPLimits);
+    defer run.deinit();
+    try expect_rule(&run, .SMPLimits, 1);
+    try expect_violation(&run, .SMPLimits, "_wrong_unit");
+}
+
+test "SMPLimits and RCCXValues3 share generating-unit bounds" {
+    var mask = qocdc.RuleMask.initEmpty();
+    mask.insert(.SMPLimits);
+    mask.insert(.RCCXValues3);
+    var run = try run_rules(
+        \\<rdf:RDF>
+        \\  <cim:GeneratingUnit rdf:ID="_unit">
+        \\    <cim:GeneratingUnit.minOperatingP>0</cim:GeneratingUnit.minOperatingP>
+        \\    <cim:GeneratingUnit.maxOperatingP>10</cim:GeneratingUnit.maxOperatingP>
+        \\  </cim:GeneratingUnit>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_curve"/>
+        \\  <cim:SynchronousMachine rdf:ID="_machine">
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.motor"/>
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_curve"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_unit"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:CurveData rdf:ID="_point">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve"/>
+        \\    <cim:CurveData.xvalue>20</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , mask);
+    defer run.deinit();
+    try std.testing.expectEqual(@as(u32, 1), run.report.count(.SMPLimits));
+    try std.testing.expectEqual(@as(u32, 1), run.report.count(.RCCXValues3));
+    try std.testing.expectEqual(@as(u64, 2), run.report.total());
+    try expect_violation(&run, .SMPLimits, "_machine");
+    try expect_violation(&run, .RCCXValues3, "_machine");
+}
+
+test "SMPLimits ignores machines outside its association and type scope" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:GeneratingUnit rdf:ID="_invalid_unit">
+        \\    <cim:GeneratingUnit.minOperatingP>10</cim:GeneratingUnit.minOperatingP>
+        \\    <cim:GeneratingUnit.maxOperatingP>-10</cim:GeneratingUnit.maxOperatingP>
+        \\  </cim:GeneratingUnit>
+        \\  <cim:BaseVoltage rdf:ID="_wrong_type"/>
+        \\  <cim:SynchronousMachine rdf:ID="_no_unit">
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.generator"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_dangling_unit">
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.generator"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_missing"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_wrong_unit_type">
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.generator"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_wrong_type"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_condenser">
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.condenser"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_invalid_unit"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_missing_type">
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_invalid_unit"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_unknown_type">
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.unknown"/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_invalid_unit"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_empty_type">
+        \\    <cim:SynchronousMachine.type rdf:resource=""/>
+        \\    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_invalid_unit"/>
+        \\  </cim:SynchronousMachine>
+        \\</rdf:RDF>
+    , .SMPLimits);
+    defer run.deinit();
+    try expect_clean(&run);
 }
 
 // ── RatedS ────────────────────────────────────────────────────────────────
@@ -836,6 +1183,88 @@ test "RatedS requires the property belonging to each target class" {
     try expect_rule(&run, .RatedS, 2);
     try expect_violation(&run, .RatedS, "_rotating_wrong_property");
     try expect_violation(&run, .RatedS, "_transformer_wrong_property");
+}
+
+// ── PowerTransformerEndRatedU ──────────────────────────────────────────────
+
+test "PowerTransformerEndRatedU accepts positive finite values" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:PowerTransformerEnd rdf:ID="_integer">
+        \\    <cim:PowerTransformerEnd.ratedU>1</cim:PowerTransformerEnd.ratedU>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PowerTransformerEnd rdf:ID="_decimal">
+        \\    <cim:PowerTransformerEnd.ratedU>
+        \\      400.5
+        \\    </cim:PowerTransformerEnd.ratedU>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PowerTransformerEnd rdf:ID="_scientific">
+        \\    <cim:PowerTransformerEnd.ratedU>1e-6</cim:PowerTransformerEnd.ratedU>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:TransformerEnd rdf:ID="_other_end">
+        \\    <cim:PowerTransformerEnd.ratedU>0</cim:PowerTransformerEnd.ratedU>
+        \\  </cim:TransformerEnd>
+        \\  <cim:BaseVoltage rdf:ID="_unrelated"/>
+        \\</rdf:RDF>
+    , .PowerTransformerEndRatedU);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "PowerTransformerEndRatedU rejects missing, invalid, and non-positive values" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:PowerTransformerEnd rdf:ID="_missing"/>
+        \\  <cim:PowerTransformerEnd rdf:ID="_empty">
+        \\    <cim:PowerTransformerEnd.ratedU/>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PowerTransformerEnd rdf:ID="_blank">
+        \\    <cim:PowerTransformerEnd.ratedU> </cim:PowerTransformerEnd.ratedU>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PowerTransformerEnd rdf:ID="_zero">
+        \\    <cim:PowerTransformerEnd.ratedU>0</cim:PowerTransformerEnd.ratedU>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PowerTransformerEnd rdf:ID="_negative_zero">
+        \\    <cim:PowerTransformerEnd.ratedU>-0</cim:PowerTransformerEnd.ratedU>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PowerTransformerEnd rdf:ID="_negative">
+        \\    <cim:PowerTransformerEnd.ratedU>-1</cim:PowerTransformerEnd.ratedU>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PowerTransformerEnd rdf:ID="_malformed">
+        \\    <cim:PowerTransformerEnd.ratedU>unknown</cim:PowerTransformerEnd.ratedU>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PowerTransformerEnd rdf:ID="_nan">
+        \\    <cim:PowerTransformerEnd.ratedU>nan</cim:PowerTransformerEnd.ratedU>
+        \\  </cim:PowerTransformerEnd>
+        \\  <cim:PowerTransformerEnd rdf:ID="_infinity">
+        \\    <cim:PowerTransformerEnd.ratedU>inf</cim:PowerTransformerEnd.ratedU>
+        \\  </cim:PowerTransformerEnd>
+        \\</rdf:RDF>
+    , .PowerTransformerEndRatedU);
+    defer run.deinit();
+    try expect_rule(&run, .PowerTransformerEndRatedU, 9);
+    try expect_violation(&run, .PowerTransformerEndRatedU, "_missing");
+    try expect_violation(&run, .PowerTransformerEndRatedU, "_empty");
+    try expect_violation(&run, .PowerTransformerEndRatedU, "_blank");
+    try expect_violation(&run, .PowerTransformerEndRatedU, "_zero");
+    try expect_violation(&run, .PowerTransformerEndRatedU, "_negative_zero");
+    try expect_violation(&run, .PowerTransformerEndRatedU, "_negative");
+    try expect_violation(&run, .PowerTransformerEndRatedU, "_malformed");
+    try expect_violation(&run, .PowerTransformerEndRatedU, "_nan");
+    try expect_violation(&run, .PowerTransformerEndRatedU, "_infinity");
+}
+
+test "PowerTransformerEndRatedU requires the ratedU property" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:PowerTransformerEnd rdf:ID="_rated_s_only">
+        \\    <cim:PowerTransformerEnd.ratedS>100</cim:PowerTransformerEnd.ratedS>
+        \\  </cim:PowerTransformerEnd>
+        \\</rdf:RDF>
+    , .PowerTransformerEndRatedU);
+    defer run.deinit();
+    try expect_rule(&run, .PowerTransformerEndRatedU, 1);
+    try expect_violation(&run, .PowerTransformerEndRatedU, "_rated_s_only");
 }
 
 // ── ShuntCompensatorSensitivity ───────────────────────────────────────────
@@ -1323,6 +1752,112 @@ test "ControlModeCompatibility intersects restrictions for shared controls" {
     try expect_rule(&run, .ControlModeCompatibility, 2);
     try expect_violation(&run, .ControlModeCompatibility, "_shared_bad");
     try expect_violation(&run, .ControlModeCompatibility, "_tap_shared");
+}
+
+// ── RCandTCCcontrollingObjects ───────────────────────────────────────────
+
+test "RCandTCCcontrollingObjects accepts controls with one or more controlling objects" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:RegulatingControl rdf:ID="_regulating_control"/>
+        \\  <cim:RegulatingControl rdf:ID="_shared_regulating_control"/>
+        \\  <cim:TapChangerControl rdf:ID="_tap_changer_control"/>
+        \\  <cim:TapChangerControl rdf:ID="_shared_tap_changer_control"/>
+        \\  <cim:RegulatingCondEq rdf:ID="_base_regulating_equipment">
+        \\    <cim:RegulatingCondEq.RegulatingControl rdf:resource="#_regulating_control"/>
+        \\  </cim:RegulatingCondEq>
+        \\  <cim:ExternalNetworkInjection rdf:ID="_external_injection">
+        \\    <cim:RegulatingCondEq.RegulatingControl rdf:resource="#_shared_regulating_control"/>
+        \\  </cim:ExternalNetworkInjection>
+        \\  <cim:PowerElectronicsConnection rdf:ID="_power_electronics_connection">
+        \\    <cim:RegulatingCondEq.RegulatingControl rdf:resource="#_shared_regulating_control"/>
+        \\  </cim:PowerElectronicsConnection>
+        \\  <cim:TapChanger rdf:ID="_base_tap_changer">
+        \\    <cim:TapChanger.TapChangerControl rdf:resource="#_tap_changer_control"/>
+        \\  </cim:TapChanger>
+        \\  <cim:PhaseTapChangerLinear rdf:ID="_phase_tap_changer">
+        \\    <cim:TapChanger.TapChangerControl rdf:resource="#_shared_tap_changer_control"/>
+        \\  </cim:PhaseTapChangerLinear>
+        \\  <cim:RatioTapChanger rdf:ID="_ratio_tap_changer">
+        \\    <cim:TapChanger.TapChangerControl rdf:resource="#_shared_tap_changer_control"/>
+        \\  </cim:RatioTapChanger>
+        \\</rdf:RDF>
+    , .RCandTCCcontrollingObjects);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "RCandTCCcontrollingObjects warns for both control classes without controllers" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:RegulatingControl rdf:ID="_regulating_control"/>
+        \\  <cim:TapChangerControl rdf:ID="_tap_changer_control"/>
+        \\  <cim:BaseVoltage rdf:ID="_unrelated"/>
+        \\</rdf:RDF>
+    , .RCandTCCcontrollingObjects);
+    defer run.deinit();
+    try expect_rule(&run, .RCandTCCcontrollingObjects, 2);
+    try expect_violation(&run, .RCandTCCcontrollingObjects, "_regulating_control");
+    try expect_violation(&run, .RCandTCCcontrollingObjects, "_tap_changer_control");
+    try std.testing.expectEqual(
+        qocdc.Severity.warning,
+        qocdc.severity(.RCandTCCcontrollingObjects),
+    );
+}
+
+test "RCandTCCcontrollingObjects requires the class-specific controlling association" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:RegulatingControl rdf:ID="_controlled_only_by_tap_changer"/>
+        \\  <cim:TapChangerControl rdf:ID="_controlled_only_by_regulating_equipment"/>
+        \\  <cim:TapChanger rdf:ID="_wrong_tap_controller">
+        \\    <cim:TapChanger.TapChangerControl rdf:resource="#_controlled_only_by_tap_changer"/>
+        \\  </cim:TapChanger>
+        \\  <cim:RegulatingCondEq rdf:ID="_wrong_regulating_controller">
+        \\    <cim:RegulatingCondEq.RegulatingControl rdf:resource="#_controlled_only_by_regulating_equipment"/>
+        \\  </cim:RegulatingCondEq>
+        \\  <cim:PowerTransformer rdf:ID="_wrong_source_class">
+        \\    <cim:RegulatingCondEq.RegulatingControl rdf:resource="#_controlled_only_by_tap_changer"/>
+        \\  </cim:PowerTransformer>
+        \\</rdf:RDF>
+    , .RCandTCCcontrollingObjects);
+    defer run.deinit();
+    try expect_rule(&run, .RCandTCCcontrollingObjects, 2);
+    try expect_violation(
+        &run,
+        .RCandTCCcontrollingObjects,
+        "_controlled_only_by_tap_changer",
+    );
+    try expect_violation(
+        &run,
+        .RCandTCCcontrollingObjects,
+        "_controlled_only_by_regulating_equipment",
+    );
+}
+
+test "RCandTCCcontrollingObjects shares reverse-control harvesting with mode validation" {
+    var mask = qocdc.RuleMask.initEmpty();
+    mask.insert(.RCandTCCcontrollingObjects);
+    mask.insert(.ControlModeCompatibility);
+    var run = try run_rules(
+        \\<rdf:RDF>
+        \\  <cim:SynchronousMachine rdf:ID="_machine">
+        \\    <cim:RegulatingCondEq.RegulatingControl rdf:resource="#_invalid_mode"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:RegulatingControl rdf:ID="_invalid_mode">
+        \\    <cim:RegulatingControl.mode rdf:resource="#RegulatingControlModeKind.activePower"/>
+        \\  </cim:RegulatingControl>
+        \\  <cim:RegulatingControl rdf:ID="_without_controller">
+        \\    <cim:RegulatingControl.mode rdf:resource="#RegulatingControlModeKind.voltage"/>
+        \\  </cim:RegulatingControl>
+        \\</rdf:RDF>
+    , mask);
+    defer run.deinit();
+    try std.testing.expectEqual(@as(u32, 1), run.report.count(.ControlModeCompatibility));
+    try expect_violation(&run, .ControlModeCompatibility, "_invalid_mode");
+    try std.testing.expectEqual(@as(u32, 1), run.report.count(.RCandTCCcontrollingObjects));
+    try expect_violation(&run, .RCandTCCcontrollingObjects, "_without_controller");
+    try std.testing.expectEqual(@as(u64, 2), run.report.total());
 }
 
 // ── ACLineSegmentR ────────────────────────────────────────────────────────
@@ -2335,6 +2870,93 @@ test "PTTerminalConsistency rejects an equipment that is not a PowerTransformer"
     try expect_rule(&run, .PTTerminalConsistency, 1);
 }
 
+// ── WindingConnectionAngle ───────────────────────────────────────────────
+
+fn winding_connection_angle_xml(buffer: []u8, value: []const u8) ![]const u8 {
+    return std.fmt.bufPrint(
+        buffer,
+        "<rdf:RDF>" ++
+            "<cim:PhaseTapChangerAsymmetrical rdf:ID=\"_tap_changer\">" ++
+            "<cim:PhaseTapChangerAsymmetrical.windingConnectionAngle>" ++
+            "{s}" ++
+            "</cim:PhaseTapChangerAsymmetrical.windingConnectionAngle>" ++
+            "</cim:PhaseTapChangerAsymmetrical>" ++
+            "</rdf:RDF>",
+        .{value},
+    );
+}
+
+test "WindingConnectionAngle accepts every signed integer and zero-decimal float" {
+    const allowed = [_][]const u8{
+        "150", "-150.0", "120.000", "-120", "90", "-90.0", "60.00", "-60", "30", "-30.000",
+    };
+    var buffer: [1024]u8 = undefined;
+    for (allowed) |value| {
+        var run = try run_rule(
+            try winding_connection_angle_xml(&buffer, value),
+            .WindingConnectionAngle,
+        );
+        defer run.deinit();
+        try expect_clean(&run);
+    }
+}
+
+test "WindingConnectionAngle rejects fractions and numbers outside the defined set" {
+    const rejected = [_][]const u8{
+        "0", "-0.0", "30.1", "-30.01", "59.9", "90.5", "119.99", "150.0001", "180", "-45",
+    };
+    var buffer: [1024]u8 = undefined;
+    for (rejected) |value| {
+        var run = try run_rule(
+            try winding_connection_angle_xml(&buffer, value),
+            .WindingConnectionAngle,
+        );
+        defer run.deinit();
+        try expect_rule(&run, .WindingConnectionAngle, 1);
+        try expect_violation(&run, .WindingConnectionAngle, "_tap_changer");
+    }
+}
+
+test "WindingConnectionAngle rejects declared unusable values" {
+    const rejected = [_][]const u8{ "", "unknown", "nan", "inf" };
+    var buffer: [1024]u8 = undefined;
+    for (rejected) |value| {
+        var run = try run_rule(
+            try winding_connection_angle_xml(&buffer, value),
+            .WindingConnectionAngle,
+        );
+        defer run.deinit();
+        try expect_rule(&run, .WindingConnectionAngle, 1);
+    }
+
+    var self_closing = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:PhaseTapChangerAsymmetrical rdf:ID="_tap_changer">
+        \\    <cim:PhaseTapChangerAsymmetrical.windingConnectionAngle/>
+        \\  </cim:PhaseTapChangerAsymmetrical>
+        \\</rdf:RDF>
+    , .WindingConnectionAngle);
+    defer self_closing.deinit();
+    try expect_rule(&self_closing, .WindingConnectionAngle, 1);
+}
+
+test "WindingConnectionAngle permits absence and ignores other tap changer classes" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:PhaseTapChangerAsymmetrical rdf:ID="_absent"/>
+        \\  <cim:PhaseTapChangerSymmetrical rdf:ID="_other_class">
+        \\    <cim:PhaseTapChangerAsymmetrical.windingConnectionAngle>1</cim:PhaseTapChangerAsymmetrical.windingConnectionAngle>
+        \\  </cim:PhaseTapChangerSymmetrical>
+        \\</rdf:RDF>
+    , .WindingConnectionAngle);
+    defer run.deinit();
+    try expect_clean(&run);
+    try std.testing.expectEqual(
+        qocdc.Severity.warning,
+        qocdc.severity(.WindingConnectionAngle),
+    );
+}
+
 // ── TooManyTapChangers ───────────────────────────────────────────────────
 
 fn power_transformer_end(comptime id: []const u8) []const u8 {
@@ -2941,6 +3563,129 @@ test "RCCYValues does not infer all-equal across unusable points" {
     try expect_violation(&run, .RCCYValues, "_blank_y2");
 }
 
+// ── CurveXValues ───────────────────────────────────────────────────────
+
+test "CurveXValues accepts distinct values and keeps curves separate" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_curve_a"/>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_curve_b"/>
+        \\  <cim:Curve rdf:ID="_generic_curve"/>
+        \\  <cim:CurveData rdf:ID="_negative">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve_a"/>
+        \\    <cim:CurveData.xvalue>-1</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_zero">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve_a"/>
+        \\    <cim:CurveData.xvalue>0</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_one_a">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve_a"/>
+        \\    <cim:CurveData.xvalue>1</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_near_one">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve_a"/>
+        \\    <cim:CurveData.xvalue>1.000000001</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_one_b">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve_b"/>
+        \\    <cim:CurveData.xvalue>1.0</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_missing_x">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve_a"/>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_blank_x">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve_a"/>
+        \\    <cim:CurveData.xvalue> </cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_malformed_x">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve_a"/>
+        \\    <cim:CurveData.xvalue>unknown</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_generic">
+        \\    <cim:CurveData.Curve rdf:resource="#_generic_curve"/>
+        \\    <cim:CurveData.xvalue>1</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_dangling">
+        \\    <cim:CurveData.Curve rdf:resource="#_missing"/>
+        \\    <cim:CurveData.xvalue>1</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_unassociated">
+        \\    <cim:CurveData.xvalue>1</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , .CurveXValues);
+    defer run.deinit();
+    try expect_clean(&run);
+}
+
+test "CurveXValues reports every point in each duplicate group" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_curve_a"/>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_curve_b"/>
+        \\  <cim:CurveData rdf:ID="_one">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve_a"/>
+        \\    <cim:CurveData.xvalue>1</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_one_decimal">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve_a"/>
+        \\    <cim:CurveData.xvalue>1.0</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_one_scientific">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve_a"/>
+        \\    <cim:CurveData.xvalue>1e0</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_unique">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve_a"/>
+        \\    <cim:CurveData.xvalue>2</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_zero">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve_b"/>
+        \\    <cim:CurveData.xvalue>0</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_negative_zero">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve_b"/>
+        \\    <cim:CurveData.xvalue>-0</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , .CurveXValues);
+    defer run.deinit();
+    try expect_rule(&run, .CurveXValues, 5);
+    try expect_violation(&run, .CurveXValues, "_one");
+    try expect_violation(&run, .CurveXValues, "_one_decimal");
+    try expect_violation(&run, .CurveXValues, "_one_scientific");
+    try expect_violation(&run, .CurveXValues, "_zero");
+    try expect_violation(&run, .CurveXValues, "_negative_zero");
+}
+
+test "CurveXValues and RCCXValues2 share point harvesting" {
+    var mask = qocdc.RuleMask.initEmpty();
+    mask.insert(.CurveXValues);
+    mask.insert(.RCCXValues2);
+    var run = try run_rules(
+        \\<rdf:RDF>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_curve"/>
+        \\  <cim:SynchronousMachine rdf:ID="_machine">
+        \\    <cim:SynchronousMachine.type rdf:resource="#SynchronousMachineKind.generator"/>
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_curve"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:CurveData rdf:ID="_first">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve"/>
+        \\    <cim:CurveData.xvalue>0</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_second">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve"/>
+        \\    <cim:CurveData.xvalue>-0</cim:CurveData.xvalue>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , mask);
+    defer run.deinit();
+    try expect_rule(&run, .CurveXValues, 2);
+    try expect_violation(&run, .CurveXValues, "_first");
+    try expect_violation(&run, .CurveXValues, "_second");
+}
+
 // ── RCCXValues2 ─────────────────────────────────────────────────────────────────────────────
 
 fn rcc_x_case_xml(
@@ -3387,4 +4132,172 @@ test "RCCXValues2 and RCCXValues3 share point harvesting without duplicate rows"
     defer run.deinit();
     try expect_rule(&run, .RCCXValues3, 1);
     try expect_violation(&run, .RCCXValues3, "_machine");
+}
+
+// ── RCCXValues4 ──────────────────────────────────────────────────────────
+
+test "RCCXValues4 accepts equality and applies NUMERIC_TOLERANCE to both y bounds" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_valid_curve"/>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_y1_invalid_curve"/>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_y2_invalid_curve"/>
+        \\  <cim:SynchronousMachine rdf:ID="_valid_machine">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_valid_curve"/>
+        \\    <cim:RotatingMachine.ratedS>100</cim:RotatingMachine.ratedS>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_y1_invalid_machine">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_y1_invalid_curve"/>
+        \\    <cim:RotatingMachine.ratedS>100</cim:RotatingMachine.ratedS>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_y2_invalid_machine">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_y2_invalid_curve"/>
+        \\    <cim:RotatingMachine.ratedS>100</cim:RotatingMachine.ratedS>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:CurveData rdf:ID="_equality">
+        \\    <cim:CurveData.Curve rdf:resource="#_valid_curve"/>
+        \\    <cim:CurveData.xvalue>60</cim:CurveData.xvalue>
+        \\    <cim:CurveData.y1value>-80</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>80</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_within_tolerance">
+        \\    <cim:CurveData.Curve rdf:resource="#_valid_curve"/>
+        \\    <cim:CurveData.xvalue>0</cim:CurveData.xvalue>
+        \\    <cim:CurveData.y1value>-100.04</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>100.04</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_y1_outside_tolerance">
+        \\    <cim:CurveData.Curve rdf:resource="#_y1_invalid_curve"/>
+        \\    <cim:CurveData.xvalue>0</cim:CurveData.xvalue>
+        \\    <cim:CurveData.y1value>-100.06</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>0</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_y2_outside_tolerance">
+        \\    <cim:CurveData.Curve rdf:resource="#_y2_invalid_curve"/>
+        \\    <cim:CurveData.xvalue>0</cim:CurveData.xvalue>
+        \\    <cim:CurveData.y1value>0</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>100.06</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , .RCCXValues4);
+    defer run.deinit();
+    try expect_rule(&run, .RCCXValues4, 2);
+    try expect_violation(&run, .RCCXValues4, "_y1_invalid_machine");
+    try expect_violation(&run, .RCCXValues4, "_y2_invalid_machine");
+    try std.testing.expectEqual(qocdc.Severity.warning, qocdc.severity(.RCCXValues4));
+}
+
+test "RCCXValues4 evaluates machines sharing a curve against their own ratedS" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_curve"/>
+        \\  <cim:SynchronousMachine rdf:ID="_wide_machine">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_curve"/>
+        \\    <cim:RotatingMachine.ratedS>200</cim:RotatingMachine.ratedS>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_narrow_machine">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_curve"/>
+        \\    <cim:RotatingMachine.ratedS>100</cim:RotatingMachine.ratedS>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:CurveData rdf:ID="_first_invalid_for_narrow">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve"/>
+        \\    <cim:CurveData.xvalue>90</cim:CurveData.xvalue>
+        \\    <cim:CurveData.y1value>-50</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>50</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_second_invalid_for_narrow">
+        \\    <cim:CurveData.Curve rdf:resource="#_curve"/>
+        \\    <cim:CurveData.xvalue>-90</cim:CurveData.xvalue>
+        \\    <cim:CurveData.y1value>-50</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>50</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , .RCCXValues4);
+    defer run.deinit();
+    try expect_rule(&run, .RCCXValues4, 1);
+    try expect_violation(&run, .RCCXValues4, "_narrow_machine");
+}
+
+test "RCCXValues4 rejects unusable values and ignores unresolved relationships" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_valid_point_curve"/>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_invalid_point_curve"/>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_empty_curve"/>
+        \\  <cim:Curve rdf:ID="_generic_curve"/>
+        \\  <cim:SynchronousMachine rdf:ID="_missing_rating_machine">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_valid_point_curve"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_invalid_rating_machine">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_valid_point_curve"/>
+        \\    <cim:RotatingMachine.ratedS>nan</cim:RotatingMachine.ratedS>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_invalid_point_machine">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_invalid_point_curve"/>
+        \\    <cim:RotatingMachine.ratedS>100</cim:RotatingMachine.ratedS>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_empty_curve_machine">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_empty_curve"/>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_no_curve_machine">
+        \\    <cim:RotatingMachine.ratedS>100</cim:RotatingMachine.ratedS>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_dangling_curve_machine">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_missing"/>
+        \\    <cim:RotatingMachine.ratedS>100</cim:RotatingMachine.ratedS>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_generic_curve_machine">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_generic_curve"/>
+        \\    <cim:RotatingMachine.ratedS>100</cim:RotatingMachine.ratedS>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:CurveData rdf:ID="_valid_point">
+        \\    <cim:CurveData.Curve rdf:resource="#_valid_point_curve"/>
+        \\    <cim:CurveData.xvalue>0</cim:CurveData.xvalue>
+        \\    <cim:CurveData.y1value>-1</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>1</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_missing_y2">
+        \\    <cim:CurveData.Curve rdf:resource="#_invalid_point_curve"/>
+        \\    <cim:CurveData.xvalue>0</cim:CurveData.xvalue>
+        \\    <cim:CurveData.y1value>-1</cim:CurveData.y1value>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , .RCCXValues4);
+    defer run.deinit();
+    try expect_rule(&run, .RCCXValues4, 3);
+    try expect_violation(&run, .RCCXValues4, "_missing_rating_machine");
+    try expect_violation(&run, .RCCXValues4, "_invalid_rating_machine");
+    try expect_violation(&run, .RCCXValues4, "_invalid_point_machine");
+}
+
+test "RCCXValues4 compares very large values without squared overflow" {
+    var run = try run_rule(
+        \\<rdf:RDF>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_valid_curve"/>
+        \\  <cim:ReactiveCapabilityCurve rdf:ID="_invalid_curve"/>
+        \\  <cim:SynchronousMachine rdf:ID="_valid_machine">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_valid_curve"/>
+        \\    <cim:RotatingMachine.ratedS>1e308</cim:RotatingMachine.ratedS>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:SynchronousMachine rdf:ID="_invalid_machine">
+        \\    <cim:SynchronousMachine.InitialReactiveCapabilityCurve rdf:resource="#_invalid_curve"/>
+        \\    <cim:RotatingMachine.ratedS>1e308</cim:RotatingMachine.ratedS>
+        \\  </cim:SynchronousMachine>
+        \\  <cim:CurveData rdf:ID="_valid_point">
+        \\    <cim:CurveData.Curve rdf:resource="#_valid_curve"/>
+        \\    <cim:CurveData.xvalue>8e307</cim:CurveData.xvalue>
+        \\    <cim:CurveData.y1value>-6e307</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>6e307</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\  <cim:CurveData rdf:ID="_invalid_point">
+        \\    <cim:CurveData.Curve rdf:resource="#_invalid_curve"/>
+        \\    <cim:CurveData.xvalue>9e307</cim:CurveData.xvalue>
+        \\    <cim:CurveData.y1value>-9e307</cim:CurveData.y1value>
+        \\    <cim:CurveData.y2value>9e307</cim:CurveData.y2value>
+        \\  </cim:CurveData>
+        \\</rdf:RDF>
+    , .RCCXValues4);
+    defer run.deinit();
+    try expect_rule(&run, .RCCXValues4, 1);
+    try expect_violation(&run, .RCCXValues4, "_invalid_machine");
 }

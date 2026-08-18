@@ -430,7 +430,30 @@ fn run_phase_b(
         }
     }
 
-    // B10: an RCC is invalid when every comparable point has equal y bounds.
+    // B10: CGMES v3 tightened both reverse associations to require a
+    // controlling object. TapChangerControl is a RegulatingControl subtype,
+    // but only a TapChanger association satisfies its specialized constraint.
+    if (requested.contains(.RCandTCCcontrollingObjects)) {
+        for (traits, columns.control_equipment_kinds, 0..) |object_traits, kinds, index| {
+            const has_controlling_object = if (object_traits.tap_changer_control)
+                kinds.tap_changer
+            else if (object_traits.regulating_control)
+                kinds.regulating_conducting_equipment
+            else
+                continue;
+            if (!has_controlling_object) {
+                try emit(
+                    report,
+                    gpa,
+                    model,
+                    .RCandTCCcontrollingObjects,
+                    @intCast(index),
+                );
+            }
+        }
+    }
+
+    // B11: an RCC is invalid when every comparable point has equal y bounds.
     // Phase A records equal points and disqualifies their curve as soon as it
     // sees a strict inequality or an unusable bound.
     if (requested.contains(.RCCYValues)) {
@@ -447,7 +470,35 @@ fn run_phase_b(
         }
     }
 
-    // B11: summarize every curve once, then join the summaries to the
+    // Both SMPLimits and RCCXValues3 join machines to the same generating-unit
+    // bounds. Sort the shared column once when either consumer is requested.
+    if (requested.contains(.SMPLimits) or requested.contains(.RCCXValues3)) {
+        sort_generating_unit_bounds(columns);
+    }
+
+    // B12: active-power bounds depend on the operating mode of the associated
+    // SynchronousMachine. Associations outside GeneratingUnit are absent from
+    // the bounds column and therefore outside this rule's scope.
+    if (requested.contains(.SMPLimits)) {
+        try run_synchronous_machine_power_limits(report, gpa, model, columns);
+    }
+
+    // CurveXValues and both RCC x-value rules consume the same point column.
+    // Sort it once by curve and numeric value for duplicate grouping and curve
+    // summaries alike.
+    if (requested.contains(.CurveXValues) or
+        requested.contains(.RCCXValues2) or
+        requested.contains(.RCCXValues3))
+    {
+        sort_curve_x_points(columns.curve_x_points.items);
+    }
+
+    // B13: every point taking part in a duplicate x-value group violates.
+    if (requested.contains(.CurveXValues)) {
+        try run_curve_x_values(report, gpa, model, columns);
+    }
+
+    // B14: summarize every curve once, then join the summaries to the
     // machine-type and generating-unit constraints that were requested.
     if (requested.contains(.RCCXValues2) or requested.contains(.RCCXValues3)) {
         var summaries = try build_curve_x_summaries(gpa, columns.curve_x_points.items);
@@ -458,6 +509,119 @@ fn run_phase_b(
         if (requested.contains(.RCCXValues3)) {
             try run_rcc_x_values3(report, gpa, model, columns, summaries.items);
         }
+    }
+
+    // B15: reduce both y bounds of every point to one apparent-power
+    // magnitude, summarize each curve once, then apply each machine's ratedS.
+    if (requested.contains(.RCCXValues4)) {
+        try run_rcc_x_values4(report, gpa, model, columns);
+    }
+}
+
+fn sort_generating_unit_bounds(columns: *rules.Columns) void {
+    std.mem.sort(
+        rules.GeneratingUnitBoundsRow,
+        columns.generating_unit_bounds.items,
+        {},
+        struct {
+            fn less_than(
+                _: void,
+                a: rules.GeneratingUnitBoundsRow,
+                b: rules.GeneratingUnitBoundsRow,
+            ) bool {
+                return a.object_index < b.object_index;
+            }
+        }.less_than,
+    );
+}
+
+fn run_synchronous_machine_power_limits(
+    report: *Report,
+    gpa: std.mem.Allocator,
+    model: *const cim.CimDocument,
+    columns: *const rules.Columns,
+) error{OutOfMemory}!void {
+    for (columns.synchronous_machine_generating_units.items) |machine| {
+        const bounds = find_generating_unit_bounds(
+            columns.generating_unit_bounds.items,
+            machine.generating_unit_index,
+        ) orelse continue;
+        if (rules.synchronous_machine_power_limits_satisfied(
+            machine.operating_mode,
+            bounds,
+        )) continue;
+
+        const object = model.object_at(machine.object_index);
+        try report.add(gpa, .{
+            .rule = .SMPLimits,
+            .offset = object.xml_offset(),
+            .object_id = object.id(),
+            .detail = "",
+        });
+    }
+}
+
+fn sort_curve_x_points(points: []rules.CurveXPointRow) void {
+    std.mem.sort(rules.CurveXPointRow, points, {}, struct {
+        fn less_than(_: void, a: rules.CurveXPointRow, b: rules.CurveXPointRow) bool {
+            if (a.curve_index != b.curve_index) return a.curve_index < b.curve_index;
+            return switch (a.x) {
+                .unusable => switch (b.x) {
+                    .unusable => a.object_index < b.object_index,
+                    .value => true,
+                },
+                .value => |a_value| switch (b.x) {
+                    .unusable => false,
+                    .value => |b_value| if (a_value == b_value)
+                        a.object_index < b.object_index
+                    else
+                        a_value < b_value,
+                },
+            };
+        }
+    }.less_than);
+}
+
+fn run_curve_x_values(
+    report: *Report,
+    gpa: std.mem.Allocator,
+    model: *const cim.CimDocument,
+    columns: *const rules.Columns,
+) error{OutOfMemory}!void {
+    const points = columns.curve_x_points.items;
+    var start: usize = 0;
+    while (start < points.len) {
+        const x = switch (points[start].x) {
+            .unusable => {
+                start += 1;
+                continue;
+            },
+            .value => |value| value,
+        };
+
+        var end = start + 1;
+        while (end < points.len and
+            points[end].curve_index == points[start].curve_index)
+        {
+            const equal = switch (points[end].x) {
+                .unusable => false,
+                .value => |value| value == x,
+            };
+            if (!equal) break;
+            end += 1;
+        }
+        if (end - start > 1) {
+            for (points[start..end]) |point| {
+                const object = model.object_at(point.object_index);
+                try report.add(gpa, .{
+                    .rule = .CurveXValues,
+                    .offset = object.xml_offset(),
+                    .object_id = object.id(),
+                    .detail = "",
+                });
+            }
+        }
+        start = end;
     }
 }
 
@@ -512,17 +676,8 @@ fn run_too_many_tap_changers(
 
 fn build_curve_x_summaries(
     gpa: std.mem.Allocator,
-    points: []rules.CurveXPointRow,
+    points: []const rules.CurveXPointRow,
 ) error{OutOfMemory}!std.ArrayList(rules.CurveXSummaryRow) {
-    // CurveData is harvested in document order, so points for one referenced
-    // curve may be interleaved with points for other curves. Sorting makes
-    // each curve contiguous for the single linear summary pass below.
-    std.mem.sort(rules.CurveXPointRow, points, {}, struct {
-        fn less_than(_: void, a: rules.CurveXPointRow, b: rules.CurveXPointRow) bool {
-            return a.curve_index < b.curve_index;
-        }
-    }.less_than);
-
     var summaries: std.ArrayList(rules.CurveXSummaryRow) = .empty;
     errdefer summaries.deinit(gpa);
     for (points) |point| {
@@ -534,6 +689,78 @@ fn build_curve_x_summaries(
         summaries.items[summaries.items.len - 1].add(point.x);
     }
     return summaries;
+}
+
+fn run_rcc_x_values4(
+    report: *Report,
+    gpa: std.mem.Allocator,
+    model: *const cim.CimDocument,
+    columns: *rules.Columns,
+) error{OutOfMemory}!void {
+    if (columns.synchronous_machine_curve_ratings.items.len == 0) return;
+
+    std.mem.sort(
+        rules.CurveApparentPowerPointRow,
+        columns.curve_apparent_power_points.items,
+        {},
+        struct {
+            fn less_than(
+                _: void,
+                a: rules.CurveApparentPowerPointRow,
+                b: rules.CurveApparentPowerPointRow,
+            ) bool {
+                if (a.curve_index != b.curve_index) return a.curve_index < b.curve_index;
+                return a.object_index < b.object_index;
+            }
+        }.less_than,
+    );
+
+    var summaries: std.ArrayList(rules.CurveApparentPowerSummaryRow) = .empty;
+    defer summaries.deinit(gpa);
+    for (columns.curve_apparent_power_points.items) |point| {
+        if (summaries.items.len == 0 or
+            summaries.items[summaries.items.len - 1].curve_index != point.curve_index)
+        {
+            try summaries.append(gpa, .{ .curve_index = point.curve_index });
+        }
+        summaries.items[summaries.items.len - 1].add(point.apparent_power);
+    }
+
+    std.mem.sort(
+        rules.SynchronousMachineCurveRatingRow,
+        columns.synchronous_machine_curve_ratings.items,
+        {},
+        struct {
+            fn less_than(
+                _: void,
+                a: rules.SynchronousMachineCurveRatingRow,
+                b: rules.SynchronousMachineCurveRatingRow,
+            ) bool {
+                if (a.curve_index != b.curve_index) return a.curve_index < b.curve_index;
+                return a.object_index < b.object_index;
+            }
+        }.less_than,
+    );
+
+    var summary_index: usize = 0;
+    for (columns.synchronous_machine_curve_ratings.items) |machine| {
+        while (summary_index < summaries.items.len and
+            summaries.items[summary_index].curve_index < machine.curve_index)
+        {
+            summary_index += 1;
+        }
+        const summary: ?rules.CurveApparentPowerSummaryRow =
+            if (summary_index < summaries.items.len and
+            summaries.items[summary_index].curve_index == machine.curve_index)
+                summaries.items[summary_index]
+            else
+                null;
+        if (rules.reactive_capability_curve_apparent_power_satisfied(
+            machine.rated_s,
+            summary,
+        )) continue;
+        try emit_rcc_x_violation(report, gpa, model, .RCCXValues4, machine.object_index);
+    }
 }
 
 fn run_rcc_x_values2(
@@ -563,7 +790,7 @@ fn run_rcc_x_values2(
             summaries[summary_index]
         else
             null;
-        if (rules.rcc_x_requirement_satisfied(machine.requirement, summary)) continue;
+        if (rules.rcc_x_requirement_satisfied(machine.operating_mode, summary)) continue;
         try emit_rcc_x_violation(report, gpa, model, .RCCXValues2, machine.object_index);
     }
 }
@@ -581,12 +808,6 @@ fn run_rcc_x_values3(
             return a.curve_index < b.curve_index;
         }
     }.less_than);
-    std.mem.sort(rules.GeneratingUnitBoundsRow, columns.generating_unit_bounds.items, {}, struct {
-        fn less_than(_: void, a: rules.GeneratingUnitBoundsRow, b: rules.GeneratingUnitBoundsRow) bool {
-            return a.object_index < b.object_index;
-        }
-    }.less_than);
-
     var summary_index: usize = 0;
     for (columns.machine_curve_units.items) |machine| {
         const bounds = find_generating_unit_bounds(
@@ -629,7 +850,7 @@ fn emit_rcc_x_violation(
     rule: Rule,
     object_index: u32,
 ) error{OutOfMemory}!void {
-    assert(rule == .RCCXValues2 or rule == .RCCXValues3);
+    assert(rule == .RCCXValues2 or rule == .RCCXValues3 or rule == .RCCXValues4);
     const obj = model.object_at(object_index);
     try report.add(gpa, .{
         .rule = rule,

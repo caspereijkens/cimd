@@ -52,13 +52,11 @@ pub const Prop = enum(u8) {
     svc_inductive,
     gu_nominal_p,
     gu_rated_s,
-    sm_type,
-    rm_generating_unit,
+    synchronous_machine_type,
+    rotating_machine_generating_unit,
     rotating_machine_rated_s,
     power_transformer_end_rated_s,
-    sm_min_q,
-    sm_max_q,
-    sm_initial_reactive_capability_curve,
+    synchronous_machine_initial_reactive_capability_curve,
     meas_type,
     meas_unit,
     eq_container,
@@ -87,6 +85,7 @@ pub const Prop = enum(u8) {
     tap_changer_control,
     tap_changer_control_enabled,
     phase_tap_changer_transformer_end,
+    phase_tap_changer_asymmetrical_winding_connection_angle,
     ratio_tap_changer_transformer_end,
     ac_line_segment_resistance,
     linear_shunt_compensator_conductance,
@@ -100,6 +99,9 @@ pub const Prop = enum(u8) {
     generating_unit_operating_power_min,
     generating_unit_operating_power_max,
     terminal_phase_code,
+    power_transformer_end_rated_u,
+    synchronous_machine_reactive_power_min,
+    synchronous_machine_reactive_power_max,
 };
 
 pub const prop_count = @typeInfo(Prop).@"enum".fields.len;
@@ -132,12 +134,10 @@ pub fn prop_name(prop: Prop) []const u8 {
         .svc_inductive => "StaticVarCompensator.inductiveRating",
         .gu_nominal_p => "GeneratingUnit.nominalP",
         .gu_rated_s => "GeneratingUnit.ratedS",
-        .sm_type => "SynchronousMachine.type",
-        .rm_generating_unit => "RotatingMachine.GeneratingUnit",
+        .synchronous_machine_type => "SynchronousMachine.type",
+        .rotating_machine_generating_unit => "RotatingMachine.GeneratingUnit",
         .rotating_machine_rated_s => "RotatingMachine.ratedS",
-        .sm_min_q => "SynchronousMachine.minQ",
-        .sm_max_q => "SynchronousMachine.maxQ",
-        .sm_initial_reactive_capability_curve => "SynchronousMachine.InitialReactiveCapabilityCurve",
+        .synchronous_machine_initial_reactive_capability_curve => "SynchronousMachine.InitialReactiveCapabilityCurve",
         .meas_type => "Measurement.measurementType",
         .meas_unit => "Measurement.unitSymbol",
         .eq_container => "Equipment.EquipmentContainer",
@@ -167,6 +167,7 @@ pub fn prop_name(prop: Prop) []const u8 {
         .tap_changer_control => "TapChanger.TapChangerControl",
         .tap_changer_control_enabled => "TapChanger.controlEnabled",
         .phase_tap_changer_transformer_end => "PhaseTapChanger.TransformerEnd",
+        .phase_tap_changer_asymmetrical_winding_connection_angle => "PhaseTapChangerAsymmetrical.windingConnectionAngle",
         .ratio_tap_changer_transformer_end => "RatioTapChanger.TransformerEnd",
         .ac_line_segment_resistance => "ACLineSegment.r",
         .linear_shunt_compensator_conductance => "LinearShuntCompensator.gPerSection",
@@ -180,6 +181,9 @@ pub fn prop_name(prop: Prop) []const u8 {
         .generating_unit_operating_power_min => "GeneratingUnit.minOperatingP",
         .generating_unit_operating_power_max => "GeneratingUnit.maxOperatingP",
         .terminal_phase_code => "Terminal.phases",
+        .power_transformer_end_rated_u => "PowerTransformerEnd.ratedU",
+        .synchronous_machine_reactive_power_min => "SynchronousMachine.minQ",
+        .synchronous_machine_reactive_power_max => "SynchronousMachine.maxQ",
     };
 }
 
@@ -214,10 +218,12 @@ pub const TargetTraits = packed struct(u32) {
     conducting_equipment: bool = false,
     busbar_section: bool = false,
     power_transformer_end: bool = false,
+    regulating_control: bool = false,
+    tap_changer_control: bool = false,
     /// The PhaseCodeGround target set, including GroundDisconnector because
     /// both of its terminals must be neutral terminals.
     phase_code_ground: bool = false,
-    _pad: u14 = 0,
+    _pad: u12 = 0,
 
     pub fn intersects(self: TargetTraits, allowed: TargetTraits) bool {
         return @as(u32, @bitCast(self)) & @as(u32, @bitCast(allowed)) != 0;
@@ -271,6 +277,8 @@ pub fn compute_traits(type_name: []const u8) TargetTraits {
         .conducting_equipment = is_a(tid, type_name, "ConductingEquipment"),
         .busbar_section = is_a(tid, type_name, "BusbarSection"),
         .power_transformer_end = is_a(tid, type_name, "PowerTransformerEnd"),
+        .regulating_control = is_a(tid, type_name, "RegulatingControl"),
+        .tap_changer_control = is_a(tid, type_name, "TapChangerControl"),
         .phase_code_ground = is_a(tid, type_name, "PetersenCoil") or
             is_a(tid, type_name, "Ground") or
             is_a(tid, type_name, "GroundingImpedance") or
@@ -510,7 +518,9 @@ pub const ControlEquipmentKinds = packed struct(u8) {
     synchronous_machine: bool = false,
     shunt_compensator: bool = false,
     static_var_compensator: bool = false,
-    _pad: u3 = 0,
+    tap_changer: bool = false,
+    regulating_conducting_equipment: bool = false,
+    _pad: u1 = 0,
 };
 
 pub const ControlRow = struct {
@@ -590,12 +600,32 @@ pub const CurveXValue = union(enum) {
 };
 
 pub const CurveXPointRow = struct {
+    object_index: u32,
     curve_index: u32,
     x: CurveXValue,
 };
 
-/// Constraint selected by SynchronousMachine.type.
-pub const RccXRequirement = enum(u8) {
+/// Largest apparent-power magnitude represented by one CurveData point, or
+/// unusable when any of its three coordinates is absent or invalid.
+pub const ApparentPowerMagnitude = union(enum) {
+    unusable,
+    value: f64,
+};
+
+pub const CurveApparentPowerPointRow = struct {
+    object_index: u32,
+    curve_index: u32,
+    apparent_power: ApparentPowerMagnitude,
+};
+
+pub const SynchronousMachineCurveRatingRow = struct {
+    object_index: u32,
+    curve_index: u32,
+    rated_s: ApparentPowerMagnitude,
+};
+
+/// Operating mode selected by SynchronousMachine.type.
+pub const SynchronousMachineOperatingMode = enum(u8) {
     invalid,
     condenser,
     generator,
@@ -606,7 +636,7 @@ pub const RccXRequirement = enum(u8) {
 pub const MachineCurveRow = struct {
     object_index: u32,
     curve_index: u32,
-    requirement: RccXRequirement,
+    operating_mode: SynchronousMachineOperatingMode,
 };
 
 pub const MachineCurveUnitRow = struct {
@@ -623,6 +653,12 @@ pub const OperatingPowerBounds = union(enum) {
 pub const GeneratingUnitBoundsRow = struct {
     object_index: u32,
     bounds: OperatingPowerBounds,
+};
+
+pub const SynchronousMachineGeneratingUnitRow = struct {
+    object_index: u32,
+    generating_unit_index: u32,
+    operating_mode: SynchronousMachineOperatingMode,
 };
 
 /// One derived row per curve. Phase B builds it once so machines sharing a
@@ -659,20 +695,58 @@ pub const CurveXSummaryRow = struct {
     }
 };
 
+/// One derived row per reactive capability curve. The two y bounds of each
+/// point are reduced to one maximum magnitude during harvesting.
+pub const CurveApparentPowerSummaryRow = struct {
+    curve_index: u32,
+    maximum_apparent_power: f64 = 0,
+    unusable: bool = false,
+
+    pub fn add(self: *CurveApparentPowerSummaryRow, magnitude: ApparentPowerMagnitude) void {
+        switch (magnitude) {
+            .unusable => self.unusable = true,
+            .value => |value| {
+                assert(value >= 0);
+                self.maximum_apparent_power = @max(self.maximum_apparent_power, value);
+            },
+        }
+    }
+};
+
 /// Whether one curve summary satisfies a machine type.
 pub fn rcc_x_requirement_satisfied(
-    requirement: RccXRequirement,
+    operating_mode: SynchronousMachineOperatingMode,
     summary_optional: ?CurveXSummaryRow,
 ) bool {
     const summary = summary_optional orelse return false;
     if (summary.unusable) return false;
-    return switch (requirement) {
+    return switch (operating_mode) {
         .invalid => false,
         .condenser => summary.point_count == 1 and summary.zero_count == 1,
         .generator => summary.nonnegative_count >= 2,
         .motor => summary.nonpositive_count >= 2,
         .generator_or_motor => summary.point_count >= 3 and
             summary.nonnegative_count >= 1 and summary.nonpositive_count >= 1,
+    };
+}
+
+pub fn synchronous_machine_power_limits_satisfied(
+    operating_mode: SynchronousMachineOperatingMode,
+    bounds: OperatingPowerBounds,
+) bool {
+    const limits = switch (bounds) {
+        .unusable => return false,
+        .value => |value| value,
+    };
+    return switch (operating_mode) {
+        .invalid, .condenser => unreachable,
+        .generator => limits.min >= 0 and
+            limits.max > 0 and
+            limits.max >= limits.min,
+        .motor => limits.min < 0 and
+            limits.max <= 0 and
+            limits.max >= limits.min,
+        .generator_or_motor => limits.min < 0 and limits.max > 0,
     };
 }
 
@@ -691,6 +765,25 @@ pub fn rcc_x_bounds_satisfied(
         .value => |value| value,
     };
     return summary.min_x >= limits.min and summary.max_x <= limits.max;
+}
+
+/// Comparing magnitudes is algebraically identical to the two squared
+/// relations in RCCXValues4, without risking overflow in x*x or ratedS*ratedS.
+/// QoCDC deliberately relaxes the CGMES 3.0 boundary by NUMERIC_TOLERANCE.
+pub fn reactive_capability_curve_apparent_power_satisfied(
+    rated_s: ApparentPowerMagnitude,
+    summary_optional: ?CurveApparentPowerSummaryRow,
+) bool {
+    const summary = summary_optional orelse return true;
+    if (summary.unusable) return false;
+    const rating = switch (rated_s) {
+        .unusable => return false,
+        .value => |value| value,
+    };
+    assert(std.math.isFinite(rating));
+    const tolerance_multiplier = 1.0 + data.numeric_tolerance_factor;
+    assert(tolerance_multiplier > 1.0);
+    return summary.maximum_apparent_power / tolerance_multiplier <= @abs(rating);
 }
 
 /// Side tables filled during the fused sweep and consumed by the engine's
@@ -731,9 +824,12 @@ pub const Columns = struct {
     /// Curve indexes with a strict inequality or an unusable y value.
     curve_all_equal_disqualified: std.DynamicBitSetUnmanaged,
     curve_x_points: std.ArrayList(CurveXPointRow),
+    curve_apparent_power_points: std.ArrayList(CurveApparentPowerPointRow),
     machine_curves: std.ArrayList(MachineCurveRow),
     machine_curve_units: std.ArrayList(MachineCurveUnitRow),
+    synchronous_machine_curve_ratings: std.ArrayList(SynchronousMachineCurveRatingRow),
     generating_unit_bounds: std.ArrayList(GeneratingUnitBoundsRow),
+    synchronous_machine_generating_units: std.ArrayList(SynchronousMachineGeneratingUnitRow),
 
     pub fn init(gpa: std.mem.Allocator, object_count: u32) error{OutOfMemory}!Columns {
         const terminal_equipment = try gpa.alloc(u32, object_count);
@@ -776,9 +872,12 @@ pub const Columns = struct {
             .curve_equal_points = .empty,
             .curve_all_equal_disqualified = curve_all_equal_disqualified,
             .curve_x_points = .empty,
+            .curve_apparent_power_points = .empty,
             .machine_curves = .empty,
             .machine_curve_units = .empty,
+            .synchronous_machine_curve_ratings = .empty,
             .generating_unit_bounds = .empty,
+            .synchronous_machine_generating_units = .empty,
         };
     }
 
@@ -803,19 +902,23 @@ pub const Columns = struct {
         self.curve_equal_points.deinit(gpa);
         self.curve_all_equal_disqualified.deinit(gpa);
         self.curve_x_points.deinit(gpa);
+        self.curve_apparent_power_points.deinit(gpa);
         self.machine_curves.deinit(gpa);
         self.machine_curve_units.deinit(gpa);
+        self.synchronous_machine_curve_ratings.deinit(gpa);
         self.generating_unit_bounds.deinit(gpa);
+        self.synchronous_machine_generating_units.deinit(gpa);
     }
 };
 
 /// The rules whose verdicts need harvested columns (and so the traits column
 /// and reference resolution too).
 pub const relational_rules = [_]Rule{
-    .TerminalCount1,        .TerminalCount2, .TerminalSeqNum,           .TerminalSeqNumOrder,
-    .PTTerminalConsistency, .MCFirstSecond,  .MeasTerminal,             .TooManyTapChangers,
-    .CEBaseVoltage,         .CATieFlow,      .ControlModeCompatibility, .RCCYValues,
-    .RCCXValues2,           .RCCXValues3,    .PhaseCodeGround,
+    .TerminalCount1,        .TerminalCount2, .TerminalSeqNum,             .TerminalSeqNumOrder,
+    .PTTerminalConsistency, .MCFirstSecond,  .MeasTerminal,               .TooManyTapChangers,
+    .CEBaseVoltage,         .CATieFlow,      .ControlModeCompatibility,   .RCCYValues,
+    .RCCXValues2,           .RCCXValues3,    .PhaseCodeGround,            .SMPLimits,
+    .CurveXValues,          .RCCXValues4,    .RCandTCCcontrollingObjects,
 };
 
 // ── the object-rule table ─────────────────────────────────────────────────
@@ -1034,22 +1137,40 @@ pub const object_rules = [_]ObjectRule{
         .check = &check_generating_unit_nominal_p,
     },
     .{
+        .rule = .SMQLimits1,
+        .filter = .{ .is_a_any = &.{"SynchronousMachine"} },
+        .needs = &.{
+            .{
+                .prop = .synchronous_machine_reactive_power_min,
+                .channels = .{ .text = true, .declared = true },
+            },
+            .{
+                .prop = .synchronous_machine_reactive_power_max,
+                .channels = .{ .text = true, .declared = true },
+            },
+        },
+        .check = &check_synchronous_machine_limits1,
+    },
+    .{
         .rule = .SMQLimits2,
         .filter = .{ .is_a_any = &.{"SynchronousMachine"} },
         .needs_resolution = true,
         .needs = &.{
-            .{ .prop = .sm_min_q, .channels = text_only },
-            .{ .prop = .sm_max_q, .channels = text_only },
-            .{ .prop = .sm_initial_reactive_capability_curve, .channels = .{ .ref = true } },
+            .{ .prop = .synchronous_machine_reactive_power_min, .channels = text_only },
+            .{ .prop = .synchronous_machine_reactive_power_max, .channels = text_only },
+            .{
+                .prop = .synchronous_machine_initial_reactive_capability_curve,
+                .channels = .{ .ref = true },
+            },
         },
-        .check = &check_synchronous_machine_limits,
+        .check = &check_synchronous_machine_limits2,
     },
     .{
         .rule = .SynchronousCondenser,
         .filter = .{ .is_a_any = &.{"SynchronousMachine"} },
         .needs = &.{
-            .{ .prop = .sm_type, .channels = .{ .ref = true } },
-            .{ .prop = .rm_generating_unit, .channels = declared_only },
+            .{ .prop = .synchronous_machine_type, .channels = .{ .ref = true } },
+            .{ .prop = .rotating_machine_generating_unit, .channels = declared_only },
         },
         .check = &check_synchronous_condenser,
     },
@@ -1103,6 +1224,15 @@ pub const object_rules = [_]ObjectRule{
         .check = &harvest_regulating_control,
     },
     .{
+        .rule = .WindingConnectionAngle,
+        .filter = .{ .is_a_any = &.{"PhaseTapChangerAsymmetrical"} },
+        .needs = &.{.{
+            .prop = .phase_tap_changer_asymmetrical_winding_connection_angle,
+            .channels = .{ .text = true, .declared = true },
+        }},
+        .check = &check_winding_connection_angle,
+    },
+    .{
         .rule = .ACLineSegmentR,
         .filter = .{ .is_a_any = &.{"ACLineSegment"} },
         .needs = &.{.{ .prop = .ac_line_segment_resistance, .channels = .{ .text = true, .declared = true } }},
@@ -1145,8 +1275,11 @@ pub const object_rules = [_]ObjectRule{
         .filter = .{ .is_a_any = &.{"SynchronousMachine"} },
         .needs_resolution = true,
         .needs = &.{
-            .{ .prop = .sm_initial_reactive_capability_curve, .channels = .{ .ref = true } },
-            .{ .prop = .sm_type, .channels = .{ .ref = true } },
+            .{
+                .prop = .synchronous_machine_initial_reactive_capability_curve,
+                .channels = .{ .ref = true },
+            },
+            .{ .prop = .synchronous_machine_type, .channels = .{ .ref = true } },
         },
         .check = &harvest_synchronous_machine_curve,
     },
@@ -1155,19 +1288,21 @@ pub const object_rules = [_]ObjectRule{
         .filter = .{ .is_a_any = &.{"SynchronousMachine"} },
         .needs_resolution = true,
         .needs = &.{
-            .{ .prop = .sm_initial_reactive_capability_curve, .channels = .{ .ref = true } },
-            .{ .prop = .rm_generating_unit, .channels = .{ .ref = true } },
+            .{
+                .prop = .synchronous_machine_initial_reactive_capability_curve,
+                .channels = .{ .ref = true },
+            },
+            .{ .prop = .rotating_machine_generating_unit, .channels = .{ .ref = true } },
         },
         .check = &harvest_synchronous_machine_curve_unit,
     },
     .{
-        .rule = .RCCXValues3,
-        .filter = .{ .is_a_any = &.{"GeneratingUnit"} },
+        .rule = .PowerTransformerEndRatedU,
+        .filter = .{ .is_a_any = &.{"PowerTransformerEnd"} },
         .needs = &.{
-            .{ .prop = .generating_unit_operating_power_min, .channels = .{ .text = true } },
-            .{ .prop = .generating_unit_operating_power_max, .channels = .{ .text = true } },
+            .{ .prop = .power_transformer_end_rated_u, .channels = text_only },
         },
-        .check = &harvest_generating_unit_bounds,
+        .check = &check_power_transformer_end_rated_u,
     },
     // Containment: the referenced container must exist and carry one of the
     // allowed traits. `required = false` tolerates an absent reference only;
@@ -1292,8 +1427,8 @@ pub const harvesters = [_]Harvester{
         .harvest = &harvest_tie_flow_control_area,
     },
     .{
-        .rules = &.{.ControlModeCompatibility},
-        .filter = .{ .is_a_any = &.{ "PhaseTapChanger", "RatioTapChanger" } },
+        .rules = &.{ .ControlModeCompatibility, .RCandTCCcontrollingObjects },
+        .filter = .{ .is_a_any = &.{"TapChanger"} },
         .needs = &.{.{ .prop = .tap_changer_control, .channels = .{ .ref = true } }},
         .harvest = &harvest_tap_changer_control_source,
     },
@@ -1324,21 +1459,60 @@ pub const harvesters = [_]Harvester{
         .harvest = &harvest_regulating_control_enabled,
     },
     .{
-        .rules = &.{.ControlModeCompatibility},
-        .filter = .{ .is_a_any = &.{
-            "SynchronousMachine", "ShuntCompensator", "StaticVarCompensator",
-        } },
+        .rules = &.{ .ControlModeCompatibility, .RCandTCCcontrollingObjects },
+        .filter = .{ .is_a_any = &.{"RegulatingCondEq"} },
         .needs = &.{.{ .prop = .regulating_cond_eq_control, .channels = .{ .ref = true } }},
         .harvest = &harvest_regulating_equipment_control_source,
     },
     .{
-        .rules = &.{ .RCCXValues2, .RCCXValues3 },
+        .rules = &.{ .RCCXValues2, .RCCXValues3, .CurveXValues },
         .filter = .{ .exact = "CurveData" },
         .needs = &.{
             .{ .prop = .curve_data_curve, .channels = .{ .ref = true } },
             .{ .prop = .curve_data_xvalue, .channels = .{ .text = true } },
         },
         .harvest = &harvest_curve_data_x_value,
+    },
+    .{
+        .rules = &.{.RCCXValues4},
+        .filter = .{ .exact = "CurveData" },
+        .needs = &.{
+            .{ .prop = .curve_data_curve, .channels = .{ .ref = true } },
+            .{ .prop = .curve_data_xvalue, .channels = .{ .text = true } },
+            .{ .prop = .curve_data_y1value, .channels = .{ .text = true } },
+            .{ .prop = .curve_data_y2value, .channels = .{ .text = true } },
+        },
+        .harvest = &harvest_curve_data_apparent_power,
+    },
+    .{
+        .rules = &.{.RCCXValues4},
+        .filter = .{ .is_a_any = &.{"SynchronousMachine"} },
+        .needs = &.{
+            .{
+                .prop = .synchronous_machine_initial_reactive_capability_curve,
+                .channels = .{ .ref = true },
+            },
+            .{ .prop = .rotating_machine_rated_s, .channels = .{ .text = true } },
+        },
+        .harvest = &harvest_synchronous_machine_curve_rating,
+    },
+    .{
+        .rules = &.{.SMPLimits},
+        .filter = .{ .is_a_any = &.{"SynchronousMachine"} },
+        .needs = &.{
+            .{ .prop = .synchronous_machine_type, .channels = .{ .ref = true } },
+            .{ .prop = .rotating_machine_generating_unit, .channels = .{ .ref = true } },
+        },
+        .harvest = &harvest_synchronous_machine_generating_unit,
+    },
+    .{
+        .rules = &.{ .RCCXValues3, .SMPLimits },
+        .filter = .{ .is_a_any = &.{"GeneratingUnit"} },
+        .needs = &.{
+            .{ .prop = .generating_unit_operating_power_min, .channels = .{ .text = true } },
+            .{ .prop = .generating_unit_operating_power_max, .channels = .{ .text = true } },
+        },
+        .harvest = &harvest_generating_unit_bounds,
     },
 };
 
@@ -1438,6 +1612,7 @@ fn harvest_tap_changer_control_source(ctx: *Ctx, obj: cim.CimObject) error{OutOf
     if (control == none_index) return;
 
     const kinds = &ctx.columns.?.control_equipment_kinds[control];
+    if (ctx.traits.?[control].tap_changer_control) kinds.tap_changer = true;
     if (matches_is_a(ctx.group_tid, ctx.group_type_name, "PhaseTapChanger")) {
         kinds.phase_tap_changer = true;
     }
@@ -1492,6 +1667,9 @@ fn harvest_regulating_equipment_control_source(
     if (control == none_index) return;
 
     const kinds = &ctx.columns.?.control_equipment_kinds[control];
+    if (ctx.traits.?[control].regulating_control) {
+        kinds.regulating_conducting_equipment = true;
+    }
     if (matches_is_a(ctx.group_tid, ctx.group_type_name, "SynchronousMachine")) {
         kinds.synchronous_machine = true;
     }
@@ -1835,14 +2013,47 @@ fn check_generating_unit_nominal_p(ctx: *Ctx, obj: cim.CimObject) error{OutOfMem
     }
 }
 
+/// SMQLimits1: each declared scalar limit must be finite; when both are
+/// present, maxQ must be greater than or equal to minQ.
+fn check_synchronous_machine_limits1(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    var reactive_power_min: ?f64 = null;
+    if (prop_declared(ctx.slots, .synchronous_machine_reactive_power_min)) {
+        const text = prop_text(ctx.slots, .synchronous_machine_reactive_power_min) orelse
+            return ctx.emit(.SMQLimits1, obj, "");
+        reactive_power_min = parse.float_req(text) catch
+            return ctx.emit(.SMQLimits1, obj, text);
+    }
+
+    var reactive_power_max: ?f64 = null;
+    if (prop_declared(ctx.slots, .synchronous_machine_reactive_power_max)) {
+        const text = prop_text(ctx.slots, .synchronous_machine_reactive_power_max) orelse
+            return ctx.emit(.SMQLimits1, obj, "");
+        reactive_power_max = parse.float_req(text) catch
+            return ctx.emit(.SMQLimits1, obj, text);
+    }
+
+    const min = reactive_power_min orelse return;
+    const max = reactive_power_max orelse return;
+    if (max < min) try ctx.emit(.SMQLimits1, obj, "");
+}
+
 /// SMQLimits2: a SynchronousMachine needs both scalar reactive-power limits,
 /// or a forward association that resolves to a ReactiveCapabilityCurve.
-fn check_synchronous_machine_limits(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
-    const has_limits = parse.non_blank(prop_text(ctx.slots, .sm_min_q)) != null and
-        parse.non_blank(prop_text(ctx.slots, .sm_max_q)) != null;
+fn check_synchronous_machine_limits2(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    const reactive_power_min = parse.non_blank(
+        prop_text(ctx.slots, .synchronous_machine_reactive_power_min),
+    );
+    const reactive_power_max = parse.non_blank(
+        prop_text(ctx.slots, .synchronous_machine_reactive_power_max),
+    );
+    const has_limits = reactive_power_min != null and reactive_power_max != null;
     if (has_limits) return;
 
-    const reference = switch (prop_ref(ctx.slots, .sm_initial_reactive_capability_curve)) {
+    const capability_curve_reference = prop_ref(
+        ctx.slots,
+        .synchronous_machine_initial_reactive_capability_curve,
+    );
+    const reference = switch (capability_curve_reference) {
         .value => |value| value,
         .absent, .malformed => return ctx.emit(.SMQLimits2, obj, ""),
     };
@@ -1854,13 +2065,13 @@ fn check_synchronous_machine_limits(ctx: *Ctx, obj: cim.CimObject) error{OutOfMe
 }
 
 fn check_synchronous_condenser(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
-    const type_reference = switch (prop_ref(ctx.slots, .sm_type)) {
+    const type_reference = switch (prop_ref(ctx.slots, .synchronous_machine_type)) {
         .value => |value| value,
         .absent, .malformed => return,
     };
     const machine_type = cim.uri.fragment_or_self(type_reference);
     if (!std.mem.eql(u8, machine_type, "SynchronousMachineKind.condenser")) return;
-    if (prop_declared(ctx.slots, .rm_generating_unit)) {
+    if (prop_declared(ctx.slots, .rotating_machine_generating_unit)) {
         try ctx.emit(.SynchronousCondenser, obj, "");
     }
 }
@@ -1909,6 +2120,28 @@ fn check_operational_limit_set_terminal(ctx: *Ctx, obj: cim.CimObject) error{Out
     }
     if (!ctx.traits.?[terminal].terminal) {
         try ctx.emit(.OperationalLimitSetAtTerminal, obj, "");
+    }
+}
+
+fn check_winding_connection_angle(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    if (!prop_declared(
+        ctx.slots,
+        .phase_tap_changer_asymmetrical_winding_connection_angle,
+    )) return;
+    const text = prop_text(
+        ctx.slots,
+        .phase_tap_changer_asymmetrical_winding_connection_angle,
+    ) orelse return ctx.emit(.WindingConnectionAngle, obj, "");
+    const angle = parse.float_req(text) catch
+        return ctx.emit(.WindingConnectionAngle, obj, text);
+    const magnitude = @abs(angle);
+    if (magnitude != 30 and
+        magnitude != 60 and
+        magnitude != 90 and
+        magnitude != 120 and
+        magnitude != 150)
+    {
+        try ctx.emit(.WindingConnectionAngle, obj, text);
     }
 }
 
@@ -2014,37 +2247,109 @@ fn harvest_curve_data_x_value(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!
         break :blk .{ .value = value };
     };
     try ctx.columns.?.curve_x_points.append(ctx.gpa, .{
+        .object_index = ctx.object_index,
         .curve_index = curve,
         .x = x,
     });
 }
 
-fn harvest_synchronous_machine_curve(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+fn harvest_curve_data_apparent_power(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
     _ = obj;
-    const curve = resolve_ref(ctx, .sm_initial_reactive_capability_curve);
+    const curve = resolve_ref(ctx, .curve_data_curve);
     if (curve == none_index) return;
     if (!ctx.traits.?[curve].reactive_capability_curve) return;
 
-    const requirement = rcc_x_requirement(prop_ref(ctx.slots, .sm_type));
+    const apparent_power: ApparentPowerMagnitude = blk: {
+        const x_text = prop_text(ctx.slots, .curve_data_xvalue) orelse
+            break :blk .unusable;
+        const y1_text = prop_text(ctx.slots, .curve_data_y1value) orelse
+            break :blk .unusable;
+        const y2_text = prop_text(ctx.slots, .curve_data_y2value) orelse
+            break :blk .unusable;
+        const x = parse.float_req(x_text) catch break :blk .unusable;
+        const y1 = parse.float_req(y1_text) catch break :blk .unusable;
+        const y2 = parse.float_req(y2_text) catch break :blk .unusable;
+        break :blk .{ .value = @max(std.math.hypot(x, y1), std.math.hypot(x, y2)) };
+    };
+    try ctx.columns.?.curve_apparent_power_points.append(ctx.gpa, .{
+        .object_index = ctx.object_index,
+        .curve_index = curve,
+        .apparent_power = apparent_power,
+    });
+}
+
+fn harvest_synchronous_machine_curve_rating(
+    ctx: *Ctx,
+    obj: cim.CimObject,
+) error{OutOfMemory}!void {
+    _ = obj;
+    const curve = resolve_ref(ctx, .synchronous_machine_initial_reactive_capability_curve);
+    if (curve == none_index) return;
+    if (!ctx.traits.?[curve].reactive_capability_curve) return;
+
+    const rated_s: ApparentPowerMagnitude = blk: {
+        const text = prop_text(ctx.slots, .rotating_machine_rated_s) orelse
+            break :blk .unusable;
+        const value = parse.float_req(text) catch break :blk .unusable;
+        break :blk .{ .value = value };
+    };
+    try ctx.columns.?.synchronous_machine_curve_ratings.append(ctx.gpa, .{
+        .object_index = ctx.object_index,
+        .curve_index = curve,
+        .rated_s = rated_s,
+    });
+}
+
+fn harvest_synchronous_machine_curve(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    _ = obj;
+    const curve = resolve_ref(ctx, .synchronous_machine_initial_reactive_capability_curve);
+    if (curve == none_index) return;
+    if (!ctx.traits.?[curve].reactive_capability_curve) return;
+
+    const operating_mode = synchronous_machine_operating_mode(
+        prop_ref(ctx.slots, .synchronous_machine_type),
+    );
     try ctx.columns.?.machine_curves.append(ctx.gpa, .{
         .object_index = ctx.object_index,
         .curve_index = curve,
-        .requirement = requirement,
+        .operating_mode = operating_mode,
     });
 }
 
 fn harvest_synchronous_machine_curve_unit(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
     _ = obj;
-    const curve = resolve_ref(ctx, .sm_initial_reactive_capability_curve);
+    const curve = resolve_ref(ctx, .synchronous_machine_initial_reactive_capability_curve);
     if (curve == none_index) return;
     if (!ctx.traits.?[curve].reactive_capability_curve) return;
 
-    const generating_unit = resolve_ref(ctx, .rm_generating_unit);
+    const generating_unit = resolve_ref(ctx, .rotating_machine_generating_unit);
     if (generating_unit == none_index) return;
     try ctx.columns.?.machine_curve_units.append(ctx.gpa, .{
         .object_index = ctx.object_index,
         .curve_index = curve,
         .generating_unit_index = generating_unit,
+    });
+}
+
+fn harvest_synchronous_machine_generating_unit(
+    ctx: *Ctx,
+    obj: cim.CimObject,
+) error{OutOfMemory}!void {
+    _ = obj;
+    const generating_unit = resolve_ref(ctx, .rotating_machine_generating_unit);
+    if (generating_unit == none_index) return;
+
+    const operating_mode = synchronous_machine_operating_mode(
+        prop_ref(ctx.slots, .synchronous_machine_type),
+    );
+    switch (operating_mode) {
+        .invalid, .condenser => return,
+        .generator, .motor, .generator_or_motor => {},
+    }
+    try ctx.columns.?.synchronous_machine_generating_units.append(ctx.gpa, .{
+        .object_index = ctx.object_index,
+        .generating_unit_index = generating_unit,
+        .operating_mode = operating_mode,
     });
 }
 
@@ -2065,7 +2370,15 @@ fn harvest_generating_unit_bounds(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemo
     });
 }
 
-fn rcc_x_requirement(type_reference: RefState) RccXRequirement {
+fn check_power_transformer_end_rated_u(ctx: *Ctx, obj: cim.CimObject) error{OutOfMemory}!void {
+    const text = prop_text(ctx.slots, .power_transformer_end_rated_u) orelse
+        return ctx.emit(.PowerTransformerEndRatedU, obj, "");
+    const rated_u = parse.float_req(text) catch
+        return ctx.emit(.PowerTransformerEndRatedU, obj, text);
+    if (rated_u <= 0) try ctx.emit(.PowerTransformerEndRatedU, obj, text);
+}
+
+fn synchronous_machine_operating_mode(type_reference: RefState) SynchronousMachineOperatingMode {
     const reference = switch (type_reference) {
         .value => |value| value,
         .absent, .malformed => return .invalid,
