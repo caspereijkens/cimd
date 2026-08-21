@@ -99,7 +99,11 @@ pub const CimDocument = struct {
         errdefer gpa.free(xml);
         if (xml.len == 0) return error.EmptyInput;
 
-        var boundary_list = try xml_scan.find_tag_boundaries(gpa, xml);
+        var malformed_offset: u32 = undefined;
+        var boundary_list = xml_scan.find_tag_boundariesWithErrorOffset(gpa, xml, &malformed_offset) catch |err| {
+            if (err == error.MalformedXML) if (diagnostics) |d| d.record_malformed_xml(xml, malformed_offset);
+            return err;
+        };
         errdefer boundary_list.deinit(gpa);
         const boundaries = try boundary_list.toOwnedSlice(gpa);
         errdefer gpa.free(boundaries);
@@ -114,7 +118,15 @@ pub const CimDocument = struct {
         var id_to_index = std.StringHashMap(u32).init(gpa);
         errdefer id_to_index.deinit();
 
-        const closing_for = try xml_scan.build_closing_index(gpa, xml, boundaries);
+        const closing_for = xml_scan.build_closing_indexWithErrorOffset(
+            gpa,
+            xml,
+            boundaries,
+            &malformed_offset,
+        ) catch |err| {
+            if (err == error.MalformedXML) if (diagnostics) |d| d.record_malformed_xml(xml, malformed_offset);
+            return err;
+        };
         defer gpa.free(closing_for);
 
         // Pass 1: collect objects and count per type.
@@ -406,6 +418,27 @@ test "EQ diagnostics record duplicate RDF identifier" {
     try std.testing.expectEqualStrings("_DUP", diagnostics.duplicate_id());
     try std.testing.expectEqual(@as(u64, 3), diagnostics.duplicate_line);
     try std.testing.expect(!diagnostics.duplicate_id_truncated);
+}
+
+test "EQ diagnostics record malformed XML position" {
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Substation>
+        \\  </cim:WrongType>
+        \\</rdf:RDF>
+    ;
+    var diagnostics: Diagnostics = .{};
+    try std.testing.expectError(
+        error.MalformedXML,
+        CimDocument.initWithDiagnostics(gpa, try gpa.dupe(u8, xml), &diagnostics),
+    );
+    try std.testing.expect(diagnostics.malformed_xml_recorded);
+    try std.testing.expectEqual(@as(u64, 3), diagnostics.malformed_xml_line);
+    try std.testing.expectEqual(
+        @as(u32, @intCast(std.mem.indexOf(u8, xml, "</cim:WrongType>").?)),
+        diagnostics.malformed_xml_offset,
+    );
 }
 
 test "EQ inventory retains identifiers that conversion cannot use" {
