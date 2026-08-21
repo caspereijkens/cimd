@@ -304,6 +304,12 @@ pub const TagBoundary = struct {
     end: u32,
 };
 
+fn malformed_xml(error_offset: *u32, offset: u32, xml_len: usize) error{MalformedXML} {
+    assert(offset <= xml_len);
+    error_offset.* = offset;
+    return error.MalformedXML;
+}
+
 /// Find all XML tag boundaries by pairing '<' and '>' characters.
 /// Uses two SIMD passes (one per delimiter) then zips the results, skipping
 /// `<` and `>` that appear inside XML comments (`<!-- ... -->`). The comment
@@ -314,6 +320,17 @@ pub const TagBoundary = struct {
 pub fn find_tag_boundaries(
     gpa: std.mem.Allocator,
     xml: []const u8,
+) !std.ArrayList(TagBoundary) {
+    var error_offset: u32 = undefined;
+    return find_tag_boundariesWithErrorOffset(gpa, xml, &error_offset);
+}
+
+/// The diagnostic variant records the byte that made the scan fail. The
+/// caller only reads `error_offset` when this returns error.MalformedXML.
+pub fn find_tag_boundariesWithErrorOffset(
+    gpa: std.mem.Allocator,
+    xml: []const u8,
+    error_offset: *u32,
 ) !std.ArrayList(TagBoundary) {
     var result: std.ArrayList(TagBoundary) = .empty;
     errdefer result.deinit(gpa);
@@ -350,7 +367,7 @@ pub fn find_tag_boundaries(
             // Skip any stray '>' positions that appear in text content before
             // this tag's '<'. Such '>' are legal XML character data.
             while (gt_idx < gts.len and gts[gt_idx] < lt) : (gt_idx += 1) {}
-            if (gt_idx >= gts.len) return error.MalformedXML;
+            if (gt_idx >= gts.len) return malformed_xml(error_offset, lt, xml.len);
             const gt = gts[gt_idx];
             result.appendAssumeCapacity(.{ .start = lt, .end = gt });
             lt_idx += 1;
@@ -367,7 +384,7 @@ pub fn find_tag_boundaries(
         const close_gt = while (gt_idx < gts.len) : (gt_idx += 1) {
             const gt = gts[gt_idx];
             if (xml[gt - 1] == '-' and xml[gt - 2] == '-') break gt;
-        } else return error.MalformedXML;
+        } else return malformed_xml(error_offset, lt, xml.len);
 
         result.appendAssumeCapacity(.{ .start = lt, .end = close_gt });
         gt_idx += 1;
@@ -556,6 +573,19 @@ pub fn build_closing_index(
     xml: []const u8,
     boundaries: []const TagBoundary,
 ) ![]u32 {
+    var error_offset: u32 = undefined;
+    return build_closing_indexWithErrorOffset(gpa, xml, boundaries, &error_offset);
+}
+
+/// The diagnostic variant records the offset of the offending tag: the closing
+/// tag that failed to match, or the outermost opener that was never closed.
+pub fn build_closing_indexWithErrorOffset(
+    gpa: std.mem.Allocator,
+    xml: []const u8,
+    boundaries: []const TagBoundary,
+    error_offset: *u32,
+) ![]u32 {
+    assert(xml.len <= std.math.maxInt(u32));
     const closing_for = try gpa.alloc(u32, boundaries.len);
     errdefer gpa.free(closing_for);
 
@@ -578,9 +608,9 @@ pub fn build_closing_index(
             // Bound the type search to within this tag to prevent cross-tag colon matches.
             const tag_xml = xml[tag.start .. tag.end + 1];
             const type_name = extract_tag_type(tag_xml, 1) catch continue;
-            if (stack.items.len == 0) return error.MalformedXML;
+            if (stack.items.len == 0) return malformed_xml(error_offset, tag.start, xml.len);
             if (!std.mem.eql(u8, stack.items[stack.items.len - 1].type_name, type_name)) {
-                return error.MalformedXML;
+                return malformed_xml(error_offset, tag.start, xml.len);
             }
             const opener = stack.pop().?;
             closing_for[opener.idx] = @intCast(i);
@@ -596,7 +626,9 @@ pub fn build_closing_index(
     }
 
     // Every opener must have been matched; a non-empty stack means unclosed tags.
-    if (stack.items.len != 0) return error.MalformedXML;
+    // Report the outermost unclosed opener -- that is the tag the user must fix,
+    // and unlike end-of-input it falls inside the segment that actually broke.
+    if (stack.items.len != 0) return malformed_xml(error_offset, boundaries[stack.items[0].idx].start, xml.len);
 
     // Postcondition: every entry either points to itself (self-closing) or to a
     // boundary strictly after it. A regression in the matching logic above

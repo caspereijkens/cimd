@@ -501,8 +501,13 @@ test "xml_scan.find_tag_boundaries - unmatched opening bracket" {
     const gpa = std.testing.allocator;
 
     const input = "<root"; // No closing >
+    var error_offset: u32 = undefined;
 
-    try std.testing.expectError(error.MalformedXML, xml_scan.find_tag_boundaries(gpa, input));
+    try std.testing.expectError(
+        error.MalformedXML,
+        xml_scan.find_tag_boundariesWithErrorOffset(gpa, input, &error_offset),
+    );
+    try std.testing.expectEqual(@as(u32, 0), error_offset);
 }
 
 test "xml_scan.find_tag_boundaries - unmatched opening bracket followed by self-closing tag" {
@@ -1121,8 +1126,13 @@ test "xml_scan.build_closing_index - mismatched nesting returns MalformedXML" {
     var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
     defer boundaries.deinit(gpa);
 
-    const result = xml_scan.build_closing_index(gpa, xml, boundaries.items);
+    var error_offset: u32 = undefined;
+    const result = xml_scan.build_closing_indexWithErrorOffset(gpa, xml, boundaries.items, &error_offset);
     try std.testing.expectError(error.MalformedXML, result);
+    try std.testing.expectEqual(
+        @as(u32, @intCast(std.mem.indexOf(u8, xml, "</cim:Root>").?)),
+        error_offset,
+    );
 }
 
 test "xml_scan.build_closing_index - unclosed opener returns MalformedXML" {
@@ -1132,8 +1142,15 @@ test "xml_scan.build_closing_index - unclosed opener returns MalformedXML" {
     var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
     defer boundaries.deinit(gpa);
 
-    const result = xml_scan.build_closing_index(gpa, xml, boundaries.items);
+    var error_offset: u32 = undefined;
+    const result = xml_scan.build_closing_indexWithErrorOffset(gpa, xml, boundaries.items, &error_offset);
     try std.testing.expectError(error.MalformedXML, result);
+    // The outermost unclosed opener, not end-of-input: a caller mapping the
+    // offset back to a line (or to a file segment) must land on the real defect.
+    try std.testing.expectEqual(
+        @as(u32, @intCast(std.mem.indexOf(u8, xml, "<cim:Root>").?)),
+        error_offset,
+    );
 }
 
 test "xml_scan.find_closing_tag - multiple same-name tags at same level" {

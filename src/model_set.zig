@@ -392,6 +392,14 @@ fn report_parse_error(
             validate.segment_local_line(segment, diagnostics.duplicate_line),
         });
     }
+    if (err == error.MalformedXML and diagnostics.malformed_xml_recorded) {
+        const segment = validate.segment_of(segments, diagnostics.malformed_xml_offset);
+        print.data_error(io, "{s}: '{s}': malformed XML at line {d}: tags are unbalanced or not well nested", .{
+            command_name,
+            segment.name,
+            validate.segment_local_line(segment, diagnostics.malformed_xml_line),
+        });
+    }
     switch (err) {
         error.EmptyInput => parse_detail(io, command_name, segments, "input is empty", .{}),
         error.DuplicateId => parse_detail(io, command_name, segments, "duplicate RDF identifier", .{}),
@@ -1070,5 +1078,34 @@ test "DocumentSet duplicate diagnostics resolve to a boundary-local line" {
     try std.testing.expectEqual(
         @as(u64, 3),
         validate.segment_local_line(segment, diagnostics.model.duplicate_line),
+    );
+}
+
+test "DocumentSet malformed XML diagnostics resolve to a boundary-local line" {
+    const gpa = std.testing.allocator;
+    const plans = try gpa.alloc(DocumentPlan, 1);
+    plans[0] = .{
+        .first = .{
+            .name = try gpa.dupe(u8, "eq.xml"),
+            .xml = try gpa.dupe(u8, "<rdf:RDF>\n</rdf:RDF>\n"),
+        },
+        .second = .{
+            .name = try gpa.dupe(u8, "eqbd.xml"),
+            .xml = try gpa.dupe(u8, "<rdf:RDF>\n<cim:X>\n</cim:Y>\n</rdf:RDF>"),
+        },
+    };
+    var set: DocumentSet = .{ .plans = plans };
+    defer set.deinit(gpa);
+    var diagnostics: ParseDiagnostics = .{};
+    try std.testing.expectError(error.MalformedXML, set.next(gpa, &diagnostics));
+    try std.testing.expect(diagnostics.model.malformed_xml_recorded);
+    const segment = validate.segment_of(
+        diagnostics.segments[0..diagnostics.segments_count],
+        diagnostics.model.malformed_xml_offset,
+    );
+    try std.testing.expectEqualStrings("eqbd.xml", segment.name);
+    try std.testing.expectEqual(
+        @as(u64, 3),
+        validate.segment_local_line(segment, diagnostics.model.malformed_xml_line),
     );
 }

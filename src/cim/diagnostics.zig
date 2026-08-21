@@ -3,12 +3,22 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 pub const Diagnostics = struct {
+    malformed_xml_offset: u32 = 0,
+    malformed_xml_line: u64 = 0,
+    malformed_xml_recorded: bool = false,
     duplicate_offset: u32 = 0,
     duplicate_line: u64 = 0,
     duplicate_id_len: u8 = 0,
     duplicate_id_truncated: bool = false,
     duplicate_id_recorded: bool = false,
     duplicate_id_buf: [128]u8 = undefined,
+
+    pub fn record_malformed_xml(self: *Diagnostics, xml: []const u8, offset: u32) void {
+        assert(offset <= xml.len);
+        self.malformed_xml_offset = offset;
+        self.malformed_xml_line = line_number_at(xml, offset);
+        self.malformed_xml_recorded = true;
+    }
 
     pub fn record_duplicate_id(self: *Diagnostics, xml: []const u8, id: []const u8, offset: u32) void {
         assert(offset <= xml.len);
@@ -34,8 +44,12 @@ pub fn line_number_at(xml: []const u8, offset: u32) u64 {
 
 test "Diagnostics remains valid when copied" {
     var original: Diagnostics = .{};
+    original.record_malformed_xml("one\ntwo", 4);
     original.record_duplicate_id("one\ntwo", "_id", 4);
     const copy = original;
+    try std.testing.expect(copy.malformed_xml_recorded);
+    try std.testing.expectEqual(@as(u32, 4), copy.malformed_xml_offset);
+    try std.testing.expectEqual(@as(u64, 2), copy.malformed_xml_line);
     try std.testing.expectEqualStrings("_id", copy.duplicate_id());
     try std.testing.expectEqual(@as(u64, 2), copy.duplicate_line);
 }

@@ -176,6 +176,58 @@ const exit_differences = 3;
 const exit_usage = 2;
 const exit_data_error = 65;
 
+// ── Malformed XML reporting ───────────────────────────────────────────────────
+//
+// The line number must name the tag that actually broke: with several parts
+// merged into one document, the offset also picks which file gets blamed.
+
+test "malformed XML reports the offending line" {
+    const gpa = std.testing.allocator;
+    var fixtures = Fixtures.init();
+    defer fixtures.deinit();
+    const malformed =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:cim="http://iec.ch/TC57/CIM100#">
+        \\  <cim:Breaker rdf:ID="_BR1">
+        \\    <cim:IdentifiedObject.name>Broken</cim:Wrong>
+        \\  </cim:Breaker>
+        \\</rdf:RDF>
+    ;
+    var buf: [128]u8 = undefined;
+    const path = try fixtures.write(&buf, "bad.xml", malformed);
+
+    var result = try run(gpa, &.{ "types", path });
+    defer result.deinit(gpa);
+    try std.testing.expectEqual(@as(u8, exit_data_error), result.code);
+    try std.testing.expect(result.stderr_contains(
+        "bad.xml': malformed XML at line 4: tags are unbalanced or not well nested",
+    ));
+}
+
+test "malformed XML blames the unclosed opener's own file" {
+    const gpa = std.testing.allocator;
+    var fixtures = Fixtures.init();
+    defer fixtures.deinit();
+    // An EQ part missing its </rdf:RDF>, merged with a well-formed boundary.
+    // Reporting end-of-input here would land in the boundary's segment and
+    // name a line past the end of a file that is not at fault.
+    const unclosed = header(eq_uri) ++
+        "  <cim:Breaker rdf:ID=\"_BR1\">\n" ++
+        "    <cim:IdentifiedObject.name>North</cim:IdentifiedObject.name>\n" ++
+        "  </cim:Breaker>\n";
+    var buf1: [128]u8 = undefined;
+    var buf2: [128]u8 = undefined;
+    const eq = try fixtures.write(&buf1, "unclosed.xml", unclosed);
+    const bd = try fixtures.write(&buf2, "bd.xml", eqbd_document);
+
+    var result = try run(gpa, &.{ "types", eq, bd });
+    defer result.deinit(gpa);
+    try std.testing.expectEqual(@as(u8, exit_data_error), result.code);
+    // Line 2 is <rdf:RDF ...>, the outermost tag left open.
+    try std.testing.expect(result.stderr_contains("unclosed.xml': malformed XML at line 2"));
+    try std.testing.expect(!result.stderr_contains("bd.xml'"));
+}
+
 // ── Auto-detected non-EQ sides ────────────────────────────────────────────────
 
 test "diff routes two SSH files by their declared profile" {
