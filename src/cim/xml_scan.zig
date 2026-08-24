@@ -463,11 +463,21 @@ fn markup_section_end(xml: []const u8, lt: u32) MarkupSection {
 }
 
 /// Find all XML tag boundaries by pairing '<' and '>' characters.
-/// Uses two SIMD passes (one per delimiter) then zips the results, skipping
-/// `<` and `>` that appear inside XML comments (`<!-- ... -->`). The comment
-/// itself is emitted as a single boundary spanning the whole section.
-/// Stray '>' characters in text content (legal per the XML spec -- only '<'
-/// and '&' must be escaped in character data) are skipped silently.
+///
+/// One SIMD pass indexes every '<'; each tag's '>' is then found by scanning
+/// forward from its own '<'. Indexing '>' as well and zipping the two lists
+/// gives the same answer for a cost the second index does not earn: a whole
+/// second pass over the file plus a u32 per '>' -- 28MB of it on a 300MB
+/// document -- to order delimiters that scanning forward orders for free.
+///
+/// Stray '>' in text content (legal per the XML spec -- only '<' and '&' must
+/// be escaped in character data) fall out with no code at all: they sit before
+/// the next '<', and nothing looks backwards.
+///
+/// Markup sections (`<!-- -->`, `<![CDATA[ ]]>`, `<!DOCTYPE ... [ ... ]>`) hold
+/// delimiters that are data rather than markup, so each is emitted as a single
+/// boundary spanning the whole section -- see `markup_section_end`.
+///
 /// Returns ArrayList of TagBoundary in document order.
 pub fn find_tag_boundaries(
     gpa: std.mem.Allocator,
@@ -491,21 +501,14 @@ pub fn find_tag_boundariesWithErrorOffset(
 
     var lt_positions = try find_byte_simd(gpa, xml, '<');
     defer lt_positions.deinit(gpa);
-
-    var gt_positions = try find_byte_simd(gpa, xml, '>');
-    defer gt_positions.deinit(gpa);
-
     const lts = lt_positions.items;
-    const gts = gt_positions.items;
 
-    if (lts.len == 0 and gts.len == 0) return result;
+    if (lts.len == 0) return result;
 
     // Upper bound: every '<' opens a tag. Markup sections only reduce this.
     try result.ensureTotalCapacity(gpa, lts.len);
 
     var lt_idx: usize = 0;
-    var gt_idx: usize = 0;
-
     while (lt_idx < lts.len) {
         const lt = lts[lt_idx];
 
@@ -518,32 +521,31 @@ pub fn find_tag_boundariesWithErrorOffset(
             .none;
 
         if (section == .none) {
-            // Skip any stray '>' positions that appear in text content before
-            // this tag's '<'. Such '>' are legal XML character data.
-            while (gt_idx < gts.len and gts[gt_idx] < lt) : (gt_idx += 1) {}
-            if (gt_idx >= gts.len) return malformed_xml(error_offset, lt, .unclosed_tag, xml.len);
-            const gt = gts[gt_idx];
+            // A tag is short, so this lands in the first chunk or two. Starting
+            // from `lt` is also what makes a stray '>' in earlier text content a
+            // non-issue: it is behind us and never considered.
+            const gt: u32 = @intCast(std.mem.indexOfScalarPos(u8, xml, lt + 1, '>') orelse
+                return malformed_xml(error_offset, lt, .unclosed_tag, xml.len));
             // '<' is never legal inside a tag. Left alone it gets paired with a
             // later '>' into a boundary that *starts inside this one*, and every
             // consumer slices between adjacent boundaries assuming they do not
             // overlap -- `ChildIterator` reads `xml[tag.end + 1 .. closing.start]`,
-            // which panics when they do. The comment branch below already skips
-            // '<' inside its span, because there the '<' is legal; here it is not,
-            // so it is reported rather than dropped. The offset names the inner
-            // '<', which is the byte to fix.
+            // which panics when they do. A markup section skips the '<' inside
+            // its span, because there the '<' is legal; here it is not, so it is
+            // reported rather than dropped. The offset names the inner '<',
+            // which is the byte to fix.
             if (lt_idx + 1 < lts.len and lts[lt_idx + 1] < gt) {
                 return malformed_xml(error_offset, lts[lt_idx + 1], .nested_tag_open, xml.len);
             }
             result.appendAssumeCapacity(.{ .start = lt, .end = gt });
             lt_idx += 1;
-            gt_idx += 1;
             continue;
         }
 
         // A markup section is emitted as one boundary spanning the whole thing.
-        // Its interior '<' and '>' are data, so both cursors skip past them --
-        // that is what keeps the section from splitting into boundaries that
-        // overlap the ones around it.
+        // Its interior '<' are data, so the cursor skips past them -- that is
+        // what keeps the section from splitting into boundaries that overlap the
+        // ones around it.
         const close_gt = switch (section) {
             .none => unreachable,
             .unterminated => return malformed_xml(error_offset, lt, .unterminated_section, xml.len),
@@ -553,10 +555,7 @@ pub fn find_tag_boundariesWithErrorOffset(
         result.appendAssumeCapacity(.{ .start = lt, .end = close_gt });
         lt_idx += 1;
         while (lt_idx < lts.len and lts[lt_idx] < close_gt) : (lt_idx += 1) {}
-        while (gt_idx < gts.len and gts[gt_idx] <= close_gt) : (gt_idx += 1) {}
     }
-
-    // Any remaining '>' entries are stray (text content after the last tag) -- ignore them.
 
     // Postcondition: boundaries are disjoint and strictly ordered. Everything
     // downstream slices between adjacent boundaries on that assumption, so a
