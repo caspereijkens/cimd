@@ -83,7 +83,7 @@ test "tag_index.get_property_from_indices - simple property with text content" {
     try std.testing.expectEqual(@as(u32, 3), closing);
 
     // Get the "IdentifiedObject.name" property
-    const value = try tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "IdentifiedObject.name");
+    const value = tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "IdentifiedObject.name");
     try std.testing.expect(value != null);
     try std.testing.expectEqualStrings("North Station", value.?);
 }
@@ -103,7 +103,7 @@ test "tag_index.get_property_from_indices - property not found returns null" {
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
 
     // Request property that doesn't exist
-    const value = try tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "NonExistent.property");
+    const value = tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "NonExistent.property");
     try std.testing.expectEqual(@as(?[]const u8, null), value);
 }
 
@@ -121,7 +121,7 @@ test "tag_index.get_property_from_indices - empty property value" {
 
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
 
-    const value = try tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "Property.name");
+    const value = tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "Property.name");
     try std.testing.expect(value != null);
     try std.testing.expectEqualStrings("", value.?);
 }
@@ -143,12 +143,12 @@ test "tag_index.get_property_from_indices - multiple properties, find specific o
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
 
     // Get first property
-    const name = try tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "IdentifiedObject.name");
+    const name = tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "IdentifiedObject.name");
     try std.testing.expect(name != null);
     try std.testing.expectEqualStrings("North Station", name.?);
 
     // Get second property
-    const desc = try tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "IdentifiedObject.description");
+    const desc = tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "IdentifiedObject.description");
     try std.testing.expect(desc != null);
     try std.testing.expectEqualStrings("Main substation", desc.?);
 }
@@ -168,7 +168,7 @@ test "tag_index.get_property_from_indices - self-closing property tag returns nu
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
 
     // Self-closing tag has no text content
-    const value = try tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "Substation.Region");
+    const value = tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "Substation.Region");
     try std.testing.expectEqual(@as(?[]const u8, null), value);
 }
 
@@ -186,7 +186,7 @@ test "tag_index.get_property_from_indices - property with whitespace preserved" 
 
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
 
-    const value = try tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "Property.value");
+    const value = tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "Property.value");
     try std.testing.expect(value != null);
     try std.testing.expectEqualStrings("  Leading and trailing spaces  ", value.?);
 }
@@ -207,12 +207,12 @@ test "tag_index.get_property_from_indices - property name must match exactly" {
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
 
     // Should find exact match "Property.name", not "Property.nameExtra"
-    const value = try tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "Property.name");
+    const value = tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "Property.name");
     try std.testing.expect(value != null);
     try std.testing.expectEqualStrings("Value", value.?);
 
     // Should NOT match partial "Property.name" when looking for "Property.nameExtra"
-    const value2 = try tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "Property.nameExtra");
+    const value2 = tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "Property.nameExtra");
     try std.testing.expect(value2 != null);
     try std.testing.expectEqualStrings("Other", value2.?);
 }
@@ -231,7 +231,7 @@ test "tag_index.get_property_from_indices - property with special characters" {
 
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
 
-    const value = try tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "Property.value");
+    const value = tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "Property.value");
     try std.testing.expect(value != null);
     // Note: We return raw XML content, not decoded entities
     try std.testing.expectEqualStrings("Value with &lt;special&gt; chars &amp; symbols", value.?);
@@ -253,7 +253,7 @@ test "tag_index.get_property_from_indices - multiple same-name properties return
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
 
     // Should return first occurrence
-    const value = try tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "Property.value");
+    const value = tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "Property.value");
     try std.testing.expect(value != null);
     try std.testing.expectEqualStrings("First", value.?);
 }
@@ -272,7 +272,7 @@ test "tag_index.get_property_from_indices - property with numeric value" {
 
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
 
-    const value = try tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "VoltageLevel.nominalV");
+    const value = tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "VoltageLevel.nominalV");
     try std.testing.expect(value != null);
     try std.testing.expectEqualStrings("380.0", value.?);
 }
@@ -287,7 +287,7 @@ test "tag_index.get_property_from_indices - no properties in object" {
 
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
 
-    const value = try tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "Any.property");
+    const value = tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "Any.property");
     try std.testing.expectEqual(@as(?[]const u8, null), value);
 }
 
@@ -309,7 +309,7 @@ test "tag_index.get_property_from_indices - nested object doesn't interfere" {
     const outer_closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
 
     // Getting property from Outer should find its own property, not nested one
-    const value = try tag_index.get_property_from_indices(xml, boundaries.items, 0, outer_closing, "Outer.property");
+    const value = tag_index.get_property_from_indices(xml, boundaries.items, 0, outer_closing, "Outer.property");
     try std.testing.expect(value != null);
     try std.testing.expectEqualStrings("OuterValue", value.?);
 }
@@ -331,7 +331,7 @@ test "tag_index.get_property_from_indices - property with newlines and indentati
 
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
 
-    const value = try tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "Property.text");
+    const value = tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "Property.text");
     try std.testing.expect(value != null);
     // Should preserve all whitespace including newlines
     try std.testing.expect(std.mem.indexOf(u8, value.?, "Multi-line") != null);
@@ -354,7 +354,7 @@ test "tag_index.get_property_from_indices - self-closing tag before target prope
     const closing = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
 
     // Should skip self-closing Region and find name
-    const value = try tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "IdentifiedObject.name");
+    const value = tag_index.get_property_from_indices(xml, boundaries.items, 0, closing, "IdentifiedObject.name");
     try std.testing.expect(value != null);
     try std.testing.expectEqualStrings("North Station", value.?);
 }
@@ -992,7 +992,7 @@ test "tag_index.get_property_from_indices - self-closing tag returns null" {
     defer boundaries.deinit(gpa);
 
     // For self-closing tag, opening_idx == closing_idx
-    const result = try tag_index.get_property_from_indices(xml, boundaries.items, 0, 0, "SomeProperty");
+    const result = tag_index.get_property_from_indices(xml, boundaries.items, 0, 0, "SomeProperty");
     try std.testing.expect(result == null);
 }
 

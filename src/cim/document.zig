@@ -8,14 +8,15 @@
 //! same parse plus an index on the normalized mRID.
 //!
 //! It is *not* a general RDF/XML parser, and does not resolve namespaces.
-//! Matching is on literal qualified names: `rdf:ID="`, `rdf:about="`, and a
-//! `prefix:LocalName` tag shape. A document that binds the RDF namespace to
-//! any prefix other than `rdf` is therefore not recognized -- and fails
-//! quietly, indexing zero objects rather than erroring, because "no tag here
-//! declares an id" is also what an ordinary non-object element looks like.
-//! Every CGMES export in the wild uses the `rdf:` binding, so this buys a
-//! single-pass scan with no namespace bookkeeping; the cost is that supporting
-//! other bindings later means resolving prefixes at parse time, not a doc fix.
+//! Element local names are read from either `prefix:LocalName` or the
+//! unprefixed `LocalName` form used with a default namespace. RDF attributes
+//! are still matched literally as `rdf:ID="` and `rdf:about="`. A document that
+//! binds the RDF namespace to any prefix other than `rdf` is therefore not
+//! recognized -- and fails quietly, indexing zero objects rather than erroring,
+//! because "no tag here declares an id" is also what an ordinary non-object
+//! element looks like. Every CGMES export in the wild uses the `rdf:` binding,
+//! so this buys a single-pass scan with no namespace bookkeeping; supporting
+//! other RDF bindings later would require resolving prefixes at parse time.
 //!
 //! Three indexes are built in one pass over the tag boundaries: objects by
 //! document order, mRID to object, and type name to a contiguous range of
@@ -99,9 +100,9 @@ pub const CimDocument = struct {
         errdefer gpa.free(xml);
         if (xml.len == 0) return error.EmptyInput;
 
-        var malformed_offset: u32 = undefined;
-        var boundary_list = xml_scan.find_tag_boundariesWithErrorOffset(gpa, xml, &malformed_offset) catch |err| {
-            if (err == error.MalformedXML) if (diagnostics) |d| d.record_malformed_xml(xml, malformed_offset);
+        var malformed: xml_scan.MalformedXML = .{};
+        var boundary_list = xml_scan.find_tag_boundariesWithErrorOffset(gpa, xml, &malformed) catch |err| {
+            if (err == error.MalformedXML) if (diagnostics) |d| d.record_malformed_xml(xml, malformed);
             return err;
         };
         errdefer boundary_list.deinit(gpa);
@@ -122,9 +123,9 @@ pub const CimDocument = struct {
             gpa,
             xml,
             boundaries,
-            &malformed_offset,
+            &malformed,
         ) catch |err| {
-            if (err == error.MalformedXML) if (diagnostics) |d| d.record_malformed_xml(xml, malformed_offset);
+            if (err == error.MalformedXML) if (diagnostics) |d| d.record_malformed_xml(xml, malformed);
             return err;
         };
         defer gpa.free(closing_for);

@@ -394,10 +394,11 @@ fn report_parse_error(
     }
     if (err == error.MalformedXML and diagnostics.malformed_xml_recorded) {
         const segment = validate.segment_of(segments, diagnostics.malformed_xml_offset);
-        print.data_error(io, "{s}: '{s}': malformed XML at line {d}: tags are unbalanced or not well nested", .{
+        print.data_error(io, "{s}: '{s}': malformed XML at line {d}: {s}", .{
             command_name,
             segment.name,
             validate.segment_local_line(segment, diagnostics.malformed_xml_line),
+            diagnostics.malformed_xml_reason.describe(),
         });
     }
     switch (err) {
@@ -412,7 +413,7 @@ fn report_parse_error(
             io,
             command_name,
             segments,
-            "malformed XML: tags are unbalanced or not well nested",
+            "malformed XML",
             .{},
         ),
         error.MalformedTag => parse_detail(io, command_name, segments, "malformed XML tag", .{}),

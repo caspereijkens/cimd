@@ -147,7 +147,7 @@ pub fn build_op_lims(
 
     for (limit_sets.items) |set| {
         const set_mrid = try set.mrid();
-        const set_name = parse.non_blank(try set.property("IdentifiedObject.name")) orelse set_mrid;
+        const set_name = parse.non_blank(set.property("IdentifiedObject.name")) orelse set_mrid;
 
         var patl_value: ?f64 = null;
         var patl_cl_mrid: ?[]const u8 = null;
@@ -159,8 +159,8 @@ pub fn build_op_lims(
                 const type_info = index.limit_types.get(type_id) orelse continue;
                 if (!type_info.is_infinite) continue; // skip TATLs for now (none in dataset)
 
-                const value_str = parse.non_blank(try current_limit.property("CurrentLimit.value")) orelse
-                    parse.non_blank(try current_limit.property("CurrentLimit.normalValue")) orelse continue;
+                const value_str = parse.non_blank(current_limit.property("CurrentLimit.value")) orelse
+                    parse.non_blank(current_limit.property("CurrentLimit.normalValue")) orelse continue;
                 patl_value = try parse.float_req(value_str);
                 patl_cl_mrid = try current_limit.mrid();
                 break;

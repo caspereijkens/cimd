@@ -351,7 +351,7 @@ fn write_get_list_text(
         for (fields) |field| {
             // Fall back to a reference when the field isn't a text property, so
             // rdf:resource fields show their target instead of a bare N/A.
-            const val = (try obj.property(field)) orelse (try obj.reference(field)) orelse "N/A";
+            const val = obj.property(field) orelse (try obj.reference(field)) orelse "N/A";
             try w.print(" | {s}", .{val});
         }
         try w.writeByte('\n');

@@ -185,6 +185,61 @@ pub fn index_of_any_pos_simd(haystack: []const u8, start: usize, comptime set: [
     return index_of_any_pos_table(haystack, i, set);
 }
 
+/// Positions of the first two bytes from `set` at or after `start`, in one pass.
+/// `second` is null when the haystack ends after the first hit.
+///
+/// This exists for `extract_tag_type_terminated`, which needs both the prefix
+/// colon and the name terminator. Those are the first two members of the same
+/// set, and in a qualified tag name they almost always land in the same 32-byte
+/// chunk -- `<cim:ACLineSegment.r ` resolves entirely inside chunk one. Calling
+/// `index_of_any_pos_simd` twice reloads those bytes and pays the per-member
+/// compares a second time, on what profiling puts at the hottest line in the
+/// scanner. Finding both from one load halves that.
+pub fn first_two_of_any_pos_simd(
+    haystack: []const u8,
+    start: usize,
+    comptime set: []const u8,
+) ?struct { first: usize, second: ?usize } {
+    comptime assert(set.len > 0);
+    assert(start <= haystack.len);
+
+    const splats = comptime blk: {
+        var sp: [set.len]Chunk = undefined;
+        for (set, 0..) |c, j| sp[j] = @splat(c);
+        break :blk sp;
+    };
+
+    var first: ?usize = null;
+    var i: usize = start;
+    while (i + VECTOR_LEN <= haystack.len) : (i += VECTOR_LEN) {
+        const chunk: Chunk = haystack[i..][0..VECTOR_LEN].*;
+        var mask: Mask = 0;
+        inline for (splats) |splat| {
+            const eq: @Vector(VECTOR_LEN, bool) = chunk == splat;
+            mask |= @as(Mask, @bitCast(eq));
+        }
+        // Walk the set bits low to high: they are in ascending byte order, so
+        // the first two encountered are the first two hits overall. The common
+        // case leaves this loop on its second iteration, having never issued a
+        // second load.
+        while (mask != 0) : (mask &= mask - 1) {
+            const pos = i + @ctz(mask);
+            if (first) |f| return .{ .first = f, .second = pos };
+            first = pos;
+        }
+    }
+
+    // Tail: fewer than VECTOR_LEN bytes left, so scan them a byte at a time.
+    while (index_of_any_pos_table(haystack, i, set)) |pos| {
+        if (first) |f| return .{ .first = f, .second = pos };
+        first = pos;
+        i = pos + 1;
+    }
+
+    if (first) |f| return .{ .first = f, .second = null };
+    return null;
+}
+
 /// Verify needle at position and extract quoted value if match found
 /// Returns PatternMatch if pattern matches and closing quote is found, null otherwise
 pub fn verify_and_extract_pattern(
@@ -304,10 +359,107 @@ pub const TagBoundary = struct {
     end: u32,
 };
 
-fn malformed_xml(error_offset: *u32, offset: u32, xml_len: usize) error{MalformedXML} {
+/// Why a document failed to scan. The offset alone says where to look; this
+/// says what to look for, and the two are only useful together -- "a '<' inside
+/// a tag" at line 40 is actionable in a way that "something is wrong" at line 40
+/// is not.
+pub const MalformedReason = enum {
+    unclosed_tag,
+    nested_tag_open,
+    unterminated_section,
+    closing_tag_self_closed,
+    unreadable_tag_name,
+    unexpected_closing_tag,
+    mismatched_closing_tag,
+    unclosed_element,
+
+    /// Completes the sentence "malformed XML at line N: ...".
+    pub fn describe(self: MalformedReason) []const u8 {
+        return switch (self) {
+            .unclosed_tag => "a tag is opened with '<' but never closed with '>'",
+            .nested_tag_open => "'<' appears inside a tag; write it as &lt; in text",
+            .unterminated_section => "a comment, CDATA section or DOCTYPE is never closed",
+            .closing_tag_self_closed => "a closing tag cannot also be self-closing",
+            .unreadable_tag_name => "a tag name is missing or not a valid XML qualified name",
+            .unexpected_closing_tag => "a closing tag appears with no element open",
+            .mismatched_closing_tag => "a closing tag does not match the element it closes",
+            .unclosed_element => "an element is opened but never closed",
+        };
+    }
+};
+
+/// Where a scan failed and why. Populated only when the scan returns
+/// `error.MalformedXML`.
+pub const MalformedXML = struct {
+    offset: u32 = 0,
+    reason: MalformedReason = .unclosed_element,
+};
+
+fn malformed_xml(
+    info: *MalformedXML,
+    offset: u32,
+    reason: MalformedReason,
+    xml_len: usize,
+) error{MalformedXML} {
     assert(offset <= xml_len);
-    error_offset.* = offset;
+    info.* = .{ .offset = offset, .reason = reason };
     return error.MalformedXML;
+}
+
+const MarkupSection = union(enum) {
+    /// `<!` did not open a section this scanner spans; treat it as a plain tag.
+    none,
+    /// A section was opened but never closed.
+    unterminated,
+    /// Index of the '>' that closes the section.
+    ends_at: u32,
+};
+
+/// End of a `<!...>` markup section starting at `lt`.
+///
+/// These have to be recognised as a whole because a '<' inside one is character
+/// data, not the start of a tag. An internal DTD subset holds them by
+/// construction -- `<!DOCTYPE rdf:RDF [<!ENTITY name "Station">]>` has two '<'
+/// and two '>' interleaved -- and so can a CDATA section. Pairing those
+/// naively yields boundaries that start inside their predecessor, which every
+/// consumer's slicing assumes cannot happen; spanning the section keeps that
+/// invariant without rejecting a well-formed document.
+///
+/// The subset scan tracks `[` / `]` rather than parsing declarations, so a ']'
+/// inside a quoted entity value would end it early. That form does not occur in
+/// CGMES, and getting it wrong yields a diagnostic, not a bad parse.
+fn markup_section_end(xml: []const u8, lt: u32) MarkupSection {
+    assert(xml.len <= std.math.maxInt(u32));
+    assert(lt < xml.len);
+    assert(xml[lt] == '<');
+
+    const rest = xml[lt..];
+
+    if (std.mem.startsWith(u8, rest, "<!--")) {
+        const at = std.mem.indexOfPos(u8, xml, lt + 4, "-->") orelse return .unterminated;
+        return .{ .ends_at = @intCast(at + 2) };
+    }
+
+    if (std.mem.startsWith(u8, rest, "<![CDATA[")) {
+        const at = std.mem.indexOfPos(u8, xml, lt + 9, "]]>") orelse return .unterminated;
+        return .{ .ends_at = @intCast(at + 2) };
+    }
+
+    if (std.mem.startsWith(u8, rest, "<!DOCTYPE")) {
+        var i: u32 = lt + 9;
+        var in_subset = false;
+        while (i < xml.len) : (i += 1) {
+            switch (xml[i]) {
+                '[' => in_subset = true,
+                ']' => in_subset = false,
+                '>' => if (!in_subset) return .{ .ends_at = i },
+                else => {},
+            }
+        }
+        return .unterminated;
+    }
+
+    return .none;
 }
 
 /// Find all XML tag boundaries by pairing '<' and '>' characters.
@@ -321,7 +473,7 @@ pub fn find_tag_boundaries(
     gpa: std.mem.Allocator,
     xml: []const u8,
 ) !std.ArrayList(TagBoundary) {
-    var error_offset: u32 = undefined;
+    var error_offset: MalformedXML = .{};
     return find_tag_boundariesWithErrorOffset(gpa, xml, &error_offset);
 }
 
@@ -330,7 +482,7 @@ pub fn find_tag_boundaries(
 pub fn find_tag_boundariesWithErrorOffset(
     gpa: std.mem.Allocator,
     xml: []const u8,
-    error_offset: *u32,
+    error_offset: *MalformedXML,
 ) !std.ArrayList(TagBoundary) {
     var result: std.ArrayList(TagBoundary) = .empty;
     errdefer result.deinit(gpa);
@@ -348,7 +500,7 @@ pub fn find_tag_boundariesWithErrorOffset(
 
     if (lts.len == 0 and gts.len == 0) return result;
 
-    // Upper bound: every '<' opens a tag. Comments only reduce this.
+    // Upper bound: every '<' opens a tag. Markup sections only reduce this.
     try result.ensureTotalCapacity(gpa, lts.len);
 
     var lt_idx: usize = 0;
@@ -358,56 +510,92 @@ pub fn find_tag_boundariesWithErrorOffset(
         const lt = lts[lt_idx];
 
         // Fast path: most '<' open a normal element. One byte-compare guards
-        // the comment branch; the compiler keeps this in a single predictable
-        // branch since '!' is rare immediately after '<'.
-        const is_comment = lt + 3 < xml.len and
-            xml[lt + 1] == '!' and xml[lt + 2] == '-' and xml[lt + 3] == '-';
+        // the markup-section branch; the compiler keeps this in a single
+        // predictable branch since '!' is rare immediately after '<'.
+        const section: MarkupSection = if (lt + 1 < xml.len and xml[lt + 1] == '!')
+            markup_section_end(xml, lt)
+        else
+            .none;
 
-        if (!is_comment) {
+        if (section == .none) {
             // Skip any stray '>' positions that appear in text content before
             // this tag's '<'. Such '>' are legal XML character data.
             while (gt_idx < gts.len and gts[gt_idx] < lt) : (gt_idx += 1) {}
-            if (gt_idx >= gts.len) return malformed_xml(error_offset, lt, xml.len);
+            if (gt_idx >= gts.len) return malformed_xml(error_offset, lt, .unclosed_tag, xml.len);
             const gt = gts[gt_idx];
+            // '<' is never legal inside a tag. Left alone it gets paired with a
+            // later '>' into a boundary that *starts inside this one*, and every
+            // consumer slices between adjacent boundaries assuming they do not
+            // overlap -- `ChildIterator` reads `xml[tag.end + 1 .. closing.start]`,
+            // which panics when they do. The comment branch below already skips
+            // '<' inside its span, because there the '<' is legal; here it is not,
+            // so it is reported rather than dropped. The offset names the inner
+            // '<', which is the byte to fix.
+            if (lt_idx + 1 < lts.len and lts[lt_idx + 1] < gt) {
+                return malformed_xml(error_offset, lts[lt_idx + 1], .nested_tag_open, xml.len);
+            }
             result.appendAssumeCapacity(.{ .start = lt, .end = gt });
             lt_idx += 1;
             gt_idx += 1;
             continue;
         }
 
-        // Comment: walk gt_idx forward to the first '>' preceded by '--',
-        // then skip any '<' positions that fell inside the comment span.
-        // The opening '<!--' occupies lt..lt+3, so any '>' at or before lt+3
-        // can't be the closer (and would already be paired with a prior tag).
-        while (gt_idx < gts.len and gts[gt_idx] <= lt + 3) : (gt_idx += 1) {}
-
-        const close_gt = while (gt_idx < gts.len) : (gt_idx += 1) {
-            const gt = gts[gt_idx];
-            if (xml[gt - 1] == '-' and xml[gt - 2] == '-') break gt;
-        } else return malformed_xml(error_offset, lt, xml.len);
+        // A markup section is emitted as one boundary spanning the whole thing.
+        // Its interior '<' and '>' are data, so both cursors skip past them --
+        // that is what keeps the section from splitting into boundaries that
+        // overlap the ones around it.
+        const close_gt = switch (section) {
+            .none => unreachable,
+            .unterminated => return malformed_xml(error_offset, lt, .unterminated_section, xml.len),
+            .ends_at => |end| end,
+        };
 
         result.appendAssumeCapacity(.{ .start = lt, .end = close_gt });
-        gt_idx += 1;
         lt_idx += 1;
         while (lt_idx < lts.len and lts[lt_idx] < close_gt) : (lt_idx += 1) {}
+        while (gt_idx < gts.len and gts[gt_idx] <= close_gt) : (gt_idx += 1) {}
     }
 
     // Any remaining '>' entries are stray (text content after the last tag) -- ignore them.
 
+    // Postcondition: boundaries are disjoint and strictly ordered. Everything
+    // downstream slices between adjacent boundaries on that assumption, so a
+    // regression here surfaces as an out-of-range slice panic several layers
+    // away rather than as anything diagnosable. Catch it at the source.
+    if (result.items.len > 0) {
+        for (result.items[1..], 1..) |t, i| {
+            assert(t.start > result.items[i - 1].end);
+        }
+    }
+
     return result;
 }
 
-/// Extract tag type from XML tag, stripping namespace
-/// Example: "<cim:Substation rdf:ID="_SS1">" → "Substation"
+/// Extract an element's local name, stripping its namespace prefix when present.
+/// Examples:
+///   "<cim:Substation rdf:ID="_SS1">" → "Substation"
+///   "<Substation rdf:ID="_SS1">"     → "Substation"
 /// Tag-name terminator set includes all XML whitespace (space, tab, CR, LF)
 /// plus '>' and '/', so multi-line opening tags like `<rdf:RDF\n  xmlns=...>`
 /// and attribute-less self-closing tags like `<cim:X/>` are handled
-/// correctly. Scan stays bounded to a single tag at the call sites.
+/// correctly. The scans stop at the first whitespace or tag end, so callers
+/// may pass the complete XML: neither an attribute colon nor a prefix in a
+/// later tag can affect the result. Comments, CDATA and processing instructions
+/// are not elements and return `error.MalformedTag`.
 pub fn extract_tag_type(slice: []const u8, start_idx: u32) error{MalformedTag}![]const u8 {
     return (try extract_tag_type_terminated(slice, start_idx)).name;
 }
 
-/// `extract_tag_type`, plus the byte that ended the name. The terminator answers
+/// `extract_tag_type`, plus the qualified name and the byte that ended it.
+///
+/// `qname` is the name exactly as written, prefix included -- "cim:Substation"
+/// where `name` is "Substation". CIM typing wants the local name, because a
+/// document is free to bind the CIM namespace to any prefix or to no prefix at
+/// all; XML *nesting* wants the qualified one, because an end tag must repeat
+/// its opener's name verbatim. Matching on `name` alone would balance
+/// `<cim:Substation></Substation>`, which is not well-formed XML.
+///
+/// The terminator answers
 /// "can this element carry attributes at all" for free: '>' or '/' means the name
 /// ran straight into the end of the tag, so there is no room for an
 /// `rdf:resource`. `ChildIterator` uses that to skip the attribute scan on the
@@ -417,10 +605,51 @@ pub fn extract_tag_type(slice: []const u8, start_idx: u32) error{MalformedTag}![
 pub fn extract_tag_type_terminated(
     slice: []const u8,
     start_idx: u32,
-) error{MalformedTag}!struct { name: []const u8, terminator: u8 } {
-    const colon_idx = std.mem.indexOfScalarPos(u8, slice, start_idx, ':') orelse return error.MalformedTag;
-    const end_idx = index_of_any_pos_simd(slice, colon_idx, " \t\r\n>/") orelse return error.MalformedTag;
-    return .{ .name = slice[colon_idx + 1 .. end_idx], .terminator = slice[end_idx] };
+) error{MalformedTag}!struct { name: []const u8, qname: []const u8, terminator: u8 } {
+    assert(slice.len <= std.math.maxInt(u32));
+
+    var name_start: u32 = start_idx;
+    if (name_start >= slice.len) return error.MalformedTag;
+    if (slice[name_start] == '<') name_start += 1;
+    if (name_start >= slice.len) return error.MalformedTag;
+    if (slice[name_start] == '/') name_start += 1;
+    if (name_start >= slice.len) return error.MalformedTag;
+
+    if (slice[name_start] == '!' or slice[name_start] == '?') return error.MalformedTag;
+
+    // The colon is in the terminator set so that one sweep locates both the
+    // prefix separator and the end of the name. An unprefixed name stops at its
+    // terminator and never needs `second`.
+    const terminators = ": \t\r\n>/";
+    const hits = first_two_of_any_pos_simd(slice, name_start, terminators) orelse
+        return error.MalformedTag;
+
+    const prefix_end: u32 = @intCast(hits.first);
+    if (prefix_end == name_start) return error.MalformedTag;
+    assert(prefix_end > name_start);
+    assert(prefix_end < slice.len);
+
+    if (slice[prefix_end] != ':') {
+        return .{
+            .name = slice[name_start..prefix_end],
+            .qname = slice[name_start..prefix_end],
+            .terminator = slice[prefix_end],
+        };
+    }
+
+    const local_start = prefix_end + 1;
+    const end_idx: u32 = @intCast(hits.second orelse return error.MalformedTag);
+    if (end_idx == local_start) return error.MalformedTag;
+    // A second colon: `a:b:c` is not a QName.
+    if (slice[end_idx] == ':') return error.MalformedTag;
+    assert(end_idx > local_start);
+    assert(end_idx < slice.len);
+
+    return .{
+        .name = slice[local_start..end_idx],
+        .qname = slice[name_start..end_idx],
+        .terminator = slice[end_idx],
+    };
 }
 
 /// Extract rdf:ID value from an XML tag
@@ -504,6 +733,15 @@ pub fn extract_rdf_resource(slice: []const u8, start_idx: u32) error{MalformedTa
     return extract_rdf_resource_within(slice, start_idx, @intCast(gt_idx));
 }
 
+/// Find the closing boundary paired with an opening element boundary.
+/// Returns `error.MalformedTag` if `opening_tag_idx` is a non-element boundary
+/// or its name cannot be parsed.
+///
+/// Strict, and identically so to `build_closing_index`: comments, processing
+/// instructions and CDATA are skipped because they are not elements and take no
+/// part in nesting, but an *element* whose name will not parse is malformed XML
+/// and aborts the search. Skipping it instead would silently answer a nesting
+/// question using a document the scanner could not fully read.
 pub fn find_closing_tag(
     xml: []const u8,
     boundaries: []const TagBoundary,
@@ -513,28 +751,39 @@ pub fn find_closing_tag(
 
     const opening_tag = boundaries[opening_tag_idx];
     assert(opening_tag.start < opening_tag.end);
+    if (boundary_kind(xml, opening_tag) != .element_open) return error.MalformedTag;
 
     // Check if self-closing.
     if (xml[opening_tag.end - 1] == '/') return error.SelfClosingTag;
 
     var depth: u32 = 1;
-    const opening_tag_type = try extract_tag_type(xml, opening_tag.start);
+    // Qualified names, matching `build_closing_index`: depth tracking has to
+    // agree with the index the rest of the document is read through.
+    const opening_qname = (try extract_tag_type_terminated(xml, opening_tag.start)).qname;
     const result_idx: u32 = blk: {
         for (boundaries[opening_tag_idx + 1 ..], opening_tag_idx + 1..) |tag, i| {
-            if (xml[tag.start + 1] == '/') {
-                const tag_type = extract_tag_type(xml, tag.start + 1) catch continue;
-                if (std.mem.eql(u8, opening_tag_type, tag_type)) {
+            const kind = boundary_kind(xml, tag);
+            if (kind == .non_element) continue;
+            const self_closing = xml[tag.end - 1] == '/';
+            // A closing tag cannot also be self-closing: `</x/>` is malformed
+            // XML, not an empty element.
+            if (kind == .element_close and self_closing) return error.MalformedTag;
+            const tag_qname = (try extract_tag_type_terminated(xml, tag.start)).qname;
+            // A self-closing element opens and closes at once: its name still has
+            // to parse, but it cannot change the depth.
+            if (self_closing) continue;
+
+            switch (kind) {
+                .element_close => if (std.mem.eql(u8, opening_qname, tag_qname)) {
                     assert(depth > 0);
                     depth -= 1;
                     if (depth == 0) break :blk @intCast(i);
-                }
-            } else if (xml[tag.end - 1] != '/') {
-                // Opening tag (not self-closing)
-                const tag_type = extract_tag_type(xml, tag.start) catch continue;
-                if (std.mem.eql(u8, opening_tag_type, tag_type)) {
+                },
+                .element_open => if (std.mem.eql(u8, opening_qname, tag_qname)) {
                     assert(depth < std.math.maxInt(u32));
                     depth += 1;
-                }
+                },
+                .non_element => unreachable,
             }
         }
         return error.NoClosingTag;
@@ -546,34 +795,54 @@ pub fn find_closing_tag(
     return result_idx;
 }
 
+const BoundaryKind = enum { element_open, element_close, non_element };
+
+inline fn boundary_kind(xml: []const u8, tag: TagBoundary) BoundaryKind {
+    assert(tag.start < tag.end);
+    assert(tag.end < xml.len);
+    assert(xml[tag.start] == '<');
+    return switch (xml[tag.start + 1]) {
+        '/' => .element_close,
+        '!', '?' => .non_element,
+        else => .element_open,
+    };
+}
+
 /// True when a boundary is an element opening tag, i.e. a candidate child of the
 /// object being walked. False for closing tags, comments and processing
 /// instructions.
 ///
 /// The comment case is load-bearing, not defensive: `find_tag_boundaries` emits
 /// a comment as one boundary spanning the whole `<!-- ... -->` section, so a
-/// commented-out child would otherwise be read as a live one. `extract_tag_type`
-/// also scans forward past the boundary for its ':', so an ordinary comment can
-/// take its name -- and a property walk its value -- from the following tag.
+/// commented-out child would otherwise be read as a live one. A comment's bytes
+/// can also resemble a qualified element name closely enough to perturb tag
+/// matching unless the boundary is rejected before parsing its name.
 ///
 /// Every child walk must apply this; property walks additionally skip
 /// self-closing tags, which cannot carry a text value.
 pub inline fn is_element_open_tag(xml: []const u8, tag: TagBoundary) bool {
-    assert(tag.start + 1 < xml.len);
-    const c = xml[tag.start + 1];
-    return c != '/' and c != '!' and c != '?';
+    return boundary_kind(xml, tag) == .element_open;
 }
 
 /// Pre-compute closing tag indices for all boundaries.
-/// closing_for[i] == i means self-closing. Otherwise closing_for[i] is the
-/// index of the matching closing boundary.
+/// For an opening element, `closing_for[i]` is the matching closing boundary,
+/// or `i` when it is self-closing. Closing and non-element boundaries retain
+/// their default `i` value.
+///
+/// This is the document's gate, and it is strict: any element whose name will
+/// not parse fails the whole parse with `error.MalformedXML`. Non-elements
+/// (comments, processing instructions, CDATA, doctype) are skipped -- that is
+/// not tolerance, they simply are not elements. Because `CimDocument.init` runs
+/// this pass before anything walks the document, every later consumer may take
+/// it as given that an element boundary has a parseable name; `ChildIterator`
+/// relies on exactly that.
 /// Caller owns the returned slice.
 pub fn build_closing_index(
     gpa: std.mem.Allocator,
     xml: []const u8,
     boundaries: []const TagBoundary,
 ) ![]u32 {
-    var error_offset: u32 = undefined;
+    var error_offset: MalformedXML = .{};
     return build_closing_indexWithErrorOffset(gpa, xml, boundaries, &error_offset);
 }
 
@@ -583,7 +852,7 @@ pub fn build_closing_indexWithErrorOffset(
     gpa: std.mem.Allocator,
     xml: []const u8,
     boundaries: []const TagBoundary,
-    error_offset: *u32,
+    error_offset: *MalformedXML,
 ) ![]u32 {
     assert(xml.len <= std.math.maxInt(u32));
     const closing_for = try gpa.alloc(u32, boundaries.len);
@@ -592,43 +861,54 @@ pub fn build_closing_indexWithErrorOffset(
     // Default: each tag closes itself (correct for self-closing; overwritten for pairs).
     for (closing_for, 0..) |*v, i| v.* = @intCast(i);
 
-    // Stack entries: opening tag type + its boundary index.
-    const StackEntry = struct { type_name: []const u8, idx: u32 };
+    // Stack entries: the opener's qualified name + its boundary index. Nesting
+    // is matched on the qualified name, not the local one: an XML end tag must
+    // repeat its opener's name exactly, so `<cim:Substation></Substation>` and
+    // `<cim:X></md:X>` are both malformed even though the local names agree.
+    const StackEntry = struct { qname: []const u8, idx: u32 };
     var stack: std.ArrayListUnmanaged(StackEntry) = .empty;
     defer stack.deinit(gpa);
 
     for (boundaries, 0..) |tag, i| {
-        if (xml[tag.end - 1] == '/') {
-            // Self-closing -- already defaulted, nothing to push.
-        } else if (xml[tag.start + 1] == '!' or xml[tag.start + 1] == '?') {
-            // XML comment (<!--) or processing instruction (<?).
-            // Not an element -- never pushed, never popped.
-        } else if (xml[tag.start + 1] == '/') {
-            // Closing tag -- must match the stack top; CGMES XML is always well-nested.
-            // Bound the type search to within this tag to prevent cross-tag colon matches.
-            const tag_xml = xml[tag.start .. tag.end + 1];
-            const type_name = extract_tag_type(tag_xml, 1) catch continue;
-            if (stack.items.len == 0) return malformed_xml(error_offset, tag.start, xml.len);
-            if (!std.mem.eql(u8, stack.items[stack.items.len - 1].type_name, type_name)) {
-                return malformed_xml(error_offset, tag.start, xml.len);
-            }
-            const opener = stack.pop().?;
-            closing_for[opener.idx] = @intCast(i);
-        } else {
-            // Opening tag -- push.
-            // Bound the type search to within this tag to prevent cross-tag colon matches
-            // (e.g. a boundary created by '<->' inside an XML comment could otherwise look
-            // past the boundary end and find the ':' in the following real tag's namespace).
-            const tag_xml = xml[tag.start .. tag.end + 1];
-            const type_name = extract_tag_type(tag_xml, 0) catch continue;
-            try stack.append(gpa, .{ .type_name = type_name, .idx = @intCast(i) });
+        switch (boundary_kind(xml, tag)) {
+            // Not an element, so it takes no part in nesting. This is the only
+            // boundary this pass passes over.
+            .non_element => {},
+            .element_close => {
+                // A closing tag cannot also be self-closing: `</x/>` is
+                // malformed XML, not an empty element, and must not be dropped.
+                if (xml[tag.end - 1] == '/') return malformed_xml(error_offset, tag.start, .closing_tag_self_closed, xml.len);
+                const parsed = extract_tag_type_terminated(xml, tag.start) catch
+                    return malformed_xml(error_offset, tag.start, .unreadable_tag_name, xml.len);
+                if (stack.items.len == 0) return malformed_xml(error_offset, tag.start, .unexpected_closing_tag, xml.len);
+                if (!std.mem.eql(u8, stack.items[stack.items.len - 1].qname, parsed.qname)) {
+                    return malformed_xml(error_offset, tag.start, .mismatched_closing_tag, xml.len);
+                }
+                const opener = stack.pop().?;
+                closing_for[opener.idx] = @intCast(i);
+            },
+            .element_open => {
+                // The name is parsed before the self-closing test: `<x/>` never
+                // reaches the stack, but it is still an element and still has to
+                // be readable for the document to be well-formed.
+                const parsed = extract_tag_type_terminated(xml, tag.start) catch
+                    return malformed_xml(error_offset, tag.start, .unreadable_tag_name, xml.len);
+                // Self-closing -- already defaulted, nothing to push.
+                if (xml[tag.end - 1] == '/') continue;
+                try stack.append(gpa, .{ .qname = parsed.qname, .idx = @intCast(i) });
+            },
         }
     }
 
     // Every opener must have been matched; a non-empty stack means unclosed tags.
     // Report the outermost unclosed opener -- that is the tag the user must fix,
     // and unlike end-of-input it falls inside the segment that actually broke.
-    if (stack.items.len != 0) return malformed_xml(error_offset, boundaries[stack.items[0].idx].start, xml.len);
+    if (stack.items.len != 0) return malformed_xml(
+        error_offset,
+        boundaries[stack.items[0].idx].start,
+        .unclosed_element,
+        xml.len,
+    );
 
     // Postcondition: every entry either points to itself (self-closing) or to a
     // boundary strictly after it. A regression in the matching logic above

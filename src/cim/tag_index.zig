@@ -39,7 +39,7 @@ pub fn get_property_from_indices(
     opening_tag_idx: u32,
     closing_tag_idx: u32,
     property_name: []const u8,
-) error{MalformedTag}!?[]const u8 {
+) ?[]const u8 {
     assert(property_name.len > 0);
 
     var it = ChildIterator.init_range(xml, boundaries, opening_tag_idx, closing_tag_idx);
@@ -49,6 +49,10 @@ pub fn get_property_from_indices(
     return null;
 }
 
+/// Unlike `get_property_from_indices` this can still fail: `ChildIterator` reads
+/// every child without erroring, but a child whose `rdf:resource` will not parse
+/// is a specific answer to a specific question, and returning it as "absent"
+/// would be a lie.
 pub fn get_reference_from_indices(
     xml: []const u8,
     boundaries: []const TagBoundary,
@@ -114,9 +118,14 @@ pub const Child = struct {
 /// what let the boundary array leave the facade: it now lives in `xml_scan`,
 /// reachable only by a caller that asks for raw scanning by name.
 ///
-/// Skips comments, processing instructions and tags whose name will not parse,
-/// matching the tolerance the previous walks had: a malformed child is not a
-/// reason to fail a whole query.
+/// Skips comments and processing instructions: they are not elements, so they
+/// are not children. It does *not* skip elements whose name will not parse --
+/// there are none to skip. `CimDocument.init` runs
+/// `xml_scan.build_closing_index`, which fails the whole document on an element
+/// it cannot name, so every boundary that reaches this walk has already been
+/// named once. An earlier version tolerated unparseable children here and so
+/// answered queries from a document the scanner had not fully read; the check
+/// now lives at the gate, where it can report an offset.
 pub const ChildIterator = struct {
     xml: []const u8,
     boundaries: []const TagBoundary,
@@ -131,6 +140,10 @@ pub const ChildIterator = struct {
     /// Iterate the children of an element identified by its opening and closing
     /// boundary indices. For callers that hold a span but no view -- the SSH/TP
     /// overlay patches, which are elements inside a document they do not own.
+    ///
+    /// Precondition: `boundaries` come from a document that has passed
+    /// `xml_scan.build_closing_index` -- in practice, a `CimDocument`. That pass
+    /// is what makes every element name here parseable, which `next` relies on.
     pub fn init_range(
         xml: []const u8,
         boundaries: []const TagBoundary,
@@ -154,7 +167,10 @@ pub const ChildIterator = struct {
             self.next_idx += 1;
 
             if (!is_element_open_tag(self.xml, tag)) continue;
-            const parsed = extract_tag_type_terminated(self.xml, tag.start) catch continue;
+            // Unreachable by construction: this element's name already parsed in
+            // `build_closing_index`, which failed the document if it could not.
+            // See the precondition on `init_range`.
+            const parsed = extract_tag_type_terminated(self.xml, tag.start) catch unreachable;
             const name = parsed.name;
 
             // No attributes, so no rdf:resource: the name ran into the end of
@@ -273,7 +289,7 @@ pub const CimObject = struct {
         return self.element_view().xml_offset();
     }
 
-    pub inline fn property(self: CimObject, property_name: []const u8) error{MalformedTag}!?[]const u8 {
+    pub inline fn property(self: CimObject, property_name: []const u8) ?[]const u8 {
         return self.element_view().property(property_name);
     }
 
@@ -285,7 +301,7 @@ pub const CimObject = struct {
     /// IdentifiedObject.mRID, else the local RDF identifier with its leading
     /// hash and underscore stripped. Single source of truth for overlay keying.
     pub fn mrid(self: CimObject) error{MalformedTag}![]const u8 {
-        return parse.non_blank(try self.property("IdentifiedObject.mRID")) orelse
+        return parse.non_blank(self.property("IdentifiedObject.mRID")) orelse
             ids.strip_underscore(ids.strip_hash(self.id()));
     }
 
@@ -368,7 +384,7 @@ pub const ElementView = struct {
     }
 
     /// Get a text property value by name.
-    pub fn property(self: ElementView, property_name: []const u8) error{MalformedTag}!?[]const u8 {
+    pub fn property(self: ElementView, property_name: []const u8) ?[]const u8 {
         return get_property_from_indices(self.xml, self.boundaries, self.object_tag_idx, self.closing_tag_idx, property_name);
     }
 

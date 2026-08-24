@@ -227,7 +227,7 @@ pub const Overlay = struct {
     }
 
     /// Read a text property from a patch returned by `find_patch`.
-    pub fn property_from_patch(self: Overlay, patch: Patch, property_name: []const u8) !?[]const u8 {
+    pub fn property_from_patch(self: Overlay, patch: Patch, property_name: []const u8) ?[]const u8 {
         return tag_index.get_property_from_indices(
             self.xml,
             self.boundaries,
@@ -251,7 +251,7 @@ pub const Overlay = struct {
     /// Convenience wrapper for a single lookup. For several properties on the
     /// same object, use `find_patch` + `property_from_patch` and pay for one
     /// binary search.
-    pub fn property(self: Overlay, mrid: []const u8, property_name: []const u8) !?[]const u8 {
+    pub fn property(self: Overlay, mrid: []const u8, property_name: []const u8) ?[]const u8 {
         const patch = self.find_patch(mrid) orelse return null;
         return self.property_from_patch(patch, property_name);
     }
@@ -401,12 +401,12 @@ pub const CimMergedView = struct {
     }
 
     /// Get a text property. SSH value takes priority, then TP, then the primary.
-    pub fn property(self: CimMergedView, name: []const u8) !?[]const u8 {
+    pub fn property(self: CimMergedView, name: []const u8) ?[]const u8 {
         if (self.ssh) |s| {
-            if (try patch_view(s).property(name)) |v| return v;
+            if (patch_view(s).property(name)) |v| return v;
         }
         if (self.tp) |t| {
-            if (try patch_view(t).property(name)) |v| return v;
+            if (patch_view(t).property(name)) |v| return v;
         }
         return self.eq.property(name);
     }
@@ -586,7 +586,7 @@ test "object_by_id returns a declared object by raw rdf:ID" {
     const view = tp.object_by_id("_TN1") orelse return error.TestFailed;
     try testing.expectEqualStrings("TopologicalNode", view.type_name());
     try testing.expectEqualStrings("_TN1", view.id());
-    const name = try view.property("IdentifiedObject.name");
+    const name = view.property("IdentifiedObject.name");
     try testing.expect(name != null);
     try testing.expectEqualStrings("Bus 1", std.mem.trim(u8, name.?, " \t\r\n"));
 
@@ -653,7 +653,7 @@ test "bare and underscored patch identifiers index to the same key" {
         var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, xml));
         defer ssh.deinit(gpa);
         const patch = ssh.find_patch("SW1") orelse return error.TestFailed;
-        const value = try ssh.property_from_patch(patch, "Switch.open") orelse return error.TestFailed;
+        const value = ssh.property_from_patch(patch, "Switch.open") orelse return error.TestFailed;
         try testing.expectEqualStrings("true", value);
     }
 }
@@ -767,7 +767,7 @@ test "full_model returns the metadata element with its urn id" {
     try testing.expect(view != null);
     try testing.expectEqualStrings("urn:uuid:view-test-1", view.?.id());
     try testing.expectEqualStrings("FullModel", view.?.type_name());
-    const st = try view.?.property("Model.scenarioTime");
+    const st = view.?.property("Model.scenarioTime");
     try testing.expect(st != null);
     try testing.expectEqualStrings("2024-06-01T00:00:00Z", std.mem.trim(u8, st.?, " \t\r\n"));
 }
@@ -828,7 +828,7 @@ test "CimMergedView applies SSH patches to bare EQ identifiers" {
     const view = eq.object_by_id("SW1") orelse return error.TestFailed;
     const mrid = try view.mrid();
     const merged = CimMergedView.init(view, mrid, null, ssh);
-    try testing.expectEqualStrings("true", (try merged.property("Switch.open")).?);
+    try testing.expectEqualStrings("true", merged.property("Switch.open").?);
 }
 
 test "CimMergedView.all_properties merges EQ + TP + SSH with SSH precedence" {

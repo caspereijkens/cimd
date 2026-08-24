@@ -332,6 +332,21 @@ test "classify known multi-profile header" {
     try std.testing.expectEqual(Version.v2_4_15, header.version.?);
 }
 
+test "classify header in a default namespace" {
+    const xml =
+        "<rdf:RDF xmlns=\"http://iec.ch/TC57/61970-552/ModelDescription/1#\" " ++
+        "xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">" ++
+        "<FullModel rdf:about=\"urn:uuid:default\">" ++
+        "<Model.profile>http://entsoe.eu/CIM/EquipmentCore/3/1</Model.profile>" ++
+        "</FullModel></rdf:RDF>";
+
+    const header = try classify(std.testing.allocator, xml);
+    try std.testing.expectEqual(Kind.eq, header.profile.known);
+    try std.testing.expectEqualStrings("urn:uuid:default", header.model_id);
+    try std.testing.expect(header.has_profile(.equipment_core));
+    try std.testing.expectEqual(Version.v2_4_15, header.version.?);
+}
+
 test "classify keeps routing when profile URIs disagree about the version" {
     const xml = header_xml(
         "<md:Model.profile>http://entsoe.eu/CIM/EquipmentCore/3/1</md:Model.profile>" ++

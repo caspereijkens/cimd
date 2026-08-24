@@ -200,7 +200,7 @@ test "malformed XML reports the offending line" {
     defer result.deinit(gpa);
     try std.testing.expectEqual(@as(u8, exit_data_error), result.code);
     try std.testing.expect(result.stderr_contains(
-        "bad.xml': malformed XML at line 4: tags are unbalanced or not well nested",
+        "bad.xml': malformed XML at line 4: a closing tag does not match the element it closes",
     ));
 }
 

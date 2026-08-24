@@ -222,8 +222,8 @@ fn build_limit_types(gpa: std.mem.Allocator, model: *const CimDocument, index: *
     const objects = model.objects_by_type("OperationalLimitType");
     try index.limit_types.ensureTotalCapacity(gpa, @intCast(objects.len));
     for (objects) |obj| {
-        const is_inf = try obj.property("OperationalLimitType.isInfiniteDuration");
-        const duration = try obj.property("OperationalLimitType.acceptableDuration");
+        const is_inf = obj.property("OperationalLimitType.isInfiniteDuration");
+        const duration = obj.property("OperationalLimitType.acceptableDuration");
         index.limit_types.putAssumeCapacity(obj.id(), .{
             .is_infinite = parse.flag(is_inf),
             .acceptable_duration = duration,
@@ -252,7 +252,7 @@ fn build_terminals(gpa: std.mem.Allocator, model: *const CimDocument, index: *Cr
             index.terminal_conn_node.putAssumeCapacity(obj.id(), .{ .conn_node_id = id, .ordinal = ordinal });
         }
 
-        const sequence = try parse.int_strict(u32, try obj.property("ACDCTerminal.sequenceNumber"), 1);
+        const sequence = try parse.int_strict(u32, obj.property("ACDCTerminal.sequenceNumber"), 1);
         index.terminal_sequence.putAssumeCapacity(obj.id(), sequence);
 
         const equipment_ref = try obj.reference("Terminal.ConductingEquipment") orelse return error.MalformedXML;
@@ -381,9 +381,9 @@ fn build_curve_points(gpa: std.mem.Allocator, model: *const CimDocument, index: 
         const curve_ref = try view.reference("CurveData.Curve") orelse return error.MalformedXML;
         const curve_id = strip_hash(curve_ref);
 
-        const x = try parse.float_strict(try view.property("CurveData.xvalue"), 0.0);
-        const y1 = try parse.float_strict(try view.property("CurveData.y1value"), 0.0);
-        const y2 = try parse.float_strict(try view.property("CurveData.y2value"), 0.0);
+        const x = try parse.float_strict(view.property("CurveData.xvalue"), 0.0);
+        const y1 = try parse.float_strict(view.property("CurveData.y1value"), 0.0);
+        const y2 = try parse.float_strict(view.property("CurveData.y2value"), 0.0);
 
         const gop = index.curve_points.getOrPutAssumeCapacity(curve_id);
         if (!gop.found_existing) {
@@ -468,7 +468,7 @@ pub fn build_voltage_limits(gpa: std.mem.Allocator, model: *const CimDocument, i
         else
             continue;
 
-        const value_text = parse.non_blank(try voltage_limit.property("VoltageLimit.normalValue")) orelse continue;
+        const value_text = parse.non_blank(voltage_limit.property("VoltageLimit.normalValue")) orelse continue;
         const value = try parse.float_req(value_text);
 
         const gop = index.voltage_level_limits.getOrPutAssumeCapacity(container_id);

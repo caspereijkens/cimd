@@ -21,7 +21,7 @@ const strip_hash = utils.strip_hash;
 fn resolve_nominal_voltageoltage(model: *const CimDocument, voltage_level: CimObject) !?f64 {
     const base_voltage_ref = try voltage_level.reference("VoltageLevel.BaseVoltage") orelse return null;
     const base_voltage = model.object_by_id(strip_hash(base_voltage_ref)) orelse return null;
-    const nominal_voltageoltage_str = try base_voltage.property("BaseVoltage.nominalVoltage") orelse return null;
+    const nominal_voltageoltage_str = base_voltage.property("BaseVoltage.nominalVoltage") orelse return null;
     return try parse.float_req(nominal_voltageoltage_str);
 }
 
@@ -41,7 +41,7 @@ fn append_voltage_level(
 
     const mrid = try voltage_level.mrid();
     assert(mrid.len > 0);
-    const name = parse.non_blank(try voltage_level.property("IdentifiedObject.name"));
+    const name = parse.non_blank(voltage_level.property("IdentifiedObject.name"));
     const nominal_voltageoltage = try resolve_nominal_voltageoltage(model, voltage_level);
     const limits = index.voltage_level_limits.get(voltage_level.id());
 

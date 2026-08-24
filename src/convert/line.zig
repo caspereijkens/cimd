@@ -222,19 +222,19 @@ pub fn convert_lines(
                     const container_object_opt = model.object_by_id(container_id);
                     const container_mrid: []const u8 = blk: {
                         if (container_object_opt) |container_object| {
-                            if (parse.non_blank(try container_object.property("IdentifiedObject.mRID"))) |container_mrid_value| break :blk container_mrid_value;
+                            if (parse.non_blank(container_object.property("IdentifiedObject.mRID"))) |container_mrid_value| break :blk container_mrid_value;
                         }
                         break :blk strip_underscore(container_id);
                     };
                     const conn_node_name: ?[]const u8 = blk: {
                         const container_object = container_object_opt orelse break :blk null;
-                        break :blk parse.non_blank(try container_object.property("IdentifiedObject.name"));
+                        break :blk parse.non_blank(container_object.property("IdentifiedObject.name"));
                     };
                     var nominal_voltage: ?f64 = null;
                     if (try segment.reference("ConductingEquipment.BaseVoltage")) |base_voltage_ref| {
                         const base_voltage_id = strip_hash(base_voltage_ref);
                         if (model.object_by_id(base_voltage_id)) |base_voltage_object| {
-                            nominal_voltage = parse.float_opt(try base_voltage_object.property("BaseVoltage.nominalVoltage"));
+                            nominal_voltage = parse.float_opt(base_voltage_object.property("BaseVoltage.nominalVoltage"));
                         }
                     }
                     boundary_conn_node_entry.value_ptr.* = .{
@@ -325,14 +325,14 @@ pub fn convert_lines(
 
         // SSH EquivalentInjection.p/q -- load convention (negative = injecting) → negate for targetP/Q.
         const target_p: ?f64 = if (ssh_opt) |ssh|
-            if (try ssh.property(mrid, "EquivalentInjection.p")) |v|
+            if (ssh.property(mrid, "EquivalentInjection.p")) |v|
                 -parse.float_or(v, 0.0)
             else
                 null
         else
             null;
         const target_q: ?f64 = if (ssh_opt) |ssh|
-            if (try ssh.property(mrid, "EquivalentInjection.q")) |v|
+            if (ssh.property(mrid, "EquivalentInjection.q")) |v|
                 -parse.float_or(v, 0.0)
             else
                 null

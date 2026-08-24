@@ -31,10 +31,39 @@ test "CimDocument.init - parses all top-level CIM objects" {
     try std.testing.expectEqualStrings("_SS2", substations[1].id());
     try std.testing.expectEqualStrings(
         "North Station",
-        (try substations[0].property("IdentifiedObject.name")).?,
+        (substations[0].property("IdentifiedObject.name")).?,
     );
     const voltage_levels = model.objects_by_type("VoltageLevel");
     try std.testing.expectEqual(1, voltage_levels.len);
+}
+
+test "CimDocument.init - parses objects in a default namespace" {
+    const xml =
+        \\<rdf:RDF xmlns="http://iec.ch/TC57/2013/CIM-schema-cim16#"
+        \\         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+        \\  <FullModel xmlns="http://iec.ch/TC57/61970-552/ModelDescription/1#"
+        \\             rdf:about="urn:uuid:model">
+        \\    <Model.profile>http://entsoe.eu/CIM/EquipmentCore/3/1</Model.profile>
+        \\  </FullModel>
+        \\  <EffectivityResult rdf:ID="_result">
+        \\    <EffectivityResult.CBCO rdf:resource="#_cbco"/>
+        \\  </EffectivityResult>
+        \\</rdf:RDF>
+    ;
+
+    const gpa = std.testing.allocator;
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 2), model.objects.len);
+    const result = model.object_by_id("_result") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("EffectivityResult", result.type_name());
+    try std.testing.expectEqualStrings(
+        "#_cbco",
+        (try result.reference("EffectivityResult.CBCO")).?,
+    );
+    const full_model = model.object_by_id("urn:uuid:model") orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("FullModel", full_model.type_name());
 }
 
 test "CimDocument.object_by_id - finds object by ID" {
@@ -60,7 +89,7 @@ test "CimDocument.object_by_id - finds object by ID" {
     try std.testing.expectEqualStrings("VoltageLevel", voltage_level.type_name());
     try std.testing.expectEqualStrings(
         "380kV",
-        (try voltage_level.property("IdentifiedObject.name")).?,
+        (voltage_level.property("IdentifiedObject.name")).?,
     );
 
     // Should return null for non-existent ID
@@ -238,10 +267,69 @@ test "EQ objects maintain CimObject functionality" {
     const obj = model.object_by_id("_SS1") orelse return error.TestFailed;
 
     // Should still be able to get properties
-    const name = try obj.property("IdentifiedObject.name");
+    const name = obj.property("IdentifiedObject.name");
     try std.testing.expectEqualStrings("North Station", name.?);
 
     // Should still be able to get references
     const region = try obj.reference("Substation.Region");
     try std.testing.expectEqualStrings("#_Region1", region.?);
+}
+
+test "CimDocument.init - an unnameable element fails the whole document" {
+    const xml =
+        \\<rdf:RDF>
+        \\  <cim:Substation rdf:ID="_SS1">
+        \\    <cim:IdentifiedObject.name>North Station</cim:IdentifiedObject.name>
+        \\  </cim:Substation>
+        \\  <>
+        \\</rdf:RDF>
+    ;
+
+    const gpa = std.testing.allocator;
+
+    // The alternative was to drop `<>` and hand back a document with one object
+    // in it, which reports success for a file the scanner could not read. The
+    // parse fails at the gate instead, so no consumer ever walks a document that
+    // silently lost a tag. `init` owns the buffer and frees it on error.
+    try std.testing.expectError(
+        error.MalformedXML,
+        CimDocument.init(gpa, try gpa.dupe(u8, xml)),
+    );
+}
+
+test "CimDocument.init - comments and PIs are not elements and do not fail" {
+    const xml =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<rdf:RDF>
+        \\  <!-- <cim:Substation rdf:ID="_commented_out"> -->
+        \\  <cim:Substation rdf:ID="_SS1">
+        \\    <cim:IdentifiedObject.name>North Station</cim:IdentifiedObject.name>
+        \\  </cim:Substation>
+        \\</rdf:RDF>
+    ;
+
+    const gpa = std.testing.allocator;
+    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    defer model.deinit(gpa);
+
+    // Being strict about elements must not make the parser strict about things
+    // that are not elements: the declaration and the comment are skipped, and the
+    // commented-out object does not become real.
+    try std.testing.expectEqual(@as(usize, 1), model.objects.len);
+    try std.testing.expect(model.object_by_id("_commented_out") == null);
+    try std.testing.expect(model.object_by_id("_SS1") != null);
+}
+
+test "CimDocument.init - a stray '<' inside a tag errors instead of panicking" {
+    // Regression: this document used to parse, and then panic in the child walk
+    // with "start index 38 is larger than end index 35" -- `find_tag_boundaries`
+    // emitted `<m>/>` as a boundary starting inside `<cim:P <m>`, and the walk
+    // sliced backwards between the two. Reachable from `cimd get` on a file.
+    const xml = "<rdf:RDF><cim:S rdf:ID=\"_1\"><cim:P <m>/></cim:P></cim:S></rdf:RDF>";
+
+    const gpa = std.testing.allocator;
+    try std.testing.expectError(
+        error.MalformedXML,
+        CimDocument.init(gpa, try gpa.dupe(u8, xml)),
+    );
 }

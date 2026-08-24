@@ -469,7 +469,7 @@ fn write_object_list_json(
             for (fields) |field| {
                 // Fall back to a reference when the field isn't a text property;
                 // strip the '#' so the value matches the references map shape.
-                const val = if (try obj.property(field)) |p|
+                const val = if (obj.property(field)) |p|
                     p
                 else if (try obj.reference(field)) |r|
                     utils.strip_hash(r)

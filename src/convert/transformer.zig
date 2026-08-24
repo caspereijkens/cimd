@@ -91,7 +91,7 @@ fn read_tap_changer_regulating(
             try control.mrid()
         else
             strip_underscore(control_id);
-        return parse.flag(try ssh.property(control_mrid, "RegulatingCondEq.controlEnabled"));
+        return parse.flag(ssh.property(control_mrid, "RegulatingCondEq.controlEnabled"));
     }
     return false;
 }
@@ -216,7 +216,7 @@ fn build_ratio_table_points(
     for (points) |point| {
         const table_ref = try point.reference("RatioTapChangerTablePoint.RatioTapChangerTable") orelse continue;
         const base = try read_tap_changer_base_step(point) orelse continue;
-        const step_num_str = parse.non_blank(try point.property("TapChangerTablePoint.step")) orelse continue;
+        const step_num_str = parse.non_blank(point.property("TapChangerTablePoint.step")) orelse continue;
         const step_num = try parse.int_req(i32, step_num_str);
         // pypowsybl inverts cgmes_ratio for ratio tap changers.
         const rho = 1.0 / base.cgmes_ratio;
@@ -287,11 +287,11 @@ fn build_linear_ratio_steps(
     tap_changer: CimObject,
     low_step: i32,
 ) !?std.ArrayListUnmanaged(iidm.RatioTapChangerStep) {
-    const high_step_str = parse.non_blank(try tap_changer.property("TapChanger.highStep")) orelse return null;
+    const high_step_str = parse.non_blank(tap_changer.property("TapChanger.highStep")) orelse return null;
     const high_step = try parse.int_req(i32, high_step_str);
-    const neutral_step_str = parse.non_blank(try tap_changer.property("TapChanger.neutralStep")) orelse return null;
+    const neutral_step_str = parse.non_blank(tap_changer.property("TapChanger.neutralStep")) orelse return null;
     const neutral_step = try parse.int_req(i32, neutral_step_str);
-    const increment_str = parse.non_blank(try tap_changer.property("RatioTapChanger.stepVoltageIncrement")) orelse return null;
+    const increment_str = parse.non_blank(tap_changer.property("RatioTapChanger.stepVoltageIncrement")) orelse return null;
     const increment = try parse.float_req(increment_str);
 
     if (high_step < low_step) return error.InvalidTapStepRange;
@@ -453,8 +453,8 @@ fn build_phase_tap_changer_map(
         const table_id = strip_hash(table_ref);
 
         const base = try read_tap_changer_base_step(point) orelse continue;
-        const alpha = try parse.float_strict(try point.property("PhaseTapChangerTablePoint.angle"), 0.0);
-        const step_num_str = parse.non_blank(try point.property("TapChangerTablePoint.step")) orelse continue;
+        const alpha = try parse.float_strict(point.property("PhaseTapChangerTablePoint.angle"), 0.0);
+        const step_num_str = parse.non_blank(point.property("TapChangerTablePoint.step")) orelse continue;
         const step_num = try parse.int_req(i32, step_num_str);
 
         const gop = try points_by_table.getOrPut(gpa, table_id);
@@ -506,7 +506,7 @@ fn build_phase_tap_changer_map(
         //       step.r = 100 * ((1 + cgmes_r/100) * a² - 1)
         //       step.g = 100 * ((1 + cgmes_g/100) / a² - 1)
         const end_obj = model.object_by_id(end_id) orelse continue;
-        const end_number = parse.int_or(u32, try end_obj.property("TransformerEnd.endNumber"), 0);
+        const end_number = parse.int_or(u32, end_obj.property("TransformerEnd.endNumber"), 0);
         const move = end_number == 1;
 
         var owned_steps: std.ArrayListUnmanaged(iidm.PhaseTapChangerStep) = .empty;
@@ -683,8 +683,8 @@ test "tap changer info includes only retained map entries" {
 }
 
 fn view_less_than(_: void, a: CimObject, b: CimObject) bool {
-    const end_number0 = parse.int_or(u32, a.property("TransformerEnd.endNumber") catch null, 0);
-    const end_number1 = parse.int_or(u32, b.property("TransformerEnd.endNumber") catch null, 0);
+    const end_number0 = parse.int_or(u32, a.property("TransformerEnd.endNumber"), 0);
+    const end_number1 = parse.int_or(u32, b.property("TransformerEnd.endNumber"), 0);
     return end_number0 < end_number1;
 }
 
@@ -922,7 +922,7 @@ fn append_two_windings_transformer(
     const ratio2 = ratio * ratio;
 
     const mrid = try transformer.mrid();
-    const name = parse.non_blank(try transformer.property("IdentifiedObject.name"));
+    const name = parse.non_blank(transformer.property("IdentifiedObject.name"));
 
     // Tap changers keyed by end rdf:ID (= end.id). Track which end (1 or 2) so we can
     // emit the correct CGMES.RatioTapChanger<N> / CGMES.PhaseTapChanger<N> alias.
@@ -1030,7 +1030,7 @@ fn append_three_windings_transformer(
     const e3 = try read_end_electrical(ends[2]) orelse return;
 
     const mrid = try transformer.mrid();
-    const name = parse.non_blank(try transformer.property("IdentifiedObject.name"));
+    const name = parse.non_blank(transformer.property("IdentifiedObject.name"));
 
     // Tap changers keyed by end rdf:ID (= end.id). fetchRemove takes ownership.
     const rtc1 = ratio_tap_changer_map.fetchRemove(ends[0].id());

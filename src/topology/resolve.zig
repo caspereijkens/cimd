@@ -645,7 +645,7 @@ pub fn is_ssh_terminal_disconnected(ssh_opt: ?Overlay, terminal_id: []const u8) 
     assert(terminal_id.len > 0);
     const ssh = ssh_opt orelse return false;
     const mrid = strip_underscore(terminal_id);
-    const connected = ssh.property(mrid, "ACDCTerminal.connected") catch return false;
+    const connected = ssh.property(mrid, "ACDCTerminal.connected");
     const val = connected orelse return false;
     // Trim like is_switch_closed: pretty-printed SSH wraps the value in whitespace.
     return std.mem.eql(u8, std.mem.trim(u8, val, " \t\r\n"), "false");
@@ -655,7 +655,7 @@ pub fn is_switch_closed(model: *const CimDocument, ssh: *const Overlay, switch_i
     assert(switch_id.len > 0);
     const eq_object = model.object_by_id(switch_id) orelse return true;
     const view = CimMergedView.init(eq_object, try eq_object.mrid(), null, ssh.*);
-    const open_str = try view.property("Switch.open") orelse "false";
+    const open_str = view.property("Switch.open") orelse "false";
     // Property values are returned as raw XML content between tags; pretty-printed
     // SSH files surround the boolean with whitespace and would otherwise flip
     // every closed switch to open and break topology resolution.
@@ -682,7 +682,7 @@ fn union_closed_switch_conn_nodes(
 
             // Retained closed switches become SwitchBranches in the IIDM bus-branch view --
             // each end stays its own TopologicalNode, so do not union across them.
-            if (parse.flag(try @"switch".property("Switch.retained"))) continue;
+            if (parse.flag(@"switch".property("Switch.retained"))) continue;
 
             // default behavior is closed.
             const closed = if (ssh_opt) |s| try is_switch_closed(model, s, @"switch".id()) else true;
@@ -720,7 +720,7 @@ fn append_topological_node(
     if (!std.mem.eql(u8, voltage_level.type_name(), "VoltageLevel")) return;
 
     const mrid = try conn_node.mrid();
-    const name = try conn_node.property("IdentifiedObject.name") orelse "";
+    const name = conn_node.property("IdentifiedObject.name") orelse "";
     const base_voltage_mrid = try get_base_voltage_mrid(model, voltage_level);
     const voltage_level_mrid = try voltage_level.mrid();
 

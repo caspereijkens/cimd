@@ -512,10 +512,10 @@ fn append_metadata_model(
 ) !void {
     assert(view.id().len > 0);
     assert(view.closing_tag_idx > view.object_tag_idx);
-    const mas = try view.property("Model.modelingAuthoritySet") orelse "";
-    const raw_desc = try view.property("Model.description") orelse "";
+    const mas = view.property("Model.modelingAuthoritySet") orelse "";
+    const raw_desc = view.property("Model.description") orelse "";
     const desc = try decode_xml_entities(gpa, raw_desc);
-    const version = parse.int_or(u32, try view.property("Model.version"), 0);
+    const version = parse.int_or(u32, view.property("Model.version"), 0);
 
     var profiles: std.ArrayListUnmanaged(iidm.ModelProfile) = .empty;
     var dependent_on: std.ArrayListUnmanaged(iidm.DependentOnModel) = .empty;
@@ -564,7 +564,7 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimDocument, ssh_opt: ?Ov
 
     for (control_areas) |control_area| {
         const control_area_mrid = try control_area.mrid();
-        const control_area_name = parse.non_blank(try control_area.property("IdentifiedObject.name")) orelse control_area_mrid;
+        const control_area_name = parse.non_blank(control_area.property("IdentifiedObject.name")) orelse control_area_mrid;
 
         // ControlArea.type is a rdf:resource; extract the fragment after '#'.
         const area_type = if (try control_area.reference("ControlArea.type")) |raw|
@@ -590,14 +590,14 @@ fn convert_areas(gpa: std.mem.Allocator, model: *const CimDocument, ssh_opt: ?Ov
             const equipment = model.object_by_id(equipment_id) orelse continue;
             const eq_mrid = try equipment.mrid();
 
-            const seq = parse.int_or(u32, try term_obj.property("ACDCTerminal.sequenceNumber"), 1);
+            const seq = parse.int_or(u32, term_obj.property("ACDCTerminal.sequenceNumber"), 1);
             const side: []const u8 = if (seq == 1) "ONE" else "TWO";
 
             try boundaries.append(gpa, .{ .id = eq_mrid, .side = side });
         }
 
         const interchange_target: ?f64 = if (ssh_opt) |ssh| blk: {
-            const v = try ssh.property(control_area_mrid, "ControlArea.netInterchange") orelse break :blk null;
+            const v = ssh.property(control_area_mrid, "ControlArea.netInterchange") orelse break :blk null;
             break :blk parse.float_opt(v);
         } else null;
 
@@ -663,7 +663,7 @@ pub fn convertWithDiagnostics(
             if (try ssh.full_model_property("Model.scenarioTime")) |st| break :blk st;
         }
         break :blk if (eq_full_model) |full_model|
-            try full_model.property("Model.scenarioTime")
+            full_model.property("Model.scenarioTime")
         else
             null;
     };
@@ -672,7 +672,7 @@ pub fn convertWithDiagnostics(
             if (try ssh.full_model_property("Model.created")) |ct| break :blk ct;
         }
         break :blk if (eq_full_model) |full_model|
-            try full_model.property("Model.created")
+            full_model.property("Model.created")
         else
             null;
     };
@@ -928,7 +928,7 @@ pub fn convertWithDiagnostics(
         try base_voltage_list.ensureTotalCapacity(gpa, base_voltages.len);
         for (base_voltages) |base_voltage| {
             const base_voltage_mrid = try base_voltage.mrid();
-            const nom_v_str = try base_voltage.property("BaseVoltage.nominalVoltage") orelse continue;
+            const nom_v_str = base_voltage.property("BaseVoltage.nominalVoltage") orelse continue;
             const nom_v = parse.float_opt(nom_v_str) orelse continue;
             const xml_pos = base_voltage.xml_offset();
             const source: []const u8 = if (xml_pos < eq_boundary) "IGM" else "BOUNDARY";

@@ -78,7 +78,7 @@ pub fn convert_buses(
         const vl = voltage_level_map.get(container_id) orelse continue;
 
         const mrid = try view.mrid();
-        const name = parse.non_blank(try view.property("IdentifiedObject.name"));
+        const name = parse.non_blank(view.property("IdentifiedObject.name"));
 
         vl.bus_breaker_topology.buses.appendAssumeCapacity(.{ .id = mrid, .name = name });
 

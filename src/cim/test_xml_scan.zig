@@ -501,13 +501,13 @@ test "xml_scan.find_tag_boundaries - unmatched opening bracket" {
     const gpa = std.testing.allocator;
 
     const input = "<root"; // No closing >
-    var error_offset: u32 = undefined;
+    var error_offset: xml_scan.MalformedXML = .{};
 
     try std.testing.expectError(
         error.MalformedXML,
         xml_scan.find_tag_boundariesWithErrorOffset(gpa, input, &error_offset),
     );
-    try std.testing.expectEqual(@as(u32, 0), error_offset);
+    try std.testing.expectEqual(@as(u32, 0), error_offset.offset);
 }
 
 test "xml_scan.find_tag_boundaries - unmatched opening bracket followed by self-closing tag" {
@@ -643,10 +643,158 @@ test "xml_scan.extract_tag_type - with namespace" {
     try std.testing.expectEqualStrings("VoltageLevel", tag_type);
 }
 
-test "xml_scan.extract_tag_type - no namespace (error)" {
-    const xml = "<Substation>"; // No colon!
-    const result = xml_scan.extract_tag_type(xml, 0);
-    try std.testing.expectError(error.MalformedTag, result);
+test "xml_scan.extract_tag_type - default namespace element" {
+    const xml = "<Substation>";
+    const tag_type = try xml_scan.extract_tag_type(xml, 0);
+    try std.testing.expectEqualStrings("Substation", tag_type);
+}
+
+test "xml_scan.extract_tag_type - unprefixed element with prefixed attribute" {
+    const xml = "<EffectivityResult rdf:ID=\"_result\">";
+    const tag_type = try xml_scan.extract_tag_type(xml, 0);
+    try std.testing.expectEqualStrings("EffectivityResult", tag_type);
+}
+
+test "xml_scan.extract_tag_type - malformed names" {
+    const cases = [_]struct { xml: []const u8, start_idx: u32 }{
+        .{ .xml = "", .start_idx = 0 },
+        .{ .xml = "prefix", .start_idx = 6 },
+        .{ .xml = "<", .start_idx = 0 },
+        .{ .xml = "</", .start_idx = 0 },
+        .{ .xml = "<>", .start_idx = 0 },
+        .{ .xml = "<:Name>", .start_idx = 0 },
+        .{ .xml = "<Name", .start_idx = 0 },
+        .{ .xml = "<cim:>", .start_idx = 0 },
+        .{ .xml = "<cim:Name", .start_idx = 0 },
+        .{ .xml = "<?xml version=\"1.0\"?>", .start_idx = 0 },
+        .{ .xml = "<![CDATA[text]]>", .start_idx = 0 },
+    };
+    for (cases) |case| {
+        try std.testing.expectError(
+            error.MalformedTag,
+            xml_scan.extract_tag_type(case.xml, case.start_idx),
+        );
+    }
+}
+
+test "xml_scan.extract_tag_type - name and terminator across every chunk alignment" {
+    // The prefix colon and the name terminator are found in a single SIMD
+    // sweep, so a name whose two hits fall in the same 32-byte chunk takes a
+    // different path through it than one that straddles a chunk boundary or
+    // resolves in the scalar tail. Slide each case past VECTOR_LEN to cover
+    // all three.
+    const cases = [_]struct { tag: []const u8, name: []const u8, terminator: u8 }{
+        .{ .tag = "<cim:ACLineSegment.r>", .name = "ACLineSegment.r", .terminator = '>' },
+        .{ .tag = "<ACLineSegment.r>", .name = "ACLineSegment.r", .terminator = '>' },
+        .{
+            .tag = "<cim:GeneratingUnit.maxOperatingP rdf:ID=\"_1\">",
+            .name = "GeneratingUnit.maxOperatingP",
+            .terminator = ' ',
+        },
+        .{ .tag = "</cim:Substation>", .name = "Substation", .terminator = '>' },
+        .{ .tag = "<cim:X/>", .name = "X", .terminator = '/' },
+    };
+    var buf: [256]u8 = undefined;
+    for (cases) |case| {
+        var pad: u32 = 0;
+        while (pad <= xml_scan.VECTOR_LEN + 8) : (pad += 1) {
+            @memset(buf[0..pad], ' ');
+            @memcpy(buf[pad..][0..case.tag.len], case.tag);
+            const total = pad + @as(u32, @intCast(case.tag.len));
+            const got = try xml_scan.extract_tag_type_terminated(buf[0..total], pad);
+            try std.testing.expectEqualStrings(case.name, got.name);
+            try std.testing.expectEqual(case.terminator, got.terminator);
+        }
+    }
+}
+
+test "xml_scan.find_tag_boundaries - DOCTYPE with an internal subset is one boundary" {
+    // The entity declaration's '<' comes before the DOCTYPE's own '>', so
+    // pairing delimiters naively splits this into two overlapping boundaries.
+    // It is well-formed XML and must be spanned, not rejected.
+    const gpa = std.testing.allocator;
+    const xml =
+        \\<!DOCTYPE rdf:RDF [<!ENTITY label "Station">]>
+        \\<rdf:RDF><cim:Substation rdf:ID="_1"></cim:Substation></rdf:RDF>
+    ;
+    var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const doctype = boundaries.items[0];
+    try std.testing.expectEqualStrings(
+        "<!DOCTYPE rdf:RDF [<!ENTITY label \"Station\">]>",
+        xml[doctype.start .. doctype.end + 1],
+    );
+    try std.testing.expect(!xml_scan.is_element_open_tag(xml, doctype));
+
+    // And the document still parses through the closing index.
+    const closing = try xml_scan.build_closing_index(gpa, xml, boundaries.items);
+    defer gpa.free(closing);
+}
+
+test "xml_scan.find_tag_boundaries - CDATA holding '<' is one boundary" {
+    const gpa = std.testing.allocator;
+    const xml = "<a><![CDATA[x<y>z]]></a>";
+    var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 3), boundaries.items.len);
+    const cdata = boundaries.items[1];
+    try std.testing.expectEqualStrings(
+        "<![CDATA[x<y>z]]>",
+        xml[cdata.start .. cdata.end + 1],
+    );
+}
+
+test "xml_scan.build_closing_index - end tags must repeat the opener's QName" {
+    // Nesting is matched on the qualified name. Local names alone would balance
+    // all three of these, because `extract_tag_type` strips the prefix.
+    const gpa = std.testing.allocator;
+    const cases = [_][]const u8{
+        "<rdf:RDF><cim:Substation rdf:ID=\"_1\"></Substation></rdf:RDF>",
+        "<rdf:RDF><cim:Substation rdf:ID=\"_1\"></md:Substation></rdf:RDF>",
+        "<rdf:RDF><Substation rdf:ID=\"_1\"></cim:Substation></rdf:RDF>",
+    };
+    for (cases) |xml| {
+        var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
+        defer boundaries.deinit(gpa);
+        try std.testing.expectError(
+            error.MalformedXML,
+            xml_scan.build_closing_index(gpa, xml, boundaries.items),
+        );
+    }
+
+    // An unprefixed pair is still well-formed: the default namespace is a
+    // namespace like any other.
+    const ok = "<RDF><Substation rdf:ID=\"_1\"></Substation></RDF>";
+    var boundaries = try xml_scan.find_tag_boundaries(gpa, ok);
+    defer boundaries.deinit(gpa);
+    const closing = try xml_scan.build_closing_index(gpa, ok, boundaries.items);
+    defer gpa.free(closing);
+    try std.testing.expectEqual(@as(u32, 2), closing[1]);
+}
+
+test "xml_scan.extract_tag_type - a second colon is not a QName" {
+    // The sweep returns the first two hits from the terminator set. When the
+    // first is the prefix colon, the second is the name's terminator -- and a
+    // colon is not a legal one.
+    try std.testing.expectError(
+        error.MalformedTag,
+        xml_scan.extract_tag_type("<a:b:c>", 0),
+    );
+    try std.testing.expectError(
+        error.MalformedTag,
+        xml_scan.extract_tag_type("<cim:Sub:Station rdf:ID=\"_1\">", 0),
+    );
+}
+
+test "xml_scan.extract_tag_type - scan stays within its own tag" {
+    const xml = "<First><cim:Second>";
+    const first = try xml_scan.extract_tag_type(xml, 0);
+    const second = try xml_scan.extract_tag_type(xml, 7);
+
+    try std.testing.expectEqualStrings("First", first);
+    try std.testing.expectEqualStrings("Second", second);
 }
 
 test "xml_scan.extract_tag_type - colon before tag (handles start_index)" {
@@ -1119,6 +1267,59 @@ test "xml_scan.find_closing_tag - no closing tag (error)" {
     try std.testing.expectError(error.NoClosingTag, result);
 }
 
+test "xml_scan.find_closing_tag - comment cannot alter same-name depth" {
+    const gpa = std.testing.allocator;
+    const xml = "<cim:Name><!--cim:Name ignored--></cim:Name>";
+
+    var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing_idx = try xml_scan.find_closing_tag(xml, boundaries.items, 0);
+    try std.testing.expectEqual(@as(u32, 2), closing_idx);
+}
+
+test "xml_scan.find_closing_tag - non-element opener returns MalformedTag" {
+    const gpa = std.testing.allocator;
+    const xml = "<!--cim:Name-->";
+
+    var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const result = xml_scan.find_closing_tag(xml, boundaries.items, 0);
+    try std.testing.expectError(error.MalformedTag, result);
+}
+
+test "xml_scan.find_closing_tag - unnameable element aborts the search" {
+    const gpa = std.testing.allocator;
+    const xml = "<cim:Name><></cim:Name>";
+
+    var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    // `<>` is an element boundary whose name will not parse. Skipping it would
+    // return 2 -- the right answer read out of a document the scanner could not
+    // fully read. Same rule as `build_closing_index`.
+    try std.testing.expectError(
+        error.MalformedTag,
+        xml_scan.find_closing_tag(xml, boundaries.items, 0),
+    );
+}
+
+test "xml_scan.find_closing_tag - comments and PIs are still skipped" {
+    const gpa = std.testing.allocator;
+    const xml = "<cim:Name><!-- cim:Name --><?pi cim:Name?></cim:Name>";
+
+    var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    // Strictness is about elements. A non-element is not tolerated, it simply is
+    // not part of the nesting -- and must not be mistaken for a nested opener.
+    try std.testing.expectEqual(
+        @as(u32, 3),
+        try xml_scan.find_closing_tag(xml, boundaries.items, 0),
+    );
+}
+
 test "xml_scan.build_closing_index - mismatched nesting returns MalformedXML" {
     const gpa = std.testing.allocator;
     const xml = "<cim:Root><cim:Child></cim:Root></cim:Child>";
@@ -1126,12 +1327,12 @@ test "xml_scan.build_closing_index - mismatched nesting returns MalformedXML" {
     var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
     defer boundaries.deinit(gpa);
 
-    var error_offset: u32 = undefined;
+    var error_offset: xml_scan.MalformedXML = .{};
     const result = xml_scan.build_closing_indexWithErrorOffset(gpa, xml, boundaries.items, &error_offset);
     try std.testing.expectError(error.MalformedXML, result);
     try std.testing.expectEqual(
         @as(u32, @intCast(std.mem.indexOf(u8, xml, "</cim:Root>").?)),
-        error_offset,
+        error_offset.offset,
     );
 }
 
@@ -1142,15 +1343,95 @@ test "xml_scan.build_closing_index - unclosed opener returns MalformedXML" {
     var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
     defer boundaries.deinit(gpa);
 
-    var error_offset: u32 = undefined;
+    var error_offset: xml_scan.MalformedXML = .{};
     const result = xml_scan.build_closing_indexWithErrorOffset(gpa, xml, boundaries.items, &error_offset);
     try std.testing.expectError(error.MalformedXML, result);
     // The outermost unclosed opener, not end-of-input: a caller mapping the
     // offset back to a line (or to a file segment) must land on the real defect.
     try std.testing.expectEqual(
         @as(u32, @intCast(std.mem.indexOf(u8, xml, "<cim:Root>").?)),
-        error_offset,
+        error_offset.offset,
     );
+}
+
+test "xml_scan.build_closing_index - malformed closer cannot close an opener" {
+    const gpa = std.testing.allocator;
+    const xml = "<cim:Root></cim:Root/>";
+
+    var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    var error_offset: xml_scan.MalformedXML = .{};
+    const result = xml_scan.build_closing_indexWithErrorOffset(
+        gpa,
+        xml,
+        boundaries.items,
+        &error_offset,
+    );
+    try std.testing.expectError(error.MalformedXML, result);
+    // The offset names the malformed closer itself, not the opener it failed to
+    // close: `</cim:Root/>` is the tag the user has to fix.
+    try std.testing.expectEqual(
+        @as(u32, @intCast(std.mem.indexOf(u8, xml, "</cim:Root/>").?)),
+        error_offset.offset,
+    );
+}
+
+test "xml_scan.build_closing_index - unnameable element fails the document" {
+    const gpa = std.testing.allocator;
+    const xml = "<cim:Root><></cim:Root>";
+
+    var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    var error_offset: xml_scan.MalformedXML = .{};
+    const result = xml_scan.build_closing_indexWithErrorOffset(
+        gpa,
+        xml,
+        boundaries.items,
+        &error_offset,
+    );
+    // This pass is the gate every later consumer trusts, so an element it cannot
+    // name fails the parse here rather than being quietly dropped from the
+    // document that gets handed on.
+    try std.testing.expectError(error.MalformedXML, result);
+    try std.testing.expectEqual(
+        @as(u32, @intCast(std.mem.indexOf(u8, xml, "<>").?)),
+        error_offset.offset,
+    );
+}
+
+test "xml_scan.build_closing_index - non-elements are skipped, not rejected" {
+    const gpa = std.testing.allocator;
+    const xml = "<cim:Root><!-- c --><?pi x?><cim:Child/></cim:Root>";
+
+    var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing_for = try xml_scan.build_closing_index(gpa, xml, boundaries.items);
+    defer gpa.free(closing_for);
+
+    // Comment, PI and self-closing element all point at themselves; only the
+    // real pair is matched. Strict about elements, silent about non-elements.
+    try std.testing.expectEqualSlices(u32, &.{ 4, 1, 2, 3, 4 }, closing_for);
+}
+
+test "xml_scan.build_closing_index - default namespace elements balance" {
+    const gpa = std.testing.allocator;
+    const xml =
+        "<rdf:RDF xmlns=\"http://iec.ch/TC57/2013/CIM-schema-cim16#\" " ++
+        "xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">" ++
+        "<EffectivityResult rdf:ID=\"_result\">" ++
+        "<EffectivityResult.CBCO rdf:resource=\"#_cbco\"/>" ++
+        "</EffectivityResult></rdf:RDF>";
+
+    var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    const closing_for = try xml_scan.build_closing_index(gpa, xml, boundaries.items);
+    defer gpa.free(closing_for);
+
+    try std.testing.expectEqualSlices(u32, &.{ 4, 3, 2, 3, 4 }, closing_for);
 }
 
 test "xml_scan.find_closing_tag - multiple same-name tags at same level" {
@@ -1271,5 +1552,55 @@ test "xml_scan.index_of_any_pos_table/simd - match std.mem.indexOfAnyPos" {
             try std.testing.expectEqual(want, xml_scan.index_of_any_pos_table(haystack, start, set));
             try std.testing.expectEqual(want, xml_scan.index_of_any_pos_simd(haystack, start, set));
         }
+    }
+}
+
+test "find_tag_boundaries - '<' inside a tag is rejected" {
+    const gpa = std.testing.allocator;
+    // Left alone, `<m>` here becomes a second boundary starting *inside*
+    // `<cim:P <m>`, and the overlap panics whatever slices between the two.
+    const xml = "<rdf:RDF><cim:S rdf:ID=\"_1\"><cim:P <m>/></cim:P></cim:S></rdf:RDF>";
+
+    var error_offset: xml_scan.MalformedXML = .{};
+    try std.testing.expectError(
+        error.MalformedXML,
+        xml_scan.find_tag_boundariesWithErrorOffset(gpa, xml, &error_offset),
+    );
+    // The offset names the offending inner '<', not the tag that contains it.
+    try std.testing.expectEqual(
+        @as(u32, @intCast(std.mem.indexOf(u8, xml, "<m>").?)),
+        error_offset.offset,
+    );
+}
+
+test "find_tag_boundaries - '<' inside a comment is still legal" {
+    const gpa = std.testing.allocator;
+    // The distinction that makes the rule above correct: '<' is legal inside a
+    // comment and illegal inside a tag, so only one of the two is rejected.
+    const xml = "<rdf:RDF><!-- <cim:S rdf:ID=\"_x\"> --><cim:S rdf:ID=\"_1\"/></rdf:RDF>";
+
+    var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 4), boundaries.items.len);
+    try std.testing.expectEqualStrings(
+        "<!-- <cim:S rdf:ID=\"_x\"> -->",
+        xml[boundaries.items[1].start .. boundaries.items[1].end + 1],
+    );
+}
+
+test "find_tag_boundaries - boundaries never overlap" {
+    const gpa = std.testing.allocator;
+    const xml =
+        "<?xml version=\"1.0\"?><rdf:RDF><!-- <a> --><cim:S rdf:ID=\"_1\">" ++
+        "<cim:S.name>x</cim:S.name><cim:S.R rdf:resource=\"#_R\"/></cim:S></rdf:RDF>";
+
+    var boundaries = try xml_scan.find_tag_boundaries(gpa, xml);
+    defer boundaries.deinit(gpa);
+
+    // The property the postcondition in `find_tag_boundaries` asserts, stated
+    // once as a test so it is visible to a reader who never trips the assert.
+    for (boundaries.items[1..], 1..) |t, i| {
+        try std.testing.expect(t.start > boundaries.items[i - 1].end);
     }
 }

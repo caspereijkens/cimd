@@ -39,14 +39,14 @@ fn resolve_region_chain(model: *const CimDocument, substation: CimObject) error{
 // Substation.Region -> SubGeographicalRegion.IdentifiedObject.name.
 fn resolve_geo_tag(sub_region: ?CimObject) error{MalformedTag}!?[]const u8 {
     const region = sub_region orelse return null;
-    return parse.non_blank(try region.property("IdentifiedObject.name"));
+    return parse.non_blank(region.property("IdentifiedObject.name"));
 }
 
 // Resolve the country code for a Substation.
 // Substation.Region -> SubGeographicalRegion.Region -> GeographicalRegion.IdentifiedObject.name.
 fn resolve_country(region: ?CimObject) error{MalformedTag}!?[]const u8 {
     const geo_region = region orelse return null;
-    return parse.non_blank(try geo_region.property("IdentifiedObject.name"));
+    return parse.non_blank(geo_region.property("IdentifiedObject.name"));
 }
 
 // mRID (if present) or rdf:ID with leading underscore stripped.
@@ -68,7 +68,7 @@ fn append_substation(
 
     const mrid = try resolve_mrid(substation);
     assert(mrid.len > 0);
-    const name = parse.non_blank(try substation.property("IdentifiedObject.name"));
+    const name = parse.non_blank(substation.property("IdentifiedObject.name"));
     const region_chain = try resolve_region_chain(model, substation);
     const country = try resolve_country(region_chain.region);
     const geo_tag = try resolve_geo_tag(region_chain.sub_region);
@@ -87,7 +87,7 @@ fn append_substation(
     defer if (!ownership_transferred) properties.deinit(gpa);
     if (region_chain.region) |region| {
         const region_mrid = try resolve_mrid(region);
-        const region_name = parse.non_blank(try region.property("IdentifiedObject.name"));
+        const region_name = parse.non_blank(region.property("IdentifiedObject.name"));
         try properties.ensureTotalCapacity(gpa, 3);
         if (region_name) |rn| {
             properties.appendAssumeCapacity(.{ .name = "CGMES.regionName", .value = rn });

@@ -1,10 +1,13 @@
 const std = @import("std");
 
+const xml_scan = @import("xml_scan.zig");
+
 const assert = std.debug.assert;
 
 pub const Diagnostics = struct {
     malformed_xml_offset: u32 = 0,
     malformed_xml_line: u64 = 0,
+    malformed_xml_reason: xml_scan.MalformedReason = .unclosed_element,
     malformed_xml_recorded: bool = false,
     duplicate_offset: u32 = 0,
     duplicate_line: u64 = 0,
@@ -13,10 +16,15 @@ pub const Diagnostics = struct {
     duplicate_id_recorded: bool = false,
     duplicate_id_buf: [128]u8 = undefined,
 
-    pub fn record_malformed_xml(self: *Diagnostics, xml: []const u8, offset: u32) void {
-        assert(offset <= xml.len);
-        self.malformed_xml_offset = offset;
-        self.malformed_xml_line = line_number_at(xml, offset);
+    pub fn record_malformed_xml(
+        self: *Diagnostics,
+        xml: []const u8,
+        malformed: xml_scan.MalformedXML,
+    ) void {
+        assert(malformed.offset <= xml.len);
+        self.malformed_xml_offset = malformed.offset;
+        self.malformed_xml_line = line_number_at(xml, malformed.offset);
+        self.malformed_xml_reason = malformed.reason;
         self.malformed_xml_recorded = true;
     }
 
@@ -44,7 +52,7 @@ pub fn line_number_at(xml: []const u8, offset: u32) u64 {
 
 test "Diagnostics remains valid when copied" {
     var original: Diagnostics = .{};
-    original.record_malformed_xml("one\ntwo", 4);
+    original.record_malformed_xml("one\ntwo", .{ .offset = 4, .reason = .nested_tag_open });
     original.record_duplicate_id("one\ntwo", "_id", 4);
     const copy = original;
     try std.testing.expect(copy.malformed_xml_recorded);

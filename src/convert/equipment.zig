@@ -146,7 +146,7 @@ pub fn convert_busbar_sections(
         const node = placement.node;
 
         const mrid = try busbar_section.mrid();
-        const name = parse.non_blank(try busbar_section.property("IdentifiedObject.name"));
+        const name = parse.non_blank(busbar_section.property("IdentifiedObject.name"));
 
         // alias: CGMES.Terminal1 = terminal mRID
         var aliases: std.ArrayListUnmanaged(iidm.Alias) = .empty;
@@ -578,9 +578,9 @@ pub fn convert_shunts(
             }
             if (rc_mrid) |rm| {
                 if (ssh_opt) |ssh| {
-                    if (try ssh.property(rm, "RegulatingControl.targetValue")) |v|
+                    if (ssh.property(rm, "RegulatingControl.targetValue")) |v|
                         target_v = parse.float_opt(v);
-                    if (try ssh.property(rm, "RegulatingControl.targetDeadband")) |v|
+                    if (ssh.property(rm, "RegulatingControl.targetDeadband")) |v|
                         target_deadband = parse.float_opt(v);
                 }
             }
@@ -806,7 +806,7 @@ pub fn convert_generators(
                 // SSH GeneratingUnit.normalPF → activePowerControl participationFactor.
                 if (ssh_opt) |ssh| {
                     const gu_mrid = unit_mrid orelse strip_underscore(unit_id);
-                    if (try ssh.property(gu_mrid, "GeneratingUnit.normalPF")) |v|
+                    if (ssh.property(gu_mrid, "GeneratingUnit.normalPF")) |v|
                         participation_factor = parse.float_opt(v);
                 }
             }
@@ -849,7 +849,7 @@ pub fn convert_generators(
                 // SSH RegulatingControl.targetValue → IIDM targetV.
                 if (rc_mrid) |rm| {
                     if (ssh_opt) |ssh| {
-                        if (try ssh.property(rm, "RegulatingControl.targetValue")) |v|
+                        if (ssh.property(rm, "RegulatingControl.targetValue")) |v|
                             target_v = parse.float_opt(v);
                     }
                 }
