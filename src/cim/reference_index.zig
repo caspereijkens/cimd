@@ -30,6 +30,8 @@ const assert = std.debug.assert;
 const CimDocument = @import("document.zig").CimDocument;
 const uri = @import("uri.zig");
 
+const cim_documents_max: u32 = 128;
+
 pub const ReferenceIndex = struct {
     model: *const CimDocument,
     /// local alias -> object index, only for ids whose local form differs
@@ -155,6 +157,74 @@ const HashedKey = struct {
 
     pub fn eql(_: HashedKey, a: []const u8, b: []const u8) bool {
         return std.mem.eql(u8, a, b);
+    }
+};
+
+pub const ReferenceScope = struct {
+    cim_documents: []const *const CimDocument,
+    /// type id -> name. Borrows document xml; ids index this table.
+    type_names: []const []const u8,
+    /// one dense array per CIM document, indexed by object index.
+    type_ids: [][]u32,
+
+    pub fn init(gpa: std.mem.Allocator, cim_documents: []const *const CimDocument) !ReferenceScope {
+        assert(cim_documents.len > 0);
+        assert(cim_documents.len <= cim_documents_max);
+
+        // Interner dedupes type names, so one type seen in two documents 
+        // interns to one id.
+        var interner = std.StringHashMap(u32).init(gpa);
+        defer interner.deinit();
+
+        var type_names: std.ArrayList([]const u8) = .empty;
+        errdefer type_names.deinit(gpa);
+
+        const type_ids = try gpa.alloc([]u32, cim_documents.len);
+        var filled: u32 = 0;
+        errdefer {
+            for (type_ids[0..filled]) |slots| gpa.free(slots);
+            gpa.free(type_ids);
+        }
+
+        for (cim_documents, 0..) |cim_document, document_index| {
+            const slots = try gpa.alloc(u32, cim_document.object_count());
+            type_ids[document_index] = slots;
+            filled += 1;
+
+            var objects_covered: u32 = 0;
+            var type_groups = cim_document.type_groups();
+            while (type_groups.next()) |type_group| {
+                assert(type_group.start == objects_covered);
+
+                const interner_entry = try interner.getOrPut(type_group.type_name);
+                if (!interner_entry.found_existing) {
+                    try type_names.append(gpa, type_group.type_name);
+                    assert(type_names.items.len <= std.math.maxInt(u32));
+                    interner_entry.value_ptr.* = @intCast(type_names.items.len - 1);
+                }
+
+                const group_object_count: u32 = @intCast(type_group.objects.len);
+                @memset(
+                    slots[type_group.start .. type_group.start + group_object_count],
+                    interner_entry.value_ptr.*,
+                );
+                objects_covered += group_object_count;
+            }
+            assert(objects_covered == cim_document.object_count());
+        }
+
+        return .{
+            .cim_documents = cim_documents,
+            .type_names = try type_names.toOwnedSlice(gpa),
+            .type_ids = type_ids,
+        };
+    }
+
+    pub fn deinit(self: *ReferenceScope, gpa: std.mem.Allocator) void {
+        for (self.type_ids) |slots| gpa.free(slots);
+        gpa.free(self.type_ids);
+        // The table only: the names themselves borrow document xml.
+        gpa.free(self.type_names);
     }
 };
 
