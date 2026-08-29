@@ -75,10 +75,9 @@ pub const Overlay = struct {
     /// Sorted by normalized mRID, so `find_patch` is a binary search.
     patches: []const Patch,
 
-    /// Objects this part declares. Empty under `id_names_patch`. In document
-    /// order, which `doc.objects` is not -- consumers emit in this order
-    /// (`convert` writes one bus per TopologicalNode), so it is the part's
-    /// order that has to survive, not the type grouping.
+    /// Objects this part declares. Empty under `id_names_patch`. Kept in
+    /// document order, which `doc.objects` is not, so consumers can preserve
+    /// the part's original ordering instead of its type grouping.
     new_objects: []const CimObject,
 
     /// Raw `rdf:ID` -> index into `new_objects`. Not `doc.id_to_index`, which

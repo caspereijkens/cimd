@@ -5,11 +5,11 @@
 //! whitespace, e.g. `<cim:Switch.open>\n  true\n</cim:Switch.open>` yields
 //! "\n  true\n". `std.fmt.parseFloat`/`parseInt` reject leading/trailing
 //! whitespace (error.InvalidCharacter), and `std.mem.eql(x, "true")` silently
-//! fails on it -- so untrimmed parsing either aborts the whole conversion or
-//! produces silently wrong values, depending on the call site.
+//! fails on it -- so untrimmed parsing either aborts the operation or produces
+//! silently wrong values, depending on the call site.
 //!
 //! These helpers are the single source of truth for that whitespace contract:
-//! every numeric/boolean property read in the convert pathway trims first.
+//! every numeric/boolean CIM property consumer trims first.
 //! Trimming a value that has no surrounding whitespace (the common single-line
 //! CGMES case) is a no-op, so output for well-formed input is unchanged.
 

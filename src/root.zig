@@ -45,16 +45,8 @@ comptime {
     _ = @import("qocdc/test_all.zig");
     _ = @import("model_set.zig");
     _ = @import("test_browse.zig");
-    _ = @import("topology/test_resolve.zig");
-    _ = @import("convert/test_conversion.zig");
-    _ = @import("topology/cross_ref.zig");
     _ = @import("io/zip.zig");
     _ = @import("io/crc32.zig");
-    _ = @import("convert/network.zig");
-    _ = @import("convert/transformer.zig");
-    _ = @import("convert/placement.zig");
-    _ = @import("convert/equipment.zig");
-    _ = @import("convert/line.zig");
     _ = @import("shacl/test_turtle.zig");
     _ = @import("shacl/test_rule_set.zig");
     _ = @import("test_validate.zig");

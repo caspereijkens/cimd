@@ -56,13 +56,11 @@ const help_main = std.fmt.comptimePrint(
     \\  uncompressed XML from stdin.
     \\
     \\Commands:
-    \\  convert    Convert an EQ profile to JIIDM JSON
     \\  browse     Interactively browse CIM objects (EQ/EQBD/TP/SSH merged view)
     \\  get        Fetch a single object or list by type from any CIM file
     \\  refs       List objects that reference a CIM object
     \\  types      List CIM types present in a CIM file
     \\  diff       Semantic diff between two CIM files of the same profile
-    \\  topology   Generate TopologicalNodes from EQ (+SSH)
     \\  validate   Validate a CGMES file against a SHACL rule set
     \\  qocdc      Run Quality of CGMES Datasets and Calculations checks
     \\  version    Print version information
@@ -87,38 +85,6 @@ const help_main = std.fmt.comptimePrint(
         .rules_limit = print.size_limit_text_comptime(rule_set.rules_bytes_max),
     },
 );
-
-const help_convert = std.fmt.comptimePrint(
-    \\Usage: cimd convert <file>... [options]
-    \\
-    \\Convert a CGMES EQ profile to JIIDM JSON format.
-    \\Output is written to stdout unless --output is given.
-    \\
-    \\A network summary is printed to stderr when stdout is a terminal, so
-    \\`cimd convert eq.zip | jq` emits nothing but JSON. See --stats in
-    \\`cimd --help` to force it on or off.
-    \\
-    \\Arguments:
-    \\  <file>...               CGMES parts or a bundle (XML or ZIP)
-    \\
-    \\Options:
-    \\      --eq <file>         Explicitly route a headerless/unknown file as EQ
-    \\  -b, --eqbd <file>       EQBD boundary profile (XML or ZIP)
-    \\  -t, --tp <file>         TP topology profile (XML or ZIP)
-    \\  -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
-    \\  -o, --output <file>     Write output to file instead of stdout
-    \\      --bus-branch        Emit one JIIDM bus per TopologicalNode
-    \\                          Requires a TP part. Default is node-breaker even
-    \\                          when TP is given (matches pypowsybl).
-    \\
-    \\Examples:
-    \\  cimd convert data{[sep]s}eq.zip
-    \\  cimd convert data{[sep]s}eq.zip --eqbd eqbd.zip
-    \\  cimd convert data{[sep]s}eq.zip --eqbd eqbd.zip -s ssh.zip
-    \\  cimd convert data{[sep]s}eq.zip -o network.json
-    \\  cimd convert data{[sep]s}eq.zip --tp tp.zip --bus-branch
-    \\
-, .{ .sep = path_separator });
 
 const help_browse = std.fmt.comptimePrint(
     \\Usage: cimd browse <file>... <mrid> [options]
@@ -339,32 +305,6 @@ const help_diff =
     \\
 ;
 
-const help_topology = std.fmt.comptimePrint(
-    \\Usage: cimd topology <file>... [options]
-    \\
-    \\Generate TopologicalNodes from an EQ profile and optional SSH. Each TN is
-    \\a connected component of ConnectivityNodes joined by *closed* switches --
-    \\equivalent to a CGMES TP profile's terminal→TopologicalNode mapping.
-    \\Output is JSON on stdout.
-    \\
-    \\Without --ssh, all switches are treated as closed (electrical-equivalence
-    \\snapshot ignoring switch state).
-    \\
-    \\Arguments:
-    \\  <file>...               CGMES parts or a bundle (XML or ZIP)
-    \\
-    \\Options:
-    \\      --eq <file>         Explicitly route a file as EQ
-    \\  -b, --eqbd <file>       EQBD boundary profile (XML or ZIP)
-    \\  -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
-    \\  -o, --output <file>     Write output to file instead of stdout
-    \\
-    \\Examples:
-    \\  cimd topology data{[sep]s}eq.zip -s ssh.zip
-    \\  cimd topology data{[sep]s}eq.zip --eqbd eqbd.zip -s ssh.zip -o tn.json
-    \\
-, .{ .sep = path_separator });
-
 const help_validate = std.fmt.comptimePrint(
     \\Usage: cimd validate <file>... --rules <ttl|zip> [options]
     \\
@@ -439,22 +379,14 @@ const unknown_option_message = ": unknown option '{s}', use --help for usage";
 // ── Command types ─────────────────────────────────────────────────────────────
 
 pub const Command = union(enum) {
-    convert: Convert,
     browse: Browse,
     get: Get,
     refs: Refs,
     types: Types,
     diff: Diff,
-    topology: Topology,
     validate: Validate,
     qocdc: Qocdc,
     version: Version,
-
-    pub const Convert = struct {
-        model_inputs: ModelInputs,
-        output_path: ?[]const u8,
-        bus_branch: bool,
-    };
 
     pub const Browse = struct {
         model_inputs: ModelInputs,
@@ -509,11 +441,6 @@ pub const Command = union(enum) {
         summary,
     };
 
-    pub const Topology = struct {
-        model_inputs: ModelInputs,
-        output_path: ?[]const u8,
-    };
-
     pub const Qocdc = struct {
         eq_path: []const u8,
     };
@@ -564,13 +491,11 @@ pub fn parse_args(io: std.Io, args: *std.process.Args.Iterator) !Command {
         std.process.exit(0);
     }
 
-    if (std.mem.eql(u8, command_name, "convert")) return parse_convert(io, args);
     if (std.mem.eql(u8, command_name, "browse")) return parse_browse(io, args);
     if (std.mem.eql(u8, command_name, "get")) return parse_get(io, args);
     if (std.mem.eql(u8, command_name, "refs")) return parse_refs(io, args);
     if (std.mem.eql(u8, command_name, "types")) return parse_types(io, args);
     if (std.mem.eql(u8, command_name, "diff")) return parse_diff(io, args);
-    if (std.mem.eql(u8, command_name, "topology")) return parse_topology(io, args);
     if (std.mem.eql(u8, command_name, "validate")) return parse_validate(io, args);
     if (std.mem.eql(u8, command_name, "qocdc")) return parse_qocdc(io, args);
     if (std.mem.eql(u8, command_name, "version")) return parse_version(io, args);
@@ -675,44 +600,6 @@ fn is_cgmes_operand(arg: []const u8) bool {
     if (io_read.is_stdin(arg)) return true;
     const extension = std.fs.path.extension(arg);
     return std.ascii.eqlIgnoreCase(extension, ".xml") or std.ascii.eqlIgnoreCase(extension, ".zip");
-}
-
-fn parse_convert(io: std.Io, args: *std.process.Args.Iterator) !Command {
-    const command_name = "convert";
-
-    var inputs: InputBuilder = .{};
-    var output_path: ?[]const u8 = null;
-    var bus_branch: bool = false;
-
-    while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--help")) {
-            try print.write(io, help_convert);
-            std.process.exit(0);
-        }
-        if (std.mem.eql(u8, arg, "-t")) {
-            inputs.add_flagged(io, args, command_name, "--tp", .tp);
-        } else if (std.mem.eql(u8, arg, "-s")) {
-            inputs.add_flagged(io, args, command_name, "--ssh", .ssh);
-        } else if (parse_kind_flag(&inputs, io, args, command_name, arg)) {
-            continue;
-        } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
-            output_path = take_output_arg(io, args, command_name);
-        } else if (std.mem.eql(u8, arg, "--bus-branch")) {
-            bus_branch = true;
-        } else if (parse_output_flag(io, args, command_name, arg)) {
-            continue;
-        } else if (is_flag(arg)) {
-            print.stderr(io, command_name ++ unknown_option_message, .{arg});
-        } else {
-            inputs.add_positional(io, command_name, arg);
-        }
-    }
-
-    return .{ .convert = .{
-        .model_inputs = inputs.finish(io, command_name),
-        .output_path = output_path,
-        .bus_branch = bus_branch,
-    } };
 }
 
 fn parse_browse(io: std.Io, args: *std.process.Args.Iterator) !Command {
@@ -1014,38 +901,6 @@ fn validate_diff_options(
         print.stderr(io, "diff: --patch, --summary, and --json are mutually exclusive", .{});
     }
     return if (patch) .patch else if (summary) .summary else if (json) .json else .eqdiff;
-}
-
-fn parse_topology(io: std.Io, args: *std.process.Args.Iterator) !Command {
-    const command_name = "topology";
-
-    var inputs: InputBuilder = .{};
-    var output_path: ?[]const u8 = null;
-
-    while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--help")) {
-            try print.write(io, help_topology);
-            std.process.exit(0);
-        }
-        if (std.mem.eql(u8, arg, "-s")) {
-            inputs.add_flagged(io, args, command_name, "--ssh", .ssh);
-        } else if (parse_kind_flag(&inputs, io, args, command_name, arg)) {
-            continue;
-        } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
-            output_path = take_output_arg(io, args, command_name);
-        } else if (parse_output_flag(io, args, command_name, arg)) {
-            continue;
-        } else if (is_flag(arg)) {
-            print.stderr(io, command_name ++ unknown_option_message, .{arg});
-        } else {
-            inputs.add_positional(io, command_name, arg);
-        }
-    }
-
-    return .{ .topology = .{
-        .model_inputs = inputs.finish(io, command_name),
-        .output_path = output_path,
-    } };
 }
 
 fn parse_validate(io: std.Io, args: *std.process.Args.Iterator) !Command {

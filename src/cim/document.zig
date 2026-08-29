@@ -442,7 +442,7 @@ test "EQ diagnostics record malformed XML position" {
     );
 }
 
-test "EQ inventory retains identifiers that conversion cannot use" {
+test "EQ inventory retains underscore-only identifiers" {
     const gpa = std.testing.allocator;
     const xml =
         \\<rdf:RDF>

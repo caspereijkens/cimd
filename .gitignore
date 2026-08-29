@@ -6,7 +6,6 @@ data/
 *.DS_Store
 *.xml
 *.zip
-*.jiidm
 *.json
 *.ttl
 zig-out-fast

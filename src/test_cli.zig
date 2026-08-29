@@ -567,9 +567,19 @@ test "diff compares unrecognized profiles routed under one agreed kind" {
 /// Every subcommand `cimd --help` lists. Global options must work on all of
 /// these so wrappers can append them without knowing the selected command.
 const advertised_commands = [_][]const u8{
-    "convert", "browse",   "get",      "refs",  "types",
-    "diff",    "topology", "validate", "qocdc", "version",
+    "browse", "get",      "refs",  "types",
+    "diff",   "validate", "qocdc", "version",
 };
+
+test "removed subcommands are rejected" {
+    const gpa = std.testing.allocator;
+    for ([_][]const u8{ "convert", "topology" }) |command| {
+        var result = try run(gpa, &.{command});
+        defer result.deinit(gpa);
+        try std.testing.expectEqual(@as(u8, exit_usage), result.code);
+        try std.testing.expect(result.stderr_contains("unknown command"));
+    }
+}
 
 test "every advertised subcommand accepts the global --stats flag" {
     const gpa = std.testing.allocator;

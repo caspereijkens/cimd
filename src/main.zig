@@ -14,10 +14,6 @@ const CimObject = cim.CimObject;
 const browse = @import("browse.zig");
 const diff = cim.diff;
 const eqdiff = cim.eqdiff;
-const converter = @import("convert/network.zig");
-const iidm = @import("iidm/model.zig");
-const cross_ref = @import("topology/cross_ref.zig");
-const resolve = @import("topology/resolve.zig");
 const refs = cim.refs;
 const ids = cim.ids;
 const cim_types = cim.cim_types;
@@ -90,105 +86,15 @@ test "only a broken pipe is a normal closed output" {
 
 fn run_command(io: std.Io, gpa: std.mem.Allocator, command: cli.Command) !void {
     switch (command) {
-        .convert => |c| try command_convert(io, gpa, c),
         .browse => |c| try command_browse(io, gpa, c),
         .get => |c| try command_get(io, gpa, c),
         .refs => |c| try command_refs(io, gpa, c),
         .types => |c| try command_types(io, gpa, c),
         .diff => |c| try command_diff(io, gpa, c),
-        .topology => |c| try command_topology(io, gpa, c),
         .validate => |c| try command_validate(io, gpa, c),
         .qocdc => |c| try command_qocdc(io, gpa, c),
         .version => |v| try command_version(io, v.verbose, v.json),
     }
-}
-
-fn command_convert(io: std.Io, parent_gpa: std.mem.Allocator, c: cli.Command.Convert) !void {
-    var arena_instance = std.heap.ArenaAllocator.init(parent_gpa);
-    defer arena_instance.deinit();
-    const gpa = arena_instance.allocator();
-
-    var inputs = try model_set.load_merged(io, gpa, "convert", c.model_inputs.slice(), .convert);
-    defer inputs.deinit(gpa);
-    const model = &inputs.model;
-    const segments = inputs.segments[0..inputs.segments_count];
-    const tp_opt: ?Overlay = if (inputs.tp) |loaded| loaded.overlay else null;
-    const ssh_opt: ?Overlay = if (inputs.ssh) |loaded| loaded.overlay else null;
-    const primary_path = inputs.primary_source.label();
-    const tp_path: ?[]const u8 = if (inputs.tp) |loaded| loaded.source.label() else null;
-
-    if (c.bus_branch and tp_opt == null) print.stderr(io, "convert: --bus-branch requires a TP part", .{});
-    reject_tp_primary_mrid_collision(io, gpa, "convert", model, tp_opt, tp_path) catch |err|
-        return model_operation_error(io, "convert", primary_path, err);
-
-    var conversion_diagnostics: converter.ConversionDiagnostics = .{};
-    const network = converter.convertWithDiagnostics(gpa, model, tp_opt, ssh_opt, c.bus_branch, &conversion_diagnostics) catch |err| switch (err) {
-        error.MissingSubstations => invalid_model_structure(io, "convert", "Substation"),
-        error.MissingVoltageLevels => invalid_model_structure(io, "convert", "VoltageLevel"),
-        error.MissingTerminals => invalid_model_structure(io, "convert", "Terminal"),
-        error.UnresolvedVoltageLevels => print.data_error(
-            io,
-            "convert: EQ profile '{s}' has a VoltageLevel whose Substation reference is missing or unresolved",
-            .{primary_path},
-        ),
-        error.EmptyMrid, error.DuplicateMrid => conversion_id_error(io, segments, model, conversion_diagnostics, err),
-        else => if (is_model_data_error(err))
-            invalid_model_data(io, "convert", primary_path, err)
-        else if (is_model_capacity_error(err))
-            model_capacity_error(io, "convert", primary_path, err)
-        else
-            return err,
-    };
-
-    try print_conversion_summary(io, &network, tp_opt != null);
-
-    const output = try open_output(io, "convert", c.output_path);
-    defer output.deinit(io);
-
-    var write_buffer: [64 * 1024]u8 = undefined;
-    var file_writer = std.Io.File.Writer.init(output.file, io, &write_buffer);
-    try print.file_writer_result(&file_writer, std.json.Stringify.value(network, .{}, &file_writer.interface));
-    try print.file_writer_result(&file_writer, file_writer.interface.writeByte('\n'));
-    try print.flush_file_writer(&file_writer);
-}
-
-fn print_conversion_summary(io: std.Io, network: *const iidm.Network, has_tp: bool) !void {
-    var total_voltage_levels: u64 = 0;
-    var total_buses: u64 = 0;
-    var total_busbar_sections: u64 = 0;
-    var total_switches: u64 = 0;
-    var total_loads: u64 = 0;
-    var total_shunts: u64 = 0;
-    var total_svcs: u64 = 0;
-    var total_generators: u64 = 0;
-    var total_2w: u64 = 0;
-    var total_3w: u64 = 0;
-    for (network.substations.items) |substation| {
-        total_voltage_levels += @intCast(substation.voltage_levels.items.len);
-        total_2w += @intCast(substation.two_winding_transformers.items.len);
-        total_3w += @intCast(substation.three_winding_transformers.items.len);
-        for (substation.voltage_levels.items) |voltage_level| {
-            total_buses += @intCast(voltage_level.bus_breaker_topology.buses.items.len);
-            total_busbar_sections += @intCast(voltage_level.node_breaker_topology.busbar_sections.items.len);
-            total_switches += @intCast(voltage_level.node_breaker_topology.switches.items.len);
-            total_loads += @intCast(voltage_level.loads.items.len);
-            total_shunts += @intCast(voltage_level.shunts.items.len);
-            total_svcs += @intCast(voltage_level.static_var_compensators.items.len);
-            total_generators += @intCast(voltage_level.generators.items.len);
-        }
-    }
-    try print.stderr_info(io, "Substations: {d}\n", .{network.substations.items.len});
-    try print.stderr_info(io, "VoltageLevels: {d}\n", .{total_voltage_levels});
-    if (has_tp) try print.stderr_info(io, "Buses: {d}\n", .{total_buses});
-    try print.stderr_info(io, "BusbarSections: {d}\n", .{total_busbar_sections});
-    try print.stderr_info(io, "Switches: {d}\n", .{total_switches});
-    try print.stderr_info(io, "Loads: {d}\n", .{total_loads});
-    try print.stderr_info(io, "Shunts: {d}\n", .{total_shunts});
-    try print.stderr_info(io, "StaticVarCompensators: {d}\n", .{total_svcs});
-    try print.stderr_info(io, "Generators: {d}\n", .{total_generators});
-    try print.stderr_info(io, "2-winding transformers: {d}\n", .{total_2w});
-    try print.stderr_info(io, "3-winding transformers: {d}\n", .{total_3w});
-    try print.stderr_info(io, "Lines: {d}\n", .{network.lines.items.len});
 }
 
 fn command_browse(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Browse) !void {
@@ -660,25 +566,6 @@ fn reject_tp_primary_id_collision(
             io,
             "{s}: RDF identifier collision: '{s}' is defined in both the primary file and TP profile '{s}' at line {d}",
             .{ command_name, object.id(), tp_path orelse "(unknown)", line },
-        );
-    };
-}
-
-fn reject_tp_primary_mrid_collision(
-    io: std.Io,
-    gpa: std.mem.Allocator,
-    command_name: []const u8,
-    model: *const CimDocument,
-    tp_opt: ?Overlay,
-    tp_path: ?[]const u8,
-) !void {
-    if (tp_opt) |tp| if (try refs.find_tp_primary_mrid_collision(gpa, model, tp)) |collision| {
-        const offset = tp.boundaries[collision.object.object_tag_idx].start;
-        const line = diagnostics_mod.line_number_at(tp.xml, offset);
-        print.data_error(
-            io,
-            "{s}: mRID collision: '{s}' is defined in both the primary file and TP profile '{s}' at line {d}",
-            .{ command_name, collision.mrid, tp_path orelse "(unknown)", line },
         );
     };
 }
@@ -1298,46 +1185,6 @@ fn diff_options(c: cli.Command.Diff) diff.DiffOptions {
     };
 }
 
-fn command_topology(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Topology) !void {
-    var inputs = try model_set.load_merged(io, gpa, "topology", c.model_inputs.slice(), .topology);
-    defer inputs.deinit(gpa);
-    const model = &inputs.model;
-    const ssh_opt: ?Overlay = if (inputs.ssh) |loaded| loaded.overlay else null;
-    const primary_path = inputs.primary_source.label();
-
-    const boundary_ids: std.StringHashMapUnmanaged(void) = .empty;
-    var index = cross_ref.CrossRef.build_for_topology(gpa, model, boundary_ids) catch |err| switch (err) {
-        error.MissingTerminals => invalid_model_structure(io, "topology", "Terminal"),
-        else => return model_operation_error(io, "topology", primary_path, err),
-    };
-    defer index.deinit(gpa);
-
-    var topology = resolve.Topology.build_for_topological_nodes(gpa, model, &index) catch |err|
-        return model_operation_error(io, "topology", primary_path, err);
-    defer topology.deinit(gpa);
-
-    const ssh_ptr: ?*const Overlay = if (ssh_opt) |*s| s else null;
-    var nodes = resolve.build_topological_nodes(gpa, model, &index, &topology, ssh_ptr) catch |err|
-        return model_operation_error(io, "topology", primary_path, err);
-    defer nodes.deinit(gpa);
-
-    try print.stderr_info(io, "TopologicalNodes: {d}\n", .{nodes.items.len});
-
-    const output = try open_output(io, "topology", c.output_path);
-    defer output.deinit(io);
-
-    var write_buffer: [4096]u8 = undefined;
-    var file_writer = std.Io.File.Writer.init(output.file, io, &write_buffer);
-    const w = &file_writer.interface;
-
-    try print.file_writer_result(
-        &file_writer,
-        std.json.Stringify.value(.{ .topologicalNodes = nodes.items }, .{}, w),
-    );
-    try print.file_writer_result(&file_writer, w.writeByte('\n'));
-    try print.flush_file_writer(&file_writer);
-}
-
 fn command_validate(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Validate) !void {
     // Rule sets load first: a bad rules file should not cost a model parse.
     var rule_sets: [cli.Command.Validate.rules_count_max]RuleSet = undefined;
@@ -1528,92 +1375,18 @@ fn qocdc_zip_entry_name(io: std.Io, file_path: []const u8, buffer: *[std.fs.max_
     return entry_name;
 }
 
-fn invalid_model_structure(io: std.Io, command_name: []const u8, required_type: []const u8) noreturn {
-    print.data_error(
-        io,
-        "{s}: EQ profile contains no {s} objects required by this command",
-        .{ command_name, required_type },
-    );
-}
-
-fn conversion_id_error(
-    io: std.Io,
-    segments: []const validate.DataSegment,
-    model: *const CimDocument,
-    diagnostics: converter.ConversionDiagnostics,
-    err: anyerror,
-) noreturn {
-    const issue = diagnostics.id_issue orelse print.data_error(
-        io,
-        "convert: EQ profile '{s}' contains an invalid IIDM identifier",
-        .{segments[0].name},
-    );
-    switch (issue.kind) {
-        .empty => {
-            assert(err == error.EmptyMrid);
-            if (issue.offset) |offset| {
-                const segment = validate.segment_of(segments, offset);
-                const line = validate.segment_local_line(segment, diagnostics_mod.line_number_at(model.xml, offset));
-                print.data_error(
-                    io,
-                    "convert: {s} '{s}': RDF identifier '{s}' resolves to an empty mRID at line {d}",
-                    .{ segment_role(segment), segment.name, issue.raw_id, line },
-                );
-            }
-            print.data_error(io, "convert: emitted IIDM object has an empty identifier", .{});
-        },
-        .duplicate => {
-            assert(err == error.DuplicateMrid);
-            if (issue.offset) |offset| {
-                const segment = validate.segment_of(segments, offset);
-                const line = validate.segment_local_line(segment, diagnostics_mod.line_number_at(model.xml, offset));
-                print.data_error(
-                    io,
-                    "convert: {s} '{s}': duplicate resolved mRID '{s}' at line {d}",
-                    .{ segment_role(segment), segment.name, issue.mrid, line },
-                );
-            }
-            print.data_error(io, "convert: duplicate emitted IIDM identifier '{s}'", .{issue.mrid});
-        },
-    }
-}
-
-/// The primary EQ input starts at offset 0; any later segment is the EQBD
-/// boundary profile concatenated after it.
-fn segment_role(segment: validate.DataSegment) []const u8 {
-    return if (segment.start == 0) "EQ profile" else "EQBD boundary profile";
-}
-
 fn is_model_data_error(err: anyerror) bool {
     return switch (err) {
         error.MalformedXML,
         error.MalformedTag,
         error.InvalidNumericValue,
         error.InvalidIntegerValue,
-        error.InvalidTapStepRange,
-        error.TapStepRangeTooLarge,
-        error.EmptyMrid,
-        error.DuplicateMrid,
         => true,
         else => false,
     };
 }
 
-fn is_model_capacity_error(err: anyerror) bool {
-    return switch (err) {
-        error.ForecastDistanceTooLarge,
-        error.TooManyInternalConnections,
-        error.TooManySubstations,
-        error.TooManyTransformers,
-        error.TooManyVoltageLevelEquipment,
-        error.TooManyIidmObjects,
-        error.NodeIdOverflow,
-        => true,
-        else => false,
-    };
-}
-
-/// Route errors from model transformation stages into the CLI's data/capacity
+/// Route invalid model data from query operations into the CLI's data-error
 /// taxonomy while preserving unrelated failures for the command-level handler.
 fn model_operation_error(
     io: std.Io,
@@ -1622,17 +1395,13 @@ fn model_operation_error(
     err: anyerror,
 ) anyerror {
     if (is_model_data_error(err)) invalid_model_data(io, command_name, path, err);
-    if (is_model_capacity_error(err)) model_capacity_error(io, command_name, path, err);
     return err;
 }
 
-test "model transformation errors distinguish bad data from fixed capacities" {
+test "model operations distinguish bad data from system failures" {
     try std.testing.expect(is_model_data_error(error.MalformedXML));
     try std.testing.expect(is_model_data_error(error.InvalidNumericValue));
-    try std.testing.expect(is_model_data_error(error.DuplicateMrid));
     try std.testing.expect(!is_model_data_error(error.OutOfMemory));
-    try std.testing.expect(!is_model_data_error(error.TooManySubstations));
-    try std.testing.expect(is_model_capacity_error(error.TooManySubstations));
 }
 
 fn invalid_model_data(
@@ -1644,19 +1413,6 @@ fn invalid_model_data(
     print.data_error(
         io,
         "{s}: EQ profile '{s}' contains invalid model data: {t}",
-        .{ command_name, path, err },
-    );
-}
-
-fn model_capacity_error(
-    io: std.Io,
-    command_name: []const u8,
-    path: []const u8,
-    err: anyerror,
-) noreturn {
-    print.data_error(
-        io,
-        "{s}: EQ profile '{s}' exceeds a supported model capacity: {t}",
         .{ command_name, path, err },
     );
 }
