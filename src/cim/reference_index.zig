@@ -162,19 +162,25 @@ const HashedKey = struct {
 };
 
 pub const ReferenceScope = struct {
-    cim_documents: []const *const CimDocument,
     /// type id -> name. Borrows document xml; ids index this table.
     type_names: []const []const u8,
     /// one dense array per CIM document, indexed by object index.
     type_ids: [][]u32,
     /// one per document, in scope order. Rung 3 has no alias table to probe
     /// without them, and holding every document's here is what lets a single
-    /// pair of hashed keys serve the whole sweep.
+    /// pair of hashed keys serve the whole sweep. Also the only list of
+    /// documents the scope keeps, so no caller's array has to outlive it.
     indexes: []ReferenceIndex,
 
+    /// The documents are borrowed and must outlive the scope; `cim_documents`
+    /// itself need not, since every pointer is copied into `indexes` here.
+    ///
+    /// Too many documents is an error rather than an assert: the arbitration
+    /// buffer is sized on `cim_documents_max`, and ReleaseFast keeps no
+    /// assert to hold that bound.
     pub fn init(gpa: std.mem.Allocator, cim_documents: []const *const CimDocument) !ReferenceScope {
         assert(cim_documents.len > 0);
-        assert(cim_documents.len <= cim_documents_max);
+        if (cim_documents.len > cim_documents_max) return error.TooManyDocuments;
 
         // Interner dedupes type names, so one type seen in two documents
         // interns to one id.
@@ -235,7 +241,6 @@ pub const ReferenceScope = struct {
         }
 
         return .{
-            .cim_documents = cim_documents,
             .type_names = try type_names.toOwnedSlice(gpa),
             .type_ids = type_ids,
             .indexes = indexes,
@@ -252,18 +257,20 @@ pub const ReferenceScope = struct {
     }
 
     pub fn document_count(self: *const ReferenceScope) u32 {
-        // `init` bounded the slice, so the narrowing cannot lose a document.
-        assert(self.cim_documents.len <= cim_documents_max);
-        return @intCast(self.cim_documents.len);
+        // `init` rejected anything wider, so the narrowing cannot lose a
+        // document.
+        assert(self.indexes.len <= cim_documents_max);
+        return @intCast(self.indexes.len);
     }
 
     /// A consumer that walks objects takes them from here rather than holding
     /// its own slice, so it cannot walk a different set than the scope
-    /// resolves over. Borrowed: the document outlives the scope, not the
-    /// other way round.
+    /// resolves over. Answered from the same `indexes` the ladder probes, so
+    /// there is no second list to drift from it. Borrowed: the documents
+    /// outlive the scope, not the other way round.
     pub fn document(self: *const ReferenceScope, index: u32) *const CimDocument {
         assert(index < self.document_count());
-        return self.cim_documents[index];
+        return self.indexes[index].model;
     }
 
     /// The primitive the other accessors are layered over. Total: every
@@ -429,9 +436,8 @@ pub const ReferenceScope = struct {
         type_names: []const []const u8,
         key: HashedKey,
     ) void {
-        // A document holds an id at most once, so the candidates cannot
-        // outnumber the documents. Restated here because the buffer is sized
-        // on the bound and a release build drops `init`'s check of it.
+        // A document holds an id at most once, so candidates cannot outnumber
+        // the documents -- and `init` refused more than this buffer holds.
         assert(indexes.len <= cim_documents_max);
         var candidates: [cim_documents_max]Candidate = undefined;
         var candidate_count: u32 = 0;
@@ -1041,6 +1047,46 @@ test "ReferenceScope: identical declarations and uncontested objects keep their 
             );
         }
     }
+}
+
+test "ReferenceScope: a scope wider than the bound is refused, not asserted" {
+    var model = try init_document(rdf_id_document);
+    defer model.deinit(test_gpa);
+
+    var documents: [cim_documents_max + 1]*const CimDocument = undefined;
+    for (&documents) |*slot| slot.* = &model;
+
+    // The arbitration buffer is sized on this bound, so an assert would not
+    // hold it in ReleaseFast.
+    try std.testing.expectError(error.TooManyDocuments, ReferenceScope.init(test_gpa, &documents));
+
+    // One id in every document, so the widest legal scope also fills that
+    // buffer to its last slot.
+    var at_bound = try ReferenceScope.init(test_gpa, documents[0..cim_documents_max]);
+    defer at_bound.deinit(test_gpa);
+    try std.testing.expectEqual(cim_documents_max, at_bound.document_count());
+    try std.testing.expectEqualStrings("BaseVoltage", at_bound.type_name_by_reference("_bv1").?);
+}
+
+test "ReferenceScope: the caller's pointer array is read once, not retained" {
+    var a = try init_document(alias_only_document);
+    defer a.deinit(test_gpa);
+    var b = try init_document(raw_id_document);
+    defer b.deinit(test_gpa);
+
+    var documents = [_]*const CimDocument{ &a, &b };
+    var scope = try ReferenceScope.init(test_gpa, &documents);
+    defer scope.deinit(test_gpa);
+
+    // Only the documents are borrowed. A caller reusing or freeing its array
+    // must not re-point the scope, leaving `document` disagreeing with the
+    // indexes the ladder probes.
+    documents[0] = &b;
+    documents[1] = &a;
+
+    try std.testing.expect(scope.document(0) == &a);
+    try std.testing.expect(scope.document(1) == &b);
+    try std.testing.expectEqualStrings("Terminal", scope.type_name_by_reference("_y").?);
 }
 
 fn init_and_deinit_scope(gpa: std.mem.Allocator, cim_documents: []const *const CimDocument) !void {
