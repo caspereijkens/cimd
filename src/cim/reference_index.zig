@@ -166,6 +166,10 @@ pub const ReferenceScope = struct {
     type_names: []const []const u8,
     /// one dense array per CIM document, indexed by object index.
     type_ids: [][]u32,
+    /// one per document, in scope order. Rung 3 needs an alias table per
+    /// document to probe; rungs 1 and 2 reach the document's own
+    /// `id_to_index` through it.
+    indexes: []ReferenceIndex,
 
     pub fn init(gpa: std.mem.Allocator, cim_documents: []const *const CimDocument) !ReferenceScope {
         assert(cim_documents.len > 0);
@@ -186,7 +190,17 @@ pub const ReferenceScope = struct {
             gpa.free(type_ids);
         }
 
+        const indexes = try gpa.alloc(ReferenceIndex, cim_documents.len);
+        var indexes_built: u32 = 0;
+        errdefer {
+            for (indexes[0..indexes_built]) |*index| index.deinit();
+            gpa.free(indexes);
+        }
+
         for (cim_documents, 0..) |cim_document, document_index| {
+            indexes[document_index] = try ReferenceIndex.init(gpa, cim_document);
+            indexes_built += 1;
+
             const slots = try gpa.alloc(u32, cim_document.object_count());
             type_ids[document_index] = slots;
             filled += 1;
@@ -217,10 +231,13 @@ pub const ReferenceScope = struct {
             .cim_documents = cim_documents,
             .type_names = try type_names.toOwnedSlice(gpa),
             .type_ids = type_ids,
+            .indexes = indexes,
         };
     }
 
     pub fn deinit(self: *ReferenceScope, gpa: std.mem.Allocator) void {
+        for (self.indexes) |*index| index.deinit();
+        gpa.free(self.indexes);
         for (self.type_ids) |slots| gpa.free(slots);
         gpa.free(self.type_ids);
         // The table only: the names themselves borrow document xml.
@@ -263,6 +280,88 @@ pub const ReferenceScope = struct {
 
     pub fn type_name_by_object(self: *const ReferenceScope, document_index: u32, object_index: u32) []const u8 {
         return self.type_name(self.type_id_by_object(document_index, object_index));
+    }
+
+    /// Resolve, then read the primitive. Null exactly when the reference
+    /// resolves to nothing: dangling, or an alias the scope poisoned.
+    pub fn type_id_by_reference(self: *const ReferenceScope, reference: []const u8) ?u32 {
+        const object = self.resolve(reference) orelse return null;
+        return self.type_id_by_object(object.document_index, object.object_index);
+    }
+
+    /// One line over `type_name(type_id_by_reference(...))`, the way
+    /// `type_name_by_object` sits over `type_name(type_id_by_object(...))`.
+    /// Optional for the same reason the id form is: a miss has no name, and
+    /// the two must agree on misses as well as hits.
+    pub fn type_name_by_reference(self: *const ReferenceScope, reference: []const u8) ?[]const u8 {
+        const type_id = self.type_id_by_reference(reference) orelse return null;
+        return self.type_name(type_id);
+    }
+
+    /// Where a reference landed. An object index alone does not name an
+    /// object once the scope spans more than one document.
+    const ObjectRef = struct {
+        document_index: u32,
+        object_index: u32,
+    };
+
+    /// The N-document driver over the ladder `ReferenceIndex` runs for one
+    /// document, stage-major: every document's rung 1, then every document's
+    /// rung 2, then every document's rung 3. The first rung with any hit
+    /// decides, so an exact raw match in the last document beats an alias
+    /// match in the first however the documents were ordered.
+    ///
+    /// Two hashes for the whole sweep whatever the document count: the raw
+    /// key and its local form are each built once here and handed to every
+    /// document's probes.
+    fn resolve(self: *const ReferenceScope, reference: []const u8) ?ObjectRef {
+        const raw = HashedKey.init(reference);
+        for (self.indexes, 0..) |*index, document_index| {
+            if (index.probe_exact_raw(raw)) |object_index| {
+                return .{ .document_index = @intCast(document_index), .object_index = object_index };
+            }
+        }
+
+        const local = LocalKey.init(reference, raw);
+        for (self.indexes, 0..) |*index, document_index| {
+            if (index.probe_local_against_raw(local)) |object_index| {
+                return .{ .document_index = @intCast(document_index), .object_index = object_index };
+            }
+        }
+
+        return self.probe_unique_alias(local);
+    }
+
+    /// Rung 3 across the scope. Unlike rungs 1 and 2 this cannot stop at the
+    /// first hit: a later document may poison the alias, and the answer is
+    /// then null rather than the hit already in hand.
+    fn probe_unique_alias(self: *const ReferenceScope, local: LocalKey) ?ObjectRef {
+        var hit: ?ObjectRef = null;
+        var hit_id: []const u8 = "";
+
+        for (self.indexes, 0..) |*index, document_index| {
+            switch (index.probe_unique_alias(local)) {
+                .none => {},
+                // Poisoned within one document poisons the scope: the
+                // reference already names no single object, and another
+                // document's alias must not paper over that.
+                .ambiguous => return null,
+                .unique => |object_index| {
+                    const id = index.model.objects[object_index].id();
+                    if (hit == null) {
+                        hit = .{ .document_index = @intCast(document_index), .object_index = object_index };
+                        hit_id = id;
+                        continue;
+                    }
+                    // Alias collision: two raw ids sharing one local form
+                    // name two objects, so the alias names none. The same
+                    // raw id twice is one identity seen in two documents,
+                    // settled in the dense arrays at build time, not here.
+                    if (!std.mem.eql(u8, id, hit_id)) return null;
+                },
+            }
+        }
+        return hit;
     }
 };
 
@@ -454,4 +553,208 @@ test "ReferenceIndex: the precomputed-hash probe agrees with a plain map get" {
             local.key.get(&index.aliases),
         );
     }
+}
+
+const alias_only_document =
+    \\<rdf:RDF>
+    \\  <cim:Breaker rdf:about="http://a.example/data#_x">
+    \\    <cim:IdentifiedObject.name>from A</cim:IdentifiedObject.name>
+    \\  </cim:Breaker>
+    \\</rdf:RDF>
+;
+
+const raw_id_document =
+    \\<rdf:RDF>
+    \\  <cim:Disconnector rdf:ID="_x">
+    \\    <cim:IdentifiedObject.name>from B</cim:IdentifiedObject.name>
+    \\  </cim:Disconnector>
+    \\  <cim:Terminal rdf:ID="_y">
+    \\    <cim:IdentifiedObject.name>terminal</cim:IdentifiedObject.name>
+    \\  </cim:Terminal>
+    \\</rdf:RDF>
+;
+
+test "ReferenceScope: a one-document scope answers like ReferenceIndex" {
+    var model = try init_document(mixed_id_document);
+    defer model.deinit(test_gpa);
+    var index = try ReferenceIndex.init(test_gpa, &model);
+    defer index.deinit();
+    var scope = try ReferenceScope.init(test_gpa, &.{&model});
+    defer scope.deinit(test_gpa);
+
+    // Every shape the single-document fixtures cover, plus the two misses.
+    const references = [_][]const u8{
+        "_bv1",
+        "#_bv1",
+        "http://a.example/data#_bv1",
+        "http://example.com/id/_bv1",
+        "_missing",
+        "",
+    };
+    for (references) |reference| {
+        const expected: ?[]const u8 = if (index.object_index_by_reference(reference)) |object_index|
+            model.objects[object_index].type_name()
+        else
+            null;
+        const actual = scope.type_name_by_reference(reference);
+
+        try std.testing.expectEqual(expected == null, actual == null);
+        if (expected) |name| try std.testing.expectEqualStrings(name, actual.?);
+        // Layering: the id form and the name form are one answer rendered twice.
+        if (scope.type_id_by_reference(reference)) |type_id| {
+            try std.testing.expectEqualStrings(scope.type_name(type_id), actual.?);
+        } else {
+            try std.testing.expect(actual == null);
+        }
+    }
+}
+
+test "ReferenceScope: totality -- every object index renders to its own type name" {
+    var model = try init_document(mixed_id_document);
+    defer model.deinit(test_gpa);
+    var scope = try ReferenceScope.init(test_gpa, &.{&model});
+    defer scope.deinit(test_gpa);
+
+    // A one-document scope has nothing to arbitrate, so the dense array is
+    // exactly the elements' own names.
+    for (model.objects, 0..) |object, object_index| {
+        try std.testing.expectEqualStrings(
+            object.type_name(),
+            scope.type_name_by_object(0, @intCast(object_index)),
+        );
+    }
+}
+
+test "ReferenceScope: references resolve across documents" {
+    var a = try init_document(alias_only_document);
+    defer a.deinit(test_gpa);
+    var b = try init_document(raw_id_document);
+    defer b.deinit(test_gpa);
+    var scope = try ReferenceScope.init(test_gpa, &.{ &a, &b });
+    defer scope.deinit(test_gpa);
+
+    // Rung 2 reaches the second document: "#_y" finds raw "_y" there.
+    try std.testing.expectEqualStrings("Terminal", scope.type_name_by_reference("#_y").?);
+    try std.testing.expectEqualStrings("Terminal", scope.type_name_by_reference("_y").?);
+    try std.testing.expect(scope.type_name_by_reference("_nowhere") == null);
+}
+
+test "ReferenceScope: stage-major precedence survives document order" {
+    var a = try init_document(alias_only_document);
+    defer a.deinit(test_gpa);
+    var b = try init_document(raw_id_document);
+    defer b.deinit(test_gpa);
+
+    // "_x" is an exact raw id in B and only an alias in A, so rung 1 decides
+    // in both orders. Document-major resolution would answer Breaker when A
+    // comes first.
+    inline for (.{ .{ &a, &b }, .{ &b, &a } }) |documents| {
+        var scope = try ReferenceScope.init(test_gpa, &documents);
+        defer scope.deinit(test_gpa);
+        try std.testing.expectEqualStrings("Disconnector", scope.type_name_by_reference("_x").?);
+    }
+}
+
+test "ReferenceScope: aliases ambiguous within or across documents resolve to null" {
+    var shared = try init_document(
+        \\<rdf:RDF>
+        \\  <cim:BaseVoltage rdf:about="http://a.example/data#_shared">
+        \\    <cim:BaseVoltage.nominalVoltage>110</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\  <cim:BaseVoltage rdf:about="http://b.example/data#_shared">
+        \\    <cim:BaseVoltage.nominalVoltage>220</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\</rdf:RDF>
+    );
+    defer shared.deinit(test_gpa);
+    var other = try init_document(raw_id_document);
+    defer other.deinit(test_gpa);
+
+    // Ambiguous inside one document stays ambiguous once that document is in
+    // a scope: another document cannot un-poison it.
+    var one = try ReferenceScope.init(test_gpa, &.{&shared});
+    defer one.deinit(test_gpa);
+    try std.testing.expect(one.type_name_by_reference("_shared") == null);
+    var two = try ReferenceScope.init(test_gpa, &.{ &shared, &other });
+    defer two.deinit(test_gpa);
+    try std.testing.expect(two.type_name_by_reference("_shared") == null);
+
+    // Unique in each document but naming different raw ids: an alias
+    // collision only the scope can see.
+    var split_a = try init_document(
+        \\<rdf:RDF>
+        \\  <cim:BaseVoltage rdf:about="http://a.example/data#_shared">
+        \\    <cim:BaseVoltage.nominalVoltage>110</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\</rdf:RDF>
+    );
+    defer split_a.deinit(test_gpa);
+    var split_b = try init_document(
+        \\<rdf:RDF>
+        \\  <cim:BaseVoltage rdf:about="http://b.example/data#_shared">
+        \\    <cim:BaseVoltage.nominalVoltage>220</cim:BaseVoltage.nominalVoltage>
+        \\  </cim:BaseVoltage>
+        \\</rdf:RDF>
+    );
+    defer split_b.deinit(test_gpa);
+    var split = try ReferenceScope.init(test_gpa, &.{ &split_a, &split_b });
+    defer split.deinit(test_gpa);
+    try std.testing.expect(split.type_name_by_reference("_shared") == null);
+    // Each raw form still names its own object.
+    try std.testing.expect(split.type_name_by_reference("http://a.example/data#_shared") != null);
+    try std.testing.expect(split.type_name_by_reference("http://b.example/data#_shared") != null);
+}
+
+test "ReferenceScope: document_count and document return the input, in order" {
+    var a = try init_document(alias_only_document);
+    defer a.deinit(test_gpa);
+    var b = try init_document(raw_id_document);
+    defer b.deinit(test_gpa);
+    var scope = try ReferenceScope.init(test_gpa, &.{ &a, &b });
+    defer scope.deinit(test_gpa);
+
+    try std.testing.expectEqual(@as(u32, 2), scope.document_count());
+    try std.testing.expect(scope.document(0) == &a);
+    try std.testing.expect(scope.document(1) == &b);
+}
+
+test "ReferenceScope: degenerate inputs" {
+    var empty = try init_document(
+        \\<rdf:RDF>
+        \\</rdf:RDF>
+    );
+    defer empty.deinit(test_gpa);
+    var b = try init_document(raw_id_document);
+    defer b.deinit(test_gpa);
+
+    try std.testing.expectEqual(@as(u32, 0), empty.object_count());
+    var scope = try ReferenceScope.init(test_gpa, &.{ &empty, &b });
+    defer scope.deinit(test_gpa);
+
+    // An empty reference is a miss, not an assertion failure.
+    try std.testing.expect(scope.type_name_by_reference("") == null);
+    try std.testing.expect(scope.type_id_by_reference("") == null);
+    try std.testing.expect(scope.type_name_by_reference("_nothing") == null);
+    // A document contributing no objects still resolves past.
+    try std.testing.expectEqualStrings("Terminal", scope.type_name_by_reference("_y").?);
+}
+
+fn init_and_deinit_scope(gpa: std.mem.Allocator, cim_documents: []const *const CimDocument) !void {
+    var scope = try ReferenceScope.init(gpa, cim_documents);
+    scope.deinit(gpa);
+}
+
+test "ReferenceScope: init leaks nothing when any allocation fails" {
+    var a = try init_document(alias_only_document);
+    defer a.deinit(test_gpa);
+    var b = try init_document(raw_id_document);
+    defer b.deinit(test_gpa);
+
+    // init owns four allocation sites -- the name table, the outer type_ids
+    // slice, a dense array per document, and a ReferenceIndex per document --
+    // so the errdefer chain has to unwind partial state at every one of them.
+    // The documents are allocated outside, so only init's own faults are
+    // injected.
+    const cim_documents: []const *const CimDocument = &.{ &a, &b };
+    try std.testing.checkAllAllocationFailures(test_gpa, init_and_deinit_scope, .{cim_documents});
 }
