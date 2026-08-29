@@ -171,7 +171,7 @@ pub const ReferenceScope = struct {
         assert(cim_documents.len > 0);
         assert(cim_documents.len <= cim_documents_max);
 
-        // Interner dedupes type names, so one type seen in two documents 
+        // Interner dedupes type names, so one type seen in two documents
         // interns to one id.
         var interner = std.StringHashMap(u32).init(gpa);
         defer interner.deinit();
@@ -225,6 +225,44 @@ pub const ReferenceScope = struct {
         gpa.free(self.type_ids);
         // The table only: the names themselves borrow document xml.
         gpa.free(self.type_names);
+    }
+
+    pub fn document_count(self: *const ReferenceScope) u32 {
+        // `init` bounded the slice, so the narrowing cannot lose a document.
+        assert(self.cim_documents.len <= cim_documents_max);
+        return @intCast(self.cim_documents.len);
+    }
+
+    /// A consumer that walks objects takes them from here rather than holding
+    /// its own slice, so it cannot walk a different set than the scope
+    /// resolves over. Borrowed: the document outlives the scope, not the
+    /// other way round.
+    pub fn document(self: *const ReferenceScope, index: u32) *const CimDocument {
+        assert(index < self.document_count());
+        return self.cim_documents[index];
+    }
+
+    /// The primitive the other accessors are layered over. Total: every
+    /// object index has an entry, which is what the covering assertion in
+    /// `init` buys.
+    pub fn type_id_by_object(self: *const ReferenceScope, document_index: u32, object_index: u32) u32 {
+        assert(document_index < self.document_count());
+        const document_type_ids = self.type_ids[document_index];
+        assert(object_index < document_type_ids.len);
+
+        return document_type_ids[object_index];
+    }
+
+    /// Render an id. Ids index this scope's own table: stable for its
+    /// lifetime, meaningless outside it. The single renderer, so the id space
+    /// and the name space cannot disagree.
+    pub fn type_name(self: *const ReferenceScope, type_id: u32) []const u8 {
+        assert(type_id < self.type_names.len);
+        return self.type_names[type_id];
+    }
+
+    pub fn type_name_by_object(self: *const ReferenceScope, document_index: u32, object_index: u32) []const u8 {
+        return self.type_name(self.type_id_by_object(document_index, object_index));
     }
 };
 
