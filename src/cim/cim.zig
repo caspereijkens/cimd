@@ -49,6 +49,12 @@ pub const Diagnostics = @import("diagnostics.zig").Diagnostics;
 /// Built by the run that needs it. See reference_index.zig.
 pub const ReferenceIndex = @import("reference_index.zig").ReferenceIndex;
 
+/// The same ladder over N borrowed documents, resolving a reference against
+/// all of them stage-major. Interns the scope's type names, so a resolved
+/// object answers with a type id comparable across documents. See
+/// reference_index.zig.
+pub const ReferenceScope = @import("reference_index.zig").ReferenceScope;
+
 /// One child element of an object, and the walk that yields them. This is the
 /// level a CIM consumer works at; nothing here needs a tag boundary.
 pub const Child = @import("tag_index.zig").Child;
