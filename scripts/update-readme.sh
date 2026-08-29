@@ -28,7 +28,7 @@ new_block() {
   "$CIMD" --help
   echo '```'
 
-  for sub in types get refs browse diff validate topology convert; do
+  for sub in types get refs browse diff validate; do
     # Capitalise first letter for the heading.
     heading="$(echo "$sub" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
     echo ""

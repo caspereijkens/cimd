@@ -303,11 +303,6 @@ pub fn resolve_object_normalized(
     return null;
 }
 
-pub const TpPrimaryMridCollision = struct {
-    object: tag_index.CimObject,
-    mrid: []const u8,
-};
-
 /// Return the first TP-added object whose raw RDF identifier collides with the
 /// primary model. Navigation resolves by raw id, so this check is allocation-
 /// free and prevents EQ from silently shadowing the TP object.
@@ -317,33 +312,6 @@ pub fn find_tp_primary_id_collision(
 ) ?tag_index.CimObject {
     for (tp.new_objects) |obj| {
         if (model.object_by_id(obj.id()) != null) return obj;
-    }
-    return null;
-}
-
-/// Return the first TP-added object whose resolved mRID collides with the
-/// primary model. Conversion emits IIDM objects by mRID, so it uses this
-/// stronger check; raw-id navigation deliberately does not.
-pub fn find_tp_primary_mrid_collision(
-    gpa: std.mem.Allocator,
-    model: *const CimDocument,
-    tp: Overlay,
-) !?TpPrimaryMridCollision {
-    var primary_mrids: std.StringHashMapUnmanaged(void) = .empty;
-    defer primary_mrids.deinit(gpa);
-    try primary_mrids.ensureTotalCapacity(gpa, @intCast(model.objects.len));
-
-    for (model.objects) |obj| {
-        const mrid = try obj.mrid();
-        if (mrid.len == 0) continue;
-        primary_mrids.putAssumeCapacity(mrid, {});
-    }
-
-    for (tp.new_objects) |obj| {
-        const mrid = try obj.mrid();
-        if (mrid.len > 0 and primary_mrids.contains(mrid)) {
-            return .{ .object = obj, .mrid = mrid };
-        }
     }
     return null;
 }
@@ -1006,23 +974,4 @@ test "find_tp_primary_id_collision allows distinct raw ids with equal mRIDs" {
     defer tp.deinit(gpa);
 
     try std.testing.expect(find_tp_primary_id_collision(&model, tp) == null);
-}
-
-test "find_tp_primary_mrid_collision honors explicit primary mRID" {
-    const gpa = std.testing.allocator;
-    const eq_xml =
-        \\<rdf:RDF>
-        \\  <cim:Terminal rdf:ID="_eq-object">
-        \\    <cim:IdentifiedObject.mRID>SHARED</cim:IdentifiedObject.mRID>
-        \\  </cim:Terminal>
-        \\</rdf:RDF>
-    ;
-    const tp_xml = "<rdf:RDF><cim:TopologicalNode rdf:ID=\"_SHARED\"/></rdf:RDF>";
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
-    defer model.deinit(gpa);
-    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, tp_xml));
-    defer tp.deinit(gpa);
-
-    const collision = try find_tp_primary_mrid_collision(gpa, &model, tp) orelse return error.TestExpectedCollision;
-    try std.testing.expectEqualStrings("SHARED", collision.mrid);
 }

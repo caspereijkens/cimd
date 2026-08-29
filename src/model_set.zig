@@ -27,7 +27,7 @@ pub const Input = struct {
     override: ?Kind = null,
 };
 
-pub const Purpose = enum { convert, topology, query, diff_side };
+pub const Purpose = enum { query, diff_side };
 pub const BoundaryMerge = enum { never, single_pair };
 
 pub const Source = struct {
@@ -525,21 +525,6 @@ fn resolve_primary(
     const records = collected.records.items;
     var primary_index: ?u32 = null;
     switch (purpose) {
-        .convert, .topology => {
-            primary_index = slots[@intFromEnum(Kind.eq)];
-            if (primary_index == null and inputs[0].override == null and collected.input_part_counts[0] == 1) {
-                const candidate = find_input_record(records, 0).?;
-                if (fallback_eligible(records[candidate])) primary_index = candidate;
-            }
-            if (primary_index == null) {
-                for (records) |record| if (unknown_uri(record)) |uri| print.data_error(
-                    io,
-                    "{s}: unknown profile URI '{s}' in '{s}'; use --eq to route it explicitly",
-                    .{ command_name, uri, record.part.name },
-                );
-                print.data_error(io, "{s}: an EQ part is required", .{command_name});
-            }
-        },
         // A diff side is one document compared against a document of the same
         // profile, and mRID matching plus statement comparison is profile-
         // agnostic: SSH-vs-SSH (switch states, setpoints) and TP-vs-TP are as
@@ -685,7 +670,6 @@ fn assemble_merged(
         };
     };
 
-    if (purpose == .topology) assert(loaded_tp == null);
     if (purpose == .diff_side) assert(loaded_tp == null);
     if (purpose == .diff_side) assert(loaded_ssh == null);
     return .{
@@ -705,8 +689,8 @@ fn assembly_selection(slots: Slots, primary: u32, purpose: Purpose) AssemblySele
         .eqbd = slots[@intFromEnum(Kind.eqbd)],
         .tp = slots[@intFromEnum(Kind.tp)],
         .ssh = slots[@intFromEnum(Kind.ssh)],
-        .consume_tp = purpose == .convert or purpose == .query,
-        .consume_ssh = purpose != .diff_side,
+        .consume_tp = purpose == .query,
+        .consume_ssh = purpose == .query,
     };
     if (result.eqbd == primary) result.eqbd = null;
     if (result.tp == primary) result.tp = null;

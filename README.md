@@ -3,14 +3,6 @@
 # cimd
 cimd is a **C**ommand line **I**nterface for grid **M**odel **D**ata. It is a high-performance tool for working with CGMES (Common Grid Model Exchange Standard) data. See https://cimd.eu for more information.
 
-## Performance
-### Comparison on real data
-![CGMES EQ → JIIDM conversion benchmark: cimd vs pypowsybl](scripts/benchmark/output/benchmark.svg)
-
-*End-to-end CGMES → in-memory pypowsybl `Network` on a real-world Dutch transmission model (EQ + EQBD, ~5MB zipped). The `cimd` bar measures `cimd convert` (ReleaseFast) writing JIIDM to disk plus `pypowsybl.network.load` reading it back; the `pypowsybl` bar measures `pypowsybl.network.load_from_binary_buffers` on the same CGMES inputs.*
-
-*Median of 10 runs after a discarded warm-up. Measured on Apple M4 Pro. Reproduce with `scripts/benchmark/main.py`.*
-
 Model-set loading reads every XML part in a ZIP and classifies parts from their
 `FullModel` profile declarations. Positional EQ/EQBD/TP/SSH files can therefore
 be supplied together without kind flags. Compatibility note: a multi-entry ZIP
@@ -34,13 +26,11 @@ Input limits:
   uncompressed XML from stdin.
 
 Commands:
-  convert    Convert an EQ profile to JIIDM JSON
   browse     Interactively browse CIM objects (EQ/EQBD/TP/SSH merged view)
   get        Fetch a single object or list by type from any CIM file
   refs       List objects that reference a CIM object
   types      List CIM types present in a CIM file
   diff       Semantic diff between two CIM files of the same profile
-  topology   Generate TopologicalNodes from EQ (+SSH)
   validate   Validate a CGMES file against a SHACL rule set
   qocdc      Run Quality of CGMES Datasets and Calculations checks
   version    Print version information
@@ -335,67 +325,5 @@ Options:
 Examples:
   cimd validate data/eq.zip -r rules/profile.ttl
   cimd validate data/eq.zip -b eqbd.zip -r a.ttl -r b.ttl
-```
-
-### Topology
-```
-$ cimd topology --help
-
-Usage: cimd topology <file>... [options]
-
-Generate TopologicalNodes from an EQ profile and optional SSH. Each TN is
-a connected component of ConnectivityNodes joined by *closed* switches --
-equivalent to a CGMES TP profile's terminal→TopologicalNode mapping.
-Output is JSON on stdout.
-
-Without --ssh, all switches are treated as closed (electrical-equivalence
-snapshot ignoring switch state).
-
-Arguments:
-  <file>...               CGMES parts or a bundle (XML or ZIP)
-
-Options:
-      --eq <file>         Explicitly route a file as EQ
-  -b, --eqbd <file>       EQBD boundary profile (XML or ZIP)
-  -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
-  -o, --output <file>     Write output to file instead of stdout
-
-Examples:
-  cimd topology data/eq.zip -s ssh.zip
-  cimd topology data/eq.zip --eqbd eqbd.zip -s ssh.zip -o tn.json
-```
-
-### Convert
-```
-$ cimd convert --help
-
-Usage: cimd convert <file>... [options]
-
-Convert a CGMES EQ profile to JIIDM JSON format.
-Output is written to stdout unless --output is given.
-
-A network summary is printed to stderr when stdout is a terminal, so
-`cimd convert eq.zip | jq` emits nothing but JSON. See --stats in
-`cimd --help` to force it on or off.
-
-Arguments:
-  <file>...               CGMES parts or a bundle (XML or ZIP)
-
-Options:
-      --eq <file>         Explicitly route a headerless/unknown file as EQ
-  -b, --eqbd <file>       EQBD boundary profile (XML or ZIP)
-  -t, --tp <file>         TP topology profile (XML or ZIP)
-  -s, --ssh <file>        SSH steady-state hypothesis profile (XML or ZIP)
-  -o, --output <file>     Write output to file instead of stdout
-      --bus-branch        Emit one JIIDM bus per TopologicalNode
-                          Requires a TP part. Default is node-breaker even
-                          when TP is given (matches pypowsybl).
-
-Examples:
-  cimd convert data/eq.zip
-  cimd convert data/eq.zip --eqbd eqbd.zip
-  cimd convert data/eq.zip --eqbd eqbd.zip -s ssh.zip
-  cimd convert data/eq.zip -o network.json
-  cimd convert data/eq.zip --tp tp.zip --bus-branch
 ```
 <!-- FEATURES_END -->

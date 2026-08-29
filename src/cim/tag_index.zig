@@ -89,9 +89,8 @@ pub const Child = struct {
     /// The element has an `rdf:resource=` whose value never closes inside the
     /// tag. Such a child is reported as a `.property` so tolerant walks treat it
     /// as "not a reference" and keep going, but the flag lets a walk that is
-    /// asked for this name by name fail loudly instead: topology resolution
-    /// reports a malformed reference rather than silently building the wrong
-    /// network from a truncated export.
+    /// asked for this name by name fail loudly instead, reporting a malformed
+    /// reference rather than silently accepting a truncated export.
     malformed_resource: bool,
     /// Whether the element is written `<name/>`. Distinct from `kind`: a
     /// self-closing element without `rdf:resource` is an empty literal, so the
@@ -234,9 +233,9 @@ pub const ObjectContext = struct {
 /// type-sort and id-index passes, and every type filter -- and there they feed
 /// straight into string hashing and comparison. A stored slice arrives as one
 /// load; a span has to be rebuilt from a base and two offsets at each of those
-/// call sites. Measured on a 300 MB EQ, spans cost 5% of `cimd types` and 3% of
-/// `cimd convert`. Holding the XML base pointer inline to shorten the load chain
-/// does not recover it -- the arithmetic is the cost, not the indirection.
+/// call sites. Measured on a 300 MB EQ, spans cost 5% of `cimd types`. Holding
+/// the XML base pointer inline to shorten the load chain does not recover it --
+/// the arithmetic is the cost, not the indirection.
 pub const CimObject = struct {
     context: *const ObjectContext,
     object_tag_idx: u32,

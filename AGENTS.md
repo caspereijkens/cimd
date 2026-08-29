@@ -19,7 +19,7 @@ A file for [guiding coding agents](https://agents.md/).
   the internal file.
 - Everything else in `src/` is the cimd application on top: `cli.zig`,
   `main.zig`, `browse.zig`, `model_set.zig`, `io/`, plus `validate.zig` +
-  `shacl/` and `convert/` + `iidm/`, which are separate concerns.
+  `shacl/`, which is a separate concern.
 
 ## Tools
 - When investigating a bug using real data, use cimd as the main tool and pipe
@@ -30,4 +30,3 @@ A file for [guiding coding agents](https://agents.md/).
 
 ## Zig version
 The Zig version can be found in build.zig.zon under `.minimum_zig_version`.
-

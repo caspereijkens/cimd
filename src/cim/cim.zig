@@ -24,12 +24,10 @@
 //! mechanical: add a build.zig.zon, repoint consumers from this path to the
 //! module name, done.
 //! The rest of `src/` -- cli.zig, main.zig, browse.zig, model_set.zig,
-//! io/, validate.zig, convert/, topology/ -- is the application on top and
-//! stays behind.
+//! io/, and validate.zig -- is the application on top and stays behind.
 //!
-//! Not in scope, deliberately: JIIDM conversion (convert/, iidm/) and SHACL
-//! validation (validate.zig, shacl/) are separate concerns that may become
-//! their own libraries later.
+//! Not in scope, deliberately: SHACL validation (validate.zig, shacl/) is a
+//! separate concern that may become its own library later.
 
 // ── Documents ─────────────────────────────────────────────────────────────────
 //
