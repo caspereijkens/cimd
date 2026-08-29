@@ -166,9 +166,9 @@ pub const ReferenceScope = struct {
     type_names: []const []const u8,
     /// one dense array per CIM document, indexed by object index.
     type_ids: [][]u32,
-    /// one per document, in scope order. Rung 3 needs an alias table per
-    /// document to probe; rungs 1 and 2 reach the document's own
-    /// `id_to_index` through it.
+    /// one per document, in scope order. Rung 3 has no alias table to probe
+    /// without them, and holding every document's here is what lets a single
+    /// pair of hashed keys serve the whole sweep.
     indexes: []ReferenceIndex,
 
     pub fn init(gpa: std.mem.Allocator, cim_documents: []const *const CimDocument) !ReferenceScope {
@@ -282,38 +282,39 @@ pub const ReferenceScope = struct {
         return self.type_name(self.type_id_by_object(document_index, object_index));
     }
 
-    /// Resolve, then read the primitive. Null exactly when the reference
-    /// resolves to nothing: dangling, or an alias the scope poisoned.
+    /// Type id for whatever the reference resolves to, or null when it names
+    /// no single object: dangling, or an alias the scope poisoned.
     pub fn type_id_by_reference(self: *const ReferenceScope, reference: []const u8) ?u32 {
         const object = self.resolve(reference) orelse return null;
         return self.type_id_by_object(object.document_index, object.object_index);
     }
 
-    /// One line over `type_name(type_id_by_reference(...))`, the way
-    /// `type_name_by_object` sits over `type_name(type_id_by_object(...))`.
-    /// Optional for the same reason the id form is: a miss has no name, and
-    /// the two must agree on misses as well as hits.
+    /// Type name for whatever the reference resolves to, null wherever
+    /// `type_id_by_reference` is. Renders through that id rather than the
+    /// resolved object's own name so that arbitration, which rewrites the id
+    /// and not the element, cannot leave name callers and id callers
+    /// disagreeing about the same object.
     pub fn type_name_by_reference(self: *const ReferenceScope, reference: []const u8) ?[]const u8 {
         const type_id = self.type_id_by_reference(reference) orelse return null;
         return self.type_name(type_id);
     }
 
-    /// Where a reference landed. An object index alone does not name an
-    /// object once the scope spans more than one document.
+    /// An object index means nothing without the document it indexes, so a
+    /// scope-level resolve answers with both.
     const ObjectRef = struct {
         document_index: u32,
         object_index: u32,
     };
 
-    /// The N-document driver over the ladder `ReferenceIndex` runs for one
-    /// document, stage-major: every document's rung 1, then every document's
-    /// rung 2, then every document's rung 3. The first rung with any hit
-    /// decides, so an exact raw match in the last document beats an alias
-    /// match in the first however the documents were ordered.
+    /// Object behind a reference, or null when it names none.
     ///
-    /// Two hashes for the whole sweep whatever the document count: the raw
-    /// key and its local form are each built once here and handed to every
-    /// document's probes.
+    /// Stage-major -- every document's rung 1 before any document's rung 2 --
+    /// so precedence belongs to the reference rather than to the input slice:
+    /// an exact raw match in the last document beats an alias match in the
+    /// first. Document-major would make the answer depend on argument order.
+    ///
+    /// Both keys are built here and handed to every document, so a lookup
+    /// costs two hashes whatever the document count.
     fn resolve(self: *const ReferenceScope, reference: []const u8) ?ObjectRef {
         const raw = HashedKey.init(reference);
         for (self.indexes, 0..) |*index, document_index| {
@@ -332,9 +333,10 @@ pub const ReferenceScope = struct {
         return self.probe_unique_alias(local);
     }
 
-    /// Rung 3 across the scope. Unlike rungs 1 and 2 this cannot stop at the
-    /// first hit: a later document may poison the alias, and the answer is
-    /// then null rather than the hit already in hand.
+    /// Rung 3 across the scope. Sweeps every document even once it holds a
+    /// hit, because a later document can poison the alias: a reference that
+    /// names two objects must resolve to null, not to whichever was found
+    /// first.
     fn probe_unique_alias(self: *const ReferenceScope, local: LocalKey) ?ObjectRef {
         var hit: ?ObjectRef = null;
         var hit_id: []const u8 = "";
@@ -582,7 +584,7 @@ test "ReferenceScope: a one-document scope answers like ReferenceIndex" {
     var scope = try ReferenceScope.init(test_gpa, &.{&model});
     defer scope.deinit(test_gpa);
 
-    // Every shape the single-document fixtures cover, plus the two misses.
+    // The shapes the single-document fixtures cover, plus the two misses.
     const references = [_][]const u8{
         "_bv1",
         "#_bv1",
@@ -600,7 +602,7 @@ test "ReferenceScope: a one-document scope answers like ReferenceIndex" {
 
         try std.testing.expectEqual(expected == null, actual == null);
         if (expected) |name| try std.testing.expectEqualStrings(name, actual.?);
-        // Layering: the id form and the name form are one answer rendered twice.
+        // A caller reading ids and a caller reading names must not diverge.
         if (scope.type_id_by_reference(reference)) |type_id| {
             try std.testing.expectEqualStrings(scope.type_name(type_id), actual.?);
         } else {
@@ -750,11 +752,10 @@ test "ReferenceScope: init leaks nothing when any allocation fails" {
     var b = try init_document(raw_id_document);
     defer b.deinit(test_gpa);
 
-    // init owns four allocation sites -- the name table, the outer type_ids
-    // slice, a dense array per document, and a ReferenceIndex per document --
-    // so the errdefer chain has to unwind partial state at every one of them.
-    // The documents are allocated outside, so only init's own faults are
-    // injected.
+    // init allocates at four sites and each one can fail with the previous
+    // three already owned, so the errdefer chain has to unwind partial state
+    // rather than a whole scope. The documents come from the outer allocator,
+    // so only init's own allocations fault.
     const cim_documents: []const *const CimDocument = &.{ &a, &b };
     try std.testing.checkAllAllocationFailures(test_gpa, init_and_deinit_scope, .{cim_documents});
 }
