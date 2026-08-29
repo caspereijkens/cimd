@@ -28,6 +28,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const CimDocument = @import("document.zig").CimDocument;
+const cim_types = @import("cim_types.zig");
 const uri = @import("uri.zig");
 
 const cim_documents_max: u32 = 128;
@@ -227,6 +228,12 @@ pub const ReferenceScope = struct {
             assert(objects_covered == cim_document.object_count());
         }
 
+        // A document cannot declare an id twice, so a single document has
+        // nothing to contest and pays nothing for the pass.
+        if (cim_documents.len > 1) {
+            arbitrate_collisions(indexes, type_ids, type_names.items);
+        }
+
         return .{
             .cim_documents = cim_documents,
             .type_names = try type_names.toOwnedSlice(gpa),
@@ -364,6 +371,124 @@ pub const ReferenceScope = struct {
             }
         }
         return hit;
+    }
+
+    /// One document's declaration of an identity, carrying the type id its
+    /// dense array holds before arbitration.
+    const Candidate = struct {
+        document_index: u32,
+        object_index: u32,
+        type_id: u32,
+    };
+
+    /// Give every identity declared in more than one document one type,
+    /// written into all of its slots.
+    ///
+    /// A contested id otherwise takes the type of whichever document the
+    /// ladder reached first, so the same parts in a different order type the
+    /// same object differently. Settling it here rather than on lookup is
+    /// also what keeps the query path a dense-array read with no branch.
+    ///
+    /// Costs a lookup per object per earlier document -- quadratic in the
+    /// document count, in exchange for allocating nothing. A scope is a
+    /// handful of CGMES parts, and `cim_documents_max` is the bound if that
+    /// stops holding.
+    fn arbitrate_collisions(
+        indexes: []const ReferenceIndex,
+        type_ids: []const []u32,
+        type_names: []const []const u8,
+    ) void {
+        assert(indexes.len == type_ids.len);
+        assert(indexes.len > 1);
+
+        // Document 0 has nothing before it to collide with.
+        for (indexes[1..], 1..) |*index, document_index| {
+            const earlier = indexes[0..document_index];
+            for (index.model.objects) |object| {
+                const key = HashedKey.init(object.id());
+
+                var earlier_count: u32 = 0;
+                for (earlier) |*previous| {
+                    if (key.get(&previous.model.id_to_index) != null) earlier_count += 1;
+                }
+
+                // Settling on the second occurrence and only there keeps
+                // the writes to one pass per identity: `settle_identity`
+                // gathers the whole set from every document, so a third
+                // occurrence has nothing left to add.
+                if (earlier_count == 1) settle_identity(indexes, type_ids, type_names, key);
+            }
+        }
+    }
+
+    /// Collect one identity's declarations and write the arbitrated winner
+    /// back into every one of their slots.
+    fn settle_identity(
+        indexes: []const ReferenceIndex,
+        type_ids: []const []u32,
+        type_names: []const []const u8,
+        key: HashedKey,
+    ) void {
+        // A document holds an id at most once, so the candidates cannot
+        // outnumber the documents `init` already bounded.
+        var candidates: [cim_documents_max]Candidate = undefined;
+        var candidate_count: u32 = 0;
+        for (indexes, 0..) |*index, document_index| {
+            const object_index = key.get(&index.model.id_to_index) orelse continue;
+            assert(object_index < type_ids[document_index].len);
+            candidates[candidate_count] = .{
+                .document_index = @intCast(document_index),
+                .object_index = object_index,
+                .type_id = type_ids[document_index][object_index],
+            };
+            candidate_count += 1;
+        }
+        // The caller found this id in two documents through these same
+        // maps, so both must turn up again.
+        assert(candidate_count >= 2);
+
+        const winner = arbitrate(candidates[0..candidate_count], type_names);
+        for (candidates[0..candidate_count]) |candidate| {
+            type_ids[candidate.document_index][candidate.object_index] = winner;
+        }
+    }
+
+    /// The type a contested identity answers with: the candidate that `is_a`
+    /// every other, because a part declaring Disconnector says strictly more
+    /// about the object than one declaring Equipment. Unrelated classes make
+    /// no such claim over each other, so the name breaks the tie -- an
+    /// arbitrary answer, but the same one under every input order.
+    ///
+    /// Judged against the whole set rather than folded through a running
+    /// winner. A fold forgets the candidates it discarded, so three classes
+    /// with no common subtype settle differently per permutation.
+    fn arbitrate(candidates: []const Candidate, type_names: []const []const u8) u32 {
+        assert(candidates.len >= 2);
+
+        for (candidates) |candidate| {
+            const name = type_names[candidate.type_id];
+            var subtype_of_all = true;
+            for (candidates) |other| {
+                if (!cim_types.is_a(name, type_names[other.type_id])) {
+                    subtype_of_all = false;
+                    break;
+                }
+            }
+            // A CIM class has one parent, so a candidate's ancestors are a
+            // chain: at most one candidate can sit below all of them, and
+            // the first found is that one.
+            if (subtype_of_all) return candidate.type_id;
+        }
+
+        var winner = candidates[0].type_id;
+        for (candidates[1..]) |candidate| {
+            const order = std.mem.order(u8, type_names[candidate.type_id], type_names[winner]);
+            // Names are interned, so distinct ids are distinct names: the
+            // ordering is total and leaves no tie for input order to settle.
+            assert(order != .eq or candidate.type_id == winner);
+            if (order == .lt) winner = candidate.type_id;
+        }
+        return winner;
     }
 };
 
@@ -739,6 +864,157 @@ test "ReferenceScope: degenerate inputs" {
     try std.testing.expect(scope.type_name_by_reference("_nothing") == null);
     // A document contributing no objects still resolves past.
     try std.testing.expectEqualStrings("Terminal", scope.type_name_by_reference("_y").?);
+}
+
+const eq_document =
+    \\<rdf:RDF>
+    \\  <cim:Disconnector rdf:ID="_sw">
+    \\    <cim:IdentifiedObject.name>DIS</cim:IdentifiedObject.name>
+    \\  </cim:Disconnector>
+    \\</rdf:RDF>
+;
+
+const ssh_document =
+    \\<rdf:RDF>
+    \\  <cim:Equipment rdf:about="#_sw">
+    \\    <cim:Equipment.inService>true</cim:Equipment.inService>
+    \\  </cim:Equipment>
+    \\</rdf:RDF>
+;
+
+test "ReferenceScope: the more specific of two declarations wins the identity" {
+    var eq = try init_document(eq_document);
+    defer eq.deinit(test_gpa);
+    var ssh = try init_document(ssh_document);
+    defer ssh.deinit(test_gpa);
+
+    // An SSH patch names the object Equipment only because that is all it
+    // has to say about it; EQ's Disconnector is the class of the object.
+    // Reading the patch's own object must not answer with the weaker one.
+    inline for (.{ .{ &eq, &ssh }, .{ &ssh, &eq } }) |documents| {
+        var scope = try ReferenceScope.init(test_gpa, &documents);
+        defer scope.deinit(test_gpa);
+
+        try std.testing.expectEqualStrings("Disconnector", scope.type_name_by_reference("_sw").?);
+        try std.testing.expectEqualStrings("Disconnector", scope.type_name_by_reference("#_sw").?);
+        for (0..scope.document_count()) |document_index| {
+            try std.testing.expectEqualStrings(
+                "Disconnector",
+                scope.type_name_by_object(@intCast(document_index), 0),
+            );
+        }
+        // The id form and the name form still answer as one.
+        const type_id = scope.type_id_by_reference("_sw").?;
+        try std.testing.expectEqualStrings(scope.type_name(type_id), scope.type_name_by_reference("_sw").?);
+        try std.testing.expectEqual(type_id, scope.type_id_by_object(0, 0));
+        try std.testing.expectEqual(type_id, scope.type_id_by_object(1, 0));
+    }
+}
+
+test "ReferenceScope: three declarations settle the same under every permutation" {
+    var conducting = try init_document(
+        \\<rdf:RDF>
+        \\  <cim:ConductingEquipment rdf:ID="_p"/>
+        \\</rdf:RDF>
+    );
+    defer conducting.deinit(test_gpa);
+    var switching = try init_document(
+        \\<rdf:RDF>
+        \\  <cim:Switch rdf:ID="_p"/>
+        \\</rdf:RDF>
+    );
+    defer switching.deinit(test_gpa);
+    var extension = try init_document(
+        \\<rdf:RDF>
+        \\  <ext:FooSwitch rdf:ID="_p"/>
+        \\</rdf:RDF>
+    );
+    defer extension.deinit(test_gpa);
+
+    // Switch is_a ConductingEquipment, but the extension class is below
+    // neither, so no candidate is below all three and the name decides. A
+    // running fold would answer FooSwitch wherever it met the extension
+    // class last, and ConductingEquipment where it met it first.
+    inline for (.{
+        .{ &conducting, &switching, &extension },
+        .{ &conducting, &extension, &switching },
+        .{ &switching, &conducting, &extension },
+        .{ &switching, &extension, &conducting },
+        .{ &extension, &conducting, &switching },
+        .{ &extension, &switching, &conducting },
+    }) |documents| {
+        var scope = try ReferenceScope.init(test_gpa, &documents);
+        defer scope.deinit(test_gpa);
+
+        try std.testing.expectEqualStrings("ConductingEquipment", scope.type_name_by_reference("_p").?);
+        for (0..scope.document_count()) |document_index| {
+            try std.testing.expectEqualStrings(
+                "ConductingEquipment",
+                scope.type_name_by_object(@intCast(document_index), 0),
+            );
+        }
+    }
+}
+
+test "ReferenceScope: unrelated classes tie-break on the name" {
+    var terminal = try init_document(
+        \\<rdf:RDF>
+        \\  <cim:Terminal rdf:ID="_q"/>
+        \\</rdf:RDF>
+    );
+    defer terminal.deinit(test_gpa);
+    var base_voltage = try init_document(
+        \\<rdf:RDF>
+        \\  <cim:BaseVoltage rdf:ID="_q"/>
+        \\</rdf:RDF>
+    );
+    defer base_voltage.deinit(test_gpa);
+
+    // Neither class is below the other, so there is nothing to prefer and
+    // the lexicographic order stands in for a rule.
+    inline for (.{ .{ &terminal, &base_voltage }, .{ &base_voltage, &terminal } }) |documents| {
+        var scope = try ReferenceScope.init(test_gpa, &documents);
+        defer scope.deinit(test_gpa);
+        try std.testing.expectEqualStrings("BaseVoltage", scope.type_name_by_reference("_q").?);
+    }
+}
+
+test "ReferenceScope: identical declarations and uncontested objects keep their own class" {
+    var a = try init_document(
+        \\<rdf:RDF>
+        \\  <ext:FooSwitch rdf:ID="_p"/>
+        \\  <cim:Terminal rdf:ID="_a_only"/>
+        \\</rdf:RDF>
+    );
+    defer a.deinit(test_gpa);
+    var b = try init_document(
+        \\<rdf:RDF>
+        \\  <ext:FooSwitch rdf:ID="_p"/>
+        \\  <cim:BaseVoltage rdf:ID="_b_only"/>
+        \\</rdf:RDF>
+    );
+    defer b.deinit(test_gpa);
+
+    var scope = try ReferenceScope.init(test_gpa, &.{ &a, &b });
+    defer scope.deinit(test_gpa);
+
+    // An extension class is unrelated to every class but itself, which is
+    // what stops a contested identity being renamed out from under a
+    // document that never disagreed.
+    try std.testing.expectEqualStrings("FooSwitch", scope.type_name_by_reference("_p").?);
+    try std.testing.expectEqualStrings("Terminal", scope.type_name_by_reference("_a_only").?);
+    try std.testing.expectEqualStrings("BaseVoltage", scope.type_name_by_reference("_b_only").?);
+
+    // Nothing in either dense array moved: the agreeing pair resolved to
+    // what both already held, and the rest was never a candidate.
+    inline for (.{ a, b }, 0..) |model, document_index| {
+        for (model.objects, 0..) |object, object_index| {
+            try std.testing.expectEqualStrings(
+                object.type_name(),
+                scope.type_name_by_object(@intCast(document_index), @intCast(object_index)),
+            );
+        }
+    }
 }
 
 fn init_and_deinit_scope(gpa: std.mem.Allocator, cim_documents: []const *const CimDocument) !void {
