@@ -430,7 +430,9 @@ pub const ReferenceScope = struct {
         key: HashedKey,
     ) void {
         // A document holds an id at most once, so the candidates cannot
-        // outnumber the documents `init` already bounded.
+        // outnumber the documents. Restated here because the buffer is sized
+        // on the bound and a release build drops `init`'s check of it.
+        assert(indexes.len <= cim_documents_max);
         var candidates: [cim_documents_max]Candidate = undefined;
         var candidate_count: u32 = 0;
         for (indexes, 0..) |*index, document_index| {
@@ -560,14 +562,16 @@ test "ReferenceIndex resolves _x, #_x, fragment IRI, and path IRI against rdf:ID
     try std.testing.expectEqual(@as(?u32, null), index.object_index_by_reference(""));
 }
 
+const about_iri_document =
+    \\<rdf:RDF>
+    \\  <cim:BaseVoltage rdf:about="http://example.com/data#_bv1">
+    \\    <cim:BaseVoltage.nominalVoltage>110</cim:BaseVoltage.nominalVoltage>
+    \\  </cim:BaseVoltage>
+    \\</rdf:RDF>
+;
+
 test "ReferenceIndex resolves against rdf:about ids stored as full IRIs" {
-    var model = try init_document(
-        \\<rdf:RDF>
-        \\  <cim:BaseVoltage rdf:about="http://example.com/data#_bv1">
-        \\    <cim:BaseVoltage.nominalVoltage>110</cim:BaseVoltage.nominalVoltage>
-        \\  </cim:BaseVoltage>
-        \\</rdf:RDF>
-    );
+    var model = try init_document(about_iri_document);
     defer model.deinit(test_gpa);
     var index = try ReferenceIndex.init(test_gpa, &model);
     defer index.deinit();
@@ -578,14 +582,16 @@ test "ReferenceIndex resolves against rdf:about ids stored as full IRIs" {
     try std.testing.expectEqual(@as(?u32, 0), index.object_index_by_reference("#_bv1"));
 }
 
+const urn_document =
+    \\<rdf:RDF>
+    \\  <md:FullModel rdf:about="urn:uuid:484c5d95-2ef3-4bbb-84ff-56ff5023dcbe">
+    \\    <md:Model.version>1</md:Model.version>
+    \\  </md:FullModel>
+    \\</rdf:RDF>
+;
+
 test "ReferenceIndex resolves URN ids by exact raw match" {
-    var model = try init_document(
-        \\<rdf:RDF>
-        \\  <md:FullModel rdf:about="urn:uuid:484c5d95-2ef3-4bbb-84ff-56ff5023dcbe">
-        \\    <md:Model.version>1</md:Model.version>
-        \\  </md:FullModel>
-        \\</rdf:RDF>
-    );
+    var model = try init_document(urn_document);
     defer model.deinit(test_gpa);
     var index = try ReferenceIndex.init(test_gpa, &model);
     defer index.deinit();
@@ -597,17 +603,19 @@ test "ReferenceIndex resolves URN ids by exact raw match" {
     try std.testing.expectEqual(@as(?u32, null), index.object_index_by_reference("urn:uuid:other"));
 }
 
+const ambiguous_alias_document =
+    \\<rdf:RDF>
+    \\  <cim:BaseVoltage rdf:about="http://a.example/data#_shared">
+    \\    <cim:BaseVoltage.nominalVoltage>110</cim:BaseVoltage.nominalVoltage>
+    \\  </cim:BaseVoltage>
+    \\  <cim:BaseVoltage rdf:about="http://b.example/data#_shared">
+    \\    <cim:BaseVoltage.nominalVoltage>220</cim:BaseVoltage.nominalVoltage>
+    \\  </cim:BaseVoltage>
+    \\</rdf:RDF>
+;
+
 test "ReferenceIndex: ambiguous local alias resolves to null, raw forms still win" {
-    var model = try init_document(
-        \\<rdf:RDF>
-        \\  <cim:BaseVoltage rdf:about="http://a.example/data#_shared">
-        \\    <cim:BaseVoltage.nominalVoltage>110</cim:BaseVoltage.nominalVoltage>
-        \\  </cim:BaseVoltage>
-        \\  <cim:BaseVoltage rdf:about="http://b.example/data#_shared">
-        \\    <cim:BaseVoltage.nominalVoltage>220</cim:BaseVoltage.nominalVoltage>
-        \\  </cim:BaseVoltage>
-        \\</rdf:RDF>
-    );
+    var model = try init_document(ambiguous_alias_document);
     defer model.deinit(test_gpa);
     var index = try ReferenceIndex.init(test_gpa, &model);
     defer index.deinit();
@@ -702,36 +710,54 @@ const raw_id_document =
 ;
 
 test "ReferenceScope: a one-document scope answers like ReferenceIndex" {
-    var model = try init_document(mixed_id_document);
-    defer model.deinit(test_gpa);
-    var index = try ReferenceIndex.init(test_gpa, &model);
-    defer index.deinit();
-    var scope = try ReferenceScope.init(test_gpa, &.{&model});
-    defer scope.deinit(test_gpa);
-
-    // The shapes the single-document fixtures cover, plus the two misses.
+    // Every shape ReferenceIndex is pinned against, so the scope cannot
+    // quietly answer differently on any of them. A reference that means
+    // nothing to a given fixture has to miss in both.
+    const fixtures = [_][]const u8{
+        rdf_id_document,
+        about_iri_document,
+        urn_document,
+        ambiguous_alias_document,
+        mixed_id_document,
+    };
     const references = [_][]const u8{
         "_bv1",
         "#_bv1",
+        "http://example.com/data#_bv1",
         "http://a.example/data#_bv1",
         "http://example.com/id/_bv1",
+        "urn:uuid:484c5d95-2ef3-4bbb-84ff-56ff5023dcbe",
+        "urn:uuid:other",
+        "_shared",
+        "#_shared",
+        "http://a.example/data#_shared",
         "_missing",
         "",
     };
-    for (references) |reference| {
-        const expected: ?[]const u8 = if (index.object_index_by_reference(reference)) |object_index|
-            model.objects[object_index].type_name()
-        else
-            null;
-        const actual = scope.type_name_by_reference(reference);
 
-        try std.testing.expectEqual(expected == null, actual == null);
-        if (expected) |name| try std.testing.expectEqualStrings(name, actual.?);
-        // A caller reading ids and a caller reading names must not diverge.
-        if (scope.type_id_by_reference(reference)) |type_id| {
-            try std.testing.expectEqualStrings(scope.type_name(type_id), actual.?);
-        } else {
-            try std.testing.expect(actual == null);
+    for (fixtures) |fixture| {
+        var model = try init_document(fixture);
+        defer model.deinit(test_gpa);
+        var index = try ReferenceIndex.init(test_gpa, &model);
+        defer index.deinit();
+        var scope = try ReferenceScope.init(test_gpa, &.{&model});
+        defer scope.deinit(test_gpa);
+
+        for (references) |reference| {
+            const expected: ?[]const u8 = if (index.object_index_by_reference(reference)) |object_index|
+                model.objects[object_index].type_name()
+            else
+                null;
+            const actual = scope.type_name_by_reference(reference);
+
+            try std.testing.expectEqual(expected == null, actual == null);
+            if (expected) |name| try std.testing.expectEqualStrings(name, actual.?);
+            // A caller reading ids and a caller reading names must not diverge.
+            if (scope.type_id_by_reference(reference)) |type_id| {
+                try std.testing.expectEqualStrings(scope.type_name(type_id), actual.?);
+            } else {
+                try std.testing.expect(actual == null);
+            }
         }
     }
 }
@@ -783,16 +809,7 @@ test "ReferenceScope: stage-major precedence survives document order" {
 }
 
 test "ReferenceScope: aliases ambiguous within or across documents resolve to null" {
-    var shared = try init_document(
-        \\<rdf:RDF>
-        \\  <cim:BaseVoltage rdf:about="http://a.example/data#_shared">
-        \\    <cim:BaseVoltage.nominalVoltage>110</cim:BaseVoltage.nominalVoltage>
-        \\  </cim:BaseVoltage>
-        \\  <cim:BaseVoltage rdf:about="http://b.example/data#_shared">
-        \\    <cim:BaseVoltage.nominalVoltage>220</cim:BaseVoltage.nominalVoltage>
-        \\  </cim:BaseVoltage>
-        \\</rdf:RDF>
-    );
+    var shared = try init_document(ambiguous_alias_document);
     defer shared.deinit(test_gpa);
     var other = try init_document(raw_id_document);
     defer other.deinit(test_gpa);
@@ -995,7 +1012,15 @@ test "ReferenceScope: identical declarations and uncontested objects keep their 
     );
     defer b.deinit(test_gpa);
 
-    var scope = try ReferenceScope.init(test_gpa, &.{ &a, &b });
+    // Shares no id with either, so the pass must never write into its array.
+    var c = try init_document(
+        \\<rdf:RDF>
+        \\  <cim:Breaker rdf:ID="_c_only"/>
+        \\</rdf:RDF>
+    );
+    defer c.deinit(test_gpa);
+
+    var scope = try ReferenceScope.init(test_gpa, &.{ &a, &b, &c });
     defer scope.deinit(test_gpa);
 
     // An extension class is unrelated to every class but itself, which is
@@ -1004,10 +1029,11 @@ test "ReferenceScope: identical declarations and uncontested objects keep their 
     try std.testing.expectEqualStrings("FooSwitch", scope.type_name_by_reference("_p").?);
     try std.testing.expectEqualStrings("Terminal", scope.type_name_by_reference("_a_only").?);
     try std.testing.expectEqualStrings("BaseVoltage", scope.type_name_by_reference("_b_only").?);
+    try std.testing.expectEqualStrings("Breaker", scope.type_name_by_reference("_c_only").?);
 
-    // Nothing in either dense array moved: the agreeing pair resolved to
-    // what both already held, and the rest was never a candidate.
-    inline for (.{ a, b }, 0..) |model, document_index| {
+    // No dense array moved: the agreeing pair resolved to what both already
+    // held, and nothing else was ever a candidate.
+    inline for (.{ a, b, c }, 0..) |model, document_index| {
         for (model.objects, 0..) |object, object_index| {
             try std.testing.expectEqualStrings(
                 object.type_name(),
@@ -1034,4 +1060,34 @@ test "ReferenceScope: init leaks nothing when any allocation fails" {
     // so only init's own allocations fault.
     const cim_documents: []const *const CimDocument = &.{ &a, &b };
     try std.testing.checkAllAllocationFailures(test_gpa, init_and_deinit_scope, .{cim_documents});
+}
+
+test "ReferenceScope: arbitration reaches objects the alias rung resolves" {
+    // Full-IRI ids, so neither document answers "_z" on rungs 1 or 2 and the
+    // alias table is the only way in. Both aliases name the same raw id, so
+    // this is one contested identity rather than a poisoned alias -- the
+    // case that has to end at the arbitrated type and not at the first hit.
+    var a = try init_document(
+        \\<rdf:RDF>
+        \\  <cim:Equipment rdf:about="http://a.example/data#_z"/>
+        \\</rdf:RDF>
+    );
+    defer a.deinit(test_gpa);
+    var b = try init_document(
+        \\<rdf:RDF>
+        \\  <cim:Disconnector rdf:about="http://a.example/data#_z"/>
+        \\</rdf:RDF>
+    );
+    defer b.deinit(test_gpa);
+
+    inline for (.{ .{ &a, &b }, .{ &b, &a } }) |documents| {
+        var scope = try ReferenceScope.init(test_gpa, &documents);
+        defer scope.deinit(test_gpa);
+        try std.testing.expectEqualStrings("Disconnector", scope.type_name_by_reference("_z").?);
+        try std.testing.expectEqualStrings("Disconnector", scope.type_name_by_reference("#_z").?);
+        try std.testing.expectEqualStrings(
+            "Disconnector",
+            scope.type_name_by_reference("http://a.example/data#_z").?,
+        );
+    }
 }
