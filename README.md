@@ -16,38 +16,25 @@ $ cimd --help
 
 Usage: cimd <command> [options]
 
-A high-performance CGMES file parser and analysis tool.
-
-Input limits:
-  XML data: max supported size is 4294967295 bytes (~4096 MiB) total after unzip 
-  (up to 8 inputs, 16 XML parts per ZIP).
-  SHACL rule files: max supported size is 67108864 bytes (~64 MiB) after unzip.
-  Non-interactive commands accept '-' as the primary data path to read
-  uncompressed XML from stdin.
-
 Commands:
-  browse     Interactively browse CIM objects (EQ/EQBD/TP/SSH merged view)
-  get        Fetch a single object or list by type from any CIM file
-  refs       List objects that reference a CIM object
-  types      List CIM types present in a CIM file
-  diff       Semantic diff between two CIM files of the same profile
-  validate   Validate a CGMES file against a SHACL rule set
-  qocdc      Run Quality of CGMES Datasets and Calculations checks
-  version    Print version information
 
-Global options:
-      --stats <when>   When to print human-readable summaries to stderr:
-                       auto (default) prints them only when stdout is a
-                       terminal, so piped or redirected data stays clean;
-                       always prints them regardless (useful in CI logs);
-                       never suppresses them. Errors are always shown.
-      --color <when>   Color terminal output -- qocdc severities and
-                       browsed XML: auto (default) colors a stream only
-                       when it is a terminal, so redirected output stays
-                       plain; always and never force it either way.
-                       NO_COLOR disables auto color when it is non-empty.
+  get              Fetch an object by mRID, or list objects by type
+  refs             List objects that reference an object
+  types            List CIM types in a file, with object counts
+  browse           Interactively browse objects by following references
 
-Use 'cimd <command> --help' for more information about a command.
+  diff             Semantic diff of two files of the same profile
+  validate         Check a file against a SHACL rule set
+  qocdc            Run Quality of CGMES Datasets and Calculations checks
+
+  version          Print version and build information
+
+General Options:
+
+  --help           Print command-specific usage
+
+ Specify `<command> --help` to see the help for a specific command
+ where `<command>` is one of commands listed above.
 ```
 
 ### Types
@@ -61,6 +48,11 @@ Every XML part in a ZIP bundle is inventoried.
 
 Arguments:
   <file>...               CGMES files or bundles (XML or ZIP)
+  -                       Read uncompressed XML from stdin; one input only
+
+Limits:
+  4096 MiB of XML per input after unzip (a ZIP's parts counted together),
+  with at most 16 XML parts per ZIP and 8 inputs in one run.
 
 Options:
       --eq/--eqbd/--tp/--ssh <file>
@@ -103,7 +95,12 @@ JSON errors:
 
 Arguments:
   <file>    CGMES file (XML or ZIP)
+  -         Read uncompressed XML from stdin; one input only
   <mrid>    Full mRID or a unique prefix (optional if --type is given)
+
+Limits:
+  4096 MiB of XML per input after unzip (a ZIP's parts counted together),
+  with at most 16 XML parts per ZIP and 8 inputs in one run.
 
 Options:
       --eq <file>            Explicitly route a file as EQ
@@ -162,7 +159,12 @@ JSON errors:
 
 Arguments:
   <file>    CGMES file (XML or ZIP); typically EQ
+  -         Read uncompressed XML from stdin; one input only
   <mrid>    Full mRID or a unique prefix
+
+Limits:
+  4096 MiB of XML per input after unzip (a ZIP's parts counted together),
+  with at most 16 XML parts per ZIP and 8 inputs in one run.
 
 Options:
       --eq <file>       Explicitly route a file as EQ
@@ -202,11 +204,18 @@ Arguments:
             supported because browse reserves stdin for interaction
   <mrid>    Full mRID or a prefix of one
 
+Limits:
+  4096 MiB of XML per input after unzip (a ZIP's parts counted together),
+  with at most 16 XML parts per ZIP and 8 inputs in one run.
+
 Options:
       --eq <file>             Explicitly route a file as EQ
   -b, --eqbd <file>           EQBD boundary profile (XML or ZIP)
   -t, --tp <file>             TP topology profile (XML or ZIP)
   -s, --ssh <file>            SSH profile (XML or ZIP)
+      --color <when>          Color browsed XML: auto, always or never
+                              (auto only when stdout is a terminal;
+                              a non-empty NO_COLOR disables it)
 
 Examples:
   cimd browse data/eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
@@ -252,6 +261,11 @@ Exit codes:
 Arguments:
   <file1>    First profile (XML or ZIP); a bundle resolves to its EQ part
   <file2>    Second profile (XML or ZIP); same profile as <file1>
+  -          Read uncompressed XML from stdin; one side only
+
+Limits:
+  4096 MiB of XML per side after unzip (a ZIP's parts counted together),
+  with at most 16 XML parts per ZIP.
 
 Options:
   -b, --eqbd <file>       EQBD boundary profile (EQ sides only; applied
@@ -310,6 +324,12 @@ Exit codes:
 
 Arguments:
   <file>...               CGMES files or bundles, any profile (XML or ZIP)
+  -                       Read uncompressed XML from stdin; one input only
+
+Limits:
+  4096 MiB of XML per input after unzip (a ZIP's parts counted together),
+  with at most 16 XML parts per ZIP and 8 inputs in one run.
+  Each SHACL rule set is limited to 64 MiB after unzip.
 
 Options:
       --eq <file>         Explicit EQ merge target / profile routing

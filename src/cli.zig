@@ -43,48 +43,66 @@ const help_failure_exit_codes =
     "\n  70  unexpected internal failure" ++
     "\n  71  operating-system or resource failure\n";
 
-const help_main = std.fmt.comptimePrint(
+// Input size bounds. Stated per command rather than once up front, because
+// they differ per command: the byte ceiling is checked per input -- a plain XML
+// file by its size, a ZIP by the total uncompressed size of its XML parts --
+// and how many inputs a command takes is the command's own business.
+const help_limits_model_set = std.fmt.comptimePrint(
+    \\Limits:
+    \\  {[xml]s} of XML per input after unzip (a ZIP's parts counted together),
+    \\  with at most {[parts]d} XML parts per ZIP and {[inputs]d} inputs in one run.
+, .{
+    .xml = print.size_limit_mib_comptime(io_read.max_in_memory_input_bytes),
+    .parts = io_read.parts_per_input_max,
+    .inputs = model_set.inputs_count_max,
+});
+
+const help_limits_validate = help_limits_model_set ++ std.fmt.comptimePrint(
+    \\
+    \\  Each SHACL rule set is limited to {[rules]s} after unzip.
+, .{ .rules = print.size_limit_mib_comptime(rule_set.rules_bytes_max) });
+
+const help_limits_diff = std.fmt.comptimePrint(
+    \\Limits:
+    \\  {[xml]s} of XML per side after unzip (a ZIP's parts counted together),
+    \\  with at most {[parts]d} XML parts per ZIP.
+, .{
+    .xml = print.size_limit_mib_comptime(io_read.max_in_memory_input_bytes),
+    .parts = io_read.parts_per_input_max,
+});
+
+const help_limits_qocdc = std.fmt.comptimePrint(
+    \\Limits:
+    \\  {[xml]s} of XML after unzip, with at most {[parts]d} XML parts in the archive.
+, .{
+    .xml = print.size_limit_mib_comptime(io_read.max_in_memory_input_bytes),
+    .parts = io_read.parts_per_input_max,
+});
+
+const help_main =
     \\Usage: cimd <command> [options]
     \\
-    \\A high-performance CGMES file parser and analysis tool.
-    \\
-    \\Input limits:
-    \\  XML data: {[xml_limit]s} total after unzip 
-    \\  (up to 8 inputs, 16 XML parts per ZIP).
-    \\  SHACL rule files: {[rules_limit]s} after unzip.
-    \\  Non-interactive commands accept '-' as the primary data path to read
-    \\  uncompressed XML from stdin.
-    \\
     \\Commands:
-    \\  browse     Interactively browse CIM objects (EQ/EQBD/TP/SSH merged view)
-    \\  get        Fetch a single object or list by type from any CIM file
-    \\  refs       List objects that reference a CIM object
-    \\  types      List CIM types present in a CIM file
-    \\  diff       Semantic diff between two CIM files of the same profile
-    \\  validate   Validate a CGMES file against a SHACL rule set
-    \\  qocdc      Run Quality of CGMES Datasets and Calculations checks
-    \\  version    Print version information
     \\
-    \\Global options:
-    \\      --stats <when>   When to print human-readable summaries to stderr:
-    \\                       auto (default) prints them only when stdout is a
-    \\                       terminal, so piped or redirected data stays clean;
-    \\                       always prints them regardless (useful in CI logs);
-    \\                       never suppresses them. Errors are always shown.
-    \\      --color <when>   Color terminal output -- qocdc severities and
-    \\                       browsed XML: auto (default) colors a stream only
-    \\                       when it is a terminal, so redirected output stays
-    \\                       plain; always and never force it either way.
-    \\                       NO_COLOR disables auto color when it is non-empty.
+    \\  get              Fetch an object by mRID, or list objects by type
+    \\  refs             List objects that reference an object
+    \\  types            List CIM types in a file, with object counts
+    \\  browse           Interactively browse objects by following references
     \\
-    \\Use 'cimd <command> --help' for more information about a command.
+    \\  diff             Semantic diff of two files of the same profile
+    \\  validate         Check a file against a SHACL rule set
+    \\  qocdc            Run Quality of CGMES Datasets and Calculations checks
     \\
-,
-    .{
-        .xml_limit = print.size_limit_text_comptime(io_read.max_in_memory_input_bytes),
-        .rules_limit = print.size_limit_text_comptime(rule_set.rules_bytes_max),
-    },
-);
+    \\  version          Print version and build information
+    \\
+    \\General Options:
+    \\
+    \\  --help           Print command-specific usage
+    \\
+    \\ Specify `<command> --help` to see the help for a specific command
+    \\ where `<command>` is one of commands listed above.
+    \\
+;
 
 const help_browse = std.fmt.comptimePrint(
     \\Usage: cimd browse <file>... <mrid> [options]
@@ -105,18 +123,23 @@ const help_browse = std.fmt.comptimePrint(
     \\            supported because browse reserves stdin for interaction
     \\  <mrid>    Full mRID or a prefix of one
     \\
+    \\{[limits]s}
+    \\
     \\Options:
     \\      --eq <file>             Explicitly route a file as EQ
     \\  -b, --eqbd <file>           EQBD boundary profile (XML or ZIP)
     \\  -t, --tp <file>             TP topology profile (XML or ZIP)
     \\  -s, --ssh <file>            SSH profile (XML or ZIP)
+    \\      --color <when>          Color browsed XML: auto, always or never
+    \\                              (auto only when stdout is a terminal;
+    \\                              a non-empty NO_COLOR disables it)
     \\
     \\Examples:
     \\  cimd browse data{[sep]s}eq.zip _be60a3cf-fed6-d11c-c15f-42ac6cc4e221
     \\  cimd browse data{[sep]s}eq.zip be60a3cf
     \\  cimd browse data{[sep]s}eq.zip _abc --tp tp.zip -s ssh.zip
     \\
-, .{ .sep = path_separator });
+, .{ .sep = path_separator, .limits = help_limits_model_set });
 
 const help_get = std.fmt.comptimePrint(
     \\Usage: cimd get <file>... [<mrid>] [options]
@@ -146,7 +169,10 @@ const help_get = std.fmt.comptimePrint(
     \\
     \\Arguments:
     \\  <file>    CGMES file (XML or ZIP)
+    \\  -         Read uncompressed XML from stdin; one input only
     \\  <mrid>    Full mRID or a unique prefix (optional if --type is given)
+    \\
+    \\{[limits]s}
     \\
     \\Options:
     \\      --eq <file>            Explicitly route a file as EQ
@@ -178,7 +204,7 @@ const help_get = std.fmt.comptimePrint(
     \\  cimd get data{[sep]s}eq.zip -t VoltageLevel -f IdentifiedObject.name
     \\  cimd get data{[sep]s}tp.zip -t TopologicalNode -c
     \\
-, .{ .sep = path_separator });
+, .{ .sep = path_separator, .limits = help_limits_model_set });
 
 const help_refs = std.fmt.comptimePrint(
     \\Usage: cimd refs <file>... <mrid> [options]
@@ -203,7 +229,10 @@ const help_refs = std.fmt.comptimePrint(
     \\
     \\Arguments:
     \\  <file>    CGMES file (XML or ZIP); typically EQ
+    \\  -         Read uncompressed XML from stdin; one input only
     \\  <mrid>    Full mRID or a unique prefix
+    \\
+    \\{[limits]s}
     \\
     \\Options:
     \\      --eq <file>       Explicitly route a file as EQ
@@ -220,7 +249,7 @@ const help_refs = std.fmt.comptimePrint(
     \\  cimd refs data{[sep]s}eq.zip line-prefix --from AssessedElement -j
     \\  cimd refs data{[sep]s}eq.zip _TN1 --tp tp.zip
     \\
-, .{ .sep = path_separator });
+, .{ .sep = path_separator, .limits = help_limits_model_set });
 
 const help_types = std.fmt.comptimePrint(
     \\Usage: cimd types <file>... [options]
@@ -230,6 +259,9 @@ const help_types = std.fmt.comptimePrint(
     \\
     \\Arguments:
     \\  <file>...               CGMES files or bundles (XML or ZIP)
+    \\  -                       Read uncompressed XML from stdin; one input only
+    \\
+    \\{[limits]s}
     \\
     \\Options:
     \\      --eq/--eqbd/--tp/--ssh <file>
@@ -240,7 +272,7 @@ const help_types = std.fmt.comptimePrint(
     \\  cimd types data{[sep]s}eq.zip
     \\  cimd types data{[sep]s}tp.zip -j
     \\
-, .{ .sep = path_separator });
+, .{ .sep = path_separator, .limits = help_limits_model_set });
 
 const help_diff =
     \\Usage: cimd diff <file1> <file2> [options]
@@ -274,6 +306,11 @@ const help_diff =
     \\Arguments:
     \\  <file1>    First profile (XML or ZIP); a bundle resolves to its EQ part
     \\  <file2>    Second profile (XML or ZIP); same profile as <file1>
+    \\  -          Read uncompressed XML from stdin; one side only
+    \\
+    \\
+++ help_limits_diff ++
+    \\
     \\
     \\Options:
     \\  -b, --eqbd <file>       EQBD boundary profile (EQ sides only; applied
@@ -327,6 +364,9 @@ const help_validate = std.fmt.comptimePrint(
     \\
     \\Arguments:
     \\  <file>...               CGMES files or bundles, any profile (XML or ZIP)
+    \\  -                       Read uncompressed XML from stdin; one input only
+    \\
+    \\{[limits]s}
     \\
     \\Options:
     \\      --eq <file>         Explicit EQ merge target / profile routing
@@ -343,7 +383,11 @@ const help_validate = std.fmt.comptimePrint(
     \\  cimd validate data{[sep]s}eq.zip -r rules{[sep]s}profile.ttl
     \\  cimd validate data{[sep]s}eq.zip -b eqbd.zip -r a.ttl -r b.ttl
     \\
-, .{ .sep = path_separator, .rules_max = Command.Validate.rules_count_max });
+, .{
+    .sep = path_separator,
+    .rules_max = Command.Validate.rules_count_max,
+    .limits = help_limits_validate,
+});
 
 const help_qocdc = std.fmt.comptimePrint(
     \\Usage: cimd qocdc <file>
@@ -352,12 +396,19 @@ const help_qocdc = std.fmt.comptimePrint(
     \\Calculations'.
     \\
     \\Arguments:
-    \\  <file>                  CGMES ZIP archive
+    \\  <file>                  CGMES ZIP archive; '-' is not supported
+    \\
+    \\{[limits]s}
+    \\
+    \\Options:
+    \\      --color <when>      Color severities in the stderr report: auto,
+    \\                          always or never (auto only when stderr is a
+    \\                          terminal; a non-empty NO_COLOR disables it)
     \\
     \\Examples:
     \\  cimd qocdc data{[sep]s}eq.zip
     \\
-, .{ .sep = path_separator });
+, .{ .sep = path_separator, .limits = help_limits_qocdc });
 
 const help_version =
     \\Usage: cimd version [options]
@@ -484,7 +535,7 @@ pub fn parse_args(io: std.Io, args: *std.process.Args.Iterator) !Command {
     assert(args.skip()); // skip executable name
 
     const command_name = args.next() orelse
-        print.stderr(io, "subcommand required\n\n" ++ help_main, .{});
+        print.usage_error_with_help(io, help_main, "expected a command", .{});
 
     if (std.mem.eql(u8, command_name, "--help")) {
         try print.write(io, help_main);
@@ -500,7 +551,7 @@ pub fn parse_args(io: std.Io, args: *std.process.Args.Iterator) !Command {
     if (std.mem.eql(u8, command_name, "qocdc")) return parse_qocdc(io, args);
     if (std.mem.eql(u8, command_name, "version")) return parse_version(io, args);
 
-    print.stderr(io, "unknown command '{s}'\n\n" ++ help_main, .{command_name});
+    print.usage_error_with_help(io, help_main, "unknown command '{s}'", .{command_name});
 }
 
 const KindFlag = struct {
@@ -1086,18 +1137,14 @@ inline fn is_flag(arg: []const u8) bool {
     return arg.len > 1 and arg[0] == '-';
 }
 
-/// Match either process-wide output-policy flag. Keeping this dispatch in one
-/// helper makes their documented global scope exhaustive across parse loops.
+/// Match the process-wide output-policy flag. Keeping this dispatch in one
+/// helper makes its documented global scope exhaustive across parse loops.
 fn parse_output_flag(
     io: std.Io,
     args: *std.process.Args.Iterator,
     comptime command_name: []const u8,
     arg: []const u8,
 ) bool {
-    if (parse_mode_flag(print.StatsMode, io, args, command_name, arg, "--stats")) |mode| {
-        print.set_stats_mode(mode);
-        return true;
-    }
     if (parse_mode_flag(print.ColorMode, io, args, command_name, arg, "--color")) |mode| {
         print.set_color_mode(mode);
         return true;
