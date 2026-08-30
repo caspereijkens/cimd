@@ -43,6 +43,21 @@ pub fn stderr(io: std.Io, comptime fmt_str: []const u8, args: anytype) noreturn 
     exit_message(io, exit_usage, "error: ", fmt_str, args);
 }
 
+/// Print `help` to stderr, then a usage error, and exit 2.
+///
+/// The error comes last so it is the line still on screen once the help has
+/// scrolled past, which is where the reader's eye already is.
+pub fn usage_error_with_help(
+    io: std.Io,
+    help: []const u8,
+    comptime fmt_str: []const u8,
+    args: anytype,
+) noreturn {
+    _ = std.Io.File.stderr().writeStreamingAll(io, help) catch {};
+    // `help` ends in a newline; the leading one sets the error off from it.
+    exit_message(io, exit_usage, "\nerror: ", fmt_str, args);
+}
+
 /// Print an invalid or unsupported-input error to stderr and exit 65.
 pub fn data_error(io: std.Io, comptime fmt_str: []const u8, args: anytype) noreturn {
     exit_message(io, exit_data_error, "error: ", fmt_str, args);
@@ -113,24 +128,15 @@ pub fn size_limit_text_comptime(comptime max_bytes: u64) []const u8 {
     return std.fmt.comptimePrint("{s}", .{text});
 }
 
-/// When human-readable diagnostics are written to stderr.
-///
-/// `auto` prints them only when stdout is a terminal. A summary describes the
-/// data the command just produced, so it is addressed to whoever is reading
-/// that data; when stdout is a pipe or a file, that reader is a machine and the
-/// summary is noise competing for the terminal. Redirecting the data with
-/// `--output` leaves stdout a terminal, so the summary still appears -- which is
-/// the case that wants it most, since the data itself never reaches the screen.
-pub const StatsMode = enum { auto, always, never };
-pub const ColorMode = enum { auto, always, never };
+/// Compact "N MiB" for help text, where an exact byte count is noise.
+pub fn size_limit_mib_comptime(comptime max_bytes: u64) []const u8 {
+    return std.fmt.comptimePrint("{d} MiB", .{
+        std.math.divCeil(u64, max_bytes, units.mebibyte) catch unreachable,
+    });
+}
 
-/// Process-wide output policy: requested during argument parsing, settled once
-/// by `resolve_stats` before any command runs, then read-only. Global rather
-/// than a parameter threaded through eighteen call sites across four modules,
-/// none of which make the decision.
-var stats_mode: StatsMode = .auto;
-var stats_visible: bool = true;
-var stats_resolved: bool = false;
+/// When styled output is produced.
+pub const ColorMode = enum { auto, always, never };
 
 /// Which stream a caller is about to write styled text to. Resolved per
 /// stream because they are redirected independently: `cimd browse > file`
@@ -138,34 +144,15 @@ var stats_resolved: bool = false;
 /// belong in neither the file nor a report piped to `grep`.
 pub const ColorStream = enum { stdout, stderr };
 
-/// Process-wide color policy, with the same parse-then-resolve lifecycle as
-/// stats. In auto mode, a non-empty NO_COLOR takes precedence over terminal
+/// Process-wide color policy: requested during argument parsing, settled once
+/// by `resolve_color` before any command runs, then read-only. Global rather
+/// than a parameter threaded through every renderer, none of which make the
+/// decision. In auto mode, a non-empty NO_COLOR takes precedence over terminal
 /// detection. An explicit command-line mode takes precedence over NO_COLOR.
 var color_mode: ColorMode = .auto;
 var color_stdout: bool = false;
 var color_stderr: bool = false;
 var color_resolved: bool = false;
-
-/// Record the requested mode. Argument parsing calls this; the terminal check
-/// is deliberately not done here, so parsing stays free of I/O.
-pub fn set_stats_mode(mode: StatsMode) void {
-    assert(!stats_resolved);
-    stats_mode = mode;
-}
-
-/// Settle whether diagnostics are visible. Called exactly once, after parsing
-/// and before the command runs, so every later `stderr_info` is a branch on an
-/// answer already known. A terminal check that fails is not worth reporting:
-/// treat an undeterminable stdout as not-a-terminal, the quieter reading.
-pub fn resolve_stats(io: std.Io) void {
-    assert(!stats_resolved);
-    stats_visible = switch (stats_mode) {
-        .always => true,
-        .never => false,
-        .auto => std.Io.File.stdout().isTty(io) catch false,
-    };
-    stats_resolved = true;
-}
 
 /// Record the requested color mode without doing I/O during argument parsing.
 pub fn set_color_mode(mode: ColorMode) void {
@@ -175,8 +162,7 @@ pub fn set_color_mode(mode: ColorMode) void {
 
 /// Settle color support once, after parsing and before command execution.
 /// Both streams are answered here, from one NO_COLOR read and one terminal
-/// check each, so a later `colors_enabled` is a branch on a known answer --
-/// the same shape as `resolve_stats`.
+/// check each, so a later `colors_enabled` is a branch on a known answer.
 pub fn resolve_color(io: std.Io, environ: *const std.process.Environ.Map) void {
     assert(!color_resolved);
     const no_color = if (environ.get("NO_COLOR")) |value| value.len > 0 else false;
@@ -196,9 +182,9 @@ pub fn resolve_color(io: std.Io, environ: *const std.process.Environ.Map) void {
 /// Whether styled text may be written to `stream`. Callers that build a
 /// palette should ask once and reuse the answer.
 ///
-/// Deliberately unguarded, like `stats_visible`: renderers are called
-/// in-process by tests that never run `resolve_color`, and the unresolved
-/// default is the safe one -- plain text, which every consumer can read.
+/// Deliberately unguarded: renderers are called in-process by tests that never
+/// run `resolve_color`, and the unresolved default is the safe one -- plain
+/// text, which every consumer can read.
 pub fn colors_enabled(stream: ColorStream) bool {
     return switch (stream) {
         .stdout => color_stdout,
@@ -253,24 +239,24 @@ test "an unresolved color policy writes plain text" {
     try std.testing.expectEqualStrings("", color_code(.stdout, "\x1b[91m"));
 }
 
-/// Write a summary of what the command produced to stderr. Suppressed under
-/// `--stats never`, and by default when stdout is not a terminal.
+/// Write a line to stderr that restates what the command produced.
 ///
-/// Only for output that restates the result: a caller who cannot see it has
-/// lost nothing, because the data on stdout still says it. Anything reporting
-/// that input was ignored or adjusted is a `warn`, and anything reporting
-/// failure is an `exit_message`; neither may be silenced.
+/// Only for output a caller loses nothing by missing, because the data on
+/// stdout still says it -- a header above a list, say. Anything reporting that
+/// input was ignored or adjusted is a `warn`, and anything reporting failure is
+/// an `exit_message`. Separate from `warn` because the three differ in what a
+/// reader must do about them, not in where they are written.
 pub fn stderr_info(io: std.Io, comptime fmt_str: []const u8, args: anytype) !void {
-    if (!stats_visible) return;
     return write_stderr(io, fmt_str, args);
 }
 
-/// Write a warning to stderr. Never suppressed, whatever `--stats` says.
+/// Write a warning to stderr.
 ///
 /// A warning means the command did something other than what the arguments
-/// literally asked -- ignored a part, fell back to a default. Gating that
-/// behind a terminal check would hide the mistake exactly when it is least
-/// likely to be noticed: in a pipeline or a CI job, where nobody is watching.
+/// literally asked -- ignored a part, fell back to a default. It is never
+/// conditional on a terminal check: that would hide the mistake exactly when it
+/// is least likely to be noticed, in a pipeline or a CI job where nobody is
+/// watching.
 pub fn warn(io: std.Io, comptime fmt_str: []const u8, args: anytype) !void {
     return write_stderr(io, fmt_str, args);
 }

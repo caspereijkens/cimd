@@ -56,9 +56,8 @@ fn main_impl(init: std.process.Init) !void {
     var args = try init.minimal.args.iterateAllocator(gpa);
     defer args.deinit();
     const command = try cli.parse_args(io, &args);
-    // After parsing, so the global output policies are known; before the
+    // After parsing, so the global output policy is known; before the
     // command, so no output is written against an unsettled policy.
-    print.resolve_stats(io);
     print.resolve_color(io, init.environ_map);
     const name = @tagName(command);
 
