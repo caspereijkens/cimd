@@ -1,28 +1,4 @@
-//! Overlay -- a CGMES supplementary part read as patches on a primary document.
-//!
-//! CGMES splits one model across parts: EQ carries the objects, TP and SSH
-//! carry additions to them. This is the layer that lets a read of an EQ object
-//! see what TP and SSH say about it.
-//!
-//! An overlay is **not** a second parser. It is a `CimDocument` -- the same
-//! single-pass parse every other command uses -- plus the one index
-//! `CimDocument` does not build: a lookup on the *normalized* mRID. That is the
-//! whole reason this layer exists. `CimDocument` indexes an object under the id
-//! as written, so `rdf:ID="_T1"` files under `_T1` and `rdf:about="#_T1"` under
-//! `_T1` but `rdf:about="#T1"` under `T1`. An overlay has to find an object the
-//! primary part spells differently, so it keys on
-//! `strip_underscore(strip_hash(...))` -- `T1` for all three. Normalizing once,
-//! here, is what keeps "which spelling?" out of every call site.
-//!
-//! TP and SSH were separate files with separate parsers until they were the
-//! same file. What is left of the difference is one thing, and it is a real
-//! distinction rather than an accident of how each was written: see `IdPolicy`.
-//!
-//! One consequence of sharing the parser is worth calling out, because it makes
-//! overlays stricter than they used to be: a part that spells the same id both
-//! ways -- `rdf:ID="X"` next to `rdf:about="#X"` -- is now a duplicate-id error,
-//! since `CimDocument` files both under `X`. Primary documents have always
-//! rejected that; overlays used to accept it and index the two independently.
+//! Overlay keys normalize `_T1` and `T1` to match parts that spell the same mRID differently.
 
 const std = @import("std");
 const tag_index = @import("../tag_index.zig");
@@ -36,69 +12,42 @@ pub const Diagnostics = @import("../diagnostics.zig").Diagnostics;
 pub const CimObject = tag_index.CimObject;
 const TagBoundary = xml_scan.TagBoundary;
 
-/// How an `rdf:ID` element in an overlay is read. The single behavioural
-/// difference between the CGMES supplementary profiles cimd overlays.
 pub const IdPolicy = enum {
-    /// TP. `rdf:ID` declares a *new* first-class object -- a `TopologicalNode`
-    /// -- that exists in no other part. It is navigable by raw id like any
-    /// primary object and patches nothing, so only `rdf:about` elements are
-    /// patches.
+    /// TP declares objects such as TopologicalNodes that exist in no other part.
     id_declares_object,
-    /// SSH. `rdf:ID` is just another spelling of the key of the object being
-    /// patched, so both attribute forms name a patch and the part contributes
-    /// no objects of its own.
+    /// SSH uses rdf:ID to identify patches, so it contributes no navigable objects.
     id_names_patch,
 };
 
-/// A patched object: where its element sits, under the key overlays agree on.
 pub const Patch = struct {
-    /// Normalized -- no `#` fragment marker, no leading `_`.
     mrid: []const u8,
     patch_tag_idx: u32,
     closing_tag_idx: u32,
 };
 
 pub const Overlay = struct {
-    /// The part, parsed by the one parser. Patches and declared objects are
-    /// both ordinary objects in here; the two arrays below are classifications
-    /// of it, not separate parses.
     doc: CimDocument,
     policy: IdPolicy,
 
-    /// Borrowed from `doc`, which owns them, so they stay valid exactly as long
-    /// as the overlay does. Held as fields because a patch is read by index into
-    /// `boundaries` -- every consumer needs both, and `self.doc.xml` at each of
-    /// those call sites says nothing the shorter spelling does not.
     xml: []const u8,
     boundaries: []const TagBoundary,
 
-    /// Sorted by normalized mRID, so `find_patch` is a binary search.
     patches: []const Patch,
 
-    /// Objects this part declares. Empty under `id_names_patch`. Kept in
-    /// document order, which `doc.objects` is not, so consumers can preserve
-    /// the part's original ordering instead of its type grouping.
     new_objects: []const CimObject,
 
-    /// Raw `rdf:ID` -> index into `new_objects`. Not `doc.id_to_index`, which
-    /// also indexes the patched objects: a patch is a reference to something
-    /// living in the primary part, not a thing this part offers to navigate to.
+    /// A separate index keeps patches from appearing as navigable objects of this part.
     id_to_object: std.StringHashMap(u32),
 
-    /// Takes ownership of `xml`: on success the overlay owns it (freed by
-    /// deinit), on error it is freed before returning. Callers never need to
-    /// clean up `xml`.
+    /// The parser takes ownership of XML even on failure, so callers must not free it.
     pub fn init(gpa: std.mem.Allocator, xml: []const u8, policy: IdPolicy) !Overlay {
         return init_with_diagnostics(gpa, xml, policy, null);
     }
 
-    /// A TP part. The profiles still exist -- they just no longer need separate
-    /// implementations, only these two names for the policy they pick.
     pub fn init_tp(gpa: std.mem.Allocator, xml: []const u8) !Overlay {
         return init(gpa, xml, .id_declares_object);
     }
 
-    /// An SSH part.
     pub fn init_ssh(gpa: std.mem.Allocator, xml: []const u8) !Overlay {
         return init(gpa, xml, .id_names_patch);
     }
@@ -109,13 +58,10 @@ pub const Overlay = struct {
         policy: IdPolicy,
         diagnostics: ?*Diagnostics,
     ) !Overlay {
-        // Takes ownership of `xml` and frees it on every failure path, which is
-        // why there is no `errdefer gpa.free(xml)` here.
         var doc = try CimDocument.init_with_diagnostics(gpa, xml, diagnostics);
         errdefer doc.deinit(gpa);
 
-        // Classify each object once because classification rescans its tag for
-        // both supported identifier attributes.
+        // Classify once to avoid rescanning identifier attributes.
         var patch_list: std.ArrayList(Patch) = .empty;
         errdefer patch_list.deinit(gpa);
         var object_list: std.ArrayList(CimObject) = .empty;
@@ -140,25 +86,18 @@ pub const Overlay = struct {
         errdefer id_to_object.deinit();
         try id_to_object.ensureTotalCapacity(@intCast(new_objects.len));
 
-        // `doc.objects` is grouped by type; restore the part's own order, since
-        // consumers emit in it.
+        // Restore source order for consumers; the parser groups objects by type.
         std.mem.sort(CimObject, new_objects, {}, object_before);
         for (new_objects, 0..) |obj, i| {
-            // Pairs with `CimDocument`'s duplicate-id rejection: the raw ids of
-            // declared objects are already known distinct, so no entry can clash.
             id_to_object.putAssumeCapacityNoClobber(obj.id(), @intCast(i));
         }
 
         std.mem.sort(Patch, patches, {}, patch_before);
         if (patches.len > 1) {
             for (patches[1..], 1..) |patch, i| {
-                // Pairs with the sort above: the dedup walk relies on it.
                 assert(!patch_before({}, patch, patches[i - 1]));
                 if (!std.mem.eql(u8, patches[i - 1].mrid, patch.mrid)) continue;
-                // Two spellings of one key. `CimDocument` cannot catch this --
-                // `#T1` and `#_T1` are distinct ids to it and only collide once
-                // normalized -- so the report is raised here, naming the later
-                // element the way the file spells it.
+                // Normalization can collide IDs the parser accepts, such as #T1 and #_T1.
                 const later = if (patches[i - 1].patch_tag_idx > patch.patch_tag_idx)
                     patches[i - 1]
                 else
@@ -188,10 +127,6 @@ pub const Overlay = struct {
         self.doc.deinit(gpa);
     }
 
-    /// Look up the patch for a normalized mRID (no `#`, no leading `_`).
-    /// Returns null if this part does not patch that object. Reuse the returned
-    /// `Patch` when reading several properties of one object -- that is what it
-    /// is for.
     pub fn find_patch(self: Overlay, mrid: []const u8) ?Patch {
         assert(mrid.len > 0);
         var lo: u32 = 0;
@@ -203,7 +138,6 @@ pub const Overlay = struct {
                 .gt => hi = mid,
                 .eq => {
                     const hit = self.patches[mid];
-                    // Pair the binary search hit with a direct mrid compare.
                     assert(std.mem.eql(u8, hit.mrid, mrid));
                     return hit;
                 },
@@ -212,7 +146,6 @@ pub const Overlay = struct {
         return null;
     }
 
-    /// Read a text property from a patch returned by `find_patch`.
     pub fn property_from_patch(self: Overlay, patch: Patch, property_name: []const u8) ?[]const u8 {
         return tag_index.get_property_from_indices(
             self.xml,
@@ -223,7 +156,6 @@ pub const Overlay = struct {
         );
     }
 
-    /// Read an `rdf:resource` reference from a patch returned by `find_patch`.
     pub fn reference_from_patch(self: Overlay, patch: Patch, reference_name: []const u8) !?[]const u8 {
         return tag_index.get_reference_from_indices(
             self.xml,
@@ -234,34 +166,24 @@ pub const Overlay = struct {
         );
     }
 
-    /// Convenience wrapper for a single lookup. For several properties on the
-    /// same object, use `find_patch` + `property_from_patch` and pay for one
-    /// binary search.
+    /// Reuse find_patch for multiple properties to avoid repeating the binary search.
     pub fn property(self: Overlay, mrid: []const u8, property_name: []const u8) ?[]const u8 {
         const patch = self.find_patch(mrid) orelse return null;
         return self.property_from_patch(patch, property_name);
     }
 
-    /// Convenience wrapper for a single reference lookup.
     pub fn reference(self: Overlay, mrid: []const u8, reference_name: []const u8) !?[]const u8 {
         const patch = self.find_patch(mrid) orelse return null;
         return self.reference_from_patch(patch, reference_name);
     }
 
-    /// Look up an object this part declares, by raw `rdf:ID` (leading
-    /// underscore included). Patched objects are deliberately not reachable
-    /// here -- they belong to the primary part.
     pub fn object_by_id(self: Overlay, id: []const u8) ?tag_index.CimObject {
         const idx = self.id_to_object.get(id) orelse return null;
         const obj = self.new_objects[idx];
-        // The stored object must round-trip -- pairs with the id_to_object build.
         assert(std.mem.eql(u8, obj.id(), id));
         return obj;
     }
 
-    /// Declared objects whose id starts with `id_prefix`, in document order.
-    /// The caller owns the returned slice. Matching follows
-    /// `ids.id_prefix_matches`.
     pub fn objects_by_id_prefix(
         self: Overlay,
         gpa: std.mem.Allocator,
@@ -275,15 +197,12 @@ pub const Overlay = struct {
         return matches.toOwnedSlice(gpa);
     }
 
-    /// The part's `FullModel` metadata element, or null if it carries none.
     pub fn full_model(self: Overlay) ?tag_index.CimObject {
         const group = self.doc.objects_by_type("FullModel");
         if (group.len == 0) return null;
         return group[0];
     }
 
-    /// Read a property off the part's `FullModel`. Null when the element is
-    /// absent or does not carry that property.
     pub fn full_model_property(self: Overlay, property_name: []const u8) !?[]const u8 {
         assert(property_name.len > 0);
         const metadata = self.full_model() orelse return null;
@@ -292,17 +211,12 @@ pub const Overlay = struct {
 };
 
 const Classification = union(enum) {
-    /// Metadata (`FullModel`), or an id that normalizes to nothing.
     skip,
-    /// Declares a new object; it is stored under its raw `rdf:ID`.
     declares,
-    /// Patches an object of the primary part; payload is the normalized mRID.
     patch: []const u8,
 };
 
-/// Decide what one already-parsed object means to the overlay layer. The
-/// `#` requirement on `rdf:about` is what keeps `FullModel`'s `urn:uuid:` id
-/// from being read as a patch key.
+/// Requiring a fragment keeps FullModel's urn:uuid identifier out of the patches.
 fn classify(doc: CimDocument, obj: CimObject, policy: IdPolicy) Classification {
     const tag_start = doc.boundaries[obj.object_tag_idx].start;
 
@@ -326,8 +240,6 @@ fn classify(doc: CimDocument, obj: CimObject, policy: IdPolicy) Classification {
     return .skip;
 }
 
-/// The identifier as the file spells it, for a duplicate-key report. Both
-/// attribute forms can name a patch, so both are candidates.
 fn raw_patch_id(xml: []const u8, tag_start: u32) ?[]const u8 {
     if (xml_scan.extract_rdf_id(xml, tag_start)) |raw| {
         if (ids.strip_underscore(raw).len > 0) return raw;
@@ -347,10 +259,6 @@ fn object_before(_: void, a: CimObject, b: CimObject) bool {
     return a.object_tag_idx < b.object_tag_idx;
 }
 
-/// A merged read of a primary object with its optional TP and SSH overlays.
-/// Precedence is SSH > TP > primary: SSH shadows everything, TP shadows the
-/// primary part. `init` runs one `find_patch` per overlay and caches the hit, so
-/// the accessors below repeat no lookups.
 pub const CimMergedView = struct {
     eq: tag_index.CimObject,
     tp: ?Context,
@@ -370,9 +278,7 @@ pub const CimMergedView = struct {
     ) CimMergedView {
         assert(mrid.len > 0);
         assert(eq.id().len > 0);
-        // mrid need not equal strip_underscore(eq.id): in CGMES the mRID may
-        // differ from rdf:ID, and overlays key by mRID. Callers resolve it via
-        // CimObject.mrid, so such models merge consistently across commands.
+        // Overlays key by mRID, which may differ from the primary object's rdf:ID.
         return .{
             .eq = eq,
             .tp = context_for(tp_opt, mrid),
@@ -386,7 +292,6 @@ pub const CimMergedView = struct {
         return .{ .xml = overlay.xml, .boundaries = overlay.boundaries, .patch = patch };
     }
 
-    /// Get a text property. SSH value takes priority, then TP, then the primary.
     pub fn property(self: CimMergedView, name: []const u8) ?[]const u8 {
         if (self.ssh) |s| {
             if (patch_view(s).property(name)) |v| return v;
@@ -397,8 +302,6 @@ pub const CimMergedView = struct {
         return self.eq.property(name);
     }
 
-    /// Get an rdf:resource reference. SSH value takes priority, then TP, then
-    /// the primary.
     pub fn reference(self: CimMergedView, name: []const u8) !?[]const u8 {
         if (self.ssh) |s| {
             if (try patch_view(s).reference(name)) |v| return v;
@@ -424,7 +327,6 @@ pub const CimMergedView = struct {
         }
     }
 
-    /// Batch-fetch text properties. SSH values take priority, then TP.
     pub fn properties(self: CimMergedView, comptime names: anytype) ![names.len]?[]const u8 {
         var result = try self.eq.properties(names);
         if (self.tp) |t| apply_overrides(&result, try patch_view(t).properties(names), names);
@@ -432,7 +334,6 @@ pub const CimMergedView = struct {
         return result;
     }
 
-    /// Batch-fetch rdf:resource references. SSH values take priority, then TP.
     pub fn references(self: CimMergedView, comptime names: anytype) ![names.len]?[]const u8 {
         var result = try self.eq.references(names);
         if (self.tp) |t| apply_overrides(&result, try patch_view(t).references(names), names);
@@ -440,8 +341,7 @@ pub const CimMergedView = struct {
         return result;
     }
 
-    /// The union of primary + TP + SSH properties, SSH > TP > primary.
-    /// Caller owns the returned map; values borrow from the underlying XML.
+    /// Values borrow XML, so the caller frees only the returned map.
     pub fn all_properties(self: CimMergedView, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
         var result = try self.eq.all_properties(gpa);
         errdefer result.deinit();
@@ -450,8 +350,7 @@ pub const CimMergedView = struct {
         return result;
     }
 
-    /// The union of primary + TP + SSH references, SSH > TP > primary.
-    /// Caller owns the returned map; values borrow from the underlying XML.
+    /// Values borrow XML, so the caller frees only the returned map.
     pub fn all_references(self: CimMergedView, gpa: std.mem.Allocator) !std.StringHashMap([]const u8) {
         var result = try self.eq.all_references(gpa);
         errdefer result.deinit();
@@ -470,8 +369,6 @@ pub const CimMergedView = struct {
         while (it.next()) |entry| try dest.put(entry.key_ptr.*, entry.value_ptr.*);
     }
 };
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 const testing = std.testing;
 
@@ -502,11 +399,9 @@ test "an overlay separates declared objects from patches under the TP policy" {
 
     try testing.expectEqual(@as(usize, 2), tp.new_objects.len);
     try testing.expectEqual(@as(usize, 2), tp.patches.len);
-    // Declared objects keep the part's order, not `doc.objects`' type grouping.
     try testing.expectEqualStrings("_TN1", tp.new_objects[0].id());
     try testing.expectEqualStrings("_TN2", tp.new_objects[1].id());
 
-    // Patches are sorted -- the stripped mRIDs CN_LOAD < T_LOAD1 alphabetically.
     try testing.expectEqualStrings("CN_LOAD", tp.patches[0].mrid);
     try testing.expectEqualStrings("T_LOAD1", tp.patches[1].mrid);
 }
@@ -552,7 +447,6 @@ test "find_patch resolves a Terminal patch and its TopologicalNode reference" {
     try testing.expect(tn_ref != null);
     try testing.expectEqualStrings("#_TN1", tn_ref.?);
 
-    // Absent mRID yields null.
     try testing.expectEqual(@as(?Patch, null), tp.find_patch("not_there"));
 }
 
@@ -576,7 +470,6 @@ test "object_by_id returns a declared object by raw rdf:ID" {
     try testing.expect(name != null);
     try testing.expectEqualStrings("Bus 1", std.mem.trim(u8, name.?, " \t\r\n"));
 
-    // Unknown id yields null.
     try testing.expectEqual(@as(?tag_index.CimObject, null), tp.object_by_id("_nope"));
 }
 
@@ -608,7 +501,6 @@ test "objects_by_id_prefix matches declared objects; leading _ optional" {
 
 test "a declared object keeps a raw id that normalizes to nothing" {
     const gpa = testing.allocator;
-    // `_` is a placeholder id: usable for navigation, useless as an overlay key.
     const xml = "<rdf:RDF><cim:TopologicalNode rdf:ID=\"_\"/></rdf:RDF>";
     var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, xml));
     defer tp.deinit(gpa);
@@ -658,7 +550,6 @@ test "metadata tags are neither patches nor declared objects" {
 
     try testing.expectEqual(@as(usize, 0), tp.new_objects.len);
     try testing.expectEqual(@as(usize, 0), tp.patches.len);
-    // It is still an object of the part -- that is how FullModel is read.
     try testing.expect(tp.full_model() != null);
 }
 
@@ -684,8 +575,6 @@ test "duplicate declared rdf:IDs are rejected with a diagnostic" {
 
 test "two spellings of one patch key are rejected with a diagnostic" {
     const gpa = testing.allocator;
-    // `#T1` and `#_T1` are distinct ids to the parser and collide only once
-    // normalized, so this is the overlay layer's own duplicate check firing.
     const xml =
         \\<rdf:RDF>
         \\  <cim:Terminal rdf:about="#T1"/>
@@ -723,8 +612,6 @@ test "under SSH an rdf:ID and an rdf:about naming one object collide" {
 
 test "sharing the parser makes an overlay reject a doubly-spelled id" {
     const gpa = testing.allocator;
-    // `rdf:ID="X"` and `rdf:about="#X"` are one id to `CimDocument`, which has
-    // always rejected the pair. Overlays used to index the two independently.
     const xml =
         \\<rdf:RDF>
         \\  <cim:TopologicalNode rdf:ID="_TN1"/>
@@ -780,7 +667,6 @@ test "full_model_property reads times, and yields null without a FullModel" {
     const created = try ssh.full_model_property("Model.created");
     try testing.expect(created != null);
     try testing.expectEqualStrings("2023-01-01T10:00:00Z", std.mem.trim(u8, created.?, " \t\r\n"));
-    // Present FullModel, absent property.
     try testing.expectEqual(@as(?[]const u8, null), try ssh.full_model_property("Model.version"));
 
     const without_model = "<rdf:RDF><cim:Switch rdf:ID=\"_sw1\"/></rdf:RDF>";
@@ -856,13 +742,9 @@ test "CimMergedView.all_properties merges EQ + TP + SSH with SSH precedence" {
     var props = try merged.all_properties(gpa);
     defer props.deinit();
 
-    // EQ-only key preserved.
     try testing.expectEqualStrings("eq-name", props.get("IdentifiedObject.name").?);
-    // TP overrides EQ.
     try testing.expectEqualStrings("true", props.get("Switch.normalOpen").?);
-    // SSH overrides TP (Switch.retained).
     try testing.expectEqualStrings("true", props.get("Switch.retained").?);
-    // SSH-only key included.
     try testing.expectEqualStrings("true", props.get("Switch.open").?);
 }
 
@@ -894,8 +776,6 @@ test "CimMergedView.all_references merges EQ + TP with TP precedence" {
     var refs = try merged.all_references(gpa);
     defer refs.deinit();
 
-    // TP-added reference visible.
     try testing.expectEqualStrings("#_TN1", refs.get("Terminal.TopologicalNode").?);
-    // TP overrides the EQ value.
     try testing.expectEqualStrings("#_CE_tp", refs.get("Terminal.ConductingEquipment").?);
 }
