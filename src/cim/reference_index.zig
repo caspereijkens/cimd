@@ -273,9 +273,10 @@ pub const ReferenceScope = struct {
         return self.indexes[index].model;
     }
 
-    /// The primitive the other accessors are layered over. Total: every
-    /// object index has an entry, which is what the covering assertion in
-    /// `init` buys.
+    /// Lets consumers that already have a document and object index read the
+    /// object's scope-wide, collision-arbitrated type without resolving an RDF
+    /// reference. The returned interned id can be compared across documents;
+    /// `init` fills an entry for every object index.
     pub fn type_id_by_object(self: *const ReferenceScope, document_index: u32, object_index: u32) u32 {
         assert(document_index < self.document_count());
         const document_type_ids = self.type_ids[document_index];
