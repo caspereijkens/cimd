@@ -89,7 +89,7 @@ pub const Overlay = struct {
     /// deinit), on error it is freed before returning. Callers never need to
     /// clean up `xml`.
     pub fn init(gpa: std.mem.Allocator, xml: []const u8, policy: IdPolicy) !Overlay {
-        return initWithDiagnostics(gpa, xml, policy, null);
+        return init_with_diagnostics(gpa, xml, policy, null);
     }
 
     /// A TP part. The profiles still exist -- they just no longer need separate
@@ -103,7 +103,7 @@ pub const Overlay = struct {
         return init(gpa, xml, .id_names_patch);
     }
 
-    pub fn initWithDiagnostics(
+    pub fn init_with_diagnostics(
         gpa: std.mem.Allocator,
         xml: []const u8,
         policy: IdPolicy,
@@ -111,47 +111,34 @@ pub const Overlay = struct {
     ) !Overlay {
         // Takes ownership of `xml` and frees it on every failure path, which is
         // why there is no `errdefer gpa.free(xml)` here.
-        var doc = try CimDocument.initWithDiagnostics(gpa, xml, diagnostics);
+        var doc = try CimDocument.init_with_diagnostics(gpa, xml, diagnostics);
         errdefer doc.deinit(gpa);
 
-        var patch_count: u32 = 0;
-        var declared_count: u32 = 0;
+        // Classify each object once because classification rescans its tag for
+        // both supported identifier attributes.
+        var patch_list: std.ArrayList(Patch) = .empty;
+        errdefer patch_list.deinit(gpa);
+        var object_list: std.ArrayList(CimObject) = .empty;
+        errdefer object_list.deinit(gpa);
+
         for (doc.objects) |obj| switch (classify(doc, obj, policy)) {
-            .patch => patch_count += 1,
-            .declares => declared_count += 1,
             .skip => {},
+            .declares => try object_list.append(gpa, obj),
+            .patch => |mrid| try patch_list.append(gpa, .{
+                .mrid = mrid,
+                .patch_tag_idx = obj.object_tag_idx,
+                .closing_tag_idx = obj.closing_tag_idx,
+            }),
         };
 
-        const patches = try gpa.alloc(Patch, patch_count);
+        const patches = try patch_list.toOwnedSlice(gpa);
         errdefer gpa.free(patches);
-        const new_objects = try gpa.alloc(CimObject, declared_count);
+        const new_objects = try object_list.toOwnedSlice(gpa);
         errdefer gpa.free(new_objects);
 
         var id_to_object = std.StringHashMap(u32).init(gpa);
         errdefer id_to_object.deinit();
-        try id_to_object.ensureTotalCapacity(declared_count);
-
-        var patch_cursor: u32 = 0;
-        var object_cursor: u32 = 0;
-        for (doc.objects) |obj| switch (classify(doc, obj, policy)) {
-            .skip => {},
-            .declares => {
-                assert(object_cursor < declared_count);
-                new_objects[object_cursor] = obj;
-                object_cursor += 1;
-            },
-            .patch => |mrid| {
-                assert(patch_cursor < patch_count);
-                patches[patch_cursor] = .{
-                    .mrid = mrid,
-                    .patch_tag_idx = obj.object_tag_idx,
-                    .closing_tag_idx = obj.closing_tag_idx,
-                };
-                patch_cursor += 1;
-            },
-        };
-        assert(patch_cursor == patch_count);
-        assert(object_cursor == declared_count);
+        try id_to_object.ensureTotalCapacity(@intCast(new_objects.len));
 
         // `doc.objects` is grouped by type; restore the part's own order, since
         // consumers emit in it.
@@ -688,7 +675,7 @@ test "duplicate declared rdf:IDs are rejected with a diagnostic" {
     var diagnostics: Diagnostics = .{};
     try testing.expectError(
         error.DuplicateId,
-        Overlay.initWithDiagnostics(gpa, try gpa.dupe(u8, xml), .id_declares_object, &diagnostics),
+        Overlay.init_with_diagnostics(gpa, try gpa.dupe(u8, xml), .id_declares_object, &diagnostics),
     );
     try testing.expectEqualStrings("_TN1", diagnostics.duplicate_id());
     try testing.expectEqual(@as(u64, 3), diagnostics.duplicate_line);
@@ -710,7 +697,7 @@ test "two spellings of one patch key are rejected with a diagnostic" {
     var diagnostics: Diagnostics = .{};
     try testing.expectError(
         error.DuplicateId,
-        Overlay.initWithDiagnostics(gpa, try gpa.dupe(u8, xml), .id_declares_object, &diagnostics),
+        Overlay.init_with_diagnostics(gpa, try gpa.dupe(u8, xml), .id_declares_object, &diagnostics),
     );
     try testing.expectEqualStrings("#_T1", diagnostics.duplicate_id());
     try testing.expectEqual(@as(u64, 3), diagnostics.duplicate_line);
@@ -727,7 +714,7 @@ test "under SSH an rdf:ID and an rdf:about naming one object collide" {
     var diagnostics: Diagnostics = .{};
     try testing.expectError(
         error.DuplicateId,
-        Overlay.initWithDiagnostics(gpa, try gpa.dupe(u8, xml), .id_names_patch, &diagnostics),
+        Overlay.init_with_diagnostics(gpa, try gpa.dupe(u8, xml), .id_names_patch, &diagnostics),
     );
     try testing.expectEqualStrings("#SW1", diagnostics.duplicate_id());
     try testing.expectEqual(@as(u64, 3), diagnostics.duplicate_line);

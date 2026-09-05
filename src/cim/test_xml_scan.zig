@@ -236,143 +236,6 @@ test "xml_scan.find_byte_simd - no matches in SIMD sections but matches in remai
     try std.testing.expectEqual(@as(u32, xml_scan.VECTOR_LEN + 4), positions.items[2]);
 }
 
-// ============================================================================
-// Pattern Matching Tests
-// ============================================================================
-
-test "xml_scan.find_pattern - finds rdf:ID with values" {
-    const gpa = std.testing.allocator;
-
-    const input =
-        \\<cim:Substation rdf:ID="_SubStation1">
-        \\<cim:Breaker rdf:ID="_BR1">
-    ;
-
-    var matches = try xml_scan.find_pattern(gpa, input, "rdf:ID=\"");
-    defer matches.deinit(gpa);
-
-    // Should find 2 matches
-    try std.testing.expectEqual(@as(usize, 2), matches.items.len);
-
-    // First match: _SubStation1
-    const match1 = matches.items[0];
-    try std.testing.expectEqual(@as(u32, 16), match1.pattern_start); // Position of 'r' in first rdf:ID
-    try std.testing.expectEqual(@as(u32, 24), match1.value_start); // Position of '_' in _SubStation1
-    try std.testing.expectEqual(@as(u32, 12), match1.value_len); // Length of "_SubStation1"
-
-    // Verify extracted value
-    const value1 = input[match1.value_start..][0..match1.value_len];
-    try std.testing.expectEqualStrings("_SubStation1", value1);
-
-    // Second match: _BR1
-    const match2 = matches.items[1];
-    try std.testing.expectEqual(@as(u32, 52), match2.pattern_start); // Position of 'r' in second rdf:ID
-    const value2 = input[match2.value_start..][0..match2.value_len];
-    try std.testing.expectEqualStrings("_BR1", value2);
-}
-
-test "xml_scan.find_pattern - finds rdf:about with # prefix" {
-    const gpa = std.testing.allocator;
-
-    const input =
-        \\<cim:Terminal rdf:about="#_T1">
-        \\  <cim:Terminal.ConnectivityNode rdf:resource="#_CN1"/>
-        \\</cim:Terminal>
-    ;
-
-    var matches = try xml_scan.find_pattern(gpa, input, "rdf:about=\"");
-    defer matches.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 1), matches.items.len);
-
-    const match = matches.items[0];
-    const value = input[match.value_start..][0..match.value_len];
-    try std.testing.expectEqualStrings("#_T1", value);
-}
-
-test "xml_scan.find_pattern - no matches" {
-    const gpa = std.testing.allocator;
-
-    const input = "<root>Hello World</root>";
-
-    var matches = try xml_scan.find_pattern(gpa, input, "rdf:ID=\"");
-    defer matches.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 0), matches.items.len);
-}
-
-test "xml_scan.find_pattern - empty input" {
-    const gpa = std.testing.allocator;
-
-    var matches = try xml_scan.find_pattern(gpa, "", "rdf:ID=\"");
-    defer matches.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 0), matches.items.len);
-}
-
-test "xml_scan.verify_and_extract_pattern - valid pattern with value" {
-    const input = "Hello rdf:ID=\"_SubStation1\" World";
-    const pattern = "rdf:ID=\"";
-
-    const match = xml_scan.verify_and_extract_pattern(input, 6, pattern);
-
-    try std.testing.expect(match != null);
-    try std.testing.expectEqual(@as(u32, 6), match.?.pattern_start);
-    try std.testing.expectEqual(@as(u32, 14), match.?.value_start);
-    try std.testing.expectEqual(@as(u32, 12), match.?.value_len);
-
-    const value = input[match.?.value_start..][0..match.?.value_len];
-    try std.testing.expectEqualStrings("_SubStation1", value);
-}
-
-test "xml_scan.verify_and_extract_pattern - empty value" {
-    const input = "rdf:ID=\"\"";
-    const pattern = "rdf:ID=\"";
-
-    const match = xml_scan.verify_and_extract_pattern(input, 0, pattern);
-
-    try std.testing.expect(match != null);
-    try std.testing.expectEqual(@as(u32, 0), match.?.value_len);
-}
-
-test "xml_scan.verify_and_extract_pattern - pattern mismatch" {
-    const input = "Hello rdf:about=\"value\"";
-    const pattern = "rdf:ID=\"";
-
-    const match = xml_scan.verify_and_extract_pattern(input, 6, pattern);
-
-    try std.testing.expectEqual(@as(?xml_scan.PatternMatch, null), match);
-}
-
-test "xml_scan.verify_and_extract_pattern - no closing quote" {
-    const input = "rdf:ID=\"unclosed";
-    const pattern = "rdf:ID=\"";
-
-    const match = xml_scan.verify_and_extract_pattern(input, 0, pattern);
-
-    try std.testing.expectEqual(@as(?xml_scan.PatternMatch, null), match);
-}
-
-test "xml_scan.verify_and_extract_pattern - candidate near end of haystack" {
-    const input = "rdf:";
-    const pattern = "rdf:ID=\"";
-
-    const match = xml_scan.verify_and_extract_pattern(input, 0, pattern);
-
-    try std.testing.expectEqual(@as(?xml_scan.PatternMatch, null), match);
-}
-
-test "xml_scan.verify_and_extract_pattern - value with special characters" {
-    const input = "rdf:ID=\"#_Node-123.456\"";
-    const pattern = "rdf:ID=\"";
-
-    const match = xml_scan.verify_and_extract_pattern(input, 0, pattern);
-
-    try std.testing.expect(match != null);
-    const value = input[match.?.value_start..][0..match.?.value_len];
-    try std.testing.expectEqualStrings("#_Node-123.456", value);
-}
-
 test "xml_scan.find_tag_boundaries - single tag" {
     const gpa = std.testing.allocator;
 
@@ -505,7 +368,7 @@ test "xml_scan.find_tag_boundaries - unmatched opening bracket" {
 
     try std.testing.expectError(
         error.MalformedXML,
-        xml_scan.find_tag_boundariesWithErrorOffset(gpa, input, &error_offset),
+        xml_scan.find_tag_boundaries_with_error_offset(gpa, input, &error_offset),
     );
     try std.testing.expectEqual(@as(u32, 0), error_offset.offset);
 }
@@ -1328,7 +1191,7 @@ test "xml_scan.build_closing_index - mismatched nesting returns MalformedXML" {
     defer boundaries.deinit(gpa);
 
     var error_offset: xml_scan.MalformedXML = .{};
-    const result = xml_scan.build_closing_indexWithErrorOffset(gpa, xml, boundaries.items, &error_offset);
+    const result = xml_scan.build_closing_index_with_error_offset(gpa, xml, boundaries.items, &error_offset);
     try std.testing.expectError(error.MalformedXML, result);
     try std.testing.expectEqual(
         @as(u32, @intCast(std.mem.indexOf(u8, xml, "</cim:Root>").?)),
@@ -1344,7 +1207,7 @@ test "xml_scan.build_closing_index - unclosed opener returns MalformedXML" {
     defer boundaries.deinit(gpa);
 
     var error_offset: xml_scan.MalformedXML = .{};
-    const result = xml_scan.build_closing_indexWithErrorOffset(gpa, xml, boundaries.items, &error_offset);
+    const result = xml_scan.build_closing_index_with_error_offset(gpa, xml, boundaries.items, &error_offset);
     try std.testing.expectError(error.MalformedXML, result);
     // The outermost unclosed opener, not end-of-input: a caller mapping the
     // offset back to a line (or to a file segment) must land on the real defect.
@@ -1362,7 +1225,7 @@ test "xml_scan.build_closing_index - malformed closer cannot close an opener" {
     defer boundaries.deinit(gpa);
 
     var error_offset: xml_scan.MalformedXML = .{};
-    const result = xml_scan.build_closing_indexWithErrorOffset(
+    const result = xml_scan.build_closing_index_with_error_offset(
         gpa,
         xml,
         boundaries.items,
@@ -1385,7 +1248,7 @@ test "xml_scan.build_closing_index - unnameable element fails the document" {
     defer boundaries.deinit(gpa);
 
     var error_offset: xml_scan.MalformedXML = .{};
-    const result = xml_scan.build_closing_indexWithErrorOffset(
+    const result = xml_scan.build_closing_index_with_error_offset(
         gpa,
         xml,
         boundaries.items,
@@ -1550,7 +1413,6 @@ test "xml_scan.index_of_any_pos_table/simd - match std.mem.indexOfAnyPos" {
         while (start <= haystack.len) : (start += 1) {
             const want = std.mem.indexOfAnyPos(u8, haystack, start, set);
             try std.testing.expectEqual(want, xml_scan.index_of_any_pos_table(haystack, start, set));
-            try std.testing.expectEqual(want, xml_scan.index_of_any_pos_simd(haystack, start, set));
         }
     }
 }
@@ -1564,7 +1426,7 @@ test "find_tag_boundaries - '<' inside a tag is rejected" {
     var error_offset: xml_scan.MalformedXML = .{};
     try std.testing.expectError(
         error.MalformedXML,
-        xml_scan.find_tag_boundariesWithErrorOffset(gpa, xml, &error_offset),
+        xml_scan.find_tag_boundaries_with_error_offset(gpa, xml, &error_offset),
     );
     // The offset names the offending inner '<', not the tag that contains it.
     try std.testing.expectEqual(

@@ -338,7 +338,7 @@ fn parse_eq(
     segments: []const validate.DataSegment,
 ) CimDocument {
     var diagnostics: diagnostics_mod.Diagnostics = .{};
-    return CimDocument.initWithDiagnostics(gpa, xml, &diagnostics) catch |err|
+    return CimDocument.init_with_diagnostics(gpa, xml, &diagnostics) catch |err|
         report_parse_error(io, command_name, segments, err, diagnostics);
 }
 
@@ -352,7 +352,7 @@ fn parse_overlay(
 ) Overlay {
     var diagnostics: diagnostics_mod.Diagnostics = .{};
     const segments = [_]validate.DataSegment{.{ .name = source.label(), .start = 0, .line_start = 1 }};
-    return Overlay.initWithDiagnostics(gpa, part.xml, policy, &diagnostics) catch |err|
+    return Overlay.init_with_diagnostics(gpa, part.xml, policy, &diagnostics) catch |err|
         report_parse_error(io, command_name, &segments, err, diagnostics);
 }
 
@@ -781,7 +781,7 @@ pub const DocumentSet = struct {
         const materialized = try materialize_parts(gpa, &plan.first, if (plan.second) |*part| part else null);
 
         // CimDocument.init owns `xml` from this point on, including its error paths.
-        const model = CimDocument.initWithDiagnostics(gpa, materialized.xml, &diagnostics.model) catch |err| {
+        const model = CimDocument.init_with_diagnostics(gpa, materialized.xml, &diagnostics.model) catch |err| {
             plan.state = .consumed;
             self.next_index += 1;
             return err;
