@@ -110,10 +110,10 @@ pub fn change_set(
 fn sort_by_name(statements: []Statement) void {
     // Stable: repeated same-named statements keep their document order.
     std.sort.insertion(Statement, statements, {}, struct {
-        fn lessThan(_: void, a: Statement, b: Statement) bool {
+        fn less_than(_: void, a: Statement, b: Statement) bool {
             return std.mem.order(u8, a.name, b.name) == .lt;
         }
-    }.lessThan);
+    }.less_than);
 }
 
 /// ChangeSet for two views of the same object, or null when they are

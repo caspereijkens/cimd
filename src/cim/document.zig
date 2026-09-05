@@ -93,15 +93,15 @@ pub const CimDocument = struct {
     /// Takes ownership of `xml`: on success the model owns it (freed by deinit),
     /// on error it is freed before returning. Callers never need to clean up `xml`.
     pub fn init(gpa: std.mem.Allocator, xml: []const u8) !CimDocument {
-        return initWithDiagnostics(gpa, xml, null);
+        return init_with_diagnostics(gpa, xml, null);
     }
 
-    pub fn initWithDiagnostics(gpa: std.mem.Allocator, xml: []const u8, diagnostics: ?*Diagnostics) !CimDocument {
+    pub fn init_with_diagnostics(gpa: std.mem.Allocator, xml: []const u8, diagnostics: ?*Diagnostics) !CimDocument {
         errdefer gpa.free(xml);
         if (xml.len == 0) return error.EmptyInput;
 
         var malformed: xml_scan.MalformedXML = .{};
-        var boundary_list = xml_scan.find_tag_boundariesWithErrorOffset(gpa, xml, &malformed) catch |err| {
+        var boundary_list = xml_scan.find_tag_boundaries_with_error_offset(gpa, xml, &malformed) catch |err| {
             if (err == error.MalformedXML) if (diagnostics) |d| d.record_malformed_xml(xml, malformed);
             return err;
         };
@@ -119,7 +119,7 @@ pub const CimDocument = struct {
         var id_to_index = std.StringHashMap(u32).init(gpa);
         errdefer id_to_index.deinit();
 
-        const closing_for = xml_scan.build_closing_indexWithErrorOffset(
+        const closing_for = xml_scan.build_closing_index_with_error_offset(
             gpa,
             xml,
             boundaries,
@@ -354,13 +354,10 @@ pub const CimDocument = struct {
     }
 };
 
-fn extract_attribute_from_tag(xml: []const u8, tag: TagBoundary, comptime pattern: []const u8) ?[]const u8 {
-    const tag_content = xml[tag.start..tag.end];
-    const pattern_offset = xml_scan.find_needle_anchored(tag_content, pattern) orelse return null;
-    const value_start = tag.start + pattern_offset + pattern.len;
-    const value_end = std.mem.indexOfScalarPos(u8, xml, value_start, '"') orelse return null;
-    if (value_end >= tag.end) return null;
-    return xml[value_start..value_end];
+/// Object discovery treats malformed and absent identity attributes alike
+/// because a tag without a usable identifier cannot be indexed as an object.
+fn extract_attribute_from_tag(xml: []const u8, tag: TagBoundary, comptime name: []const u8) ?[]const u8 {
+    return xml_scan.extract_attribute_within(xml, tag.start, tag.end, name) catch null;
 }
 
 /// Extract the identifier that makes a tag a CIM object. Prefer a non-empty
@@ -373,11 +370,11 @@ fn extract_object_id_from_tag(xml: []const u8, tag: TagBoundary) ?[]const u8 {
         else => {},
     }
 
-    if (extract_attribute_from_tag(xml, tag, "rdf:ID=\"")) |id| {
+    if (extract_attribute_from_tag(xml, tag, "rdf:ID")) |id| {
         if (id.len > 0) return id;
     }
 
-    if (extract_attribute_from_tag(xml, tag, "rdf:about=\"")) |about| {
+    if (extract_attribute_from_tag(xml, tag, "rdf:about")) |about| {
         if (about.len > 0) {
             const local_id = ids.strip_hash(about);
             return if (local_id.len > 0) local_id else about;
@@ -414,7 +411,7 @@ test "EQ diagnostics record duplicate RDF identifier" {
     var diagnostics: Diagnostics = .{};
     try std.testing.expectError(
         error.DuplicateId,
-        CimDocument.initWithDiagnostics(gpa, try gpa.dupe(u8, xml), &diagnostics),
+        CimDocument.init_with_diagnostics(gpa, try gpa.dupe(u8, xml), &diagnostics),
     );
     try std.testing.expectEqualStrings("_DUP", diagnostics.duplicate_id());
     try std.testing.expectEqual(@as(u64, 3), diagnostics.duplicate_line);
@@ -432,7 +429,7 @@ test "EQ diagnostics record malformed XML position" {
     var diagnostics: Diagnostics = .{};
     try std.testing.expectError(
         error.MalformedXML,
-        CimDocument.initWithDiagnostics(gpa, try gpa.dupe(u8, xml), &diagnostics),
+        CimDocument.init_with_diagnostics(gpa, try gpa.dupe(u8, xml), &diagnostics),
     );
     try std.testing.expect(diagnostics.malformed_xml_recorded);
     try std.testing.expectEqual(@as(u64, 3), diagnostics.malformed_xml_line);
