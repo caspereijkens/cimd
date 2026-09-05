@@ -26,6 +26,11 @@ A file for [guiding coding agents](https://agents.md/).
   it into jq. Note any shortcomings in the api so we can add those.
 
 ## Style
+- Keep comments sparse: explain only WHY difficult or surprising code needs
+  to be that way. Never narrate WHAT the code does, restate names or assertions,
+  or repeat test names. Use one or two short sentences; delete comments that
+  add no information the code cannot convey. This takes precedence over
+  TIGER_STYLE.md's broader commentary guidance.
 - When in doubt, follow docs/TIGER_STYLE.md, also in this repo.
 
 ## Zig version

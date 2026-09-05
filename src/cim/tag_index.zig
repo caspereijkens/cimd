@@ -3,13 +3,7 @@
 //! One layer above `xml_scan.zig`, which finds tags in bytes and knows nothing
 //! else. Here a tag becomes an object with an id and a type, and the tags
 //! between its opener and its closer become children with names, values and a
-//! property/reference distinction. `ChildIterator` is the single definition of
-//! "what is a child" -- there were twelve, and five of them were wrong about
-//! XML comments.
-//!
-//! A consumer that has a CIM document wants this file's types and never
-//! `xml_scan`'s; the boundary array below is a construction detail that
-//! `CimDocument` supplies and callers pass through.
+//! property/reference distinction.
 
 const std = @import("std");
 const ids = @import("ids.zig");
@@ -17,9 +11,6 @@ const parse = @import("parse.zig");
 const xml_scan = @import("xml_scan.zig");
 const assert = std.debug.assert;
 
-// The scanning primitives this layer is built out of. Aliased rather than
-// re-exported: a caller that wants raw scanning should say so by importing
-// `xml_scan`, which is the whole point of the two files being two files.
 const TagBoundary = xml_scan.TagBoundary;
 const extract_tag_type = xml_scan.extract_tag_type;
 const extract_tag_type_terminated = xml_scan.extract_tag_type_terminated;

@@ -117,6 +117,17 @@ pub const resolve_object_normalized = refs.resolve_object_normalized;
 pub const collect_target_candidates = refs.collect_target_candidates;
 pub const filter_referrers = refs.filter_referrers;
 
+// ── Relations ─────────────────────────────────────────────────────────────
+//
+// The same references counted rather than followed: one row per distinct
+// (source class, property, target) over a whole ReferenceScope. Where `refs`
+// answers "what points at this object", this answers "what points at what, and
+// how often", without the caller processing individual objects.
+
+pub const relations = @import("relations.zig");
+pub const Relation = relations.Relation;
+pub const Target = relations.Target;
+
 // ── Diff ──────────────────────────────────────────────────────────────────────
 //
 // diff_core is the programmatic API: match objects by mRID and get structured

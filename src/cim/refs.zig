@@ -8,16 +8,13 @@ const cim_types = @import("cim_types.zig");
 
 const assert = std.debug.assert;
 
-/// One reverse reference edge: `referrer_id.reference_name -> target_id`.
 pub const ReverseRef = struct {
     referrer_id: []const u8,
     referrer_type: []const u8,
     reference_name: []const u8,
 };
 
-/// Reverse-reference index: target raw id (e.g. "_CN42") -> referrer edges.
-/// All slices point into the model/overlay XML buffers, so those inputs must
-/// outlive the index.
+/// Inputs must outlive the index because edges borrow their XML buffers.
 pub const ReverseRefIndex = struct {
     map: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(ReverseRef)),
 
@@ -30,9 +27,6 @@ pub const ReverseRefIndex = struct {
         return build_with_overlays(gpa, model, null, null);
     }
 
-    /// Full reverse index over every referrer's merged (EQ+TP+SSH) references,
-    /// so an overlay retarget moves the edge rather than duplicating it. browse
-    /// reuses this; one-shot refs uses collect_referrers_for_target instead.
     pub fn build_with_overlays(
         gpa: std.mem.Allocator,
         model: *const CimDocument,
@@ -45,10 +39,6 @@ pub const ReverseRefIndex = struct {
         const sink: EdgeSink = .{ .index = &index };
         try iterate_merged_edges(gpa, model, tp_opt, ssh_opt, sink);
 
-        // Postcondition pairs with emit_merged_edges' per-edge invariants:
-        // every key is a non-empty target id, and every bucket holds at least
-        // one edge (an empty bucket would mean we leaked an allocation without a
-        // corresponding append).
         var it = index.map.iterator();
         while (it.next()) |entry| {
             assert(entry.key_ptr.*.len > 0);
@@ -65,14 +55,11 @@ pub const ReverseRefIndex = struct {
 
     pub fn lookup(self: *const ReverseRefIndex, target_id: []const u8) []const ReverseRef {
         const list = self.map.get(target_id) orelse return &.{};
-        // Pair with build_with_overlays's invariant: every bucket holds at least
-        // one edge -- an empty hit signals index corruption.
         assert(list.items.len > 0);
         return list.items;
     }
 };
 
-/// Routes each discovered edge into the full index, or filters it to one target.
 const EdgeSink = union(enum) {
     index: *ReverseRefIndex,
     target: TargetCollector,
@@ -100,31 +87,20 @@ const EdgeSink = union(enum) {
     }
 };
 
-/// Precedence order for overlay references: SSH shadows TP shadows EQ.
 const Layer = enum { ssh, tp, eq };
 
-/// The child-tag span of one object (or patch), as (xml, boundaries, range).
-/// A patch is an element inside a document `refs` does not own, so there is no
-/// view to hand around -- only the span.
 const RefRange = struct {
     xml: []const u8,
     boundaries: []const xml_scan.TagBoundary,
     open_idx: u32,
     close_idx: u32,
 
-    /// Walk the range's children. Reference edges are the ones with
-    /// `kind == .reference`; iterating children rather than a name→value map
-    /// preserves repeated same-name tags, so multi-valued associations keep
-    /// every reverse edge.
+    /// A name-to-value map would lose repeated tags from multi-valued associations.
     fn children(self: RefRange) tag_index.ChildIterator {
         return tag_index.ChildIterator.init_range(self.xml, self.boundaries, self.open_idx, self.close_idx);
     }
 };
 
-/// Emit one reverse edge per *effective* reference of `base` after TP/SSH
-/// overlay. The streaming, precedence-aware twin of the merge `get` displays:
-/// a reference name an overlay defines shadows the same name in lower layers,
-/// but every repeated tag within the owning layer still emits its own edge.
 fn emit_merged_edges(
     gpa: std.mem.Allocator,
     sink: EdgeSink,
@@ -142,9 +118,7 @@ fn emit_merged_edges(
         .close_idx = base.closing_tag_idx,
     };
 
-    // No overlay files at all: stream EQ directly, skipping even the mRID scan
-    // a patch lookup would need. The common `cimd refs` path, kept at plain
-    // reverse-scan cost.
+    // Avoid scanning the mRID when no overlay lookup is needed.
     if (tp_opt == null and ssh_opt == null) {
         try stream_edges(gpa, sink, eq_range, base.id(), base.type_name(), null, .eq);
         return;
@@ -164,15 +138,13 @@ fn emit_merged_edges(
         .close_idx = p.closing_tag_idx,
     } else null else null;
 
-    // No overlay touches this object: stream EQ directly, no allocation -- the
-    // cost of a plain reverse scan, which is the common path.
+    // Untouched objects need no ownership map allocation.
     if (tp_range == null and ssh_range == null) {
         try stream_edges(gpa, sink, eq_range, base.id(), base.type_name(), null, .eq);
         return;
     }
 
-    // Resolve which layer owns each reference name (highest precedence wins),
-    // then let each layer emit only the names it owns.
+    // Track ownership by name so overlays shadow lower layers without losing repeated tags.
     var owner: std.StringHashMapUnmanaged(Layer) = .empty;
     defer owner.deinit(gpa);
     if (ssh_range) |r| try record_owners(gpa, &owner, .ssh, r);
@@ -184,8 +156,6 @@ fn emit_merged_edges(
     try stream_edges(gpa, sink, eq_range, base.id(), base.type_name(), &owner, .eq);
 }
 
-/// Claim `layer` as owner of each reference name in `range` unless a
-/// higher-precedence layer already did (callers record SSH→TP→EQ).
 fn record_owners(
     gpa: std.mem.Allocator,
     owner: *std.StringHashMapUnmanaged(Layer),
@@ -200,9 +170,6 @@ fn record_owners(
     }
 }
 
-/// Emit a reverse edge per rdf:resource tag in `range`. When `owner` is given,
-/// skip names a higher-precedence layer owns -- the shadowing that keeps `refs`
-/// in step with `get` without collapsing multi-valued tags.
 fn stream_edges(
     gpa: std.mem.Allocator,
     sink: EdgeSink,
@@ -226,8 +193,6 @@ fn stream_edges(
     }
 }
 
-/// Shared spine of the full index and the target scan: hand every referrer's
-/// effective edge to `sink`. Keeps the two paths from disagreeing.
 fn iterate_merged_edges(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
@@ -238,15 +203,12 @@ fn iterate_merged_edges(
     for (model.objects) |obj| {
         try emit_merged_edges(gpa, sink, obj, tp_opt, ssh_opt);
     }
-    // TP-added objects are referrers too; TP can't patch itself, so overlay = SSH.
+    // TP cannot patch its own new objects; only SSH can overlay them.
     if (tp_opt) |tp| for (tp.new_objects) |obj| {
         try emit_merged_edges(gpa, sink, obj, null, ssh_opt);
     };
 }
 
-/// Effective reverse edges pointing at `target_id`, without building the whole
-/// index. Caller owns the slice (strings borrow the XML); unsorted, so pass it
-/// through `filter_referrers`.
 pub fn collect_referrers_for_target(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
@@ -262,16 +224,12 @@ pub fn collect_referrers_for_target(
     return out.toOwnedSlice(gpa);
 }
 
-/// Look up a CIM object by exact id across the primary model and (when
-/// present) TP's new objects. Returns null if neither contains the id.
-/// EQ takes precedence; the command layer collision-checks before calling.
 pub fn resolve_object(
     model: *const CimDocument,
     tp_opt: ?Overlay,
     id: []const u8,
 ) ?tag_index.CimObject {
     if (model.object_by_id(id)) |view| {
-        // Round-trip pair: the EQ index must hand us back the same id.
         assert(std.mem.eql(u8, view.id(), id));
         return view;
     }
@@ -284,10 +242,6 @@ pub fn resolve_object(
     return null;
 }
 
-/// Exact resolution honoring the underscore-optional full-id convenience: the
-/// literal id first, then -- for an id typed without its leading `_` -- the
-/// rdf:ID form, so `A` resolves the stored `_A` (cf. ids.id_prefix_matches).
-/// Allocates only on the rare retry; the view's id slices the model, not `buf`.
 pub fn resolve_object_normalized(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
@@ -303,9 +257,7 @@ pub fn resolve_object_normalized(
     return null;
 }
 
-/// Return the first TP-added object whose raw RDF identifier collides with the
-/// primary model. Navigation resolves by raw id, so this check is allocation-
-/// free and prevents EQ from silently shadowing the TP object.
+/// Reject collisions so EQ lookup cannot silently hide a TP-declared object.
 pub fn find_tp_primary_id_collision(
     model: *const CimDocument,
     tp: Overlay,
@@ -316,12 +268,7 @@ pub fn find_tp_primary_id_collision(
     return null;
 }
 
-/// Collect all prefix matches for `mrid_prefix` across the primary model and
-/// (when present) TP's new objects. Returns owned slice.
-///
-/// Without this union, `refs --tp eq _TN1` would not_found even though the
-/// reverse index is overlay-aware -- TP-added objects like TopologicalNodes
-/// don't exist in EQ's tag index but must still be valid targets.
+/// TP-added objects must remain valid targets even though EQ has no entry for them.
 pub fn collect_target_candidates(
     gpa: std.mem.Allocator,
     model: *const CimDocument,
@@ -335,8 +282,6 @@ pub fn collect_target_candidates(
     if (tp_opt) |tp| try append_target_candidates(gpa, &matches, tp.new_objects, mrid_prefix);
 
     const out = try matches.toOwnedSlice(gpa);
-    // Downstream consumers (lookup, display, mrid stripping) all require a
-    // non-empty id; any empty here means an upstream parser admitted garbage.
     for (out) |obj| {
         assert(obj.id().len > 0);
         assert(obj.type_name().len > 0);
@@ -357,10 +302,7 @@ fn append_target_candidates(
     for (matches.items[start_len..]) |obj| assert(ids.id_prefix_matches(obj.id(), mrid_prefix));
 }
 
-/// Return a freshly-allocated, sorted slice of referrers filtered by
-/// `type_filter`. Sort order is (referrer_type, referrer_id, reference_name).
-/// Caller owns and must free the returned slice. The slice's strings still
-/// borrow from the underlying XML buffers -- the index/model must outlive it.
+/// Strings borrow XML, so the caller frees only the returned slice.
 pub fn filter_referrers(
     gpa: std.mem.Allocator,
     referrers: []const ReverseRef,
@@ -388,8 +330,6 @@ pub fn filter_referrers(
     }
     assert(i == out.len);
 
-    // Postcondition pairs with the filter loop above: every retained row must
-    // still satisfy the type filter.
     for (out) |ref| assert(cim_types.matches_filter(ref.referrer_type, type_filter));
     sort_referrers(out);
     return out;
@@ -397,7 +337,6 @@ pub fn filter_referrers(
 
 fn sort_referrers(referrers: []ReverseRef) void {
     std.mem.sort(ReverseRef, referrers, {}, reverse_ref_less_than);
-    // Postcondition pairs with std.mem.sort above.
     if (referrers.len > 1) for (referrers[1..], 1..) |ref, i| {
         assert(!reverse_ref_less_than({}, ref, referrers[i - 1]));
     };
@@ -411,8 +350,6 @@ fn reverse_ref_less_than(_: void, a: ReverseRef, b: ReverseRef) bool {
     return std.mem.order(u8, a.reference_name, b.reference_name) == .lt;
 }
 
-/// Render the human-readable text form: one line per referrer formatted as
-/// `<referrer_id> | <referrer_type> | <reference_name>`. Caller flushes.
 pub fn write_referrers_text(
     w: *std.Io.Writer,
     target_id: []const u8,
@@ -429,8 +366,6 @@ pub fn write_referrers_text(
         return;
     }
     for (referrers) |ref| {
-        // Pair with collect_refs_from_range's preconditions: a row reaching
-        // the renderer with empty fields would point at an indexer regression.
         assert(ref.referrer_id.len > 0);
         assert(ref.referrer_type.len > 0);
         assert(ref.reference_name.len > 0);
@@ -442,9 +377,6 @@ pub fn write_referrers_text(
     }
 }
 
-/// Render the JSON form: `{"id":..,"type":..,"referrers":[{"id":..,"type":..,"reference":..}]}`.
-/// Python/jq consumers key off this schema -- changing field names is a breaking
-/// change for downstream scripts. Test "writes JSON envelope" pins the shape.
 pub fn write_referrers_json(
     w: *std.Io.Writer,
     target_id: []const u8,
@@ -459,8 +391,6 @@ pub fn write_referrers_json(
     try std.json.Stringify.value(target_type, .{}, w);
     try w.writeAll(",\"referrers\":[");
     for (referrers, 0..) |ref, i| {
-        // Pair with collect_refs_from_range's preconditions: empty fields here
-        // would point at an indexer regression rather than a renderer bug.
         assert(ref.referrer_id.len > 0);
         assert(ref.referrer_type.len > 0);
         assert(ref.reference_name.len > 0);
@@ -591,8 +521,6 @@ test "ReverseRefIndex collects multiple referrers per target (hub case)" {
 
 test "ReverseRefIndex keeps every edge of a multi-valued reference" {
     const gpa = std.testing.allocator;
-    // Two child tags share the reference name Foo.Bar. A name->value map would
-    // collapse them to one edge; the streaming scan keeps both targets.
     const xml =
         \\<rdf:RDF>
         \\  <cim:Foo rdf:ID="_F1">
@@ -639,8 +567,6 @@ test "ReverseRefIndex applies overlay precedence to a retargeted reference" {
     var index = try ReverseRefIndex.build_with_overlays(gpa, &model, tp, null);
     defer index.deinit(gpa);
 
-    // TP retargets the reference: the new target gains the edge, the shadowed
-    // EQ target keeps none.
     const to_tp = index.lookup("_CE_tp");
     try std.testing.expectEqual(@as(usize, 1), to_tp.len);
     try std.testing.expectEqualStrings("_T1", to_tp[0].referrer_id);
@@ -660,7 +586,6 @@ test "collect_referrers_for_target streams multi-valued references" {
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
-    // The target scan must see _A even though Foo.Bar also points at _B.
     const referrers = try collect_referrers_for_target(gpa, &model, null, null, "_A");
     defer gpa.free(referrers);
     try std.testing.expectEqual(@as(usize, 1), referrers.len);
@@ -683,7 +608,6 @@ test "ReverseRefIndex ignores rdf:resource inside a comment" {
     var index = try ReverseRefIndex.build(gpa, &model);
     defer index.deinit(gpa);
 
-    // The commented-out reference must not produce an edge to _A.
     try std.testing.expectEqual(@as(usize, 0), index.lookup("_A").len);
     try std.testing.expectEqual(@as(usize, 1), index.lookup("_B").len);
 }
@@ -712,11 +636,9 @@ test "resolve_object_normalized resolves a full id typed without its leading und
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
-    // Literal hit when the underscore is present.
     const exact = try resolve_object_normalized(gpa, &model, null, "_SS1") orelse return error.NotFound;
     try std.testing.expectEqualStrings("_SS1", exact.id());
 
-    // Underscore-optional convenience: "SS1" resolves the stored "_SS1".
     const convenient = try resolve_object_normalized(gpa, &model, null, "SS1") orelse return error.NotFound;
     try std.testing.expectEqualStrings("_SS1", convenient.id());
 
@@ -734,7 +656,6 @@ test "resolve_object_normalized prefers an exact literal hit over the underscore
     var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
     defer model.deinit(gpa);
 
-    // Literal "A" is authoritative; the "_A" retry must not shadow it.
     const hit = try resolve_object_normalized(gpa, &model, null, "A") orelse return error.NotFound;
     try std.testing.expectEqualStrings("A", hit.id());
     try std.testing.expectEqualStrings("Substation", hit.type_name());
@@ -817,9 +738,6 @@ test "write_referrers_json: pins the wire format" {
     try write_referrers_json(&w, "_L1", "Line", &refs);
     const out = w.buffered();
 
-    // Parse round-trip: the output must be valid JSON with the exact schema
-    // downstream Python scripts depend on. This is the contract: changing it
-    // is a breaking change.
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out, .{});
     defer parsed.deinit();
     const root = parsed.value.object;
@@ -898,19 +816,16 @@ test "collect_target_candidates: TP-only target resolves under --tp" {
     var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, tp_xml));
     defer tp.deinit(gpa);
 
-    // Without --tp the TP-added id is invisible.
     const no_tp = try collect_target_candidates(gpa, &model, null, "TN1");
     defer gpa.free(no_tp);
     try std.testing.expectEqual(@as(usize, 0), no_tp.len);
 
-    // With --tp the prefix resolves to the TP TopologicalNode.
     const with_tp = try collect_target_candidates(gpa, &model, tp, "TN1");
     defer gpa.free(with_tp);
     try std.testing.expectEqual(@as(usize, 1), with_tp.len);
     try std.testing.expectEqualStrings("_TN1", with_tp[0].id());
     try std.testing.expectEqualStrings("TopologicalNode", with_tp[0].type_name());
 
-    // The overlay-aware index then finds the patched Terminal as its referrer.
     var index = try ReverseRefIndex.build_with_overlays(gpa, &model, tp, null);
     defer index.deinit(gpa);
     const refs = index.lookup(with_tp[0].id());
@@ -938,7 +853,6 @@ test "collect_target_candidates: EQ and TP matches both included" {
     const matches = try collect_target_candidates(gpa, &model, tp, "X");
     defer gpa.free(matches);
     try std.testing.expectEqual(@as(usize, 2), matches.len);
-    // EQ matches come first by construction.
     try std.testing.expectEqualStrings("_X1", matches[0].id());
     try std.testing.expectEqualStrings("_X2", matches[1].id());
 }
