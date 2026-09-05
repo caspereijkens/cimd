@@ -38,17 +38,33 @@ pub const Relation = struct {
     target: Target,
     count: u32,
 
-    /// Kind breaks ties when an object and enumeration share a class name.
+    /// count descending, then the by_name chain
     pub fn by_count_desc(_: void, a: Relation, b: Relation) bool {
-        _ = a;
-        _ = b;
-        @panic("TODO(#88): Relation.by_count_desc");
+        if (a.count != b.count) return a.count > b.count;
+        return by_name({}, a, b);
     }
 
+    /// source → property → target name → kind
     pub fn by_name(_: void, a: Relation, b: Relation) bool {
-        _ = a;
-        _ = b;
-        @panic("TODO(#88): Relation.by_name");
+        switch (std.mem.order(u8, a.source, b.source)) {
+            .lt => return true,
+            .gt => return false,
+            .eq => {},
+        }
+        switch (std.mem.order(u8, a.property, b.property)) {
+            .lt => return true,
+            .gt => return false,
+            .eq => {},
+        }
+        switch (std.mem.order(u8, a.target.name(), b.target.name())) {
+            .lt => return true,
+            .gt => return false,
+            .eq => {},
+        }
+        // Reached only when a name is shared across kinds, or shared as the
+        // empty name every unresolved target carries.
+        return @intFromEnum(std.meta.activeTag(a.target)) <
+            @intFromEnum(std.meta.activeTag(b.target));
     }
 };
 
@@ -183,12 +199,36 @@ pub const RelationCounts = struct {
         gpa: std.mem.Allocator,
         order: Order,
     ) error{OutOfMemory}![]Relation {
-        _ = self;
-        _ = gpa;
-        _ = order;
-        @panic("TODO(#88): RelationCounts.sorted");
+        const relations = try gpa.dupe(Relation, self.relations);
+        // std.mem.sort takes the comparator comptime, so the switch picks the
+        // call rather than the function value.
+        switch (order) {
+            .count_desc => {
+                std.mem.sort(Relation, relations, {}, Relation.by_count_desc);
+                assert_strict_order(relations, Relation.by_count_desc);
+            },
+            .name => {
+                std.mem.sort(Relation, relations, {}, Relation.by_name);
+                assert_strict_order(relations, Relation.by_name);
+            },
+        }
+        return relations;
     }
 };
+
+/// Adjacent pairs pin down the whole order: strict on every neighbour means no
+/// ties survived, which is the property `build` guarantees by keying rows on
+/// all four components.
+fn assert_strict_order(
+    relations: []const Relation,
+    comptime less_than: fn (void, Relation, Relation) bool,
+) void {
+    if (relations.len == 0) return;
+    for (relations[0 .. relations.len - 1], relations[1..]) |a, b| {
+        assert(less_than({}, a, b));
+        assert(!less_than({}, b, a));
+    }
+}
 
 const ClassifiedTarget = struct {
     target: Target,
@@ -239,6 +279,7 @@ fn is_enumeration_shape(value: []const u8) ?EnumerationShape {
 
 const testing = std.testing;
 const CimDocument = @import("document.zig").CimDocument;
+const ReverseRefIndex = @import("refs.zig").ReverseRefIndex;
 
 const cim16_ns = "http://iec.ch/TC57/2013/CIM-schema-cim16#";
 const cim100_ns = "http://iec.ch/TC57/CIM100#";
@@ -548,9 +589,235 @@ test "RelationCounts.build: resolution beats the shape rule" {
     try expect_row(counts, "Terminal", "Terminal.phases", .object, "PhaseCode", 1);
 }
 
-test "stubs: signatures are analysed" {
-    // Zig skips unreferenced declarations; force stub signatures to be analysed.
-    _ = &Relation.by_count_desc;
-    _ = &Relation.by_name;
-    _ = &RelationCounts.sorted;
+fn expect_relation(expected: Relation, actual: Relation) !void {
+    try testing.expectEqualStrings(expected.source, actual.source);
+    try testing.expectEqualStrings(expected.property, actual.property);
+    try testing.expectEqual(std.meta.activeTag(expected.target), std.meta.activeTag(actual.target));
+    try testing.expectEqualStrings(expected.target.name(), actual.target.name());
+    try testing.expectEqual(expected.count, actual.count);
+}
+
+/// One row per level of both chains: `_line` is alone on source, `_breaker` on
+/// property, and the last three share (source, property) so only the target
+/// name and then the kind can separate them. `_line` also carries the odd
+/// count, so the two orders disagree about where it goes.
+const sort_fixture = [_]Relation{
+    .{ .source = "Terminal", .property = "Terminal.phases", .target = .{ .object = "PhaseCode" }, .count = 4 },
+    .{ .source = "ACLineSegment", .property = "Equipment.EquipmentContainer", .target = .{ .object = "Line" }, .count = 1 },
+    .{ .source = "Terminal", .property = "Terminal.phases", .target = .unresolved, .count = 4 },
+    .{ .source = "Terminal", .property = "Terminal.ConductingEquipment", .target = .{ .object = "Breaker" }, .count = 4 },
+    .{ .source = "Terminal", .property = "Terminal.phases", .target = .{ .enumeration = "PhaseCode" }, .count = 4 },
+};
+
+const sort_fixture_object = sort_fixture[0];
+const sort_fixture_line = sort_fixture[1];
+const sort_fixture_unresolved = sort_fixture[2];
+const sort_fixture_breaker = sort_fixture[3];
+const sort_fixture_enumeration = sort_fixture[4];
+
+fn expect_sorted(rows: []Relation, order: Order, expected: []const Relation) !void {
+    const counts = RelationCounts{ .relations = rows, .totals = .{} };
+    const got = try counts.sorted(testing.allocator, order);
+    defer testing.allocator.free(got);
+
+    try testing.expectEqual(expected.len, got.len);
+    for (expected, got) |want, have| try expect_relation(want, have);
+}
+
+test "Relation.by_name: source, then property, then target name, then kind" {
+    var rows = sort_fixture;
+    try expect_sorted(&rows, .name, &.{
+        sort_fixture_line,
+        sort_fixture_breaker,
+        // An unresolved target's empty name sorts ahead of every real one, so
+        // the kind tie-break is reached only by the two PhaseCode rows.
+        sort_fixture_unresolved,
+        sort_fixture_object,
+        sort_fixture_enumeration,
+    });
+}
+
+test "Relation.by_count_desc: count first, then the by_name chain" {
+    var rows = sort_fixture;
+    try expect_sorted(&rows, .count_desc, &.{
+        sort_fixture_breaker,
+        sort_fixture_unresolved,
+        sort_fixture_object,
+        sort_fixture_enumeration,
+        sort_fixture_line,
+    });
+}
+
+test "RelationCounts.sorted: the result does not depend on the input order" {
+    var forward = sort_fixture;
+    var reversed = sort_fixture;
+    std.mem.reverse(Relation, &reversed);
+
+    for ([_]Order{ .count_desc, .name }) |order| {
+        const from_forward = RelationCounts{ .relations = &forward, .totals = .{} };
+        const from_reversed = RelationCounts{ .relations = &reversed, .totals = .{} };
+
+        const a = try from_forward.sorted(testing.allocator, order);
+        defer testing.allocator.free(a);
+        const b = try from_reversed.sorted(testing.allocator, order);
+        defer testing.allocator.free(b);
+
+        for (a, b) |x, y| try expect_relation(x, y);
+    }
+}
+
+test "RelationCounts.sorted: a copy, so both orders stay valid at once" {
+    var rows = sort_fixture;
+    const counts = RelationCounts{ .relations = &rows, .totals = .{} };
+
+    const by_count = try counts.sorted(testing.allocator, .count_desc);
+    defer testing.allocator.free(by_count);
+    const by_name = try counts.sorted(testing.allocator, .name);
+    defer testing.allocator.free(by_name);
+
+    try expect_relation(sort_fixture_breaker, by_count[0]);
+    try expect_relation(sort_fixture_line, by_name[0]);
+    for (sort_fixture, counts.relations) |untouched, row| try expect_relation(untouched, row);
+}
+
+test "RelationCounts.build: association rows agree with ReverseRefIndex" {
+    // Constrained so the two are comparable: one document, no overlays, rdf:ID
+    // form throughout, and nothing malformed.
+    var model = try init_test_document(
+        \\<rdf:RDF>
+        \\  <cim:Terminal rdf:ID="_t1">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_l1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_t2">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_l1"/>
+        \\  </cim:Terminal>
+        \\  <cim:Terminal rdf:ID="_t3">
+        \\    <cim:Terminal.ConductingEquipment rdf:resource="#_b1"/>
+        \\  </cim:Terminal>
+        \\  <cim:ACLineSegment rdf:ID="_l1">
+        \\    <cim:Equipment.EquipmentContainer rdf:resource="#_vl1"/>
+        \\  </cim:ACLineSegment>
+        \\  <cim:Breaker rdf:ID="_b1">
+        \\    <cim:Equipment.EquipmentContainer rdf:resource="#_vl1"/>
+        \\  </cim:Breaker>
+        \\  <cim:VoltageLevel rdf:ID="_vl1"/>
+        \\</rdf:RDF>
+    );
+    defer model.deinit(testing.allocator);
+    var scope = try ReferenceScope.init(testing.allocator, &.{&model});
+    defer scope.deinit(testing.allocator);
+
+    var index = try ReverseRefIndex.build(testing.allocator, &model);
+    defer index.deinit(testing.allocator);
+
+    var counts = try RelationCounts.build(testing.allocator, &scope);
+    defer counts.deinit(testing.allocator);
+
+    var checked: u32 = 0;
+    for (counts.relations) |row| {
+        const target_class = switch (row.target) {
+            .object => |class| class,
+            .enumeration, .unresolved => continue,
+        };
+        var edges: u32 = 0;
+        for (model.objects) |object| {
+            if (!std.mem.eql(u8, object.type_name(), target_class)) continue;
+            for (index.lookup(object.id())) |edge| {
+                if (!std.mem.eql(u8, edge.referrer_type, row.source)) continue;
+                if (!std.mem.eql(u8, edge.reference_name, row.property)) continue;
+                edges += 1;
+            }
+        }
+        try testing.expectEqual(row.count, edges);
+        checked += 1;
+    }
+    // A loop that compared nothing would pass just as quietly.
+    try testing.expectEqual(@as(u32, 4), checked);
+}
+
+/// `property_count` distinct properties on one object, every one of them
+/// dangling. The targets all collapse onto the unresolved sentinel, so the
+/// property is the only thing making the rows distinct.
+fn document_with_distinct_properties(property_count: u32) !CimDocument {
+    var xml: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer xml.deinit(testing.allocator);
+
+    try xml.appendSlice(testing.allocator,
+        \\<rdf:RDF>
+        \\  <cim:Terminal rdf:ID="_t1">
+        \\
+    );
+    for (0..property_count) |i| {
+        var line: [80]u8 = undefined;
+        try xml.appendSlice(testing.allocator, try std.fmt.bufPrint(
+            &line,
+            "    <cim:Terminal.p{d} rdf:resource=\"#_missing\"/>\n",
+            .{i},
+        ));
+    }
+    try xml.appendSlice(testing.allocator,
+        \\  </cim:Terminal>
+        \\</rdf:RDF>
+    );
+
+    const owned = try xml.toOwnedSlice(testing.allocator);
+    errdefer testing.allocator.free(owned);
+    return CimDocument.init(testing.allocator, owned);
+}
+
+test "RelationCounts.build: exactly relations_max distinct rows is accepted" {
+    var model = try document_with_distinct_properties(RelationCounts.relations_max);
+    defer model.deinit(testing.allocator);
+    var scope = try ReferenceScope.init(testing.allocator, &.{&model});
+    defer scope.deinit(testing.allocator);
+
+    var counts = try RelationCounts.build(testing.allocator, &scope);
+    defer counts.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, RelationCounts.relations_max), counts.relations.len);
+}
+
+test "RelationCounts.build: one row past relations_max is an error, and frees what it had" {
+    var model = try document_with_distinct_properties(RelationCounts.relations_max + 1);
+    defer model.deinit(testing.allocator);
+    var scope = try ReferenceScope.init(testing.allocator, &.{&model});
+    defer scope.deinit(testing.allocator);
+
+    // Unwrapped by hand rather than with expectError: an unexpected success
+    // owns rows that have to be freed, or the leak check fires instead of the
+    // assertion and buries which one actually broke.
+    if (RelationCounts.build(testing.allocator, &scope)) |built| {
+        var counts = built;
+        counts.deinit(testing.allocator);
+        return error.TestExpectedTooManyRelations;
+    } else |err| {
+        // The abandoned rows and both interners leak here if the error path
+        // skips a deinit; testing.allocator is what notices.
+        try testing.expectEqual(error.TooManyRelations, err);
+    }
+}
+
+fn build_then_free(gpa: std.mem.Allocator, scope: *const ReferenceScope) !void {
+    var counts = try RelationCounts.build(gpa, scope);
+    counts.deinit(gpa);
+}
+
+fn sort_then_free(gpa: std.mem.Allocator, counts: *const RelationCounts) !void {
+    const by_count = try counts.sorted(gpa, .count_desc);
+    defer gpa.free(by_count);
+    const by_name = try counts.sorted(gpa, .name);
+    gpa.free(by_name);
+}
+
+test "RelationCounts: every allocation failure unwinds without leaking" {
+    var model = try init_test_document(mixed_document);
+    defer model.deinit(testing.allocator);
+    var scope = try ReferenceScope.init(testing.allocator, &.{&model});
+    defer scope.deinit(testing.allocator);
+
+    try testing.checkAllAllocationFailures(testing.allocator, build_then_free, .{&scope});
+
+    var counts = try RelationCounts.build(testing.allocator, &scope);
+    defer counts.deinit(testing.allocator);
+    try testing.checkAllAllocationFailures(testing.allocator, sort_then_free, .{&counts});
 }
