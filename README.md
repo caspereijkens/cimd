@@ -1,13 +1,7 @@
 ![LOGO](docs/cimd-icon-square-transparent.svg)
 
 # cimd
-cimd is a **C**ommand line **I**nterface for grid **M**odel **D**ata. It is a high-performance tool for working with CGMES (Common Grid Model Exchange Standard) data. See https://cimd.eu for more information.
-
-Model-set loading reads every XML part in a ZIP and classifies parts from their
-`FullModel` profile declarations. Positional EQ/EQBD/TP/SSH files can therefore
-be supplied together without kind flags. Compatibility note: a multi-entry ZIP
-is no longer reduced to its first XML entry, and a strict command rejects an
-unknown declared profile unless `--eq` routes it explicitly.
+cimd is a **C**ommand-line **I**nterface for grid **M**odel **D**ata. See https://cimd.eu for more information.
 
 <!-- FEATURES_START -->
 ## Features
