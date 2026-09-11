@@ -1,11 +1,3 @@
-//! Golden compile tests for the SHACL rule-set loader (rule_set.zig).
-//!
-//! One miniature rule set exercises every Check variant, all four PathKinds,
-//! all three Targets, a closed shape, a multi-class target that must flatten
-//! and dedupe, both inline and named property shapes, one sh:sparql, and one
-//! misspelled sh:MinCount, then asserts the compiled tables. A second test
-//! loads the pinned published corpus and asserts its aggregate counts.
-
 const std = @import("std");
 const turtle = @import("turtle.zig");
 const rule_set = @import("rule_set.zig");
@@ -13,8 +5,6 @@ const RuleSet = rule_set.RuleSet;
 
 const testing = std.testing;
 
-/// Miniature corpus-shaped rule set: prefixes, namespace variants, named
-/// and inline property shapes, glued punctuation.
 const golden_source =
     \\@prefix sh:    <http://www.w3.org/ns/shacl#> .
     \\@prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
@@ -186,7 +176,6 @@ fn load_borrowed_rules(gpa: std.mem.Allocator, source: []const u8, expected_erro
     }
 }
 
-/// All shapes with the given name, in table order.
 fn shapes_named(rules: *const RuleSet, name: []const u8, out: []RuleSet.Shape) []RuleSet.Shape {
     var count: usize = 0;
     for (rules.shapes) |shape| {
@@ -207,15 +196,9 @@ test "golden: table sizes, class index, and provenance" {
     defer rules.deinit(gpa);
 
     try testing.expectEqualStrings("9.9.9-test", rules.version);
-    // No escapes, no substitution table: every string stays a zero-copy
-    // slice into source.
     try testing.expectEqual(@as(usize, 0), rules.strings.len);
 
-    // Class-targeted entries: LineShape flattens to {ACLineSegment, Switch},
-    // then LineShape2, SwitchClosed, BreakerKind, TerminalShape, InvCount,
-    // RangeShape, SparqlShape, TypoShape; Deactivated is skipped.
     try testing.expectEqual(@as(u32, 10), rules.class_targeted_count);
-    // Tail: AllowedClasses, Inverse (subjects-of) and NodeTarget (node).
     try testing.expectEqual(@as(usize, 13), rules.shapes.len);
 
     try testing.expectEqual(@as(u32, 6), rules.class_index.count());
@@ -226,16 +209,10 @@ test "golden: table sizes, class index, and provenance" {
     try testing.expectEqual(@as(u32, 1), rules.class_index.get("Substation").?.len);
     try testing.expectEqual(@as(u32, 1), rules.class_index.get("BaseVoltage").?.len);
 
-    // 4 (LineShape) + 2 (LineShape2 duplication) + 2 (BreakerKind) +
-    // 2 (TerminalShape) + 1 (AllowedClasses) + 1 (Inverse) + 1 (InvCount) +
-    // 7 (RangeShape) + 1 (NodeTarget).
     try testing.expectEqual(@as(usize, 21), rules.constraints.len);
-    // 2 (BreakerKind, deduped from 3) + 1 (TerminalShape) + 4 (whitelist).
     try testing.expectEqual(@as(usize, 7), rules.in_values.len);
-    // SwitchClosed: 3 declared paths dedupe to 2.
     try testing.expectEqual(@as(usize, 2), rules.closed_paths.len);
 
-    // Every class-targeted entry lies inside its class_index range.
     var it = rules.class_index.iterator();
     var covered: u32 = 0;
     while (it.next()) |entry| {
@@ -256,7 +233,6 @@ test "golden: multi-class flattening shares one constraint range" {
     var buf: [4]RuleSet.Shape = undefined;
     const line_shapes = shapes_named(&rules, "LineShape", &buf);
     try testing.expectEqual(@as(usize, 2), line_shapes.len);
-    // Both flattened entries share the same constraint range.
     try testing.expectEqual(line_shapes[0].constraints.start, line_shapes[1].constraints.start);
     try testing.expectEqual(@as(u32, 4), line_shapes[0].constraints.len);
 
@@ -269,8 +245,6 @@ test "golden: multi-class flattening shares one constraint range" {
     try testing.expect(found_switch);
     try testing.expect(found_line);
 
-    // The named property shape's constraints carry its own rule code,
-    // message, and severity, not the node shape's.
     const constraints = constraints_of(&rules, line_shapes[0]);
     try testing.expectEqualStrings("ACLineSegment.r-datatype", constraints[0].name);
     try testing.expectEqualStrings("ACLineSegment.r", constraints[0].path);
@@ -287,8 +261,6 @@ test "golden: multi-class flattening shares one constraint range" {
     try testing.expectEqual(@as(u32, 1), constraints[2].check.min_count);
     try testing.expect(constraints[3].check == .max_count);
 
-    // The second reference duplicates the constraints into its own range.
-    // (Separate buffer: shapes_named returns a view into its argument.)
     var buf2: [4]RuleSet.Shape = undefined;
     const line2 = shapes_named(&rules, "LineShape2", &buf2);
     try testing.expectEqual(@as(usize, 1), line2.len);
@@ -427,9 +399,6 @@ test "golden: unsupported rules are counted and named" {
 
 test "value checks on inverse paths load as unsupported" {
     const gpa = testing.allocator;
-    // Inverse paths evaluate through the referrer-count pass, which yields
-    // cardinality only: the sh:in half of this shape cannot run and
-    // must be reported, while the maxCount half compiles.
     const source =
         \\@prefix sh:  <http://www.w3.org/ns/shacl#> .
         \\@prefix cim: <https://cim.ucaiug.io/ns#> .
@@ -508,8 +477,6 @@ test "escaped string literals decode at load; untouched strings stay in source" 
             try testing.expectEqualStrings("A\tB", constraint.check.has_value);
         }
     }
-    // The untouched shape name keeps the zero-copy default: a slice into
-    // `source`, not into the transform buffer.
     try testing.expectEqualStrings("Esc", shape.name);
     const name_addr = @intFromPtr(shape.name.ptr);
     try testing.expect(name_addr >= @intFromPtr(rules.source.ptr));
@@ -518,9 +485,6 @@ test "escaped string literals decode at load; untouched strings stay in source" 
 
 test "sh:in lists re-sort after escape decoding" {
     const gpa = testing.allocator;
-    // Raw bytes sort "aZ" (Z = 0x5A) before "a!" (backslash = 0x5C);
-    // decoded, "a!" (0x21) must come first for the evaluator's binary
-    // search.
     const source =
         \\@prefix sh: <http://www.w3.org/ns/shacl#> .
         \\@prefix cim: <http://cim#> .
@@ -575,7 +539,6 @@ test "substitution table expands message constants at load" {
                 constraint.message,
             );
         } else {
-            // No constant, no rewrite: still a slice into `source`.
             try testing.expectEqualStrings("self-contained message", constraint.message);
             const addr = @intFromPtr(constraint.message.ptr);
             try testing.expect(addr >= @intFromPtr(rules.source.ptr));
@@ -603,15 +566,11 @@ test "substitution expansion past message_bytes_max is MessageTooLong" {
         error.MessageTooLong,
         RuleSet.load(gpa, source, "blowup.ttl", &substitutions, &diagnostics),
     );
-    // The failure is only reachable through expansion, yet it still names
-    // the sh:message row's line.
     try testing.expectEqual(@as(u32, 8), diagnostics.line);
 }
 
 test "a \\U escape naming an impossible codepoint fails the load with its line" {
     const gpa = testing.allocator;
-    // Eight well-formed hex digits can still exceed U+10FFFF; the
-    // tokenizer catches it while the offending line is known.
     const source =
         \\@prefix sh: <http://www.w3.org/ns/shacl#> .
         \\@prefix cim: <http://cim#> .
@@ -631,10 +590,6 @@ test "a \\U escape naming an impossible codepoint fails the load with its line" 
 }
 
 test "corpus smoke: pinned aggregate counts across the published rule sets" {
-    // Loads every parseable file of the pinned corpus (see test_turtle.zig
-    // for the symlink convention and the one known-broken file) and asserts
-    // the aggregate shape/constraint/unsupported counts, so a rule-set
-    // release bump that changes coverage is a visible diff.
     const corpus_path = "testdata/shacl-corpus";
     const gpa = testing.allocator;
     const io = testing.io;
@@ -670,7 +625,6 @@ test "corpus smoke: pinned aggregate counts across the published rule sets" {
 
         var diagnostics: RuleSet.Diagnostics = .{};
         var rules = RuleSet.load(gpa, source, entry.name, &.{}, &diagnostics) catch |err| {
-            // The one published file with broken Turtle (undeclared `io:`).
             try testing.expectEqual(RuleSet.LoadError.UnknownPrefix, err);
             totals.broken += 1;
             continue;
@@ -678,7 +632,6 @@ test "corpus smoke: pinned aggregate counts across the published rule sets" {
         defer rules.deinit(gpa);
 
         try testing.expect(rules.version.len > 0); // Published corpus carries provenance.
-        // Published files carry no escaped literals: the zero-copy default.
         try testing.expectEqual(@as(usize, 0), rules.strings.len);
         totals.shapes += rules.shapes.len;
         totals.constraints += rules.constraints.len;
@@ -691,9 +644,6 @@ test "corpus smoke: pinned aggregate counts across the published rule sets" {
 
     try testing.expectEqual(@as(u32, 28), totals.files);
     try testing.expectEqual(@as(u32, 1), totals.broken);
-    // Pinned against ApplicationProfiles_NCP_v2-4-1-2 (27 loadable files).
-    // The full pinned corpus has 59 sh:sparql and 1 sh:MinCount; the broken
-    // Common-Complex file holds 1 sh:sparql shape, hence 58 loaded here.
     try testing.expectEqual(@as(u64, 58), totals.sparql);
     try testing.expectEqual(@as(u64, 1), totals.typo);
     try testing.expectEqual(@as(u64, 1_945), totals.shapes);
