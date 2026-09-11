@@ -380,7 +380,7 @@ fn local_form(reference: []const u8) []const u8 {
 const test_gpa = std.testing.allocator;
 
 fn init_document(xml: []const u8) !CimDocument {
-    return CimDocument.init(test_gpa, try test_gpa.dupe(u8, xml));
+    return CimDocument.init(test_gpa, xml);
 }
 
 const rdf_id_document =

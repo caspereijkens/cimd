@@ -57,10 +57,22 @@ pub const Source = struct {
     }
 };
 
-pub const LoadedOverlay = struct { overlay: Overlay, source: Source };
+pub const LoadedOverlay = struct {
+    overlay: Overlay,
+    owned_xml: []u8,
+    source: Source,
+
+    fn deinit(self: *LoadedOverlay, gpa: std.mem.Allocator) void {
+        self.overlay.deinit(gpa);
+        gpa.free(self.owned_xml);
+        self.source.deinit(gpa);
+        self.* = undefined;
+    }
+};
 
 pub const MergedModelSet = struct {
     model: CimDocument,
+    owned_xml: []u8,
     segments: [2]validate.DataSegment,
     segments_count: u8,
     tp: ?LoadedOverlay,
@@ -73,15 +85,10 @@ pub const MergedModelSet = struct {
     primary_kind: ?Kind,
 
     pub fn deinit(self: *MergedModelSet, gpa: std.mem.Allocator) void {
-        if (self.ssh) |*loaded| {
-            loaded.overlay.deinit(gpa);
-            loaded.source.deinit(gpa);
-        }
-        if (self.tp) |*loaded| {
-            loaded.overlay.deinit(gpa);
-            loaded.source.deinit(gpa);
-        }
+        if (self.ssh) |*loaded| loaded.deinit(gpa);
+        if (self.tp) |*loaded| loaded.deinit(gpa);
         self.model.deinit(gpa);
+        gpa.free(self.owned_xml);
         if (self.boundary_source) |*source| source.deinit(gpa);
         self.primary_source.deinit(gpa);
     }
@@ -146,25 +153,42 @@ fn collect_parts(
             @intCast(result.records.items.len),
             @intCast(parts.len),
         );
-        result.input_part_counts[input_index] = @intCast(parts.len);
-
-        for (parts) |*part| {
-            total_bytes += @intCast(part.xml.len);
+        var prepared: [io_read.parts_per_input_max]PartRecord = undefined;
+        assert(parts.len <= prepared.len);
+        for (parts, 0..) |part, index| {
+            total_bytes += @intCast(part.owned_xml.len);
             assert(total_bytes <= io_read.max_in_memory_input_bytes);
-            const header = try classify_part(io, gpa, command_name, part.*);
+            const header = try classify_part(io, gpa, command_name, part);
             const route = route_part(io, command_name, input.override, part.name, header);
-            try result.records.append(gpa, .{
-                .part = part.*,
+            prepared[index] = .{
+                .part = part,
                 .header = header,
                 .route = route,
                 .input_index = @intCast(input_index),
-            });
-            part.name = &.{};
-            part.xml = &.{};
+            };
         }
+        try adopt_parts(gpa, &result, parts, prepared[0..parts.len], @intCast(input_index));
     }
     assert(result.records.items.len <= parts_count_max);
     return result;
+}
+
+fn adopt_parts(
+    gpa: std.mem.Allocator,
+    collected: *Collected,
+    parts: []io_read.Part,
+    prepared: []const PartRecord,
+    input_index: u8,
+) !void {
+    assert(parts.len == prepared.len);
+    try collected.records.ensureUnusedCapacity(gpa, parts.len);
+    errdefer comptime unreachable;
+    collected.records.appendSliceAssumeCapacity(prepared);
+    collected.input_part_counts[input_index] = @intCast(parts.len);
+    for (parts) |*part| {
+        part.name = &.{};
+        part.owned_xml = &.{};
+    }
 }
 
 fn validate_part_count(
@@ -190,7 +214,7 @@ fn classify_part(
     command_name: []const u8,
     part: io_read.Part,
 ) !HeaderState {
-    return if (profile.classify(gpa, part.xml)) |value|
+    return if (profile.classify(gpa, part.owned_xml)) |value|
         .{ .header = value }
     else |err| switch (err) {
         error.NoFullModel => .no_full_model,
@@ -278,7 +302,7 @@ fn source_from_part(part: io_read.Part, input_path: []const u8) Source {
 }
 
 const MaterializedDocument = struct {
-    xml: []u8,
+    owned_xml: []u8,
     segments: [2]validate.DataSegment,
     segments_count: u8,
 };
@@ -288,36 +312,37 @@ fn materialize_parts(
     first: *io_read.Part,
     second: ?*io_read.Part,
 ) !MaterializedDocument {
-    assert(first.xml.len <= io_read.max_in_memory_input_bytes);
-    var result = describe_parts(first.*, if (second) |part| part.* else null);
-    if (second) |boundary| {
-        const combined_len = @as(u64, @intCast(first.xml.len)) + @as(u64, @intCast(boundary.xml.len));
+    assert(first.owned_xml.len <= io_read.max_in_memory_input_bytes);
+    const xml = if (second) |boundary| blk: {
+        const combined_len = @as(u64, @intCast(first.owned_xml.len)) + @as(u64, @intCast(boundary.owned_xml.len));
         if (combined_len > io_read.max_in_memory_input_bytes) return error.FileTooLarge;
-        result.xml = try std.mem.concat(gpa, u8, &.{ first.xml, boundary.xml });
-        assert(result.xml.len == combined_len);
-        gpa.free(first.xml);
-        gpa.free(boundary.xml);
-        boundary.xml = &.{};
-    } else {
-        result.xml = first.xml;
+        break :blk try std.mem.concat(gpa, u8, &.{ first.owned_xml, boundary.owned_xml });
+    } else first.owned_xml;
+    errdefer comptime unreachable;
+
+    var result = describe_parts(first.*, if (second) |part| part.* else null);
+    result.owned_xml = xml;
+    if (second) |boundary| {
+        gpa.free(first.owned_xml);
+        gpa.free(boundary.owned_xml);
+        boundary.owned_xml = &.{};
     }
-    first.xml = &.{};
-    assert(result.xml.len <= io_read.max_in_memory_input_bytes);
-    assert(first.xml.len == 0);
+    first.owned_xml = &.{};
+    assert(result.owned_xml.len <= io_read.max_in_memory_input_bytes);
     return result;
 }
 
 fn describe_parts(first: io_read.Part, second: ?io_read.Part) MaterializedDocument {
     var result: MaterializedDocument = .{
-        .xml = undefined,
+        .owned_xml = undefined,
         .segments = .{ .{ .name = first.name, .start = 0, .line_start = 1 }, undefined },
         .segments_count = 1,
     };
     if (second) |boundary| {
         result.segments[1] = .{
             .name = boundary.name,
-            .start = @intCast(first.xml.len),
-            .line_start = diagnostics_mod.line_number_at(first.xml, @intCast(first.xml.len)),
+            .start = @intCast(first.owned_xml.len),
+            .line_start = diagnostics_mod.line_number_at(first.owned_xml, @intCast(first.owned_xml.len)),
         };
         result.segments_count = 2;
     }
@@ -352,7 +377,7 @@ fn parse_overlay(
 ) Overlay {
     var diagnostics: diagnostics_mod.Diagnostics = .{};
     const segments = [_]validate.DataSegment{.{ .name = source.label(), .start = 0, .line_start = 1 }};
-    return Overlay.init_with_diagnostics(gpa, part.xml, policy, &diagnostics) catch |err|
+    return Overlay.init_with_diagnostics(gpa, part.owned_xml, policy, &diagnostics) catch |err|
         report_parse_error(io, command_name, &segments, err, diagnostics);
 }
 
@@ -648,7 +673,7 @@ fn assemble_merged(
         io,
         gpa,
         command_name,
-        materialized.xml,
+        materialized.owned_xml,
         materialized.segments[0..materialized.segments_count],
     );
     var loaded_tp: ?LoadedOverlay = null;
@@ -657,6 +682,7 @@ fn assemble_merged(
         const source = source_from_part(part, inputs[records[index].input_index].path);
         loaded_tp = .{
             .overlay = parse_overlay(io, gpa, command_name, part, source, .id_declares_object),
+            .owned_xml = part.owned_xml,
             .source = source,
         };
     };
@@ -666,6 +692,7 @@ fn assemble_merged(
         const source = source_from_part(part, inputs[records[index].input_index].path);
         loaded_ssh = .{
             .overlay = parse_overlay(io, gpa, command_name, part, source, .id_names_patch),
+            .owned_xml = part.owned_xml,
             .source = source,
         };
     };
@@ -674,6 +701,7 @@ fn assemble_merged(
     if (purpose == .diff_side) assert(loaded_ssh == null);
     return .{
         .model = model,
+        .owned_xml = materialized.owned_xml,
         .segments = materialized.segments,
         .segments_count = materialized.segments_count,
         .tp = loaded_tp,
@@ -735,10 +763,10 @@ const DocumentPlan = struct {
     fn deinit(self: *DocumentPlan, gpa: std.mem.Allocator) void {
         assert(self.state != .live);
         gpa.free(self.first.name);
-        if (self.state == .pending) gpa.free(self.first.xml);
+        if (self.state == .pending) gpa.free(self.first.owned_xml);
         if (self.second) |second| {
             gpa.free(second.name);
-            if (self.state == .pending) gpa.free(second.xml);
+            if (self.state == .pending) gpa.free(second.owned_xml);
         }
         self.* = undefined;
     }
@@ -746,6 +774,7 @@ const DocumentPlan = struct {
 
 pub const LoadedDocument = struct {
     model: CimDocument,
+    owned_xml: []u8,
     segments: [2]validate.DataSegment,
     segments_count: u8,
     plan_index: u32,
@@ -780,8 +809,8 @@ pub const DocumentSet = struct {
         diagnostics.segments_count = description.segments_count;
         const materialized = try materialize_parts(gpa, &plan.first, if (plan.second) |*part| part else null);
 
-        // CimDocument.init owns `xml` from this point on, including its error paths.
-        const model = CimDocument.init_with_diagnostics(gpa, materialized.xml, &diagnostics.model) catch |err| {
+        errdefer gpa.free(materialized.owned_xml);
+        const model = CimDocument.init_with_diagnostics(gpa, materialized.owned_xml, &diagnostics.model) catch |err| {
             plan.state = .consumed;
             self.next_index += 1;
             return err;
@@ -789,6 +818,7 @@ pub const DocumentSet = struct {
         plan.state = .live;
         return .{
             .model = model,
+            .owned_xml = materialized.owned_xml,
             .segments = materialized.segments,
             .segments_count = materialized.segments_count,
             .plan_index = index,
@@ -800,6 +830,7 @@ pub const DocumentSet = struct {
         const plan = &self.plans[document.plan_index];
         assert(plan.state == .live);
         document.model.deinit(gpa);
+        gpa.free(document.owned_xml);
         plan.state = .consumed;
         if (self.next_index == document.plan_index) self.next_index += 1;
         document.* = undefined;
@@ -925,9 +956,8 @@ fn build_document_set(gpa: std.mem.Allocator, collected: *Collected, pair: Merge
     const records_count: u32 = @intCast(collected.records.items.len);
     const plans_count = records_count - @as(u32, @intFromBool(pair.eqbd != null));
     const plans = try gpa.alloc(DocumentPlan, plans_count);
-    errdefer gpa.free(plans);
+    errdefer comptime unreachable;
     var plan_count: u32 = 0;
-    errdefer for (plans[0..plan_count]) |*plan| plan.deinit(gpa);
     for (collected.records.items, 0..) |_, raw_index| {
         const index: u32 = @intCast(raw_index);
         if (pair.eqbd == index) continue;
@@ -941,22 +971,31 @@ fn build_document_set(gpa: std.mem.Allocator, collected: *Collected, pair: Merge
     return .{ .plans = plans };
 }
 
-test "DocumentSet parse failure transfers buffer ownership exactly once" {
+test "DocumentSet parse failure releases detached input exactly once" {
     const gpa = std.testing.allocator;
-    const plans = try gpa.alloc(DocumentPlan, 1);
-    plans[0] = .{
-        .first = .{
-            .name = try gpa.dupe(u8, "bad.xml"),
-            .xml = try gpa.dupe(u8, ""),
-        },
-        .second = null,
+    const cases = .{
+        .{ "", error.EmptyInput },
+        .{ "<rdf:RDF><cim:A rdf:ID=\"a\"/>", error.MalformedXML },
+        .{ "<cim:A rdf:ID=\"a\"/><cim:B rdf:ID=\"a\"/>", error.DuplicateId },
     };
-    var set: DocumentSet = .{ .plans = plans };
-    defer set.deinit(gpa);
-    var diagnostics: ParseDiagnostics = .{};
-    try std.testing.expectError(error.EmptyInput, set.next(gpa, &diagnostics));
-    try std.testing.expectEqual(@as(u8, 1), diagnostics.segments_count);
-    try std.testing.expectEqualStrings("bad.xml", diagnostics.segments[0].name);
+    inline for (cases) |case| {
+        const plans = try gpa.alloc(DocumentPlan, 1);
+        plans[0] = .{
+            .first = .{
+                .name = try gpa.dupe(u8, "bad.xml"),
+                .owned_xml = try gpa.dupe(u8, case[0]),
+            },
+            .second = null,
+        };
+        var set: DocumentSet = .{ .plans = plans };
+        defer set.deinit(gpa);
+        var diagnostics: ParseDiagnostics = .{};
+        try std.testing.expectError(case[1], set.next(gpa, &diagnostics));
+        try std.testing.expectEqual(PlanState.consumed, plans[0].state);
+        try std.testing.expectEqual(@as(u8, 1), diagnostics.segments_count);
+        try std.testing.expectEqualStrings("bad.xml", diagnostics.segments[0].name);
+        try std.testing.expectEqual(null, try set.next(gpa, &diagnostics));
+    }
 }
 
 test "DocumentSet releases a merged plan and cleans an unconsumed plan" {
@@ -965,17 +1004,17 @@ test "DocumentSet releases a merged plan and cleans an unconsumed plan" {
     plans[0] = .{
         .first = .{
             .name = try gpa.dupe(u8, "eq.xml"),
-            .xml = try gpa.dupe(u8, "<rdf:RDF></rdf:RDF>\n"),
+            .owned_xml = try gpa.dupe(u8, "<rdf:RDF></rdf:RDF>\n"),
         },
         .second = .{
             .name = try gpa.dupe(u8, "eqbd.xml"),
-            .xml = try gpa.dupe(u8, "<rdf:RDF></rdf:RDF>"),
+            .owned_xml = try gpa.dupe(u8, "<rdf:RDF></rdf:RDF>"),
         },
     };
     plans[1] = .{
         .first = .{
             .name = try gpa.dupe(u8, "pending.xml"),
-            .xml = try gpa.dupe(u8, "<rdf:RDF></rdf:RDF>"),
+            .owned_xml = try gpa.dupe(u8, "<rdf:RDF></rdf:RDF>"),
         },
         .second = null,
     };
@@ -994,23 +1033,23 @@ test "DocumentSet concat failure preserves pending plan ownership" {
     plans[0] = .{
         .first = .{
             .name = try gpa.dupe(u8, "eq.xml"),
-            .xml = try gpa.dupe(u8, "<rdf:RDF></rdf:RDF>\n"),
+            .owned_xml = try gpa.dupe(u8, "<rdf:RDF></rdf:RDF>\n"),
         },
         .second = .{
             .name = try gpa.dupe(u8, "eqbd.xml"),
-            .xml = try gpa.dupe(u8, "<rdf:RDF></rdf:RDF>"),
+            .owned_xml = try gpa.dupe(u8, "<rdf:RDF></rdf:RDF>"),
         },
     };
     var set: DocumentSet = .{ .plans = plans };
     defer set.deinit(gpa);
-    const first_xml = plans[0].first.xml.ptr;
-    const second_xml = plans[0].second.?.xml.ptr;
+    const first_xml = plans[0].first.owned_xml.ptr;
+    const second_xml = plans[0].second.?.owned_xml.ptr;
     var failing = std.testing.FailingAllocator.init(gpa, .{ .fail_index = 0 });
     var diagnostics: ParseDiagnostics = .{};
     try std.testing.expectError(error.OutOfMemory, set.next(failing.allocator(), &diagnostics));
     try std.testing.expectEqual(PlanState.pending, plans[0].state);
-    try std.testing.expectEqual(first_xml, plans[0].first.xml.ptr);
-    try std.testing.expectEqual(second_xml, plans[0].second.?.xml.ptr);
+    try std.testing.expectEqual(first_xml, plans[0].first.owned_xml.ptr);
+    try std.testing.expectEqual(second_xml, plans[0].second.?.owned_xml.ptr);
     try std.testing.expectEqualStrings("eqbd.xml", diagnostics.segments[1].name);
 }
 
@@ -1019,16 +1058,16 @@ test "materialize_parts derives boundary-local segment metadata" {
     const first_xml = "<rdf:RDF>\n<object/>\n</rdf:RDF>\n";
     var first: io_read.Part = .{
         .name = try gpa.dupe(u8, "eq.xml"),
-        .xml = try gpa.dupe(u8, first_xml),
+        .owned_xml = try gpa.dupe(u8, first_xml),
     };
     defer gpa.free(first.name);
     var second: io_read.Part = .{
         .name = try gpa.dupe(u8, "eqbd.xml"),
-        .xml = try gpa.dupe(u8, "<rdf:RDF></rdf:RDF>"),
+        .owned_xml = try gpa.dupe(u8, "<rdf:RDF></rdf:RDF>"),
     };
     defer gpa.free(second.name);
     const materialized = try materialize_parts(gpa, &first, &second);
-    defer gpa.free(materialized.xml);
+    defer gpa.free(materialized.owned_xml);
     try std.testing.expectEqual(@as(u8, 2), materialized.segments_count);
     try std.testing.expectEqual(@as(u32, first_xml.len), materialized.segments[1].start);
     try std.testing.expectEqual(@as(u64, 4), materialized.segments[1].line_start);
@@ -1041,11 +1080,11 @@ test "DocumentSet duplicate diagnostics resolve to a boundary-local line" {
     plans[0] = .{
         .first = .{
             .name = try gpa.dupe(u8, "eq.xml"),
-            .xml = try gpa.dupe(u8, "<rdf:RDF>\n</rdf:RDF>\n"),
+            .owned_xml = try gpa.dupe(u8, "<rdf:RDF>\n</rdf:RDF>\n"),
         },
         .second = .{
             .name = try gpa.dupe(u8, "eqbd.xml"),
-            .xml = try gpa.dupe(u8, "<rdf:RDF>\n<cim:X rdf:ID=\"_DUP\"/>\n" ++
+            .owned_xml = try gpa.dupe(u8, "<rdf:RDF>\n<cim:X rdf:ID=\"_DUP\"/>\n" ++
                 "<cim:X rdf:ID=\"_DUP\"/>\n</rdf:RDF>"),
         },
     };
@@ -1072,11 +1111,11 @@ test "DocumentSet malformed XML diagnostics resolve to a boundary-local line" {
     plans[0] = .{
         .first = .{
             .name = try gpa.dupe(u8, "eq.xml"),
-            .xml = try gpa.dupe(u8, "<rdf:RDF>\n</rdf:RDF>\n"),
+            .owned_xml = try gpa.dupe(u8, "<rdf:RDF>\n</rdf:RDF>\n"),
         },
         .second = .{
             .name = try gpa.dupe(u8, "eqbd.xml"),
-            .xml = try gpa.dupe(u8, "<rdf:RDF>\n<cim:X>\n</cim:Y>\n</rdf:RDF>"),
+            .owned_xml = try gpa.dupe(u8, "<rdf:RDF>\n<cim:X>\n</cim:Y>\n</rdf:RDF>"),
         },
     };
     var set: DocumentSet = .{ .plans = plans };

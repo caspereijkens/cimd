@@ -5,7 +5,7 @@
 //! contiguously, and named property shapes referenced by IRI are the corpus
 //! norm), then compiles it with two passes: pass 1 counts, pass 2 allocates
 //! exactly and fills. Prefix-sum cursors and paired assertions verify the
-//! passes agree; the same discipline CimDocument.init uses.
+//! passes agree.
 //!
 //! Shapes are flattened per (target class, node shape) pair and sorted by
 //! class. Namespace variants of one CIM name collapse by local name; dedup
@@ -50,10 +50,7 @@ pub const message_bytes_max = 4096;
 pub const substitutions_count_max = 256;
 
 pub const RuleSet = struct {
-    /// The raw rule-set bytes. Names, IRIs, values, and messages below are
-    /// slices into this buffer (same ownership pattern as CimDocument.xml), except
-    /// strings that escape decoding or substitution rewrote; those live
-    /// in `strings`.
+    /// Borrows caller-owned bytes; decoded and substituted strings live in `strings`.
     source: []const u8,
     /// Strings that differ from their raw source bytes: escape-decoded
     /// literals and substitution-expanded messages, packed into one
@@ -245,9 +242,8 @@ pub const RuleSet = struct {
     /// copied into the RuleSet, so the table may be temporary.
     pub const Substitution = struct { name: []const u8, value: []const u8 };
 
-    /// Takes ownership of `source`: on success the RuleSet owns it (freed
-    /// by deinit), on error it is freed before returning; same contract
-    /// as CimDocument.init. `substitutions` is the optional message-constant table;
+    /// Borrows immutable source on success and failure; it must outlive the RuleSet.
+    /// `substitutions` is the optional message-constant table;
     /// pass `&.{}` to report messages verbatim (the default and the corpus
     /// norm).
     pub fn load(
@@ -257,7 +253,6 @@ pub const RuleSet = struct {
         substitutions: []const Substitution,
         diagnostics: ?*Diagnostics,
     ) LoadError!RuleSet {
-        errdefer gpa.free(source);
         if (source.len > rules_bytes_max) return error.RuleSetTooLarge;
         assert(substitutions.len <= substitutions_count_max);
         for (substitutions) |substitution| {
@@ -309,7 +304,6 @@ pub const RuleSet = struct {
         gpa.free(self.constraints);
         gpa.free(self.shapes);
         gpa.free(self.strings);
-        gpa.free(self.source);
     }
 
     /// The sh:in values of a constraint (empty for other checks).

@@ -560,7 +560,7 @@ fn reject_tp_primary_id_collision(
 ) void {
     if (tp_opt) |tp| if (refs.find_tp_primary_id_collision(model, tp)) |object| {
         const offset = tp.boundaries[object.object_tag_idx].start;
-        const line = diagnostics_mod.line_number_at(tp.xml, offset);
+        const line = diagnostics_mod.line_number_at(tp.source(), offset);
         print.data_error(
             io,
             "{s}: RDF identifier collision: '{s}' is defined in both the primary file and TP profile '{s}' at line {d}",
@@ -579,7 +579,7 @@ test "get type filter collector includes CIM subtypes" {
         \\  <cim:Substation rdf:ID="_SS1"/>
         \\</rdf:RDF>
     ;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     try std.testing.expectEqual(@as(usize, 3), model.count_objects_by_type_filter("ConductingEquipment"));
@@ -612,7 +612,7 @@ test "write_object_maps_text renders sorted properties and raw references" {
         \\  </cim:ACLineSegment>
         \\</rdf:RDF>
     ;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
     const view = model.object_by_id("_L1").?;
     var props = try view.all_properties(gpa);
@@ -647,7 +647,7 @@ test "write_object_maps_json strips reference hash and pins the shape" {
         \\  </cim:ACLineSegment>
         \\</rdf:RDF>
     ;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
     const view = model.object_by_id("_L1").?;
     var props = try view.all_properties(gpa);
@@ -1187,8 +1187,12 @@ fn diff_options(c: cli.Command.Diff) diff.DiffOptions {
 fn command_validate(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Validate) !void {
     // Rule sets load first: a bad rules file should not cost a model parse.
     var rule_sets: [cli.Command.Validate.rules_count_max]RuleSet = undefined;
+    var owned_rule_sources: [cli.Command.Validate.rules_count_max][]const u8 = undefined;
     var rule_sets_count: usize = 0;
-    defer for (rule_sets[0..rule_sets_count]) |*rules| rules.deinit(gpa);
+    defer for (rule_sets[0..rule_sets_count], owned_rule_sources[0..rule_sets_count]) |*rules, source| {
+        rules.deinit(gpa);
+        gpa.free(source);
+    };
     for (c.rules()) |path| {
         const bytes = try read_rules_path(io, gpa, path);
         var diagnostics: RuleSet.Diagnostics = .{};
@@ -1201,7 +1205,11 @@ fn command_validate(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Validate)
             path,
             &validate.qocdc_substitutions,
             &diagnostics,
-        ) catch |err| rule_set_load_error(io, path, diagnostics.line, err);
+        ) catch |err| {
+            gpa.free(bytes);
+            rule_set_load_error(io, path, diagnostics.line, err);
+        };
+        owned_rule_sources[rule_sets_count] = bytes;
         rule_sets_count += 1;
     }
 
@@ -1319,6 +1327,7 @@ fn command_qocdc(io: std.Io, gpa: std.mem.Allocator, c: cli.Command.Qocdc) !void
     };
 
     const xml = read_path(io, gpa, c.eq_path) catch |err| input_read_error(io, read_options, err, null);
+    defer gpa.free(xml);
     var model = CimDocument.init(gpa, xml) catch |err| input_read_error(io, read_options, err, null);
     defer model.deinit(gpa);
 

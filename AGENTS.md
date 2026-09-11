@@ -31,6 +31,17 @@ A file for [guiding coding agents](https://agents.md/).
   or repeat test names. Use one or two short sentences; delete comments that
   add no information the code cannot convey. This takes precedence over
   TIGER_STYLE.md's broader commentary guidance.
+- Reserve first: reserve all the memory an operation needs before mutating
+  anything, then mutate on a path that cannot fail, ending the reservation
+  phase with `errdefer comptime unreachable;`. `ensureUnusedCapacity` then
+  `appendAssumeCapacity`, never `append` in a loop with a known bound.
+  The rule is about containing failure, not about sizing: a perfectly sized
+  reservation taken mid-mutation still breaks it, a loose one taken up front
+  does not. Sizing is a separate, worthwhile concern -- reserve from the count
+  the work actually produced, not from a bound that happens to be in scope --
+  but do not let it stand in for the rule. See
+  https://matklad.github.io/2025/08/16/reserve-first.html and
+  docs/INGESTION_DESIGN.md section 5.
 - When in doubt, follow docs/TIGER_STYLE.md, also in this repo.
 
 ## Zig version

@@ -338,7 +338,7 @@ test "write_report orders offsetless first then by document position" {
 
     var model = try cim.CimDocument.init(
         test_gpa,
-        try test_gpa.dupe(u8, "<rdf:RDF>\n<cim:A rdf:ID=\"_early\">\n</cim:A>\n</rdf:RDF>\n"),
+        "<rdf:RDF>\n<cim:A rdf:ID=\"_early\">\n</cim:A>\n</rdf:RDF>\n",
     );
     defer model.deinit(test_gpa);
 

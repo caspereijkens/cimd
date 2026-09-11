@@ -143,9 +143,9 @@ const Fixture = struct {
     evaluation: validate.Evaluation,
 
     fn init(gpa: std.mem.Allocator) !Fixture {
-        var model = try CimDocument.init(gpa, try gpa.dupe(u8, fixture_xml));
+        var model = try CimDocument.init(gpa, fixture_xml);
         errdefer model.deinit(gpa);
-        var rules = try RuleSet.load(gpa, try gpa.dupe(u8, fixture_rules), "fixture.ttl", &.{}, null);
+        var rules = try RuleSet.load(gpa, fixture_rules, "fixture.ttl", &.{}, null);
         errdefer rules.deinit(gpa);
         const evaluation = try validate.evaluate(gpa, &model, &rules);
         return .{ .model = model, .rules = rules, .evaluation = evaluation };
@@ -297,7 +297,9 @@ test "report resolves offsets into the correct data segment" {
         \\  </cim:ACLineSegment>
         \\</rdf:RDF>
     ;
-    var model = try CimDocument.init(gpa, try std.mem.concat(gpa, u8, &.{ eq_part, eqbd_part }));
+    const xml = try std.mem.concat(gpa, u8, &.{ eq_part, eqbd_part });
+    defer gpa.free(xml);
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     const rules_source =
@@ -309,7 +311,7 @@ test "report resolves offsets into the correct data segment" {
         \\    sh:property [ sh:path cim:ACLineSegment.r ; sh:minCount 1 ;
         \\                  sh:name "r-required" ; sh:message "r is required." ] .
     ;
-    var rules = try RuleSet.load(gpa, try gpa.dupe(u8, rules_source), "rules.ttl", &.{}, null);
+    var rules = try RuleSet.load(gpa, rules_source, "rules.ttl", &.{}, null);
     defer rules.deinit(gpa);
 
     var evaluation = try validate.evaluate(gpa, &model, &rules);
@@ -340,7 +342,7 @@ test "report resolves offsets into the correct data segment" {
 
 test "node target evaluates exactly the named object" {
     const gpa = testing.allocator;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, fixture_xml));
+    var model = try CimDocument.init(gpa, fixture_xml);
     defer model.deinit(gpa);
 
     const rules_source =
@@ -356,7 +358,7 @@ test "node target evaluates exactly the named object" {
         \\    sh:property [ sh:path cim:IdentifiedObject.name ; sh:minCount 1 ;
         \\                  sh:name "node-missing-target" ] .
     ;
-    var rules = try RuleSet.load(gpa, try gpa.dupe(u8, rules_source), "rules.ttl", &.{}, null);
+    var rules = try RuleSet.load(gpa, rules_source, "rules.ttl", &.{}, null);
     defer rules.deinit(gpa);
 
     var evaluation = try validate.evaluate(gpa, &model, &rules);
@@ -386,7 +388,7 @@ test "rdf:about instance files (SSH/TP/SV) resolve references and referrers" {
         \\  </cim:TopologicalNode>
         \\</rdf:RDF>
     ;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     const rules_source =
@@ -405,7 +407,7 @@ test "rdf:about instance files (SSH/TP/SV) resolve references and referrers" {
         \\                  sh:minCount 1 ; sh:name "TopologicalNode.SvVoltage-inverse" ;
         \\                  sh:message "Node lacks a voltage result." ] .
     ;
-    var rules = try RuleSet.load(gpa, try gpa.dupe(u8, rules_source), "rules.ttl", &.{}, null);
+    var rules = try RuleSet.load(gpa, rules_source, "rules.ttl", &.{}, null);
     defer rules.deinit(gpa);
 
     var evaluation = try validate.evaluate(gpa, &model, &rules);
@@ -424,7 +426,7 @@ test "rdf:about instance files (SSH/TP/SV) resolve references and referrers" {
 
 test "escape-decoded and substitution-expanded messages flow into the report" {
     const gpa = testing.allocator;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, fixture_xml));
+    var model = try CimDocument.init(gpa, fixture_xml);
     defer model.deinit(gpa);
 
     const rules_source =
@@ -442,7 +444,7 @@ test "escape-decoded and substitution-expanded messages flow into the report" {
     };
     var rules = try RuleSet.load(
         gpa,
-        try gpa.dupe(u8, rules_source),
+        rules_source,
         "rules.ttl",
         &substitutions,
         null,
@@ -490,7 +492,7 @@ test "the QoCDC constant table reaches users as value and unit" {
     ;
     var rules = try RuleSet.load(
         gpa,
-        try gpa.dupe(u8, rules_source),
+        rules_source,
         "rules.ttl",
         &validate.qocdc_substitutions,
         null,
@@ -547,9 +549,9 @@ test "name interning: rule names absent from the document match no child" {
         \\    sh:property [ sh:path cim:IdentifiedObject.name ] .
     ;
 
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
-    var rules = try RuleSet.load(gpa, try gpa.dupe(u8, rules_source), "fixture.ttl", &.{}, null);
+    var rules = try RuleSet.load(gpa, rules_source, "fixture.ttl", &.{}, null);
     defer rules.deinit(gpa);
     var evaluation = try validate.evaluate(gpa, &model, &rules);
     defer evaluation.deinit(gpa);
@@ -620,9 +622,9 @@ test "a subjects-of shape reports nothing when the document lacks its target pro
         \\                  sh:name "type-sweep" ; sh:message "m" ] .
     ;
 
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
-    var rules = try RuleSet.load(gpa, try gpa.dupe(u8, rules_source), "fixture.ttl", &.{}, null);
+    var rules = try RuleSet.load(gpa, rules_source, "fixture.ttl", &.{}, null);
     defer rules.deinit(gpa);
     var evaluation = try validate.evaluate(gpa, &model, &rules);
     defer evaluation.deinit(gpa);

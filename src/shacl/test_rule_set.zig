@@ -143,8 +143,47 @@ const golden_source =
 ;
 
 fn load_golden(gpa: std.mem.Allocator) !RuleSet {
-    const source = try gpa.dupe(u8, golden_source);
-    return RuleSet.load(gpa, source, "golden.ttl", &.{}, null);
+    return RuleSet.load(gpa, golden_source, "golden.ttl", &.{}, null);
+}
+
+test "rule sets can share a borrowed subslice" {
+    const gpa = testing.allocator;
+    const storage = try gpa.dupe(u8, "prefix" ++ golden_source ++ "suffix");
+    defer gpa.free(storage);
+    const source = storage[6 .. 6 + golden_source.len];
+    var first = try RuleSet.load(gpa, source, "first.ttl", &.{}, null);
+    var second = RuleSet.load(gpa, source, "second.ttl", &.{}, null) catch |err| {
+        first.deinit(gpa);
+        return err;
+    };
+    defer second.deinit(gpa);
+    first.deinit(gpa);
+    try testing.expectEqualStrings(golden_source, second.source);
+    try testing.expect(second.shapes.len > 0);
+    try testing.expect(second.shapes[0].name.len > 0);
+}
+
+test "rule loading preserves borrowed input through allocation and parse failures" {
+    const source =
+        \\@prefix sh: <http://www.w3.org/ns/shacl#> .
+        \\<shape> a sh:NodeShape ; sh:targetClass <Switch> ;
+        \\    sh:property [ sh:path <name> ; sh:minCount 1 ; sh:message "say \"name\"" ] .
+    ;
+    try testing.checkAllAllocationFailures(testing.allocator, load_borrowed_rules, .{ source, null });
+    try testing.checkAllAllocationFailures(testing.allocator, load_borrowed_rules, .{
+        "unknown:shape unknown:property unknown:value .", error.UnknownPrefix,
+    });
+}
+
+fn load_borrowed_rules(gpa: std.mem.Allocator, source: []const u8, expected_error: ?anyerror) !void {
+    if (RuleSet.load(gpa, source, "borrowed.ttl", &.{}, null)) |loaded| {
+        var rules = loaded;
+        defer rules.deinit(gpa);
+        try testing.expect(expected_error == null);
+    } else |err| {
+        if (err == error.OutOfMemory) return err;
+        try testing.expectEqual(expected_error orelse return err, err);
+    }
 }
 
 /// All shapes with the given name, in table order.
@@ -391,7 +430,7 @@ test "value checks on inverse paths load as unsupported" {
     // Inverse paths evaluate through the referrer-count pass, which yields
     // cardinality only: the sh:in half of this shape cannot run and
     // must be reported, while the maxCount half compiles.
-    const source = try gpa.dupe(u8,
+    const source =
         \\@prefix sh:  <http://www.w3.org/ns/shacl#> .
         \\@prefix cim: <https://cim.ucaiug.io/ns#> .
         \\@prefix ex:  <http://example.org/rules#> .
@@ -400,7 +439,7 @@ test "value checks on inverse paths load as unsupported" {
         \\    sh:property [ sh:path [ sh:inversePath cim:Terminal.ConductingEquipment ] ;
         \\                  sh:maxCount 0 ; sh:in ( cim:Terminal ) ;
         \\                  sh:name "C:TEST:inverse-in" ] .
-    );
+    ;
     var rules = try RuleSet.load(gpa, source, "inverse.ttl", &.{}, null);
     defer rules.deinit(gpa);
 
@@ -413,11 +452,11 @@ test "value checks on inverse paths load as unsupported" {
 
 test "load reports the offending line for parse errors" {
     const gpa = testing.allocator;
-    const source = try gpa.dupe(u8,
+    const source =
         \\@prefix sh: <http://www.w3.org/ns/shacl#> .
         \\
         \\sh:x nope:y sh:z .
-    );
+    ;
     var diagnostics: RuleSet.Diagnostics = .{};
     try testing.expectError(
         error.UnknownPrefix,
@@ -428,8 +467,8 @@ test "load reports the offending line for parse errors" {
 
 test "load rejects oversized rule sets" {
     const gpa = testing.allocator;
-    // Ownership contract: load frees the source on the error path.
     const source = try gpa.alloc(u8, rule_set.rules_bytes_max + 1);
+    defer gpa.free(source);
     @memset(source, ' ');
     try testing.expectError(
         error.RuleSetTooLarge,
@@ -439,7 +478,7 @@ test "load rejects oversized rule sets" {
 
 test "escaped string literals decode at load; untouched strings stay in source" {
     const gpa = testing.allocator;
-    const source = try gpa.dupe(u8,
+    const source =
         \\@prefix sh: <http://www.w3.org/ns/shacl#> .
         \\@prefix cim: <http://cim#> .
         \\@prefix ex: <http://ex#> .
@@ -452,7 +491,7 @@ test "escaped string literals decode at load; untouched strings stay in source" 
         \\                  sh:message "say \"no\" \\ once" ;
         \\                  sh:hasValue "A\tB" ;
         \\                  sh:minCount 1 ] .
-    );
+    ;
     var rules = try RuleSet.load(gpa, source, "esc.ttl", &.{}, null);
     defer rules.deinit(gpa);
 
@@ -482,7 +521,7 @@ test "sh:in lists re-sort after escape decoding" {
     // Raw bytes sort "aZ" (Z = 0x5A) before "a!" (backslash = 0x5C);
     // decoded, "a!" (0x21) must come first for the evaluator's binary
     // search.
-    const source = try gpa.dupe(u8,
+    const source =
         \\@prefix sh: <http://www.w3.org/ns/shacl#> .
         \\@prefix cim: <http://cim#> .
         \\@prefix ex: <http://ex#> .
@@ -492,7 +531,7 @@ test "sh:in lists re-sort after escape decoding" {
         \\    sh:property [ sh:path cim:Switch.kind ;
         \\                  sh:in ( "a\u0021" "aZ" ) ;
         \\                  sh:name "C:TEST:in-esc" ] .
-    );
+    ;
     var rules = try RuleSet.load(gpa, source, "in-esc.ttl", &.{}, null);
     defer rules.deinit(gpa);
 
@@ -505,7 +544,7 @@ test "sh:in lists re-sort after escape decoding" {
 
 test "substitution table expands message constants at load" {
     const gpa = testing.allocator;
-    const source = try gpa.dupe(u8,
+    const source =
         \\@prefix sh: <http://www.w3.org/ns/shacl#> .
         \\@prefix cim: <http://cim#> .
         \\@prefix ex: <http://ex#> .
@@ -520,7 +559,7 @@ test "substitution table expands message constants at load" {
         \\                  sh:message "self-contained message" ;
         \\                  sh:name "C:TEST:plain" ;
         \\                  sh:minCount 1 ] .
-    );
+    ;
     const substitutions = [_]RuleSet.Substitution{
         .{ .name = "EQ_BRANCH_X_LIMIT", .value = "0.01 Ohm" },
         .{ .name = "EQ_NAME_LEN", .value = "32 characters" },
@@ -547,7 +586,7 @@ test "substitution table expands message constants at load" {
 
 test "substitution expansion past message_bytes_max is MessageTooLong" {
     const gpa = testing.allocator;
-    const source = try gpa.dupe(u8,
+    const source =
         \\@prefix sh: <http://www.w3.org/ns/shacl#> .
         \\@prefix cim: <http://cim#> .
         \\@prefix ex: <http://ex#> .
@@ -556,7 +595,7 @@ test "substitution expansion past message_bytes_max is MessageTooLong" {
         \\    sh:targetClass cim:Switch ;
         \\    sh:property [ sh:path cim:Switch.kind ;
         \\                  sh:message "XX" ; sh:minCount 1 ] .
-    );
+    ;
     const big = "a" ** rule_set.message_bytes_max;
     const substitutions = [_]RuleSet.Substitution{.{ .name = "X", .value = big }};
     var diagnostics: RuleSet.Diagnostics = .{};
@@ -573,7 +612,7 @@ test "a \\U escape naming an impossible codepoint fails the load with its line" 
     const gpa = testing.allocator;
     // Eight well-formed hex digits can still exceed U+10FFFF; the
     // tokenizer catches it while the offending line is known.
-    const source = try gpa.dupe(u8,
+    const source =
         \\@prefix sh: <http://www.w3.org/ns/shacl#> .
         \\@prefix cim: <http://cim#> .
         \\@prefix ex: <http://ex#> .
@@ -582,7 +621,7 @@ test "a \\U escape naming an impossible codepoint fails the load with its line" 
         \\    sh:targetClass cim:Switch ;
         \\    sh:property [ sh:path cim:Switch.kind ;
         \\                  sh:message "bad \UFFFFFFFF" ; sh:minCount 1 ] .
-    );
+    ;
     var diagnostics: RuleSet.Diagnostics = .{};
     try testing.expectError(
         error.InvalidEscape,
@@ -627,6 +666,7 @@ test "corpus smoke: pinned aggregate counts across the published rule sets" {
         defer file.close(io);
         var file_reader = file.reader(io, &.{});
         const source = try file_reader.interface.allocRemaining(gpa, .unlimited);
+        defer gpa.free(source);
 
         var diagnostics: RuleSet.Diagnostics = .{};
         var rules = RuleSet.load(gpa, source, entry.name, &.{}, &diagnostics) catch |err| {

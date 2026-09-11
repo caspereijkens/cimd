@@ -126,13 +126,13 @@ fn emit_merged_edges(
 
     const mrid = try base.mrid();
     const tp_range: ?RefRange = if (tp_opt) |tp| if (tp.find_patch(mrid)) |p| .{
-        .xml = tp.xml,
+        .xml = tp.source(),
         .boundaries = tp.boundaries,
         .open_idx = p.patch_tag_idx,
         .close_idx = p.closing_tag_idx,
     } else null else null;
     const ssh_range: ?RefRange = if (ssh_opt) |s| if (s.find_patch(mrid)) |p| .{
-        .xml = s.xml,
+        .xml = s.source(),
         .boundaries = s.boundaries,
         .open_idx = p.patch_tag_idx,
         .close_idx = p.closing_tag_idx,
@@ -419,7 +419,7 @@ test "ReverseRefIndex.build indexes EQ referrers by target id" {
         \\  </cim:Bay>
         \\</rdf:RDF>
     ;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     var index = try ReverseRefIndex.build(gpa, &model);
@@ -447,9 +447,9 @@ test "ReverseRefIndex.build_with_overlays indexes TP patch referrers" {
         \\  </cim:Terminal>
         \\</rdf:RDF>
     ;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
+    var model = try CimDocument.init(gpa, eq_xml);
     defer model.deinit(gpa);
-    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, tp_xml));
+    var tp = try Overlay.init_tp(gpa, tp_xml);
     defer tp.deinit(gpa);
 
     var index = try ReverseRefIndex.build_with_overlays(gpa, &model, tp, null);
@@ -478,9 +478,9 @@ test "ReverseRefIndex.build_with_overlays indexes SSH patch referrers" {
         \\  </cim:Switch>
         \\</rdf:RDF>
     ;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
+    var model = try CimDocument.init(gpa, eq_xml);
     defer model.deinit(gpa);
-    var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, ssh_xml));
+    var ssh = try Overlay.init_ssh(gpa, ssh_xml);
     defer ssh.deinit(gpa);
 
     var index = try ReverseRefIndex.build_with_overlays(gpa, &model, null, ssh);
@@ -509,7 +509,7 @@ test "ReverseRefIndex collects multiple referrers per target (hub case)" {
         \\  </cim:Switch>
         \\</rdf:RDF>
     ;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     var index = try ReverseRefIndex.build(gpa, &model);
@@ -529,7 +529,7 @@ test "ReverseRefIndex keeps every edge of a multi-valued reference" {
         \\  </cim:Foo>
         \\</rdf:RDF>
     ;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     var index = try ReverseRefIndex.build(gpa, &model);
@@ -559,9 +559,9 @@ test "ReverseRefIndex applies overlay precedence to a retargeted reference" {
         \\  </cim:Terminal>
         \\</rdf:RDF>
     ;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
+    var model = try CimDocument.init(gpa, eq_xml);
     defer model.deinit(gpa);
-    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, tp_xml));
+    var tp = try Overlay.init_tp(gpa, tp_xml);
     defer tp.deinit(gpa);
 
     var index = try ReverseRefIndex.build_with_overlays(gpa, &model, tp, null);
@@ -583,7 +583,7 @@ test "collect_referrers_for_target streams multi-valued references" {
         \\  </cim:Foo>
         \\</rdf:RDF>
     ;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     const referrers = try collect_referrers_for_target(gpa, &model, null, null, "_A");
@@ -602,7 +602,7 @@ test "ReverseRefIndex ignores rdf:resource inside a comment" {
         \\  </cim:Foo>
         \\</rdf:RDF>
     ;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     var index = try ReverseRefIndex.build(gpa, &model);
@@ -617,7 +617,7 @@ test "resolve_object_normalized handles ids longer than any stack buffer" {
     const long = "a" ** 400;
     const xml = try std.fmt.allocPrint(gpa, "<rdf:RDF><cim:Substation rdf:ID=\"_{s}\"/></rdf:RDF>", .{long});
     defer gpa.free(xml);
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     const expected = try std.fmt.allocPrint(gpa, "_{s}", .{long});
@@ -633,7 +633,7 @@ test "resolve_object_normalized resolves a full id typed without its leading und
         \\  <cim:Substation rdf:ID="_SS1"/>
         \\</rdf:RDF>
     ;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     const exact = try resolve_object_normalized(gpa, &model, null, "_SS1") orelse return error.NotFound;
@@ -653,7 +653,7 @@ test "resolve_object_normalized prefers an exact literal hit over the underscore
         \\  <cim:VoltageLevel rdf:ID="_A"/>
         \\</rdf:RDF>
     ;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     const hit = try resolve_object_normalized(gpa, &model, null, "A") orelse return error.NotFound;
@@ -811,9 +811,9 @@ test "collect_target_candidates: TP-only target resolves under --tp" {
         \\  </cim:Terminal>
         \\</rdf:RDF>
     ;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
+    var model = try CimDocument.init(gpa, eq_xml);
     defer model.deinit(gpa);
-    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, tp_xml));
+    var tp = try Overlay.init_tp(gpa, tp_xml);
     defer tp.deinit(gpa);
 
     const no_tp = try collect_target_candidates(gpa, &model, null, "TN1");
@@ -845,9 +845,9 @@ test "collect_target_candidates: EQ and TP matches both included" {
         \\  <cim:TopologicalNode rdf:ID="_X2"/>
         \\</rdf:RDF>
     ;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
+    var model = try CimDocument.init(gpa, eq_xml);
     defer model.deinit(gpa);
-    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, tp_xml));
+    var tp = try Overlay.init_tp(gpa, tp_xml);
     defer tp.deinit(gpa);
 
     const matches = try collect_target_candidates(gpa, &model, tp, "X");
@@ -871,9 +871,9 @@ test "find_tp_primary_id_collision compares raw RDF identifiers" {
         \\  <cim:TopologicalNode rdf:ID="_T1"/>
         \\</rdf:RDF>
     ;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
+    var model = try CimDocument.init(gpa, eq_xml);
     defer model.deinit(gpa);
-    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, tp_xml));
+    var tp = try Overlay.init_tp(gpa, tp_xml);
     defer tp.deinit(gpa);
 
     const collision = find_tp_primary_id_collision(&model, tp) orelse return error.TestExpectedCollision;
@@ -882,9 +882,9 @@ test "find_tp_primary_id_collision compares raw RDF identifiers" {
 
 test "find_tp_primary_id_collision allows distinct raw ids with equal mRIDs" {
     const gpa = std.testing.allocator;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, "<rdf:RDF><cim:Terminal rdf:ID=\"_T1\"/></rdf:RDF>"));
+    var model = try CimDocument.init(gpa, "<rdf:RDF><cim:Terminal rdf:ID=\"_T1\"/></rdf:RDF>");
     defer model.deinit(gpa);
-    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, "<rdf:RDF><cim:TopologicalNode rdf:ID=\"T1\"/></rdf:RDF>"));
+    var tp = try Overlay.init_tp(gpa, "<rdf:RDF><cim:TopologicalNode rdf:ID=\"T1\"/></rdf:RDF>");
     defer tp.deinit(gpa);
 
     try std.testing.expect(find_tp_primary_id_collision(&model, tp) == null);

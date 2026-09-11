@@ -347,7 +347,7 @@ test "Target.name is empty for unresolved and the class otherwise" {
 }
 
 fn init_test_document(xml: []const u8) !CimDocument {
-    return CimDocument.init(testing.allocator, try testing.allocator.dupe(u8, xml));
+    return CimDocument.init(testing.allocator, xml);
 }
 
 const mixed_document =
@@ -738,7 +738,7 @@ test "RelationCounts.build: association rows agree with ReverseRefIndex" {
 /// `property_count` distinct properties on one object, every one of them
 /// dangling. The targets all collapse onto the unresolved sentinel, so the
 /// property is the only thing making the rows distinct.
-fn document_with_distinct_properties(property_count: u32) !CimDocument {
+fn xml_with_distinct_properties(property_count: u32) ![]u8 {
     var xml: std.ArrayListUnmanaged(u8) = .empty;
     errdefer xml.deinit(testing.allocator);
 
@@ -760,13 +760,13 @@ fn document_with_distinct_properties(property_count: u32) !CimDocument {
         \\</rdf:RDF>
     );
 
-    const owned = try xml.toOwnedSlice(testing.allocator);
-    errdefer testing.allocator.free(owned);
-    return CimDocument.init(testing.allocator, owned);
+    return xml.toOwnedSlice(testing.allocator);
 }
 
 test "RelationCounts.build: exactly relations_max distinct rows is accepted" {
-    var model = try document_with_distinct_properties(RelationCounts.relations_max);
+    const xml = try xml_with_distinct_properties(RelationCounts.relations_max);
+    defer testing.allocator.free(xml);
+    var model = try CimDocument.init(testing.allocator, xml);
     defer model.deinit(testing.allocator);
     var scope = try ReferenceScope.init(testing.allocator, &.{&model});
     defer scope.deinit(testing.allocator);
@@ -778,7 +778,9 @@ test "RelationCounts.build: exactly relations_max distinct rows is accepted" {
 }
 
 test "RelationCounts.build: one row past relations_max is an error, and frees what it had" {
-    var model = try document_with_distinct_properties(RelationCounts.relations_max + 1);
+    const xml = try xml_with_distinct_properties(RelationCounts.relations_max + 1);
+    defer testing.allocator.free(xml);
+    var model = try CimDocument.init(testing.allocator, xml);
     defer model.deinit(testing.allocator);
     var scope = try ReferenceScope.init(testing.allocator, &.{&model});
     defer scope.deinit(testing.allocator);

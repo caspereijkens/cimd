@@ -37,7 +37,7 @@ const TABLE_XML =
 ;
 
 fn build(gpa: std.mem.Allocator, xml: []const u8) !struct { CimDocument, ChildTable } {
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     errdefer model.deinit(gpa);
     const table = try ChildTable.build(gpa, &model);
     return .{ model, table };
@@ -158,7 +158,7 @@ test "ChildTable - an absent name is inert, and every real id is a valid name" {
 }
 
 fn build_then_free(gpa: std.mem.Allocator, xml: []const u8) !void {
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
     var table = try ChildTable.build(gpa, &model);
     table.deinit(gpa);

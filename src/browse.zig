@@ -252,14 +252,14 @@ fn render_regular(
     if (tp_opt) |tp| {
         if (tp.find_patch(overlay_key)) |patch| {
             try writer.writeAll("\n\n--- TP ---");
-            const patch_xml = tag_slice(tp.xml, tp.boundaries, patch.patch_tag_idx, patch.closing_tag_idx);
+            const patch_xml = tag_slice(tp.source(), tp.boundaries, patch.patch_tag_idx, patch.closing_tag_idx);
             counter = try render_fragment(writer, gpa, patch_xml, counter, selections);
         }
     }
     if (ssh_opt) |ssh| {
         if (ssh.find_patch(overlay_key)) |patch| {
             try writer.writeAll("\n\n--- SSH ---");
-            const patch_xml = tag_slice(ssh.xml, ssh.boundaries, patch.patch_tag_idx, patch.closing_tag_idx);
+            const patch_xml = tag_slice(ssh.source(), ssh.boundaries, patch.patch_tag_idx, patch.closing_tag_idx);
             counter = try render_fragment(writer, gpa, patch_xml, counter, selections);
         }
     }
@@ -564,8 +564,8 @@ const PickSel = union(enum) {
 };
 
 /// Interactive picker shown when the user enters a prefix that matches more
-/// than one object. Returns the chosen mRID (a slice into `model.xml` via the
-/// CimObjects in `matches`). Returns null on `q` or end of input.
+/// than one object. Returns the chosen mRID borrowed from the caller-owned XML
+/// backing `matches`. Returns null on `q` or end of input.
 ///
 /// Layout follows the back-refs menu: grouped-by-type when over
 /// `group_threshold` matches, flat list otherwise. `b` returns to the grouped

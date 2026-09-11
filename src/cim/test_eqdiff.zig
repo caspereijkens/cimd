@@ -35,9 +35,9 @@ fn run_eqdiff(
     xml2: []const u8,
     options: eqdiff.Options,
 ) !EqdiffResult {
-    var model1 = try CimDocument.init(gpa, try gpa.dupe(u8, xml1));
+    var model1 = try CimDocument.init(gpa, xml1);
     defer model1.deinit(gpa);
-    var model2 = try CimDocument.init(gpa, try gpa.dupe(u8, xml2));
+    var model2 = try CimDocument.init(gpa, xml2);
     defer model2.deinit(gpa);
 
     var result = EqdiffResult{ .had_diffs = false, .buf = undefined, .len = 0 };
@@ -644,9 +644,9 @@ fn run_eqdiff_single(
     mrid: []const u8,
     options: eqdiff.Options,
 ) !struct { status: @import("diff.zig").SingleDiffStatus, result: EqdiffResult } {
-    var model1 = try CimDocument.init(gpa, try gpa.dupe(u8, xml1));
+    var model1 = try CimDocument.init(gpa, xml1);
     defer model1.deinit(gpa);
-    var model2 = try CimDocument.init(gpa, try gpa.dupe(u8, xml2));
+    var model2 = try CimDocument.init(gpa, xml2);
     defer model2.deinit(gpa);
 
     var result = EqdiffResult{ .had_diffs = false, .buf = undefined, .len = 0 };
@@ -756,9 +756,9 @@ test "eqdiff single - type filter mismatch reports actual type" {
     ;
     // Models stay alive for the whole test: the type_mismatch payload is a
     // slice into the model XML (cf. run_diff_single in test_diff.zig).
-    var model1 = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model1 = try CimDocument.init(gpa, xml);
     defer model1.deinit(gpa);
-    var model2 = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model2 = try CimDocument.init(gpa, xml);
     defer model2.deinit(gpa);
 
     var buf: [16384]u8 = undefined;
