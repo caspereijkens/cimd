@@ -1,10 +1,3 @@
-//! Tests for the Turtle tokenizer + triple iterator (turtle.zig).
-//!
-//! Positive and negative space, exhaustively: every accepted construct has a
-//! test, and every rejected construct has a test asserting the precise error
-//! and its line number; data crossing the valid/invalid boundary is where
-//! the bugs are.
-
 const std = @import("std");
 const turtle = @import("turtle.zig");
 const Turtle = turtle.Turtle;
@@ -14,8 +7,6 @@ const Iri = turtle.Iri;
 
 const testing = std.testing;
 
-/// Parse the whole source, returning owned triples. Fails the test on any
-/// parse error, so error-path tests use expect_parse_error instead.
 fn parse_all(gpa: std.mem.Allocator, source: []const u8) ![]Triple {
     var parser = Turtle.init(source, "test.ttl");
     var triples: std.ArrayList(Triple) = .empty;
@@ -24,8 +15,6 @@ fn parse_all(gpa: std.mem.Allocator, source: []const u8) ![]Triple {
     return triples.toOwnedSlice(gpa);
 }
 
-/// Assert parsing fails with exactly `expected` on 1-based line
-/// `expected_line`.
 fn expect_parse_error(
     source: []const u8,
     expected: turtle.Error,
@@ -57,8 +46,6 @@ fn expect_blank(term: Term) !u32 {
     return term.blank;
 }
 
-// ── Valid space ───────────────────────────────────────────────────────────
-
 test "single triple with full IRIs splits namespace and local" {
     const gpa = testing.allocator;
     const triples = try parse_all(gpa, "<http://ex#s> <http://ex/p> <urn:uuid:42> .");
@@ -68,7 +55,6 @@ test "single triple with full IRIs splits namespace and local" {
     try expect_iri(triples[0].subject, "http://ex", "s");
     try testing.expectEqualStrings("http://ex", triples[0].predicate.namespace);
     try testing.expectEqualStrings("p", triples[0].predicate.local);
-    // No '#' or '/' separator: the whole IRI is the local name.
     try expect_iri(triples[0].object, "", "urn:uuid:42");
 }
 
@@ -85,7 +71,6 @@ test "prefixed names resolve; empty prefix and empty local are legal" {
     try expect_iri(triples[0].subject, "http://ex", "s");
     try testing.expectEqualStrings(turtle.shacl_namespace, triples[0].predicate.namespace);
     try testing.expectEqualStrings("prefixes", triples[0].predicate.local);
-    // `sh:` with an empty local names the namespace itself.
     try expect_iri(triples[0].object, turtle.shacl_namespace, "");
 }
 
@@ -147,7 +132,6 @@ test "predicate lists, object lists, and a trailing semicolon" {
     try testing.expectEqualStrings("p", triples[1].predicate.local);
     try testing.expectEqualStrings("q", triples[2].predicate.local);
     try expect_iri(triples[2].object, "http://ex", "c");
-    // All three share the subject.
     for (triples) |t| try expect_iri(t.subject, "http://ex", "s");
 }
 
@@ -161,7 +145,6 @@ test "string literals: escapes kept raw, language tag dropped, datatype kept" {
     defer gpa.free(triples);
 
     try testing.expectEqual(@as(usize, 3), triples.len);
-    // Escapes are validated but not decoded; the raw lexical form.
     try expect_literal(triples[0].object, .string, "a\\\"b\\\\c\\n");
     try testing.expectEqual(@as(?Iri, null), triples[0].object.literal.datatype);
     try expect_literal(triples[1].object, .string, "ENTSO-E");
@@ -187,14 +170,11 @@ test "long strings span lines, embed quotes, and count lines" {
         .string,
         "SELECT $this\nWHERE { \"x\" \"\"quoted\"\" }",
     );
-    // The newline inside the long string was counted: the second statement
-    // sits on line 4.
     try testing.expectEqual(@as(u32, 4), triples[1].line);
 }
 
 test "unicode escapes validate in strings; escaped IRIs are unsupported" {
     const gpa = testing.allocator;
-    // Regular (escape-processed) Zig literals: "\\u0041" is backslash-u-0041.
     const source = "@prefix ex: <http://ex#> .\n" ++
         "ex:s ex:p \"u\\u0041U\\U00000042\" .";
     const triples = try parse_all(gpa, source);
@@ -203,8 +183,6 @@ test "unicode escapes validate in strings; escaped IRIs are unsupported" {
     try testing.expectEqual(@as(usize, 1), triples.len);
     try expect_literal(triples[0].object, .string, "u\\u0041U\\U00000042");
 
-    // IRIs are split and matched as raw bytes, so an undecoded escape
-    // would silently match nothing, so the tokenizer rejects it.
     try expect_parse_error(
         "@prefix ex: <http://ex#> .\n" ++ "ex:s ex:p <http://ex#\\u0043> .",
         error.UnsupportedConstruct,
@@ -229,14 +207,11 @@ test "decode_escape covers every accepted form" {
         try testing.expectEqual(@as(u8, @intCast(case.raw.len)), escape.consumed);
         try testing.expectEqualStrings(case.bytes, escape.bytes[0..escape.written]);
     }
-    // Offset decoding: the escape need not start the string.
     const mid = turtle.decode_escape("ab\\nc", 2);
     try testing.expectEqualStrings("\n", mid.bytes[0..mid.written]);
 }
 
 test "escapes naming impossible codepoints fail at parse with their line" {
-    // Hex digits alone cannot make a codepoint: a surrogate half and
-    // beyond-U+10FFFF values are rejected while the line is still known.
     const prefix = "@prefix ex: <http://ex#> .\n";
     try expect_parse_error(prefix ++ "ex:s ex:p \"a\\uD800\" .", error.InvalidEscape, 2);
     try expect_parse_error(prefix ++ "ex:s ex:p \"a\\U00110000\" .", error.InvalidEscape, 2);
@@ -298,11 +273,9 @@ test "anonymous property list as object emits the parent triple first" {
     try testing.expectEqual(@as(usize, 3), triples.len);
     const blank_id = try expect_blank(triples[0].object);
     try testing.expectEqualStrings("path", triples[0].predicate.local);
-    // The inner triple's subject is that same blank node.
     try testing.expectEqual(blank_id, try expect_blank(triples[1].subject));
     try testing.expectEqualStrings("inversePath", triples[1].predicate.local);
     try expect_iri(triples[1].object, "http://ex", "p");
-    // After ']' the outer context is restored.
     try expect_iri(triples[2].subject, "http://ex", "shape");
     try expect_literal(triples[2].object, .integer, "1");
 }
@@ -333,8 +306,6 @@ test "property list as subject, with and without following predicates" {
     try testing.expectEqual(@as(usize, 3), triples.len);
     const subject_blank = try expect_blank(triples[0].subject);
     try expect_iri(triples[0].object, "http://ex", "o");
-    // The second statement's blank subject carries both its inner triple
-    // and the outer predicateObjectList.
     const second_blank = try expect_blank(triples[1].subject);
     try testing.expect(subject_blank != second_blank);
     try testing.expectEqual(second_blank, try expect_blank(triples[2].subject));
@@ -380,7 +351,6 @@ test "collection expands to an rdf:first/rdf:rest chain" {
     );
     defer gpa.free(triples);
 
-    // s in b0; b0 first a; b0 rest b1; b1 first b; b1 rest nil.
     try testing.expectEqual(@as(usize, 5), triples.len);
     const head = try expect_blank(triples[0].object);
     try testing.expectEqual(head, try expect_blank(triples[1].subject));
@@ -411,8 +381,6 @@ test "sequence path (P rdf:type) parses as a two-element chain" {
 
 test "alternativePath of inverse paths: depth-2 nesting" {
     const gpa = testing.allocator;
-    // The deepest structure in the corpus: a property list containing a
-    // collection containing property lists.
     const triples = try parse_all(gpa,
         \\@prefix sh: <http://www.w3.org/ns/shacl#> .
         \\@prefix ex: <http://ex#> .
@@ -420,8 +388,6 @@ test "alternativePath of inverse paths: depth-2 nesting" {
     );
     defer gpa.free(triples);
 
-    // shape path b0; b0 alternativePath b1(head); b1 first b2; b2 inversePath p;
-    // b1 rest b3; b3 first b4; b4 inversePath q; b3 rest nil.
     try testing.expectEqual(@as(usize, 8), triples.len);
     try testing.expectEqualStrings("alternativePath", triples[1].predicate.local);
     try testing.expectEqualStrings("inversePath", triples[3].predicate.local);
@@ -439,7 +405,6 @@ test "nested empty structures inside a collection" {
     );
     defer gpa.free(triples);
 
-    // s p b0; b0 first nil; b0 rest b1; b1 first b_empty; b1 rest nil.
     try testing.expectEqual(@as(usize, 5), triples.len);
     try testing.expect(triples[1].object.iri.eql(turtle.rdf_nil));
     _ = try expect_blank(triples[3].object);
@@ -484,8 +449,6 @@ test "tabs separate tokens (the corpus typo line uses them)" {
     try testing.expectEqualStrings("MinCount", triples[0].predicate.local);
     try testing.expectEqualStrings("b", triples[1].predicate.local);
 }
-
-// ── Invalid space ─────────────────────────────────────────────────────────
 
 test "unterminated IRI at end of input" {
     try expect_parse_error("<http://ex#s", error.UnterminatedIri, 1);
@@ -572,7 +535,6 @@ test "exponent without digits" {
 }
 
 test "blank-node nesting beyond blank_depth_max" {
-    // Depth 9 of `[ ex:p [ ... ] ]` exceeds the fixed stack of 8.
     const source = "@prefix ex: <http://ex#> .\nex:s ex:p " ++
         ("[ ex:p " ** 9) ++ "ex:o" ++ (" ]" ** 9) ++ " .";
     try expect_parse_error(source, error.BlankDepthExceeded, 2);
@@ -698,12 +660,7 @@ test "blank label table overflow" {
     try expect_parse_error(source.items, error.TooManyBlankLabels, turtle.blank_labels_count_max + 2);
 }
 
-// ── Corpus-shaped smoke ───────────────────────────────────────────────────
-
 test "corpus smoke: every published rule-set file parses cleanly" {
-    // Pair tests with the real thing: symlink a published rule-set directory
-    // (e.g. ApplicationProfiles_NCP/SHACL) to testdata/shacl-corpus to parse
-    // all of it; skipped when the corpus is not on disk.
     const corpus_path = "testdata/shacl-corpus";
     const gpa = testing.allocator;
     const io = testing.io;
@@ -715,11 +672,6 @@ test "corpus smoke: every published rule-set file parses cleanly" {
         };
     defer dir.close(io);
 
-    // One published file is broken Turtle: NC-AP-Con-Complex-Common uses the
-    // undeclared prefix `io:` (a typo for `ido:`) on line 17. Strict parsers
-    // (rdflib included) reject it; fail-fast parsing must too. Guessing what
-    // `io:` expands to would be misreading a rule. The error must name the
-    // line so the user can fix the file.
     const broken_file = "NC-AP-Con-Complex-Common-SHACL_v1-0-0.ttl";
 
     var files_count: u32 = 0;
@@ -739,8 +691,6 @@ test "corpus smoke: every published rule-set file parses cleanly" {
 
         var parser = Turtle.init(source, entry.name);
         while (true) {
-            // The catch must live in the loop body: a `break` inside a while
-            // *condition* expression would bind to the outer directory loop.
             const triple_opt = parser.next() catch |err| {
                 if (std.mem.eql(u8, entry.name, broken_file)) {
                     try testing.expectEqual(turtle.Error.UnknownPrefix, err);
@@ -756,11 +706,6 @@ test "corpus smoke: every published rule-set file parses cleanly" {
         }
     }
 
-    // Pinned totals for ApplicationProfiles_NCP_v2-4-1-2: 28 files, of which
-    // 27 parse to 72,503 triples (collections expanded to rdf:first/rest
-    // chains; the analysis script's statement-level count for all 28 files
-    // is 72,545). A corpus revision bump that changes these is a visible
-    // diff, not a silent one.
     try testing.expectEqual(@as(u32, 28), files_count);
     try testing.expectEqual(@as(u32, 1), broken_count);
     try testing.expectEqual(@as(u64, 72_503), triples_count);
@@ -768,9 +713,6 @@ test "corpus smoke: every published rule-set file parses cleanly" {
 
 test "a corpus-shaped shape block parses into the expected triple count" {
     const gpa = testing.allocator;
-    // Mirrors the AssessedElement Simple file's structure: ontology header
-    // with typed/tagged literals, a named property shape, a closed node
-    // shape with inline path-only property shapes, and an sh:in list.
     const triples = try parse_all(gpa,
         \\@base   <https://ap-con.cim4.eu/AssessedElement-Simple/2.4> .
         \\@prefix ae:  <https://ap-con.cim4.eu/AssessedElement-Simple/2.4#> .
@@ -808,7 +750,5 @@ test "a corpus-shaped shape block parses into the expected triple count" {
     );
     defer gpa.free(triples);
 
-    // Ontology: 3. Property shape: 8. Closed node shape: 6 stated + 2 for
-    // the (rdf:type) list + 1 inline sh:path. In-list: 2 stated + 6 chain.
     try testing.expectEqual(@as(usize, 28), triples.len);
 }

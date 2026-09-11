@@ -1,175 +1,72 @@
-//! Compile SHACL triples into the flat RuleSet that `cimd validate` executes.
-//!
-//! The loader materializes the triple stream from turtle.zig into one flat,
-//! bounded triple table (Turtle does not guarantee a shape's triples arrive
-//! contiguously, and named property shapes referenced by IRI are the corpus
-//! norm), then compiles it with two passes: pass 1 counts, pass 2 allocates
-//! exactly and fills. Prefix-sum cursors and paired assertions verify the
-//! passes agree; the same discipline CimDocument.init uses.
-//!
-//! Shapes are flattened per (target class, node shape) pair and sorted by
-//! class. Namespace variants of one CIM name collapse by local name; dedup
-//! is correctness, not hygiene: a shape targeting both cim16:CurrentLimit
-//! and cim17:CurrentLimit must not report twice.
-//!
-//! Any rule outside the supported vocabulary, sh:sparql above all, lands
-//! in `unsupported` with its rule name and offending component, never
-//! silently dropped. That includes unknown sh:-namespace predicates: the
-//! corpus contains a published `sh:MinCount` typo that plain SHACL semantics
-//! would silently turn into a no-op.
-
 const std = @import("std");
 const assert = std.debug.assert;
 const turtle = @import("turtle.zig");
 const units = @import("../units.zig");
 
-/// Maximum rule-set file size: u32 offsets need < 4 GiB; the largest
-/// published file is 1.04 MiB, so this is 60x headroom.
 pub const rules_bytes_max = 64 * units.mebibyte;
 
-/// Maximum triples per rule-set file. Largest corpus file: 22,788.
 pub const triples_count_max = 1 << 22;
 
-/// Maximum flattened (class, shape) entries per file. Corpus max per
-/// file: 4,026 shapes; 16x headroom.
 pub const shapes_count_max = 65_536;
 
-/// Maximum compiled constraints per file, including the flattening
-/// duplication.
 pub const constraints_count_max = 1 << 20;
 
-/// Maximum allowed-property entries of closed shapes per file.
 pub const closed_paths_count_max = 1 << 20;
 
-/// Maximum sh:message length, raw and after substitution expansion.
-/// Longest corpus message: 155 bytes.
 pub const message_bytes_max = 4096;
 
-/// Maximum entries in a load-time substitution table. Publishers
-/// define a handful of named constants (QoCDC's EQ_* set is ~30).
 pub const substitutions_count_max = 256;
 
 pub const RuleSet = struct {
-    /// The raw rule-set bytes. Names, IRIs, values, and messages below are
-    /// slices into this buffer (same ownership pattern as CimDocument.xml), except
-    /// strings that escape decoding or substitution rewrote; those live
-    /// in `strings`.
     source: []const u8,
-    /// Strings that differ from their raw source bytes: escape-decoded
-    /// literals and substitution-expanded messages, packed into one
-    /// exact-size buffer. Empty in the corpus norm when every stored
-    /// string is a verbatim slice into `source`.
     strings: []const u8,
-    /// Rule-set file name, for load-error and report traceability. Borrowed
-    /// from the caller.
     source_name: []const u8,
-    /// owl:versionInfo of the ontology header (present across the corpus,
-    /// printed in report headers for provenance; "" when absent.
     version: []const u8,
 
-    /// Class-targeted shapes first, flattened per (class, shape) pair and
-    /// grouped by class (covered by class_index); subjects-of and
-    /// node-targeted shapes follow, evaluated by scan / id lookup.
     shapes: []const Shape,
-    /// shapes[0..class_targeted_count] carry .class targets; the rest form
-    /// the tail section.
     class_targeted_count: u32,
-    /// Grouped by shape: shapes[i] owns constraints[first..first+len].
     constraints: []const Constraint,
-    /// Values of sh:in lists, grouped per constraint; local names, sorted
-    /// and deduplicated: a corpus list of 482 IRIs holding three namespace
-    /// variants per class shrinks to its distinct names.
     in_values: []const []const u8,
-    /// Allowed child-tag names of closed shapes, grouped per shape, sorted
-    /// for binary search, deduplicated.
     closed_paths: []const []const u8,
 
-    /// Target class local name -> range into shapes.
     class_index: std.StringHashMap(Range),
-    /// Rules whose constraint component we do not execute (sh:sparql, ...),
-    /// kept for honest reporting: rule name + component local name.
     unsupported: []const UnsupportedRule,
 
     pub const Range = struct { start: u32, len: u32 };
 
     pub const Shape = struct {
-        /// sh:name if present (it always is in the corpus), else the
-        /// shape's local IRI name, the rule code users see and grep for.
         name: []const u8,
         target: Target,
         constraints: Range,
-        /// sh:closed: allowed child-tag names (range into closed_paths);
-        /// null when the shape is not closed. rdf:type, the only
-        /// sh:ignoredProperties member in the corpus, is the XML element
-        /// name itself, never a child tag, so it needs no entry.
         closed_paths: ?Range,
-        /// sh:message of the node shape itself (closed shapes carry theirs
-        /// at node level); "" when absent.
         message: []const u8,
         severity: Severity,
     };
 
-    /// SHACL targets, normalized per the published corpus. sh:targetObjectsOf
-    /// and implicit class targets have zero published uses and load as
-    /// unsupported until a use case pays for them.
     pub const Target = union(enum) {
-        /// One class name with namespace stripped, e.g. "ACLineSegment",
-        /// keyed directly into CimDocument.type_index / cim_types.is_a. Multi-class
-        /// targets are flattened before this point. A class absent
-        /// from the model matches zero objects; valid, not an error.
         class: []const u8,
-        /// A single node id, resolved via CimDocument.object_by_id. In the corpus
-        /// these are synthetic hooks for dataset-level SPARQL, so they
-        /// typically resolve to nothing; valid, not an error.
         node: []const u8,
-        /// sh:targetSubjectsOf: every object carrying this property as a
-        /// child tag; the sentinel "rdf:type" means every object (the
-        /// class-whitelist idiom).
         subjects_of: []const u8,
     };
 
     pub const Severity = enum(u8) { violation, warning, info };
 
     pub const Constraint = struct {
-        /// Property name as it appears as a child tag in CGMES XML, e.g.
-        /// "ACLineSegment.r", directly usable against child-tag scans.
         path: []const u8,
         path_kind: PathKind,
-        /// The property shape's sh:name, the per-rule code. The corpus puts
-        /// name/severity on constraint-bearing property shapes, so they
-        /// live here rather than only on Shape; violations must report the
-        /// exact rule violated.
         name: []const u8,
-        /// sh:message, reported verbatim, with named constants already
-        /// expanded when a substitution table was given to load;
-        /// "" when absent.
         message: []const u8,
         severity: Severity,
         check: Check,
     };
 
-    /// How sh:path maps onto the CGMES document index. The corpus uses
-    /// exactly these four forms; anything else loads as unsupported.
     pub const PathKind = enum(u8) {
-        /// The path is a child tag of the focus object.
         direct,
-        /// sh:path rdf:type: the value is the focus object's own class
-        /// name (the class-whitelist idiom).
         own_type,
-        /// sh:path (P rdf:type): follow reference P; the value is the
-        /// referenced object's class name.
         ref_type,
-        /// sh:path [sh:inversePath P]: the values are the objects that
-        /// reference the focus object via P. Cardinality checks only in
-        /// the corpus (105 shapes); evaluated by a referrer-count pass.
-        /// An sh:alternativePath whose alternatives collapse to one local
-        /// name compiles to this.
         inverse,
     };
 
-    /// The supported constraint vocabulary. A tagged union so that
-    /// evaluation is a single exhaustive switch; no rule syntax survives
-    /// into the evaluator.
     pub const Check = union(enum) {
         min_count: u32,
         max_count: u32,
@@ -179,24 +76,13 @@ pub const RuleSet = struct {
         max_inclusive: f64,
         min_exclusive: f64,
         max_exclusive: f64,
-        /// Allowed values; range into in_values. Serves both enumeration
-        /// values and allowed-class lists.
         in: Range,
-        /// Reference must resolve to an instance of this class (subtypes
-        /// ok, via cim_types.is_a).
         class: []const u8,
-        /// Value must equal this literal or IRI local name (sh:hasValue).
         has_value: []const u8,
-        /// String length bounds (sh:minLength / sh:maxLength).
         min_length: u32,
         max_length: u32,
     };
 
-    /// The xsd datatypes appearing in the corpus, by frequency:
-    /// float 324, string 104, boolean 95, dateTime 62, decimal 26,
-    /// integer 23, duration 22, anyURI 5, gMonthDay 4, time 4, date 1.
-    /// `double` has zero corpus uses but is W3C-common and checks exactly
-    /// like float, so excluding it would cost more than the enum entry.
     pub const Datatype = enum(u8) {
         float,
         double,
@@ -215,11 +101,7 @@ pub const RuleSet = struct {
     pub const NodeKind = enum(u8) { iri, literal };
 
     pub const UnsupportedRule = struct {
-        /// The rule code (sh:name or shape local name).
         name: []const u8,
-        /// Offending component's local name in the sh: namespace, e.g.
-        /// "sparql" or the published typo "MinCount"; reports print it as
-        /// "sh:<component>".
         component: []const u8,
     };
 
@@ -235,21 +117,10 @@ pub const RuleSet = struct {
         OutOfMemory,
     } || turtle.Error;
 
-    /// On load failure, the 1-based line in the rules file when known
-    /// (0 for file-level errors such as size limits).
     pub const Diagnostics = struct { line: u32 = 0 };
 
-    /// One named constant expanded in sh:message at load time: every
-    /// occurrence of `name` becomes `value` ("EQ_BRANCH_X_LIMIT" →
-    /// "0.01 Ohm"). Names are plain identifiers (no escapes); values are
-    /// copied into the RuleSet, so the table may be temporary.
     pub const Substitution = struct { name: []const u8, value: []const u8 };
 
-    /// Takes ownership of `source`: on success the RuleSet owns it (freed
-    /// by deinit), on error it is freed before returning; same contract
-    /// as CimDocument.init. `substitutions` is the optional message-constant table;
-    /// pass `&.{}` to report messages verbatim (the default and the corpus
-    /// norm).
     pub fn load(
         gpa: std.mem.Allocator,
         source: []const u8,
@@ -257,7 +128,6 @@ pub const RuleSet = struct {
         substitutions: []const Substitution,
         diagnostics: ?*Diagnostics,
     ) LoadError!RuleSet {
-        errdefer gpa.free(source);
         if (source.len > rules_bytes_max) return error.RuleSetTooLarge;
         assert(substitutions.len <= substitutions_count_max);
         for (substitutions) |substitution| {
@@ -276,8 +146,6 @@ pub const RuleSet = struct {
 
         var filler = try Emitter.init(gpa, &table, substitutions, diagnostics);
         defer filler.deinit();
-        // The scan itself frees nothing on its error paths; this errdefer
-        // covers the output arrays from begin_fill onward.
         errdefer filler.free_output();
         try filler.begin_fill(&counter);
         try scan_all(&filler);
@@ -309,10 +177,8 @@ pub const RuleSet = struct {
         gpa.free(self.constraints);
         gpa.free(self.shapes);
         gpa.free(self.strings);
-        gpa.free(self.source);
     }
 
-    /// The sh:in values of a constraint (empty for other checks).
     pub fn in_values_of(self: *const RuleSet, constraint: Constraint) []const []const u8 {
         const range = switch (constraint.check) {
             .in => |r| r,
@@ -322,7 +188,6 @@ pub const RuleSet = struct {
         return self.in_values[range.start .. range.start + range.len];
     }
 
-    /// The allowed child tags of a closed shape (sorted), empty otherwise.
     pub fn closed_paths_of(self: *const RuleSet, shape: Shape) []const []const u8 {
         const range = shape.closed_paths orelse return &.{};
         assert(range.start + range.len <= self.closed_paths.len);
@@ -330,12 +195,6 @@ pub const RuleSet = struct {
     }
 };
 
-// ── Triple table ──────────────────────────────────────────────────────────
-
-/// Recognized predicates. Everything in the sh: namespace outside this set
-/// compiles to .sh_unknown and surfaces in `unsupported` when it sits on a
-/// shape; that covers both the deliberately excluded components
-/// (sh:sparql, sh:or, sh:pattern, ...) and typos like sh:MinCount.
 const Predicate = enum(u8) {
     rdf_type,
     rdf_first,
@@ -373,8 +232,6 @@ const Predicate = enum(u8) {
     sh_unknown,
     other,
 
-    /// True for constraint components that only make sense on a property
-    /// shape; on a node shape they load as unsupported.
     fn is_value_component(p: Predicate) bool {
         return switch (p) {
             .sh_min_count,
@@ -463,7 +320,6 @@ fn predicate_from_iri(iri: turtle.Iri) Predicate {
 const Lit = struct { value: []const u8, kind: turtle.Literal.Kind };
 
 const Object = union(enum) {
-    /// Interned IRI or blank node id.
     node: u32,
     literal: Lit,
 };
@@ -471,8 +327,6 @@ const Object = union(enum) {
 const Row = struct {
     subject: u32,
     predicate: Predicate,
-    /// The predicate's local name as written, kept so unsupported
-    /// reporting can name the published typo exactly (sh:MinCount).
     predicate_local: []const u8,
     object: Object,
     line: u32,
@@ -485,10 +339,7 @@ const NodeInfo = struct {
 };
 
 const TripleTable = struct {
-    /// All triples, sorted by subject id (stable), so one shape's rows are
-    /// contiguous regardless of where its triples sat in the file.
     rows: []Row,
-    /// Indexed by node id: that subject's row range.
     subject_ranges: []RuleSet.Range,
     nodes: []NodeInfo,
 
@@ -541,8 +392,6 @@ const TableBuilder = struct {
     rows: std.ArrayList(Row),
     nodes: std.ArrayList(NodeInfo),
     iri_ids: IriIdMap,
-    /// Parser blank id -> node id. Parser ids are dense and increase in
-    /// first-encounter order, so this is an append-only array.
     blank_ids: std.ArrayList(u32),
 
     fn intern_iri(b: *TableBuilder, iri: turtle.Iri) !u32 {
@@ -556,7 +405,6 @@ const TableBuilder = struct {
 
     fn intern_blank(b: *TableBuilder, parser_id: u32) !u32 {
         if (parser_id < b.blank_ids.items.len) return b.blank_ids.items[parser_id];
-        // Parser blank ids are assigned sequentially at first encounter.
         assert(parser_id == b.blank_ids.items.len);
         const id: u32 = @intCast(b.nodes.items.len);
         try b.nodes.append(b.gpa, .{ .namespace = "", .local = "", .kind = .blank });
@@ -617,8 +465,6 @@ fn build_table(
     return sort_table(gpa, &builder);
 }
 
-/// Stable counting sort of rows by subject id, plus the per-subject ranges;
-/// the same prefix-sum-and-cursor pattern as CimDocument.init passes 2 and 3.
 fn sort_table(gpa: std.mem.Allocator, builder: *TableBuilder) !TripleTable {
     const nodes_count: u32 = @intCast(builder.nodes.items.len);
     const rows = builder.rows.items;
@@ -644,8 +490,6 @@ fn sort_table(gpa: std.mem.Allocator, builder: *TableBuilder) !TripleTable {
         sorted[cursors[row.subject]] = row;
         cursors[row.subject] += 1;
     }
-    // Every cursor must sit at the end of its range; pairs with the
-    // counting loop above.
     for (subject_ranges, cursors) |range, cursor| assert(cursor == range.start + range.len);
 
     return .{
@@ -675,23 +519,13 @@ fn find_version(table: *const TripleTable) []const u8 {
     return "";
 }
 
-// ── Two-pass compile ──────────────────────────────────────────────────────
-
-/// One scanner, two modes: counting (output slices absent, cursors count)
-/// and filling (output slices allocated from the count pass, cursors write).
-/// Sharing the walk guarantees the passes cannot disagree on logic; the
-/// paired assertions in assert_fill_complete catch it if they somehow do.
 const Emitter = struct {
     gpa: std.mem.Allocator,
     table: *const TripleTable,
-    /// The message-constant table. The scan only measures with it, so that
-    /// expansion-size errors surface while a row's line is still known; the
-    /// actual rewrite happens in finalize_strings.
     substitutions: []const RuleSet.Substitution,
     diagnostics: ?*RuleSet.Diagnostics,
     filling: bool,
 
-    // Cursors double as totals in counting mode.
     class_cursor_total: u32,
     tail_cursor: u32,
     constraints_cursor: u32,
@@ -699,17 +533,12 @@ const Emitter = struct {
     closed_paths_cursor: u32,
     unsupported_cursor: u32,
 
-    /// Class local name -> flattened entry count (counting mode) and the
-    /// prefix-summed write cursor (filling mode).
     class_counts: std.StringHashMap(u32),
     class_index: std.StringHashMap(RuleSet.Range),
     class_total: u32,
 
     output: Output,
 
-    /// Property shapes already reported to `unsupported`; constraints
-    /// duplicate per referencing node shape, unsupported entries must
-    /// not.
     unsupported_seen: []bool,
 
     scratch_classes: std.ArrayList([]const u8),
@@ -768,7 +597,6 @@ const Emitter = struct {
         e.class_counts.deinit();
     }
 
-    /// Ownership of class_index moves to the RuleSet.
     fn take_class_index(e: *Emitter) std.StringHashMap(RuleSet.Range) {
         const index = e.class_index;
         e.class_index = std.StringHashMap(RuleSet.Range).init(e.gpa);
@@ -792,8 +620,6 @@ const Emitter = struct {
         if (e.closed_paths_cursor > closed_paths_count_max) return error.TooManyClosedPaths;
     }
 
-    /// Allocate exact-size outputs from the counting pass and derive the
-    /// per-class prefix-sum cursors.
     fn begin_fill(e: *Emitter, counter: *const Emitter) !void {
         assert(!counter.filling);
         e.filling = true;
@@ -818,8 +644,6 @@ const Emitter = struct {
 
     fn assert_fill_complete(e: *const Emitter, counter: *const Emitter) void {
         assert(e.filling);
-        // Pass 1 and pass 2 must agree exactly; a mismatch is a programmer
-        // error, not an input error.
         assert(e.constraints_cursor == counter.constraints_cursor);
         assert(e.in_values_cursor == counter.in_values_cursor);
         assert(e.closed_paths_cursor == counter.closed_paths_cursor);
@@ -835,8 +659,6 @@ const Emitter = struct {
     fn fail_line(e: *Emitter, line: u32) void {
         if (e.diagnostics) |d| d.line = line;
     }
-
-    // ── Emission primitives (count or fill) ─────────────────────────────
 
     fn emit_constraint(e: *Emitter, constraint: RuleSet.Constraint) !void {
         if (e.filling) {
@@ -854,9 +676,6 @@ const Emitter = struct {
         e.unsupported_cursor += 1;
     }
 
-    /// Sort + dedup the scratch list in place, then emit it as a range.
-    /// Both passes run the identical transform, so counted size == filled
-    /// size by construction.
     fn emit_string_range(
         e: *Emitter,
         scratch: *std.ArrayList([]const u8),
@@ -917,19 +736,9 @@ fn string_less_than(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.order(u8, a, b) == .lt;
 }
 
-// ── Load-time string transformation ─────────────────────────────────────
-// Stored strings normally stay verbatim slices into `source`. Two things
-// rewrite one: a Turtle escape sequence (the tokenizer validates but does
-// not decode, turtle.zig), and a substitution-table constant inside a
-// message. Rewritten strings are packed into one exact-size buffer owned
-// by the RuleSet; pass 1 measures, pass 2 fills; the same two-pass
-// discipline as the Emitter.
-
 const TransformTotals = struct {
     bytes: u64 = 0,
     strings: u32 = 0,
-    /// How many of `strings` were sh:in list values (they alone carry a
-    /// sorted invariant to restore).
     in_values: u32 = 0,
 };
 
@@ -949,19 +758,11 @@ fn finalize_strings(
     assert(filled.bytes == measured.bytes);
     assert(filled.strings == measured.strings);
 
-    // Decoding can reorder an sh:in list ("a!" sorts after "aZ" raw
-    // but before it decoded): restore the sorted invariant binary search
-    // relies on. Values that decode equal stay as duplicates; harmless
-    // to search, and ranges cannot shrink in place.
+    // Escape decoding can change lexical order required by binary search.
     if (measured.in_values > 0) sort_in_value_ranges(output);
     return buffer;
 }
 
-/// One walk over every stored string, two modes: `buffer` null measures,
-/// `buffer` set writes each rewritten string and repoints its field.
-/// Messages get the substitution table; everything else decodes escapes
-/// only (names, values, version; sh:path and sh:class come from IRI
-/// locals, where the tokenizer admits no string escapes).
 fn transform_pass(
     output: *Emitter.Output,
     version: *[]const u8,
@@ -998,8 +799,6 @@ fn transform_field(
 ) RuleSet.LoadError!void {
     if (!string_needs_transform(field.*, substitutions)) return;
     if (buffer) |bytes| {
-        // finalize_strings checked the measured total against
-        // rules_bytes_max before allocating, so the cursor fits u32.
         assert(totals.bytes <= bytes.len);
         const start: u32 = @intCast(totals.bytes);
         const len = try transform_string(field.*, substitutions, bytes[start..]);
@@ -1007,8 +806,6 @@ fn transform_field(
         totals.bytes += len;
     } else {
         const len = try transform_string(field.*, substitutions, null);
-        // Only messages take substitutions, and check_message_length
-        // already enforced the expanded cap while the row line was known.
         if (substitutions.len > 0) assert(len <= message_bytes_max);
         totals.bytes += len;
     }
@@ -1026,10 +823,6 @@ fn string_needs_transform(
     return false;
 }
 
-/// Rewrite `raw` into `out` (or just measure when `out` is null): decode
-/// escape sequences, expand substitution names. One left-to-right scan;
-/// substitution values are emitted verbatim, never re-scanned, so
-/// expansion cannot recurse.
 fn transform_string(
     raw: []const u8,
     substitutions: []const RuleSet.Substitution,
@@ -1053,8 +846,6 @@ fn transform_string(
             len += 1;
             i += 1;
         }
-        // Substitution values are capped at message_bytes_max (load
-        // asserts), so len cannot overflow u32 before this trips.
         if (len > rules_bytes_max) return error.RuleSetTooLarge;
     }
     return len;
@@ -1089,9 +880,6 @@ const ShapeMetadata = struct {
     severity: RuleSet.Severity,
 };
 
-/// Enforce message_bytes_max while the sh:message row's line is still
-/// known: on the raw form, and on what substitution expansion will make of
-/// it in finalize_strings, which runs after row lines are gone.
 fn check_message_length(e: *Emitter, row: Row) RuleSet.LoadError!void {
     assert(row.predicate == .sh_message);
     assert(row.object == .literal);
@@ -1125,9 +913,6 @@ fn scan_all(e: *Emitter) RuleSet.LoadError!void {
         if (rows.len == 0) continue;
         if (shape_deactivated(rows)) continue;
         if (!rows_have_target(rows)) {
-            // A shape whose only target is the unsupported
-            // sh:targetObjectsOf must still surface in the report;
-            // everything else without a target is inert, not a lost rule.
             try report_unsupported_target(e, subject, rows);
             continue;
         }
@@ -1138,6 +923,7 @@ fn scan_all(e: *Emitter) RuleSet.LoadError!void {
 fn report_unsupported_target(e: *Emitter, subject: u32, rows: []const Row) RuleSet.LoadError!void {
     for (rows) |row| {
         if (row.predicate != .sh_unknown) continue;
+        // Unsupported targets must remain visible instead of becoming inert rules.
         if (!std.mem.eql(u8, row.predicate_local, "targetObjectsOf")) continue;
         const meta = try shape_metadata(e, rows, e.table.node_local(subject));
         try e.emit_unsupported(meta.name, row.predicate_local);
@@ -1159,8 +945,6 @@ fn shape_deactivated(rows: []const Row) bool {
     for (rows) |row| {
         if (row.predicate != .sh_deactivated) continue;
         if (row.object != .literal) continue;
-        // sh:deactivated true: the shape produces no violations; skipping
-        // it entirely IS the SHACL semantics, not a coverage loss.
         return std.mem.eql(u8, row.object.literal.value, "true");
     }
     return false;
@@ -1186,9 +970,7 @@ fn scan_node_shape(e: *Emitter, subject: u32, rows: []const Row) RuleSet.LoadErr
             .sh_target_node => try add_node_target(e, meta, row),
             .sh_unknown => try e.emit_unsupported(meta.name, row.predicate_local),
             else => {
-                // Value components sit on property shapes; on the node
-                // shape itself they would check the focus node; zero
-                // corpus uses, so they load as unsupported.
+                // Node-level value components have no corpus use or evaluator path.
                 if (row.predicate.is_value_component()) {
                     try e.emit_unsupported(meta.name, row.predicate_local);
                 }
@@ -1215,9 +997,6 @@ fn scan_node_shape(e: *Emitter, subject: u32, rows: []const Row) RuleSet.LoadErr
     }
 }
 
-/// Multi-class targets flatten to one entry per distinct class local name;
-/// namespace variants (cim16:/cim17:/cim:) collapse here. O(n^2) dedup is
-/// bounded by the corpus outlier of 145 classes on one shape.
 fn add_class_target(e: *Emitter, meta: ShapeMetadata, row: Row) !void {
     if (row.object != .node) return e.emit_unsupported(meta.name, row.predicate_local);
     if (!e.table.node_is_iri(row.object.node)) {
@@ -1234,9 +1013,7 @@ fn add_subjects_of_target(e: *Emitter, meta: ShapeMetadata, row: Row) !void {
     if (row.object != .node) return e.emit_unsupported(meta.name, row.predicate_local);
     const node = row.object.node;
     if (!e.table.node_is_iri(node)) return e.emit_unsupported(meta.name, row.predicate_local);
-    // Subjects of rdf:type means "every object" (the class-whitelist
-    // idiom); the sentinel keeps that distinct from a CIM property named
-    // "type".
+    // The sentinel distinguishes the class-whitelist idiom from a CIM property.
     const property = if (e.table.node_is(node, turtle.rdf_namespace, "type"))
         "rdf:type"
     else
@@ -1252,9 +1029,6 @@ fn add_node_target(e: *Emitter, meta: ShapeMetadata, row: Row) !void {
     try e.scratch_tail.append(e.gpa, .{ .node = e.table.node_local(row.object.node) });
 }
 
-/// sh:ignoredProperties contributes to the closed shape's allowed set.
-/// rdf:type, the only corpus member, is the XML element name itself,
-/// never a child tag, so it needs no entry.
 fn collect_ignored_properties(e: *Emitter, meta: ShapeMetadata, row: Row) RuleSet.LoadError!void {
     if (row.object != .node) return e.emit_unsupported(meta.name, row.predicate_local);
     e.scratch_values.clearRetainingCapacity();
@@ -1273,8 +1047,6 @@ fn scan_property_shape(e: *Emitter, node_meta: ShapeMetadata, row: Row) RuleSet.
     e.unsupported_seen[subject] = true;
 
     if (rows.len == 0) {
-        // A dangling sh:property reference is a rule that cannot run. Zero
-        // appear in the corpus, but honest reporting still needs it visible.
         if (report) try e.emit_unsupported(node_meta.name, row.predicate_local);
         return;
     }
@@ -1289,8 +1061,6 @@ fn scan_property_shape(e: *Emitter, node_meta: ShapeMetadata, row: Row) RuleSet.
         }
         return;
     };
-    // Direct paths of a closed shape's property list form its allowed set
-    // (both bare `[sh:path P]` shapes and full constraint shapes).
     if (path.kind == .direct) try e.scratch_closed.append(e.gpa, path.local);
 
     for (rows) |property_row| {
@@ -1336,20 +1106,13 @@ fn scan_component(
             if (report) try e.emit_unsupported(meta.name, row.predicate_local);
             return;
         },
-        // path/name/message/severity are consumed elsewhere;
-        // description/order/group are recognized metadata and skipped.
         else => return,
     };
     const resolved_check = check orelse {
-        // The component is known but its value is not executable (e.g.
-        // sh:datatype xsd:hexBinary, a non-integer count).
         if (report) try e.emit_unsupported(meta.name, row.predicate_local);
         return;
     };
-    // Inverse paths evaluate through the referrer-count pass, which yields
-    // cardinality only. Value checks over an inverse path have zero corpus
-    // uses and would need the referrers themselves, so they load as
-    // unsupported rather than silently never running.
+    // Inverse traversal currently materializes counts, not values.
     if (path.kind == .inverse and
         resolved_check != .min_count and resolved_check != .max_count)
     {
@@ -1377,10 +1140,6 @@ fn in_check_of(e: *Emitter, row: Row) RuleSet.LoadError!?RuleSet.Check {
     return .{ .in = range };
 }
 
-/// Walk an rdf:first/rdf:rest chain, appending each element's comparable
-/// form: IRIs as local names ("rdf:type" for rdf:type itself), literals as
-/// their lexical value. Blank elements have no comparable form and poison
-/// the list.
 fn collect_list(e: *Emitter, row: Row, out: *std.ArrayList([]const u8)) RuleSet.LoadError!void {
     assert(row.object == .node);
     var current = row.object.node;
@@ -1454,13 +1213,8 @@ fn shape_metadata(
     return meta;
 }
 
-// ── Path resolution ───────────────────────────────────────────────────────
-
 const ResolvedPath = struct { kind: RuleSet.PathKind, local: []const u8 };
 
-/// Resolve the shape's sh:path to one of the four supported forms, or null
-/// when the form is outside them (the caller reports it). Layered helpers,
-/// no recursion: the corpus nests at most 2 deep.
 fn resolve_path(table: *const TripleTable, rows: []const Row) ?ResolvedPath {
     const path_row = for (rows) |row| {
         if (row.predicate == .sh_path) break row;
@@ -1497,8 +1251,6 @@ fn resolve_inverse_path(table: *const TripleTable, row: Row) ?ResolvedPath {
         if (table.node_is(node, turtle.rdf_namespace, "type")) return null;
         return .{ .kind = .inverse, .local = table.node_local(node) };
     }
-    // [sh:inversePath [sh:alternativePath (...)]]: the alternatives must
-    // collapse to one direct local name, giving inverse of it.
     for (table.subject_rows(node)) |inner| {
         if (inner.predicate != .sh_alternative_path) continue;
         const collapsed = collapse_alternatives(table, inner) orelse return null;
@@ -1512,9 +1264,6 @@ fn resolve_alternative_path(table: *const TripleTable, row: Row) ?ResolvedPath {
     return collapse_alternatives(table, row);
 }
 
-/// All alternatives must resolve to the same (kind, local), with namespace
-/// variants of one property. Anything else is a real alternation we do not
-/// execute.
 fn collapse_alternatives(table: *const TripleTable, row: Row) ?ResolvedPath {
     if (row.object != .node) return null;
     var current = row.object.node;
@@ -1547,8 +1296,6 @@ fn collapse_alternatives(table: *const TripleTable, row: Row) ?ResolvedPath {
     return collapsed;
 }
 
-/// One element of an sh:alternativePath list: a plain property IRI or an
-/// inline [sh:inversePath P]. Deeper nesting is unsupported.
 fn resolve_alternative_element(table: *const TripleTable, element: Object) ?ResolvedPath {
     if (element != .node) return null;
     const node = element.node;
@@ -1566,10 +1313,6 @@ fn resolve_alternative_element(table: *const TripleTable, element: Object) ?Reso
     return null;
 }
 
-/// Sequence paths: exactly (P rdf:type): follow reference P, take the
-/// target's class name. All published sequence paths use that form. A
-/// sequence starting with an inverse path exists in one Complex file and
-/// loads as unsupported.
 fn resolve_sequence_path(table: *const TripleTable, head: u32) ?ResolvedPath {
     var elements: [2]Object = undefined;
     var count: u32 = 0;
@@ -1601,8 +1344,6 @@ fn resolve_sequence_path(table: *const TripleTable, head: u32) ?ResolvedPath {
     return .{ .kind = .ref_type, .local = table.node_local(property) };
 }
 
-// ── Object value helpers ──────────────────────────────────────────────────
-
 fn literal_is_true(object: Object) bool {
     if (object != .literal) return false;
     return std.mem.eql(u8, object.literal.value, "true");
@@ -1630,7 +1371,6 @@ fn node_kind_of(table: *const TripleTable, object: Object) ?RuleSet.NodeKind {
     if (object != .node) return null;
     if (table.node_is(object.node, turtle.shacl_namespace, "IRI")) return .iri;
     if (table.node_is(object.node, turtle.shacl_namespace, "Literal")) return .literal;
-    // sh:BlankNode and the combined kinds have zero corpus uses.
     return null;
 }
 

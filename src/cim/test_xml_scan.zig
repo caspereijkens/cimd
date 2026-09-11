@@ -5,6 +5,56 @@ const std = @import("std");
 const assert = std.debug.assert;
 const xml_scan = @import("xml_scan.zig");
 
+test "closing index handles deep nesting and rejects QName prefixes" {
+    const gpa = std.testing.allocator;
+    var buffer: [16 * 1024]u8 = undefined;
+    var xml = std.Io.Writer.fixed(&buffer);
+    for (0..1024) |_| try xml.writeAll("<x:a>");
+    for (0..1024) |_| try xml.writeAll("</x:a>");
+    var boundaries = try xml_scan.find_tag_boundaries(gpa, xml.buffered());
+    defer boundaries.deinit(gpa);
+    const closing = try xml_scan.build_closing_index(gpa, xml.buffered(), boundaries.items);
+    defer gpa.free(closing);
+    for (0..1024) |i| try std.testing.expectEqual(@as(u32, @intCast(2047 - i)), closing[i]);
+
+    var malformed: xml_scan.MalformedXML = .{};
+    try std.testing.expectError(error.MalformedXML, xml_scan.build_closing_index_with_error_offset(
+        gpa,
+        xml.buffered()[0 .. 1024 * "<x:a>".len],
+        boundaries.items[0..1024],
+        &malformed,
+    ));
+    try std.testing.expectEqual(@as(u32, 0), malformed.offset);
+
+    for ([_][]const u8{ "<abc></ab>", "<ab></abc>", "<x:ab attr=\"x\"></x:a>", "<x:a></y:a>" }) |invalid| {
+        var tags = try xml_scan.find_tag_boundaries(gpa, invalid);
+        defer tags.deinit(gpa);
+        try std.testing.expectError(error.MalformedXML, xml_scan.build_closing_index(gpa, invalid, tags.items));
+    }
+}
+
+test "byte scan matches scalar positions across alignment, density, and SIMD tails" {
+    var bytes: [6 * xml_scan.VECTOR_LEN + 7]u8 = undefined;
+    for ([_]usize{ 1, 2, 7, 31 }) |stride| {
+        for (&bytes, 0..) |*byte, i| byte.* = if (i % stride == 0) '<' else 'x';
+        for (0..xml_scan.VECTOR_LEN) |start| {
+            for (0..bytes.len - start + 1) |len| {
+                const input = bytes[start..][0..len];
+                var found = try xml_scan.find_byte_simd(std.testing.allocator, input, '<');
+                defer found.deinit(std.testing.allocator);
+                var count: usize = 0;
+                for (input, 0..) |byte, index| {
+                    if (byte != '<') continue;
+                    try std.testing.expect(count < found.items.len);
+                    try std.testing.expectEqual(@as(u32, @intCast(index)), found.items[count]);
+                    count += 1;
+                }
+                try std.testing.expectEqual(count, found.items.len);
+            }
+        }
+    }
+}
+
 test "xml_scan.find_byte_simd - finds all angle brackets" {
     const gpa = std.testing.allocator;
 

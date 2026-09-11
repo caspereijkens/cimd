@@ -29,7 +29,6 @@ pub const Overlay = struct {
     doc: CimDocument,
     policy: IdPolicy,
 
-    xml: []const u8,
     boundaries: []const TagBoundary,
 
     patches: []const Patch,
@@ -39,7 +38,7 @@ pub const Overlay = struct {
     /// A separate index keeps patches from appearing as navigable objects of this part.
     id_to_object: std.StringHashMap(u32),
 
-    /// The parser takes ownership of XML even on failure, so callers must not free it.
+    /// Borrows immutable XML on success and failure; the input must outlive the overlay.
     pub fn init(gpa: std.mem.Allocator, xml: []const u8, policy: IdPolicy) !Overlay {
         return init_with_diagnostics(gpa, xml, policy, null);
     }
@@ -61,30 +60,40 @@ pub const Overlay = struct {
         var doc = try CimDocument.init_with_diagnostics(gpa, xml, diagnostics);
         errdefer doc.deinit(gpa);
 
-        // Classify once to avoid rescanning identifier attributes.
-        var patch_list: std.ArrayList(Patch) = .empty;
-        errdefer patch_list.deinit(gpa);
-        var object_list: std.ArrayList(CimObject) = .empty;
-        errdefer object_list.deinit(gpa);
-
+        var patch_count: u32 = 0;
+        var object_count: u32 = 0;
         for (doc.objects) |obj| switch (classify(doc, obj, policy)) {
             .skip => {},
-            .declares => try object_list.append(gpa, obj),
-            .patch => |mrid| try patch_list.append(gpa, .{
-                .mrid = mrid,
-                .patch_tag_idx = obj.object_tag_idx,
-                .closing_tag_idx = obj.closing_tag_idx,
-            }),
+            .declares => object_count += 1,
+            .patch => patch_count += 1,
         };
-
-        const patches = try patch_list.toOwnedSlice(gpa);
+        const patches = try gpa.alloc(Patch, patch_count);
         errdefer gpa.free(patches);
-        const new_objects = try object_list.toOwnedSlice(gpa);
+        const new_objects = try gpa.alloc(CimObject, object_count);
         errdefer gpa.free(new_objects);
-
         var id_to_object = std.StringHashMap(u32).init(gpa);
         errdefer id_to_object.deinit();
-        try id_to_object.ensureTotalCapacity(@intCast(new_objects.len));
+        try id_to_object.ensureTotalCapacity(object_count);
+
+        var patch_index: u32 = 0;
+        var object_index: u32 = 0;
+        for (doc.objects) |obj| switch (classify(doc, obj, policy)) {
+            .skip => {},
+            .declares => {
+                new_objects[object_index] = obj;
+                object_index += 1;
+            },
+            .patch => |mrid| {
+                patches[patch_index] = .{
+                    .mrid = mrid,
+                    .patch_tag_idx = obj.object_tag_idx,
+                    .closing_tag_idx = obj.closing_tag_idx,
+                };
+                patch_index += 1;
+            },
+        };
+        assert(patch_index == patch_count);
+        assert(object_index == object_count);
 
         // Restore source order for consumers; the parser groups objects by type.
         std.mem.sort(CimObject, new_objects, {}, object_before);
@@ -112,7 +121,6 @@ pub const Overlay = struct {
         return .{
             .doc = doc,
             .policy = policy,
-            .xml = doc.xml,
             .boundaries = doc.boundaries,
             .patches = patches,
             .new_objects = new_objects,
@@ -125,6 +133,10 @@ pub const Overlay = struct {
         gpa.free(self.new_objects);
         gpa.free(self.patches);
         self.doc.deinit(gpa);
+    }
+
+    pub fn source(self: Overlay) []const u8 {
+        return self.doc.source();
     }
 
     pub fn find_patch(self: Overlay, mrid: []const u8) ?Patch {
@@ -148,7 +160,7 @@ pub const Overlay = struct {
 
     pub fn property_from_patch(self: Overlay, patch: Patch, property_name: []const u8) ?[]const u8 {
         return tag_index.get_property_from_indices(
-            self.xml,
+            self.source(),
             self.boundaries,
             patch.patch_tag_idx,
             patch.closing_tag_idx,
@@ -158,7 +170,7 @@ pub const Overlay = struct {
 
     pub fn reference_from_patch(self: Overlay, patch: Patch, reference_name: []const u8) !?[]const u8 {
         return tag_index.get_reference_from_indices(
-            self.xml,
+            self.source(),
             self.boundaries,
             patch.patch_tag_idx,
             patch.closing_tag_idx,
@@ -189,12 +201,18 @@ pub const Overlay = struct {
         gpa: std.mem.Allocator,
         id_prefix: []const u8,
     ) ![]const CimObject {
-        var matches: std.ArrayList(CimObject) = .empty;
-        errdefer matches.deinit(gpa);
+        var count: usize = 0;
+        for (self.new_objects) |obj| count += @intFromBool(ids.id_prefix_matches(obj.id(), id_prefix));
+        const matches = try gpa.alloc(CimObject, count);
+        errdefer comptime unreachable;
+        var index: usize = 0;
         for (self.new_objects) |obj| {
-            if (ids.id_prefix_matches(obj.id(), id_prefix)) try matches.append(gpa, obj);
+            if (!ids.id_prefix_matches(obj.id(), id_prefix)) continue;
+            matches[index] = obj;
+            index += 1;
         }
-        return matches.toOwnedSlice(gpa);
+        assert(index == count);
+        return matches;
     }
 
     pub fn full_model(self: Overlay) ?tag_index.CimObject {
@@ -289,7 +307,7 @@ pub const CimMergedView = struct {
     fn context_for(overlay_opt: ?Overlay, mrid: []const u8) ?Context {
         const overlay = overlay_opt orelse return null;
         const patch = overlay.find_patch(mrid) orelse return null;
-        return .{ .xml = overlay.xml, .boundaries = overlay.boundaries, .patch = patch };
+        return .{ .xml = overlay.source(), .boundaries = overlay.boundaries, .patch = patch };
     }
 
     pub fn property(self: CimMergedView, name: []const u8) ?[]const u8 {
@@ -372,6 +390,25 @@ pub const CimMergedView = struct {
 
 const testing = std.testing;
 
+fn parse_borrowed_overlay(gpa: std.mem.Allocator, xml: []const u8, expected_error: ?anyerror) !void {
+    if (Overlay.init_tp(gpa, xml)) |parsed| {
+        var overlay = parsed;
+        defer overlay.deinit(gpa);
+        try testing.expect(expected_error == null);
+    } else |err| {
+        if (err == error.OutOfMemory) return err;
+        try testing.expectEqual(expected_error orelse return err, err);
+    }
+}
+
+test "borrowed overlays clean up on allocation failure and normalized ID collision" {
+    const valid = "<cim:TopologicalNode rdf:ID=\"tn\"/>" ++
+        "<cim:Terminal rdf:about=\"#t\"><cim:Terminal.TopologicalNode rdf:resource=\"#tn\"/></cim:Terminal>";
+    const duplicate = "<cim:Terminal rdf:about=\"#t\"/><cim:Terminal rdf:about=\"#_t\"/>";
+    try testing.checkAllAllocationFailures(testing.allocator, parse_borrowed_overlay, .{ valid, null });
+    try testing.checkAllAllocationFailures(testing.allocator, parse_borrowed_overlay, .{ duplicate, error.DuplicateId });
+}
+
 test "an overlay separates declared objects from patches under the TP policy" {
     const gpa = testing.allocator;
     const xml =
@@ -394,7 +431,7 @@ test "an overlay separates declared objects from patches under the TP policy" {
         \\  </cim:ConnectivityNode>
         \\</rdf:RDF>
     ;
-    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, xml));
+    var tp = try Overlay.init_tp(gpa, xml);
     defer tp.deinit(gpa);
 
     try testing.expectEqual(@as(usize, 2), tp.new_objects.len);
@@ -415,14 +452,14 @@ test "the same rdf:ID is a patch under SSH and a declared object under TP" {
         \\  </cim:Switch>
         \\</rdf:RDF>
     ;
-    var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, xml));
+    var ssh = try Overlay.init_ssh(gpa, xml);
     defer ssh.deinit(gpa);
     try testing.expectEqual(@as(usize, 1), ssh.patches.len);
     try testing.expectEqual(@as(usize, 0), ssh.new_objects.len);
     try testing.expect(ssh.find_patch("SW1") != null);
     try testing.expectEqual(@as(?tag_index.CimObject, null), ssh.object_by_id("_SW1"));
 
-    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, xml));
+    var tp = try Overlay.init_tp(gpa, xml);
     defer tp.deinit(gpa);
     try testing.expectEqual(@as(usize, 0), tp.patches.len);
     try testing.expectEqual(@as(usize, 1), tp.new_objects.len);
@@ -439,7 +476,7 @@ test "find_patch resolves a Terminal patch and its TopologicalNode reference" {
         \\  </cim:Terminal>
         \\</rdf:RDF>
     ;
-    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, xml));
+    var tp = try Overlay.init_tp(gpa, xml);
     defer tp.deinit(gpa);
 
     const patch = tp.find_patch("T_LOAD1") orelse return error.TestFailed;
@@ -460,7 +497,7 @@ test "object_by_id returns a declared object by raw rdf:ID" {
         \\  </cim:TopologicalNode>
         \\</rdf:RDF>
     ;
-    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, xml));
+    var tp = try Overlay.init_tp(gpa, xml);
     defer tp.deinit(gpa);
 
     const view = tp.object_by_id("_TN1") orelse return error.TestFailed;
@@ -482,7 +519,7 @@ test "objects_by_id_prefix matches declared objects; leading _ optional" {
         \\  <cim:TopologicalNode rdf:ID="_TN_xyz"/>
         \\</rdf:RDF>
     ;
-    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, xml));
+    var tp = try Overlay.init_tp(gpa, xml);
     defer tp.deinit(gpa);
 
     const ambiguous = try tp.objects_by_id_prefix(gpa, "TN_abc");
@@ -502,7 +539,7 @@ test "objects_by_id_prefix matches declared objects; leading _ optional" {
 test "a declared object keeps a raw id that normalizes to nothing" {
     const gpa = testing.allocator;
     const xml = "<rdf:RDF><cim:TopologicalNode rdf:ID=\"_\"/></rdf:RDF>";
-    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, xml));
+    var tp = try Overlay.init_tp(gpa, xml);
     defer tp.deinit(gpa);
     try testing.expectEqual(@as(usize, 1), tp.new_objects.len);
     try testing.expectEqualStrings("_", tp.new_objects[0].id());
@@ -515,7 +552,7 @@ test "an identifier that normalizes to an empty key is not a patch" {
         "<rdf:RDF><cim:Switch rdf:ID=\"_\"/></rdf:RDF>",
     };
     for (inputs) |xml| {
-        var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, xml));
+        var ssh = try Overlay.init_ssh(gpa, xml);
         defer ssh.deinit(gpa);
         try testing.expectEqual(@as(usize, 0), ssh.patches.len);
     }
@@ -528,7 +565,7 @@ test "bare and underscored patch identifiers index to the same key" {
         "<rdf:RDF><cim:Switch rdf:about=\"#_SW1\"><cim:Switch.open>true</cim:Switch.open></cim:Switch></rdf:RDF>",
     };
     for (inputs) |xml| {
-        var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, xml));
+        var ssh = try Overlay.init_ssh(gpa, xml);
         defer ssh.deinit(gpa);
         const patch = ssh.find_patch("SW1") orelse return error.TestFailed;
         const value = ssh.property_from_patch(patch, "Switch.open") orelse return error.TestFailed;
@@ -545,7 +582,7 @@ test "metadata tags are neither patches nor declared objects" {
         \\  </md:FullModel>
         \\</rdf:RDF>
     ;
-    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, xml));
+    var tp = try Overlay.init_tp(gpa, xml);
     defer tp.deinit(gpa);
 
     try testing.expectEqual(@as(usize, 0), tp.new_objects.len);
@@ -561,12 +598,12 @@ test "duplicate declared rdf:IDs are rejected with a diagnostic" {
         \\  <cim:TopologicalNode rdf:ID="_TN1"/>
         \\</rdf:RDF>
     ;
-    try testing.expectError(error.DuplicateId, Overlay.init_tp(gpa, try gpa.dupe(u8, xml)));
+    try testing.expectError(error.DuplicateId, Overlay.init_tp(gpa, xml));
 
     var diagnostics: Diagnostics = .{};
     try testing.expectError(
         error.DuplicateId,
-        Overlay.init_with_diagnostics(gpa, try gpa.dupe(u8, xml), .id_declares_object, &diagnostics),
+        Overlay.init_with_diagnostics(gpa, xml, .id_declares_object, &diagnostics),
     );
     try testing.expectEqualStrings("_TN1", diagnostics.duplicate_id());
     try testing.expectEqual(@as(u64, 3), diagnostics.duplicate_line);
@@ -581,12 +618,12 @@ test "two spellings of one patch key are rejected with a diagnostic" {
         \\  <cim:Terminal rdf:about="#_T1"/>
         \\</rdf:RDF>
     ;
-    try testing.expectError(error.DuplicateId, Overlay.init_tp(gpa, try gpa.dupe(u8, xml)));
+    try testing.expectError(error.DuplicateId, Overlay.init_tp(gpa, xml));
 
     var diagnostics: Diagnostics = .{};
     try testing.expectError(
         error.DuplicateId,
-        Overlay.init_with_diagnostics(gpa, try gpa.dupe(u8, xml), .id_declares_object, &diagnostics),
+        Overlay.init_with_diagnostics(gpa, xml, .id_declares_object, &diagnostics),
     );
     try testing.expectEqualStrings("#_T1", diagnostics.duplicate_id());
     try testing.expectEqual(@as(u64, 3), diagnostics.duplicate_line);
@@ -603,7 +640,7 @@ test "under SSH an rdf:ID and an rdf:about naming one object collide" {
     var diagnostics: Diagnostics = .{};
     try testing.expectError(
         error.DuplicateId,
-        Overlay.init_with_diagnostics(gpa, try gpa.dupe(u8, xml), .id_names_patch, &diagnostics),
+        Overlay.init_with_diagnostics(gpa, xml, .id_names_patch, &diagnostics),
     );
     try testing.expectEqualStrings("#SW1", diagnostics.duplicate_id());
     try testing.expectEqual(@as(u64, 3), diagnostics.duplicate_line);
@@ -618,7 +655,7 @@ test "sharing the parser makes an overlay reject a doubly-spelled id" {
         \\  <cim:Terminal rdf:about="#_TN1"/>
         \\</rdf:RDF>
     ;
-    try testing.expectError(error.DuplicateId, Overlay.init_tp(gpa, try gpa.dupe(u8, xml)));
+    try testing.expectError(error.DuplicateId, Overlay.init_tp(gpa, xml));
 }
 
 test "full_model returns the metadata element with its urn id" {
@@ -633,7 +670,7 @@ test "full_model returns the metadata element with its urn id" {
         \\  </cim:Switch>
         \\</rdf:RDF>
     ;
-    var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, xml));
+    var ssh = try Overlay.init_ssh(gpa, xml);
     defer ssh.deinit(gpa);
 
     const view = ssh.full_model();
@@ -658,7 +695,7 @@ test "full_model_property reads times, and yields null without a FullModel" {
         \\  </cim:Switch>
         \\</rdf:RDF>
     ;
-    var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, with_model));
+    var ssh = try Overlay.init_ssh(gpa, with_model);
     defer ssh.deinit(gpa);
 
     const scenario_time = try ssh.full_model_property("Model.scenarioTime");
@@ -670,7 +707,7 @@ test "full_model_property reads times, and yields null without a FullModel" {
     try testing.expectEqual(@as(?[]const u8, null), try ssh.full_model_property("Model.version"));
 
     const without_model = "<rdf:RDF><cim:Switch rdf:ID=\"_sw1\"/></rdf:RDF>";
-    var bare = try Overlay.init_ssh(gpa, try gpa.dupe(u8, without_model));
+    var bare = try Overlay.init_ssh(gpa, without_model);
     defer bare.deinit(gpa);
     try testing.expectEqual(@as(?tag_index.CimObject, null), bare.full_model());
     try testing.expectEqual(@as(?[]const u8, null), try bare.full_model_property("Model.scenarioTime"));
@@ -692,9 +729,9 @@ test "CimMergedView applies SSH patches to bare EQ identifiers" {
         \\  </cim:Switch>
         \\</rdf:RDF>
     ;
-    var eq = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
+    var eq = try CimDocument.init(gpa, eq_xml);
     defer eq.deinit(gpa);
-    var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, ssh_xml));
+    var ssh = try Overlay.init_ssh(gpa, ssh_xml);
     defer ssh.deinit(gpa);
 
     const view = eq.object_by_id("SW1") orelse return error.TestFailed;
@@ -729,11 +766,11 @@ test "CimMergedView.all_properties merges EQ + TP + SSH with SSH precedence" {
         \\  </cim:Switch>
         \\</rdf:RDF>
     ;
-    var eq = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
+    var eq = try CimDocument.init(gpa, eq_xml);
     defer eq.deinit(gpa);
-    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, tp_xml));
+    var tp = try Overlay.init_tp(gpa, tp_xml);
     defer tp.deinit(gpa);
-    var ssh = try Overlay.init_ssh(gpa, try gpa.dupe(u8, ssh_xml));
+    var ssh = try Overlay.init_ssh(gpa, ssh_xml);
     defer ssh.deinit(gpa);
 
     const view = eq.object_by_id("_SW1").?;
@@ -765,9 +802,9 @@ test "CimMergedView.all_references merges EQ + TP with TP precedence" {
         \\  </cim:Terminal>
         \\</rdf:RDF>
     ;
-    var eq = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml));
+    var eq = try CimDocument.init(gpa, eq_xml);
     defer eq.deinit(gpa);
-    var tp = try Overlay.init_tp(gpa, try gpa.dupe(u8, tp_xml));
+    var tp = try Overlay.init_tp(gpa, tp_xml);
     defer tp.deinit(gpa);
 
     const view = eq.object_by_id("_T1").?;

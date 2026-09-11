@@ -23,7 +23,7 @@ const Run = struct {
 
 /// Parse `xml` and run exactly the rules in `mask`.
 fn run_rules(xml: []const u8, mask: qocdc.RuleMask) !Run {
-    var model = try cim.CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try cim.CimDocument.init(gpa, xml);
     errdefer model.deinit(gpa);
     var report: qocdc.Report = .empty;
     errdefer report.deinit(gpa);
@@ -3329,7 +3329,7 @@ test "a single-rule mask reports nothing for other rules' violations" {
 }
 
 test "validate_model collects violations across rules in one run" {
-    var model = try cim.CimDocument.init(gpa, try gpa.dupe(u8,
+    var model = try cim.CimDocument.init(gpa,
         \\<rdf:RDF>
         \\  <md:FullModel rdf:about="urn:uuid:test-eq-v3">
         \\    <md:Model.profile>http://iec.ch/TC57/ns/CIM/CoreEquipment-EU/3.0</md:Model.profile>
@@ -3341,7 +3341,7 @@ test "validate_model collects violations across rules in one run" {
         \\  <cim:Substation rdf:ID="_nameless">
         \\  </cim:Substation>
         \\</rdf:RDF>
-    ));
+    );
     defer model.deinit(gpa);
     var report: qocdc.Report = .empty;
     defer report.deinit(gpa);

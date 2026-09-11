@@ -1,44 +1,12 @@
-//! Turtle tokenizer and triple iterator for SHACL rule-set files.
-//!
-//! Produces RDF triples from a bounded subset of Turtle 1.1. This module
-//! knows nothing about SHACL; it yields triples; rule_set.zig interprets
-//! them. The mechanism/meaning separation mirrors xml_scan.zig vs tag_index.zig.
-//!
-//! Zero-copy: every namespace, local name, and literal value is a slice into
-//! `source` (the caller keeps the buffer alive). IRIs are split into
-//! (namespace, local) with the trailing '#' or '/' separator stripped from
-//! the namespace, so `cim16:CurrentLimit` and
-//! `<http://iec.ch/TC57/2013/CIM-schema-cim16#CurrentLimit>` compare equal
-//! part-by-part, and local names compare namespace-insensitively for
-//! downstream namespace-variant deduplication.
-//!
-//! Anything outside the accepted grammar is a hard error, not a skip: a
-//! construct we do not recognize is a rule we would misread, and misreading
-//! a validation rule produces false confidence, the worst failure mode a
-//! validator has. Every error carries the 1-based line number in
-//! `Turtle.line`.
-//!
-//! No recursion: anonymous property lists and collections parse iteratively
-//! with an explicit fixed-depth frame stack. All loops are bounded by the
-//! byte position, which strictly advances; `next` asserts progress.
-
 const std = @import("std");
 const assert = std.debug.assert;
 
-/// Maximum @prefix/PREFIX directives per file. Corpus max: 19 per file.
 pub const prefixes_count_max = 64;
 
-/// Maximum combined nesting depth of anonymous blank nodes `[...]` and
-/// collections `(...)`. Corpus max: 2 (alternativePath of inversePath).
 pub const blank_depth_max = 8;
 
-/// Maximum values in one RDF collection `(...)`. Corpus max: 482 raw
-/// values in one sh:in list; 4x headroom over that observed reality.
 pub const in_list_values_max = 2048;
 
-/// Maximum distinct labeled blank nodes (`_:label`) per file. Zero corpus
-/// uses, accepted because other publishers' files use them, so the bound
-/// only keeps the label table statically sized inside the parser.
 pub const blank_labels_count_max = 256;
 
 pub const rdf_namespace = "http://www.w3.org/1999/02/22-rdf-syntax-ns";
@@ -52,12 +20,7 @@ pub const rdf_rest: Iri = .{ .namespace = rdf_namespace, .local = "rest" };
 pub const rdf_nil: Iri = .{ .namespace = rdf_namespace, .local = "nil" };
 
 pub const Iri = struct {
-    /// Namespace with the trailing '#' or '/' separator stripped, e.g.
-    /// "http://www.w3.org/ns/shacl". Prefixed names carry their prefix's
-    /// expansion; relative IRIs carry the file's @base.
     namespace: []const u8,
-    /// Local name, e.g. "minCount" or "ACLineSegment.r". May be empty
-    /// (the prefixed name `cim:` alone is legal Turtle).
     local: []const u8,
 
     pub fn eql(a: Iri, b: Iri) bool {
@@ -67,13 +30,8 @@ pub const Iri = struct {
 };
 
 pub const Literal = struct {
-    /// Raw lexical form between the quotes (escapes are validated but not
-    /// decoded; decoding would force a copy the streaming parser cannot
-    /// own; consumers that store strings decode via `decode_escape`, as
-    /// rule_set.zig does at load); for numbers and booleans, the bare token.
     value: []const u8,
     kind: Kind,
-    /// Explicit `^^datatype` annotation, when written.
     datatype: ?Iri,
 
     pub const Kind = enum(u8) { string, integer, decimal, double, boolean };
@@ -85,18 +43,12 @@ pub const Term = union(enum) {
     literal: Literal,
 };
 
-/// One decoded escape sequence: up to 4 UTF-8 bytes produced from
-/// `consumed` raw bytes.
 pub const DecodedEscape = struct {
     bytes: [4]u8,
     written: u8,
     consumed: u8,
 };
 
-/// Decode the escape sequence starting at `raw[pos]` (which must be '\').
-/// Infallible by contract: the tokenizer validated shape, hex digits, and
-/// codepoint range (validate_escape), so `raw` must be a string literal
-/// value it accepted; anything else asserts.
 pub fn decode_escape(raw: []const u8, pos: u32) DecodedEscape {
     assert(pos < raw.len and raw[pos] == '\\');
     assert(pos + 1 < raw.len); // validate_escape guarantees a body
@@ -122,11 +74,9 @@ pub fn decode_escape(raw: []const u8, pos: u32) DecodedEscape {
 }
 
 pub const Triple = struct {
-    /// Always .iri or .blank, never .literal.
     subject: Term,
     predicate: Iri,
     object: Term,
-    /// 1-based line in the rules file at the point this triple was emitted.
     line: u32,
 };
 
@@ -153,16 +103,11 @@ pub const Error = error{
 pub const Turtle = struct {
     source: []const u8,
     source_name: []const u8,
-    /// Current byte position. Strictly advances across next() calls.
     pos: u32,
-    /// Current 1-based line; on error, this is the line to report.
     line: u32,
-    /// @base namespace (separator-stripped); empty until a base directive.
     base: []const u8,
 
     state: State,
-    /// Current statement subject/predicate (property-list context only;
-    /// collections keep their chain node in their frame instead).
     subject: Term,
     predicate: Iri,
 
@@ -171,15 +116,11 @@ pub const Turtle = struct {
 
     labels: [blank_labels_count_max]Label,
     labels_count: u32,
-    /// Next synthetic blank-node id (labeled and anonymous share one space).
     blank_count: u32,
 
     frames: [blank_depth_max]Frame,
     frames_count: u32,
 
-    /// Triples produced by the last grammar step but not yet returned.
-    /// A single step emits at most 2 (a collection element's rdf:rest link
-    /// plus its rdf:first value).
     pending: [pending_count_max]Triple,
     pending_head: u32,
     pending_count: u32,
@@ -187,19 +128,12 @@ pub const Turtle = struct {
     const pending_count_max = 4;
 
     const State = enum(u8) {
-        /// Expect a directive, a subject term, or end of input.
         subject,
-        /// Expect a predicate (IRI, prefixed name, or `a`).
         predicate,
-        /// After ';': expect a predicate, another ';', '.', or ']'.
         predicate_or_end,
-        /// After a top-level `[...]` subject: expect a predicate or '.'.
         subject_continue,
-        /// Expect an object term, '[', or '('.
         object,
-        /// After an object: expect ',', ';', '.', or ']'.
         post_object,
-        /// Inside a collection: expect an element term or ')'.
         collection_element,
     };
 
@@ -207,17 +141,10 @@ pub const Turtle = struct {
     const Label = struct { name: []const u8, blank_id: u32 };
 
     const Frame = struct {
-        /// Outer subject/predicate to restore when a property list closes.
-        /// Unused by collection frames (their emissions key off `node`).
         subject: Term,
         predicate: Iri,
-        /// Property list: the blank node this `[...]` denotes.
-        /// Collection: the current chain node awaiting rdf:rest.
         node: u32,
-        /// Collection: whether `node`'s rdf:first has been emitted.
         has_first: bool,
-        /// Collection: elements consumed so far, bounded by
-        /// in_list_values_max.
         values_count: u32,
         kind: Kind,
 
@@ -225,8 +152,6 @@ pub const Turtle = struct {
     };
 
     pub fn init(source: []const u8, source_name: []const u8) Turtle {
-        // u32 positions must cover the file; the loader's rules_bytes_max
-        // (64 MiB) is far below this, so only programmer error trips it.
         assert(source.len < std.math.maxInt(u32));
         return .{
             .source = source,
@@ -250,22 +175,17 @@ pub const Turtle = struct {
         };
     }
 
-    /// Returns the next triple, or null at a clean end of input.
-    /// On error, `self.line` holds the offending line.
     pub fn next(self: *Turtle) Error!?Triple {
         if (self.pending_count > 0) return self.pending_pop();
         const pos_before = self.pos;
         while (self.pending_count == 0) {
             const progressed = try self.step();
             if (!progressed) {
-                // End of input is only legal between statements.
                 if (self.state != .subject) return Error.UnexpectedEndOfInput;
                 if (self.frames_count != 0) return Error.UnexpectedEndOfInput;
                 return null;
             }
         }
-        // Non-termination is impossible by construction: every step consumes
-        // at least one byte. This assert documents and enforces it.
         assert(self.pos > pos_before);
         return self.pending_pop();
     }
@@ -281,8 +201,6 @@ pub const Turtle = struct {
             .post_object => try self.step_post_object(),
             .collection_element => try self.step_collection_element(),
         }
-        // Pairs with next()'s progress assert: a step that consumed nothing
-        // would loop forever.
         assert(self.pos > pos_before);
         return true;
     }
@@ -296,8 +214,7 @@ pub const Turtle = struct {
             return;
         }
         if (c == '[') return self.open_property_list(.subject_position);
-        // Collections as subjects are legal Turtle with zero published uses;
-        // fail fast rather than carry the extra frame variant.
+        // Subject collections have no corpus uses and need another frame variant.
         if (c == '(') return Error.UnsupportedConstruct;
         if (c == '\'' or c == '"') return Error.UnexpectedCharacter;
         const token = self.scan_name_token();
@@ -312,7 +229,6 @@ pub const Turtle = struct {
             self.state = .predicate;
             return;
         }
-        // SPARQL-style directives have no '@' and no terminating '.'.
         if (std.ascii.eqlIgnoreCase(token, "prefix")) return self.parse_prefix_directive(false);
         if (std.ascii.eqlIgnoreCase(token, "base")) return self.parse_base_directive(false);
         return Error.UnexpectedCharacter;
@@ -323,7 +239,6 @@ pub const Turtle = struct {
             self.state == .subject_continue);
         const c = self.source[self.pos];
         if (self.state == .predicate_or_end) {
-            // Trailing ';' before '.' or ']' is legal, as is ';;'.
             if (c == ';') {
                 self.pos += 1;
                 return;
@@ -335,7 +250,6 @@ pub const Turtle = struct {
             }
         }
         if (self.state == .subject_continue) {
-            // `[ ... ] .`: a blank-node statement with no outer predicate.
             if (c == '.') return self.end_statement();
         }
         self.predicate = try self.scan_predicate();
@@ -376,8 +290,6 @@ pub const Turtle = struct {
         assert(frame.kind == .collection);
         const c = self.source[self.pos];
         if (c == ')') {
-            // open_collection never pushes a frame for an empty list, so the
-            // chain node here always carries a value.
             assert(frame.has_first);
             self.pos += 1;
             self.emit(.{ .blank = frame.node }, rdf_rest, .{ .iri = rdf_nil });
@@ -400,8 +312,6 @@ pub const Turtle = struct {
         frame.has_first = true;
     }
 
-    /// `[` as an element of a collection: link it into the chain, then parse
-    /// its body exactly like an object-position property list.
     fn open_element_property_list(self: *Turtle, frame: *Frame) Error!void {
         assert(self.source[self.pos] == '[');
         assert(frame.kind == .collection);
@@ -426,7 +336,6 @@ pub const Turtle = struct {
         self.state = .predicate;
     }
 
-    /// `(` as an element of a collection: nested list.
     fn open_element_collection(self: *Turtle, frame: *Frame) Error!void {
         assert(self.source[self.pos] == '(');
         assert(frame.kind == .collection);
@@ -449,7 +358,6 @@ pub const Turtle = struct {
             .values_count = 0,
             .kind = .collection,
         });
-        // state stays .collection_element, now for the inner frame.
         assert(self.state == .collection_element);
     }
 
@@ -461,7 +369,6 @@ pub const Turtle = struct {
         self.skip_trivia();
         const blank_id = self.new_blank();
         if (self.pos < self.source.len and self.source[self.pos] == ']') {
-            // `[]` is a plain blank-node term, no frame needed.
             self.pos += 1;
             switch (position) {
                 .subject_position => {
@@ -538,14 +445,11 @@ pub const Turtle = struct {
 
     fn end_statement(self: *Turtle) Error!void {
         assert(self.source[self.pos] == '.');
-        // A '.' inside an open '[' or '(' is malformed, not a terminator.
         if (self.frames_count != 0) return Error.MalformedStatement;
         self.pos += 1;
         self.state = .subject;
     }
 
-    /// Where parsing continues after an object completes: collections take
-    /// their next element, everything else expects ',', ';', '.', or ']'.
     fn state_after_object(self: *const Turtle) State {
         if (self.frames_count > 0) {
             if (self.frames[self.frames_count - 1].kind == .collection) {
@@ -554,8 +458,6 @@ pub const Turtle = struct {
         }
         return .post_object;
     }
-
-    // ── Terms ─────────────────────────────────────────────────────────────
 
     fn scan_predicate(self: *Turtle) Error!Iri {
         const c = self.source[self.pos];
@@ -567,14 +469,11 @@ pub const Turtle = struct {
         return self.resolve_pname(token);
     }
 
-    /// One simple term: IRI, prefixed name, literal, or labeled blank node.
-    /// '[' and '(' are handled by the state machine, not here.
     fn scan_term(self: *Turtle) Error!Term {
         const c = self.source[self.pos];
         if (c == '<') return .{ .iri = try self.scan_iri_ref() };
         if (c == '"') return .{ .literal = try self.scan_string_literal() };
-        // Single-quoted strings are legal Turtle with zero corpus uses;
-        // rejected to keep the accepted grammar deliberately small.
+        // Single-quoted strings have no corpus uses, so the grammar stays smaller.
         if (c == '\'') return Error.UnsupportedConstruct;
         if (c == '+' or c == '-' or std.ascii.isDigit(c)) {
             return .{ .literal = try self.scan_number() };
@@ -594,17 +493,10 @@ pub const Turtle = struct {
         return self.split_iri(try self.scan_iri_text());
     }
 
-    /// The raw text between '<' and '>'. Whitespace or a nested '<'
-    /// (RDF-star) is a hard error. So are \uXXXX/\UXXXXXXXX escapes:
-    /// IRIs are split and matched as raw bytes (namespaces, class and
-    /// property names), so an undecoded escape would silently match
-    /// nothing, and the corpus never escapes an IRI.
     fn scan_iri_text(self: *Turtle) Error![]const u8 {
         assert(self.source[self.pos] == '<');
         self.pos += 1;
         const start = self.pos;
-        // The first byte from this set decides the outcome (whitespace is the
-        // only multi-byte case).
         const stop: u32 = @intCast(std.mem.indexOfAnyPos(u8, self.source, self.pos, "> \t\r\n<\\") orelse
             return Error.UnterminatedIri);
         switch (self.source[stop]) {
@@ -618,8 +510,6 @@ pub const Turtle = struct {
         }
     }
 
-    /// Split a full IRI into (namespace, local) at the last '#' or '/',
-    /// dropping the separator; relative references resolve against @base.
     fn split_iri(self: *const Turtle, text: []const u8) Iri {
         if (iri_is_absolute(text)) {
             if (std.mem.lastIndexOfAny(u8, text, "#/")) |idx| {
@@ -627,9 +517,6 @@ pub const Turtle = struct {
             }
             return .{ .namespace = "", .local = text };
         }
-        // Relative reference: identity within this file is all that matters
-        // because all shape references resolve within their own file. The
-        // base slice + the raw fragment is a faithful, zero-copy identity.
         if (text.len > 0 and text[0] == '#') {
             return .{ .namespace = self.base, .local = text[1..] };
         }
@@ -660,8 +547,6 @@ pub const Turtle = struct {
         assert(self.source[self.pos] == '"');
         self.pos += 1;
         const start = self.pos;
-        // Skip ordinary bytes stopping only at the closer, a line break
-        // (illegal in a short string), or an escape.
         while (std.mem.indexOfAnyPos(u8, self.source, self.pos, "\"\n\r\\")) |stop_usize| {
             const stop: u32 = @intCast(stop_usize);
             self.pos = stop;
@@ -681,13 +566,9 @@ pub const Turtle = struct {
         assert(self.source[self.pos] == '"');
         self.pos += 3;
         const start = self.pos;
-        // Ordinary bytes are skipped. Only a quote (possible closer), an
-        // escape, or a newline (line count) need handling.
         while (std.mem.indexOfAnyPos(u8, self.source, self.pos, "\"\\\n")) |stop_usize| {
             const stop: u32 = @intCast(stop_usize);
             switch (self.source[stop]) {
-                // Close at the first `"""` not followed by another quote, so up
-                // to two embedded quotes before the closer parse as content.
                 '"' => {
                     const rest = self.source[stop..];
                     if (rest.len >= 3 and rest[1] == '"' and rest[2] == '"' and
@@ -712,11 +593,6 @@ pub const Turtle = struct {
         return Error.UnterminatedString;
     }
 
-    /// Validate (but do not decode) one string escape sequence at `pos`,
-    /// advancing past it. \u/\U are checked down to the codepoint: hex
-    /// digits alone can still name a surrogate half or exceed U+10FFFF,
-    /// and rejecting that here keeps the line number (decoding happens
-    /// long after parsing, rule_set.zig).
     fn validate_escape(self: *Turtle) Error!void {
         assert(self.source[self.pos] == '\\');
         if (self.pos + 1 >= self.source.len) return Error.InvalidEscape;
@@ -741,8 +617,6 @@ pub const Turtle = struct {
         if (codepoint >= 0xD800 and codepoint <= 0xDFFF) return Error.InvalidEscape;
     }
 
-    /// Language tags are validated and dropped: nothing downstream is
-    /// language-sensitive (messages report verbatim).
     fn scan_language_tag(self: *Turtle) Error!void {
         assert(self.source[self.pos] == '@');
         self.pos += 1;
@@ -772,8 +646,6 @@ pub const Turtle = struct {
         }
         if (digits_count == 0) return Error.InvalidNumber;
         var kind: Literal.Kind = .integer;
-        // '.' only joins the number when a digit follows; a bare trailing
-        // '.' is the statement terminator (`sh:order 8.` style).
         if (self.pos + 1 < self.source.len and self.source[self.pos] == '.' and
             std.ascii.isDigit(self.source[self.pos + 1]))
         {
@@ -800,18 +672,12 @@ pub const Turtle = struct {
             if (exponent_digits == 0) return Error.InvalidNumber;
             kind = .double;
         }
-        // Numbers glue to punctuation (`sh:order 8;`) but not to letters.
         if (self.pos < self.source.len and !is_term_delimiter(self.source[self.pos])) {
             return Error.InvalidNumber;
         }
         return .{ .value = self.source[start..self.pos], .kind = kind, .datatype = null };
     }
 
-    // ── Names and prefixes ────────────────────────────────────────────────
-
-    /// Scan a name-ish token (prefixed name, keyword, or `_:label`),
-    /// backing off trailing '.'s: a pname cannot end with '.', so those
-    /// are statement terminators.
     fn scan_name_token(self: *Turtle) []const u8 {
         const start = self.pos;
         while (self.pos < self.source.len and is_name_char(self.source[self.pos])) {
@@ -842,7 +708,6 @@ pub const Turtle = struct {
     fn put_prefix(self: *Turtle, name: []const u8, namespace: []const u8) Error!void {
         for (self.prefixes[0..self.prefixes_count]) |*prefix| {
             if (std.mem.eql(u8, prefix.name, name)) {
-                // Redefinition is legal Turtle; later wins.
                 prefix.namespace = namespace;
                 return;
             }
@@ -852,13 +717,10 @@ pub const Turtle = struct {
         self.prefixes_count += 1;
     }
 
-    // ── Directives ────────────────────────────────────────────────────────
-
     fn parse_at_directive(self: *Turtle) Error!void {
         assert(self.source[self.pos] == '@');
         self.pos += 1;
         const word = self.scan_name_token();
-        // '@' forms are case-sensitive per the Turtle grammar.
         if (std.mem.eql(u8, word, "prefix")) return self.parse_prefix_directive(true);
         if (std.mem.eql(u8, word, "base")) return self.parse_base_directive(true);
         return Error.InvalidDirective;
@@ -878,8 +740,7 @@ pub const Turtle = struct {
         if (self.pos >= self.source.len) return Error.UnexpectedEndOfInput;
         if (self.source[self.pos] != '<') return Error.InvalidDirective;
         const iri_text = try self.scan_iri_text();
-        // A relative expansion would need base concatenation (a copy); no
-        // publisher writes one, so it fails fast instead of growing a system.
+        // Relative prefix expansion would require allocating a concatenated IRI.
         if (!iri_is_absolute(iri_text)) return Error.RelativePrefixIri;
         if (expect_dot) {
             self.skip_trivia();
@@ -900,8 +761,6 @@ pub const Turtle = struct {
         }
         self.base = strip_namespace_separator(iri_text);
     }
-
-    // ── Blank nodes ───────────────────────────────────────────────────────
 
     fn new_blank(self: *Turtle) u32 {
         const id = self.blank_count;
@@ -926,8 +785,6 @@ pub const Turtle = struct {
         self.frames[self.frames_count] = frame;
         self.frames_count += 1;
     }
-
-    // ── Low-level scanning ────────────────────────────────────────────────
 
     fn skip_trivia(self: *Turtle) void {
         while (self.pos < self.source.len) {
@@ -976,16 +833,11 @@ pub const Turtle = struct {
     }
 };
 
-/// Name characters cover PN_CHARS plus ':' and '%' (pname locals may contain
-/// both); bytes >= 0x80 pass through so UTF-8 names survive unvalidated,
-/// the compiler only ever compares names, never interprets them.
 fn is_name_char(c: u8) bool {
     if (std.ascii.isAlphanumeric(c)) return true;
     return c == '_' or c == '-' or c == '.' or c == ':' or c == '%' or c >= 0x80;
 }
 
-/// What may legally follow a number: whitespace or structural punctuation.
-/// (`sh:order 8;` glues digits to ';'; the corpus does this everywhere.)
 fn is_term_delimiter(c: u8) bool {
     return switch (c) {
         ' ', '\t', '\r', '\n', ';', ',', '.', '(', ')', '[', ']', '#' => true,
@@ -993,7 +845,6 @@ fn is_term_delimiter(c: u8) bool {
     };
 }
 
-/// True when the text begins with an RFC 3986 scheme ("http:", "urn:", ...).
 fn iri_is_absolute(text: []const u8) bool {
     if (text.len == 0) return false;
     if (!std.ascii.isAlphabetic(text[0])) return false;
@@ -1005,8 +856,6 @@ fn iri_is_absolute(text: []const u8) bool {
     return false;
 }
 
-/// Drop one trailing '#' or '/' so prefix expansions and split full IRIs
-/// agree on namespace identity (see Iri.namespace).
 fn strip_namespace_separator(text: []const u8) []const u8 {
     if (text.len == 0) return text;
     const last = text[text.len - 1];

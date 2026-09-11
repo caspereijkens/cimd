@@ -12,7 +12,6 @@ const xml_scan = @import("xml_scan.zig");
 const assert = std.debug.assert;
 
 const TagBoundary = xml_scan.TagBoundary;
-const extract_tag_type = xml_scan.extract_tag_type;
 const extract_tag_type_terminated = xml_scan.extract_tag_type_terminated;
 const extract_rdf_resource_within = xml_scan.extract_rdf_resource_within;
 const is_element_open_tag = xml_scan.is_element_open_tag;
@@ -234,35 +233,6 @@ pub const CimObject = struct {
     id_slice: []const u8,
     type_slice: []const u8,
 
-    pub fn init(
-        context: *const ObjectContext,
-        object_tag_idx: u32,
-        closing_tag_idx: u32,
-        object_id: []const u8,
-    ) error{MalformedTag}!CimObject {
-        assert(object_id.len > 0);
-        assert(object_tag_idx < context.boundaries.len);
-        assert(closing_tag_idx < context.boundaries.len);
-        assert(closing_tag_idx >= object_tag_idx);
-        // Both must borrow from the document, or the object outlives its own
-        // strings. `init` is the one place this can be established, so it is
-        // established here rather than re-checked at every read.
-        assert(within(context.xml, object_id));
-
-        const object_type = try extract_tag_type(
-            context.xml,
-            context.boundaries[object_tag_idx].start,
-        );
-        assert(within(context.xml, object_type));
-        return .{
-            .context = context,
-            .object_tag_idx = object_tag_idx,
-            .closing_tag_idx = closing_tag_idx,
-            .id_slice = object_id,
-            .type_slice = object_type,
-        };
-    }
-
     pub inline fn id(self: CimObject) []const u8 {
         return self.id_slice;
     }
@@ -335,16 +305,6 @@ comptime {
         fields_size,
         @alignOf(CimObject),
     ));
-}
-
-/// Whether `value` is a subslice of `source`. The invariant behind storing
-/// borrowed slices on an object: they stay valid exactly as long as the
-/// document's `xml` does, and no longer.
-fn within(source: []const u8, value: []const u8) bool {
-    const source_address = @intFromPtr(source.ptr);
-    const value_address = @intFromPtr(value.ptr);
-    return value_address >= source_address and
-        value_address + value.len <= source_address + source.len;
 }
 
 /// Internal bound element span. Overlay patches use the same child queries as

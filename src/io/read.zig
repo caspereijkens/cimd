@@ -24,11 +24,11 @@ pub const zip_entries_scanned_max = 1024;
 pub const Part = struct {
     /// Owned diagnostic name: the path for XML, `path!entry.xml` for ZIP.
     name: []u8,
-    xml: []u8,
+    owned_xml: []u8,
 
     pub fn deinit(self: Part, gpa: std.mem.Allocator) void {
         gpa.free(self.name);
-        gpa.free(self.xml);
+        gpa.free(self.owned_xml);
     }
 };
 
@@ -58,7 +58,7 @@ pub fn read_parts(
         errdefer gpa.free(xml);
         const name = try gpa.dupe(u8, file_path);
         const result = try gpa.alloc(Part, 1);
-        result[0] = .{ .name = name, .xml = @constCast(xml) };
+        result[0] = .{ .name = name, .owned_xml = @constCast(xml) };
         return result;
     }
 
@@ -73,7 +73,7 @@ pub fn read_parts(
         errdefer gpa.free(xml);
         const name = try gpa.dupe(u8, file_path);
         const result = try gpa.alloc(Part, 1);
-        result[0] = .{ .name = name, .xml = xml };
+        result[0] = .{ .name = name, .owned_xml = xml };
         return result;
     }
 
@@ -96,7 +96,7 @@ pub fn read_parts(
         const name = try std.fmt.allocPrint(gpa, "{s}!{s}", .{ file_path, entry.filename });
         gpa.free(entry.filename);
         extracted.items[i].filename = &.{};
-        result[i] = .{ .name = name, .xml = entry.data };
+        result[i] = .{ .name = name, .owned_xml = entry.data };
         extracted.items[i].data = &.{};
         initialized += 1;
     }

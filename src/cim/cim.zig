@@ -37,6 +37,7 @@
 // than resolving namespaces, and indexes zero objects for a document that
 // binds RDF to a different prefix. See document.zig.
 
+/// Borrows immutable input bytes; destroy the document before releasing its input.
 pub const CimDocument = @import("document.zig").CimDocument;
 pub const CimObject = @import("tag_index.zig").CimObject;
 pub const Diagnostics = @import("diagnostics.zig").Diagnostics;

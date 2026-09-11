@@ -1,6 +1,98 @@
 const std = @import("std");
 const CimDocument = @import("document.zig").CimDocument;
 
+test "dense rootless objects retain custom types, source order within groups, and ID lookup" {
+    const gpa = std.testing.allocator;
+    var buffer: [32 * 1024]u8 = undefined;
+    var xml = std.Io.Writer.fixed(&buffer);
+    for (0..256) |i| try xml.print("<ext:Custom{d} rdf:ID=\"id{d}\"/>", .{ i % 97, i });
+    var model = try CimDocument.init(gpa, xml.buffered());
+    defer model.deinit(gpa);
+    try std.testing.expectEqual(@as(u32, 256), model.object_count());
+
+    for (0..97) |type_id| {
+        var type_buffer: [32]u8 = undefined;
+        const type_name = try std.fmt.bufPrint(&type_buffer, "Custom{d}", .{type_id});
+        const group = model.objects_by_type(type_name);
+        const expected_count = (255 - type_id) / 97 + 1;
+        try std.testing.expectEqual(expected_count, group.len);
+        for (group, 0..) |object, offset| {
+            var id_buffer: [32]u8 = undefined;
+            const id = try std.fmt.bufPrint(&id_buffer, "id{d}", .{type_id + offset * 97});
+            try std.testing.expectEqualStrings(id, object.id());
+            const found = model.object_by_id(id).?;
+            try std.testing.expectEqualStrings(type_name, found.type_name());
+            try std.testing.expectEqual(object.object_tag_idx, found.object_tag_idx);
+        }
+    }
+    try std.testing.checkAllAllocationFailures(gpa, parse_borrowed, .{ xml.buffered(), null });
+}
+
+test "documents can share a borrowed subslice without taking ownership" {
+    const gpa = std.testing.allocator;
+    const content = "<cim:A rdf:ID=\"a\"><cim:A.name>shared</cim:A.name></cim:A>";
+    const storage = try gpa.dupe(u8, "prefix" ++ content ++ "suffix");
+    defer gpa.free(storage);
+    const xml = storage[6 .. 6 + content.len];
+    var first = try CimDocument.init(gpa, xml);
+    var second = CimDocument.init(gpa, xml) catch |err| {
+        first.deinit(gpa);
+        return err;
+    };
+    defer second.deinit(gpa);
+    first.deinit(gpa);
+    try std.testing.expectEqualStrings(content, xml);
+    try std.testing.expectEqualStrings("shared", second.object_by_id("a").?.property("A.name").?);
+}
+
+test "duplicate diagnostics retain source priority across distinct types" {
+    const gpa = std.testing.allocator;
+    const xml = "<cim:Z rdf:ID=\"a\"/><cim:A rdf:ID=\"b\"/>" ++
+        "<cim:B rdf:ID=\"a\"/><cim:Z rdf:ID=\"b\"/>";
+    var diagnostics: @import("diagnostics.zig").Diagnostics = .{};
+    try std.testing.expectError(error.DuplicateId, CimDocument.init_with_diagnostics(gpa, xml, &diagnostics));
+    try std.testing.expectEqualStrings("a", diagnostics.duplicate_id());
+    try std.testing.expectEqual(std.mem.indexOf(u8, xml, "<cim:B").?, diagnostics.duplicate_offset);
+}
+
+test "discovery descends through wrappers but skips children of accepted objects" {
+    const xml =
+        "<outer><inner><cim:A rdf:ID=\"\" rdf:about=\"#a\">" ++
+        "<cim:B rdf:ID=\"hidden\"/></cim:A>" ++
+        "<wrapper><ext:A rdf:ID=\"b\"/></wrapper></inner></outer>" ++
+        "<A rdf:ID=\"c\"/>";
+    var model = try CimDocument.init(std.testing.allocator, xml);
+    defer model.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 3), model.object_count());
+    try std.testing.expect(model.object_by_id("hidden") == null);
+    const objects = model.objects_by_type("A");
+    for (objects, [_][]const u8{ "a", "b", "c" }) |object, id| {
+        try std.testing.expectEqualStrings(id, object.id());
+        try std.testing.expectEqual(object.object_tag_idx, model.object_by_id(id).?.object_tag_idx);
+    }
+}
+
+fn parse_borrowed(gpa: std.mem.Allocator, xml: []const u8, expected_error: ?anyerror) !void {
+    if (CimDocument.init(gpa, xml)) |parsed| {
+        var model = parsed;
+        defer model.deinit(gpa);
+        try std.testing.expect(expected_error == null);
+    } else |err| {
+        if (err == error.OutOfMemory) return err;
+        try std.testing.expectEqual(expected_error orelse return err, err);
+    }
+}
+
+test "construction releases scratch storage at every allocation failure and validation exit" {
+    const valid = "<rdf:RDF><cim:A rdf:ID=\"a\"/><ext:B rdf:ID=\"b\"/>" ++
+        "<cim:A rdf:ID=\"c\"><cim:A.name>C</cim:A.name></cim:A></rdf:RDF>";
+    const duplicate = "<cim:A rdf:ID=\"a\"/><cim:B rdf:ID=\"a\"/>";
+    const malformed = "<rdf:RDF><cim:A rdf:ID=\"a\"/></wrong>";
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, parse_borrowed, .{ valid, null });
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, parse_borrowed, .{ duplicate, error.DuplicateId });
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, parse_borrowed, .{ malformed, error.MalformedXML });
+}
+
 test "CimDocument.init - parses all top-level CIM objects" {
     const xml =
         \\<rdf:RDF>
@@ -18,7 +110,7 @@ test "CimDocument.init - parses all top-level CIM objects" {
 
     const gpa = std.testing.allocator;
 
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     // Should find 3 CIM objects (not the rdf:RDF wrapper)
@@ -52,7 +144,7 @@ test "CimDocument.init - parses objects in a default namespace" {
     ;
 
     const gpa = std.testing.allocator;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     try std.testing.expectEqual(@as(usize, 2), model.objects.len);
@@ -80,7 +172,7 @@ test "CimDocument.object_by_id - finds object by ID" {
 
     const gpa = std.testing.allocator;
 
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     // Should find VL1
@@ -117,7 +209,7 @@ test "CimDocument.objects_by_type - returns all objects of given type" {
 
     const gpa = std.testing.allocator;
 
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     // Get all Substations (should be 3)
@@ -147,7 +239,7 @@ test "CimDocument.type_groups - visits each exact type once without allocation" 
     ;
 
     const gpa = std.testing.allocator;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     var groups = model.type_groups();
@@ -199,7 +291,7 @@ test "CimDocument.sorted_type_counts - returns sorted counts for each object typ
 
     const gpa = std.testing.allocator;
 
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     const counts = try model.sorted_type_counts(gpa);
@@ -221,7 +313,7 @@ test "CimDocument.init - handles empty XML" {
 
     const gpa = std.testing.allocator;
 
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     try std.testing.expectEqual(0, model.objects.len);
@@ -241,7 +333,7 @@ test "CimDocument.init - falls back to rdf:about when rdf:ID is unusable" {
 
     const gpa = std.testing.allocator;
 
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     try std.testing.expectEqual(2, model.objects.len);
@@ -261,7 +353,7 @@ test "EQ objects maintain CimObject functionality" {
 
     const gpa = std.testing.allocator;
 
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     const obj = model.object_by_id("_SS1") orelse return error.TestFailed;
@@ -287,13 +379,10 @@ test "CimDocument.init - an unnameable element fails the whole document" {
 
     const gpa = std.testing.allocator;
 
-    // The alternative was to drop `<>` and hand back a document with one object
-    // in it, which reports success for a file the scanner could not read. The
-    // parse fails at the gate instead, so no consumer ever walks a document that
-    // silently lost a tag. `init` owns the buffer and frees it on error.
+    // Dropping an unreadable tag would report success for a document that silently lost data.
     try std.testing.expectError(
         error.MalformedXML,
-        CimDocument.init(gpa, try gpa.dupe(u8, xml)),
+        CimDocument.init(gpa, xml),
     );
 }
 
@@ -309,7 +398,7 @@ test "CimDocument.init - comments and PIs are not elements and do not fail" {
     ;
 
     const gpa = std.testing.allocator;
-    var model = try CimDocument.init(gpa, try gpa.dupe(u8, xml));
+    var model = try CimDocument.init(gpa, xml);
     defer model.deinit(gpa);
 
     // Being strict about elements must not make the parser strict about things
@@ -330,6 +419,6 @@ test "CimDocument.init - a stray '<' inside a tag errors instead of panicking" {
     const gpa = std.testing.allocator;
     try std.testing.expectError(
         error.MalformedXML,
-        CimDocument.init(gpa, try gpa.dupe(u8, xml)),
+        CimDocument.init(gpa, xml),
     );
 }

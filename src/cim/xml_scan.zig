@@ -19,13 +19,9 @@ pub fn find_byte_simd(
     if (haystack.len > std.math.maxInt(u32)) return error.FileTooLarge;
 
     var result: std.ArrayList(u32) = .empty;
-    errdefer result.deinit(gpa);
-
-    if (haystack.len == 0) return result;
-
-    // XML delimiters are sparse; this estimate limits reallocations on typical input.
-    const estimated_matches = @max(@divFloor(haystack.len, 10), 16);
-    try result.ensureTotalCapacity(gpa, estimated_matches);
+    const count = count_byte_simd(haystack, needle);
+    try result.ensureTotalCapacityPrecise(gpa, count);
+    errdefer comptime unreachable;
 
     const all_needles: Chunk = @splat(needle);
     var i: usize = 0;
@@ -34,7 +30,6 @@ pub fn find_byte_simd(
     const unroll_size = VECTOR_LEN * unroll_factor;
 
     while (i + unroll_size <= haystack.len) : (i += unroll_size) {
-        try result.ensureUnusedCapacity(gpa, unroll_size);
         inline for (0..unroll_factor) |j| {
             const offset = i + j * VECTOR_LEN;
             const chunk: Chunk = haystack[offset..][0..VECTOR_LEN].*;
@@ -51,7 +46,6 @@ pub fn find_byte_simd(
     }
 
     while (i + VECTOR_LEN <= haystack.len) : (i += VECTOR_LEN) {
-        try result.ensureUnusedCapacity(gpa, VECTOR_LEN);
         const chunk: Chunk = haystack[i..][0..VECTOR_LEN].*;
         const matches: @Vector(VECTOR_LEN, bool) = chunk == all_needles;
         const mask: Mask = @bitCast(matches);
@@ -66,12 +60,38 @@ pub fn find_byte_simd(
 
     while (i < haystack.len) : (i += 1) {
         if (haystack[i] == needle) {
-            try result.ensureUnusedCapacity(gpa, 1);
             result.appendAssumeCapacity(@intCast(i));
         }
     }
 
+    assert(result.items.len == count);
     return result;
+}
+
+fn count_byte_simd(haystack: []const u8, needle: u8) u32 {
+    assert(haystack.len <= std.math.maxInt(u32));
+    const needles: Chunk = @splat(needle);
+    var count: u32 = 0;
+    var i: usize = 0;
+    const block_size = 4 * VECTOR_LEN;
+    comptime assert(block_size <= std.math.maxInt(u16));
+    while (i + block_size <= haystack.len) : (i += block_size) {
+        var lanes: Chunk = @splat(0);
+        inline for (0..4) |j| {
+            const chunk: Chunk = haystack[i + j * VECTOR_LEN ..][0..VECTOR_LEN].*;
+            lanes +%= @intFromBool(chunk == needles);
+        }
+        const wide: @Vector(VECTOR_LEN, u16) = lanes;
+        count += @reduce(.Add, wide);
+    }
+    while (i + VECTOR_LEN <= haystack.len) : (i += VECTOR_LEN) {
+        const chunk: Chunk = haystack[i..][0..VECTOR_LEN].*;
+        const matches: @Vector(VECTOR_LEN, bool) = chunk == needles;
+        count += @reduce(.Add, @as(@Vector(VECTOR_LEN, u8), @intFromBool(matches)));
+    }
+    for (haystack[i..]) |byte| count += @intFromBool(byte == needle);
+    assert(count <= haystack.len);
+    return count;
 }
 
 /// Avoid building std.mem.indexOf's skip table for each short XML attribute scan.
@@ -472,12 +492,8 @@ pub fn build_closing_index_with_error_offset(
     const closing_for = try gpa.alloc(u32, boundaries.len);
     errdefer gpa.free(closing_for);
 
-    // Fill slots during the walk to avoid an extra array write; closers fill their openers.
-
-    const StackEntry = struct { qname: []const u8, idx: u32 };
-    var stack: std.ArrayListUnmanaged(StackEntry) = .empty;
-    defer stack.deinit(gpa);
-
+    const no_parent = std.math.maxInt(u32);
+    var top: u32 = no_parent;
     for (boundaries, 0..) |tag, i| {
         switch (boundary_kind(xml, tag)) {
             .non_element => closing_for[i] = @intCast(i),
@@ -485,34 +501,37 @@ pub fn build_closing_index_with_error_offset(
                 if (xml[tag.end - 1] == '/') return malformed_xml(error_offset, tag.start, .closing_tag_self_closed, xml.len);
                 const parsed = extract_tag_type_terminated(xml, tag.start) catch
                     return malformed_xml(error_offset, tag.start, .unreadable_tag_name, xml.len);
-                if (stack.items.len == 0) return malformed_xml(error_offset, tag.start, .unexpected_closing_tag, xml.len);
-                if (!std.mem.eql(u8, stack.items[stack.items.len - 1].qname, parsed.qname)) {
+                if (top == no_parent) return malformed_xml(error_offset, tag.start, .unexpected_closing_tag, xml.len);
+                if (!opening_name_matches(xml, boundaries[top], parsed.qname)) {
                     return malformed_xml(error_offset, tag.start, .mismatched_closing_tag, xml.len);
                 }
-                const opener = stack.pop().?;
-                closing_for[opener.idx] = @intCast(i);
+                const opener = top;
+                top = closing_for[opener];
+                closing_for[opener] = @intCast(i);
                 closing_for[i] = @intCast(i);
             },
             .element_open => {
-                // Validate self-closing names too, even though they bypass the stack.
-                const parsed = extract_tag_type_terminated(xml, tag.start) catch
+                _ = extract_tag_type_terminated(xml, tag.start) catch
                     return malformed_xml(error_offset, tag.start, .unreadable_tag_name, xml.len);
                 if (xml[tag.end - 1] == '/') {
                     closing_for[i] = @intCast(i);
                     continue;
                 }
-                try stack.append(gpa, .{ .qname = parsed.qname, .idx = @intCast(i) });
+                // An unresolved opener's slot links to its parent until its closer replaces it.
+                assert(top == no_parent or top < i);
+                closing_for[i] = top;
+                top = @intCast(i);
             },
         }
     }
 
-    // The opener locates the broken segment more usefully than end-of-input.
-    if (stack.items.len != 0) return malformed_xml(
-        error_offset,
-        boundaries[stack.items[0].idx].start,
-        .unclosed_element,
-        xml.len,
-    );
+    if (top != no_parent) {
+        while (closing_for[top] != no_parent) {
+            assert(closing_for[top] < top);
+            top = closing_for[top];
+        }
+        return malformed_xml(error_offset, boundaries[top].start, .unclosed_element, xml.len);
+    }
 
     for (closing_for, 0..) |c, i| {
         assert(c >= i);
@@ -520,4 +539,14 @@ pub fn build_closing_index_with_error_offset(
     }
 
     return closing_for;
+}
+
+fn opening_name_matches(xml: []const u8, opening: TagBoundary, qname: []const u8) bool {
+    const start = opening.start + 1;
+    if (qname.len > opening.end - start) return false;
+    if (!std.mem.eql(u8, xml[start..][0..qname.len], qname)) return false;
+    return switch (xml[start + qname.len]) {
+        ' ', '\t', '\r', '\n', '>', '/' => true,
+        else => false,
+    };
 }

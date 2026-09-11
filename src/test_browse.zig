@@ -18,9 +18,9 @@ const BrowseFixture = struct {
         ssh_xml: ?[]const u8,
     ) !BrowseFixture {
         return .{
-            .eq = try CimDocument.init(gpa, try gpa.dupe(u8, eq_xml)),
-            .tp = if (tp_xml) |xml| try Overlay.init_tp(gpa, try gpa.dupe(u8, xml)) else null,
-            .ssh = if (ssh_xml) |xml| try Overlay.init_ssh(gpa, try gpa.dupe(u8, xml)) else null,
+            .eq = try CimDocument.init(gpa, eq_xml),
+            .tp = if (tp_xml) |xml| try Overlay.init_tp(gpa, xml) else null,
+            .ssh = if (ssh_xml) |xml| try Overlay.init_ssh(gpa, xml) else null,
         };
     }
 
